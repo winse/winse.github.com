@@ -1,8 +1,10 @@
-source "https://rubygems.org"
+#source "https://rubygems.org"
+source "https://ruby.taobao.org"
 
 group :development do
   gem 'rake', '~> 10.0'
   gem 'jekyll', '~> 2.0'
+  gem "json", "~> 1.4"
   gem 'jekyll-page-hooks', '~> 1.2'
   gem 'jekyll-date-format', '~> 1.0'
   gem 'jekyll-sitemap'
