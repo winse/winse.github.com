@@ -1,0 +1,2114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+
+  <title><![CDATA[Category: Tools | Winse Blog]]></title>
+  <link href="http://winse.github.io/blog/categories/tools/atom.xml" rel="self"/>
+  <link href="http://winse.github.io/"/>
+  <updated>2014-07-21T12:19:09+08:00</updated>
+  <id>http://winse.github.io/</id>
+  <author>
+    <name><![CDATA[Winse Liu]]></name>
+    <email><![CDATA[winseliu@foxmail.com]]></email>
+  </author>
+  <generator uri="http://octopress.org/">Octopress</generator>
+
+  
+  <entry>
+    <title type="html"><![CDATA[[笔记] Install Ganglia on Redhat5+]]></title>
+    <link href="http://winse.github.io/blog/2014/07/18/install-ganglia-on-redhat/"/>
+    <updated>2014-07-18T14:53:44+08:00</updated>
+    <id>http://winse.github.io/blog/2014/07/18/install-ganglia-on-redhat</id>
+    <content type="html"><![CDATA[<p>对使用C写的复杂的程序安装心里有阴影，还有本来可以上网的话，使用yum安装会省很多的事情。
+但是没办法，环境是这样，正式环境没有提供网络环境，搭建的本地yum环境也不知道行不行。</p>
+
+<p>上次在自己电脑的虚拟机上面成功安装过ganglia，但apache、rrdtool依赖使用yum安装的，安装过程比较揪心。把ganglia安装到正式环境就不了了之的。
+上个星期生产环境出现了用户查询数据久久不能返回的问题，由于查询程序写的比较差的缘故。但同时也给自己敲了警钟，都不知道集群机器运行情况，终究是大隐患；安装后监测集群同时为以后程序的调优工作带来便利。</p>
+
+<p>本次安装全部使用源码包安装，有部分lib有重复编译。总结下，原来安装ganglia就仅是按照网络的步骤一步步的弄，同时各个程序的版本又有可能不一致，每一步都胆战心惊！没有重点重心，以至于浪费了很多的事情。
+安装ganglia主要涉及三个核心部分(安装程序包<a href="http://yunpan.cn/QCFUiuyAWSyZI">下载</a>（提取码：0ec4）)：</p>
+
+<ul>
+<li>rrdtool</li>
+<li>gmetad / gmond</li>
+<li>apache / web</li>
+<li>配置hadoop metrics监控hadoop集群</li>
+</ul>
+
+
+<p>进行拆分后，就一个个的安装就可以了。无需为一个个依赖的版本不一致问题而忧心，同时可以更好的参考网络上的实践。</p>
+
+<h2>安装rrdtool</h2>
+
+<p>推荐按照<a href="http://oss.oetiker.ch/rrdtool/doc/rrdbuild.en.html#IBUILDING_DEPENDENCIES">官网的教程</a>步骤操作，很详细。
+教程中环境变量必须得设置！这个很重点！</p>
+
+<p>下面是安装rrdtool过程中用到的软件，列出的顺序即为安装的次序：</p>
+
+<pre><code>[hadoop@umcc97-44 rrdbuild]$ ll -tr | grep -v 'tar'
+总计 24132
+drwxrwxrwx  6   1000          1000    4096 07-17 12:12 pkg-config-0.23
+drwxr-xr-x 11 hadoop            80    4096 07-17 12:28 zlib-1.2.3
+drwxr-xr-x  7   1004 avahi-autoipd    4096 07-17 12:29 libpng-1.2.18
+drwxr-xr-x  8   1000 users            4096 07-17 12:31 freetype-2.3.5
+drwxrwxrwx 15  50138 vcsa            12288 07-17 16:37 libxml2-2.6.32
+drwxrwxrwx 15   1488 users            4096 07-17 16:53 fontconfig-2.4.2
+drwxrwxrwx  4 sjyw   sjyw             4096 07-17 16:56 pixman-0.10.0
+drwxrwsrwx  8   1000 ftp              4096 07-17 16:59 cairo-1.6.4
+drwxrwxrwx 12 sjyw   sjyw             4096 07-17 17:01 glib-2.15.4
+drwxrwxrwx  9 sjyw   sjyw             4096 07-17 17:16 pango-1.21.1
+drwxr-xr-x 11   1003          1001    4096 07-17 17:36 rrdtool-1.4.8
+</code></pre>
+
+<p>具体操作的步骤，下面操作相当于历史记录，试错的命令也包括在里面！</p>
+
+<pre><code>BUILD_DIR=/home/ganglia/rrdbuild
+INSTALL_DIR=/opt/rrdtool-1.4.8
+
+export PKG_CONFIG_PATH=${INSTALL_DIR}/lib/pkgconfig
+export PATH=$INSTALL_DIR/bin:$PATH
+
+export LDFLAGS="-Wl,--rpath -Wl,${INSTALL_DIR}/lib" 
+
+[root@umcc97-44 rrdbuild]# tar zxvf pkg-config-0.23.tar.gz 
+[root@umcc97-44 rrdbuild]# cd pkg-config-0.23
+[root@umcc97-44 pkg-config-0.23]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
+[root@umcc97-44 pkg-config-0.23]# make &amp;&amp; make install
+
+[root@umcc97-44 pkg-config-0.23]# export PKG_CONFIG=$INSTALL_DIR/bin/pkg-config
+[root@umcc97-44 pkg-config-0.23]# cd ..
+
+# 想碰运气, 一开始就安装一个后面的, 但是...
+[root@umcc97-44 rrdbuild]# cd cairo-1.6.4
+[root@umcc97-44 cairo-1.6.4]#  ./configure --prefix=$INSTALL_DIR \
+&gt;     --enable-xlib=no \
+&gt;     --enable-xlib-render=no \
+&gt;     --enable-win32=no \
+&gt;     CFLAGS="-O3 -fPIC"
+...
+checking whether cairo's PNG backend could be enabled... no
+configure: error: requested PNG backend could not be enabled
+
+[root@umcc97-44 cairo-1.6.4]# cd ..
+[root@umcc97-44 rrdbuild]# tar zxvf libpng-1.2.18.tar.gz 
+[root@umcc97-44 rrdbuild]# cd libpng-1.2.18
+[root@umcc97-44 libpng-1.2.18]# env CFLAGS="-O3 -fPIC" ./configure --prefix=$INSTALL_DIR
+...
+checking for zlibVersion in -lz... no
+configure: error: zlib not installed
+
+[root@umcc97-44 libpng-1.2.18]# cd ..
+[root@umcc97-44 rrdbuild]# tar zxvf zlib-1.2.3.tar.gz 
+[root@umcc97-44 rrdbuild]# cd zlib-1.2.3
+[root@umcc97-44 zlib-1.2.3]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC" --shared
+unknown option: CFLAGS=-O3 -fPIC
+./configure --help for help
+[root@umcc97-44 zlib-1.2.3]# ./configure 
+[root@umcc97-44 zlib-1.2.3]# make &amp;&amp; make install
+
+[root@umcc97-44 zlib-1.2.3]# cd ../libpng-1.2.18
+[root@umcc97-44 libpng-1.2.18]# ./configure  --prefix=$INSTALL_DIR
+[root@umcc97-44 libpng-1.2.18]# make &amp;&amp; make install
+...
+/usr/bin/ld: /usr/local/lib/libz.a(crc32.o): relocation R_X86_64_32 against `a local symbol' can not be used when making a shared object; recompile with -fPIC
+/usr/local/lib/libz.a: could not read symbols: Bad value
+collect2: ld returned 1 exit status
+make[1]: *** [libpng12.la] Error 1
+make[1]: Leaving directory `/home/ganglia/rrdbuild/libpng-1.2.18'
+make: *** [all] Error 2
+[root@umcc97-44 libpng-1.2.18]# cd ../zlib-1.2.3
+
+# 64位问题 recompile with -fPIC
+[root@umcc97-44 zlib-1.2.3]# CFLAGS="-O3 -fPIC" ./configure
+[root@umcc97-44 zlib-1.2.3]# make &amp;&amp; make install
+
+[root@umcc97-44 zlib-1.2.3]# cd ../libpng-1.2.18
+[root@umcc97-44 libpng-1.2.18]# make &amp;&amp; make install
+
+[root@umcc97-44 libpng-1.2.18]# cd ..
+[root@umcc97-44 rrdbuild]# tar zxvf freetype-2.3.5.tar.gz 
+[root@umcc97-44 rrdbuild]# cd freetype-2.3.5
+[root@umcc97-44 freetype-2.3.5]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
+[root@umcc97-44 freetype-2.3.5]# make &amp;&amp; make install
+
+# 终端断了，需要重新设置4个重要的环境变量
+[root@umcc97-44 rrdbuild]# tar zxvf libxml2-2.6.32.tar.gz 
+[root@umcc97-44 rrdbuild]# cd libxml2-2.6.32
+[root@umcc97-44 libxml2-2.6.32]# BUILD_DIR=/home/ganglia/rrdbuild
+[root@umcc97-44 libxml2-2.6.32]# INSTALL_DIR=/opt/rrdtool-1.4.8
+[root@umcc97-44 libxml2-2.6.32]# export LDFLAGS="-Wl,--rpath -Wl,${INSTALL_DIR}/lib"
+
+[root@umcc97-44 libxml2-2.6.32]#  ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
+[root@umcc97-44 libxml2-2.6.32]# make &amp;&amp; make install
+
+[root@umcc97-44 libxml2-2.6.32]# cd ..
+[root@umcc97-44 rrdbuild]# tar zxvf fontconfig-2.4.2.tar.gz 
+[root@umcc97-44 rrdbuild]# cd fontconfig-2.4.2
+[root@umcc97-44 fontconfig-2.4.2]#  ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC" --with-freetype-config=$INSTALL_DIR/bin/freetype-config
+...
+checking for LIBXML2... configure: error: Package requirements (libxml-2.0 &gt;= 2.6) were not met:
+
+No package 'libxml-2.0' found
+
+Consider adjusting the PKG_CONFIG_PATH environment variable if you
+installed software in a non-standard prefix.
+
+Alternatively, you may set the environment variables LIBXML2_CFLAGS
+and LIBXML2_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details.
+
+# 设置PKG_CONFIG
+[root@umcc97-44 fontconfig-2.4.2]# export PKG_CONFIG=$INSTALL_DIR/bin/pkg-config
+[root@umcc97-44 fontconfig-2.4.2]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC" --with-freetype-config=$INSTALL_DIR/bin/freetype-config
+[root@umcc97-44 fontconfig-2.4.2]# make &amp;&amp; make install
+
+[root@umcc97-44 fontconfig-2.4.2]# cd ..
+[root@umcc97-44 rrdbuild]# cd pixman-0.10.0
+[root@umcc97-44 pixman-0.10.0]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
+[root@umcc97-44 pixman-0.10.0]# make &amp;&amp; make install
+
+[root@umcc97-44 pixman-0.10.0]# cd ../cairo-1.6.4
+[root@umcc97-44 cairo-1.6.4]# ./configure --prefix=$INSTALL_DIR \
+&gt;     --enable-xlib=no \
+&gt;     --enable-xlib-render=no \
+&gt;     --enable-win32=no \
+&gt;     CFLAGS="-O3 -fPIC"
+[root@umcc97-44 cairo-1.6.4]# make &amp;&amp; make install
+
+[root@umcc97-44 cairo-1.6.4]# cd ..
+[root@umcc97-44 rrdbuild]# tar zxvf glib-2.15.4.tar.gz 
+[root@umcc97-44 rrdbuild]# cd glib-2.15.4
+[root@umcc97-44 glib-2.15.4]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
+[root@umcc97-44 glib-2.15.4]# make &amp;&amp; make install
+
+[root@umcc97-44 rrdbuild]# bunzip2 -c pango-1.21.1.tar.bz2 | tar xf -
+[root@umcc97-44 rrdbuild]# ll
+[root@umcc97-44 rrdbuild]# cd pango-1.21.1
+[root@umcc97-44 pango-1.21.1]#  ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC" --without-x
+#! configure后没执行make install
+
+[root@umcc97-44 pango-1.21.1]# cd ../rrdtool-1.4.8/
+[root@umcc97-44 rrdtool-1.4.8]# ./configure --prefix=$INSTALL_DIR --disable-tcl --disable-python
+# 检查不通过
+
+[root@umcc97-44 rrdtool-1.4.8]# LDFLAGS=-Wl,--rpath -Wl,/opt/rrdtool-1.4.8/lib
+[root@umcc97-44 rrdtool-1.4.8]# export LDFLAGS="-Wl,--rpath -Wl,-L/opt/rrdtool-1.4.8/lib"
+[root@umcc97-44 rrdtool-1.4.8]# export PKG_CONFIG_PATH=/opt/rrdtool-1.4.8/lib/pkgconfig/
+[root@umcc97-44 rrdtool-1.4.8]# ./configure --prefix=$INSTALL_DIR --disable-tcl --disable-python
+...
+configure: error: Please fix the library issues listed above and try again.
+
+# pango没有make!!
+[root@umcc97-44 rrdtool-1.4.8]# cd ../pango-1.21.1
+[root@umcc97-44 pango-1.21.1]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC" --without-x
+[root@umcc97-44 pango-1.21.1]# make &amp;&amp; make install
+...
+    &amp;&amp; echo timestamp &gt; s-enum-types-h
+/bin/sh: line 1: glib-mkenums: command not found
+make[2]: *** [s-enum-types-h] Error 127
+make[2]: Leaving directory `/home/ganglia/rrdbuild/pango-1.21.1/pango'
+make[1]: *** [all-recursive] Error 1
+make[1]: Leaving directory `/home/ganglia/rrdbuild/pango-1.21.1'
+make: *** [all] Error 2
+# 配置PATH环境变量
+[root@umcc97-44 pango-1.21.1]# export PATH=$INSTALL_DIR/bin:$PATH
+[root@umcc97-44 pango-1.21.1]# make &amp;&amp; make install
+
+## 吃饭回来后，终端又断了，环境变量需要重新设置
+[root@umcc97-44 rrdbuild]# BUILD_DIR=/home/ganglia/rrdbuild
+[root@umcc97-44 rrdbuild]# INSTALL_DIR=/opt/rrdtool-1.4.8
+[root@umcc97-44 rrdbuild]# export LDFLAGS="-Wl,--rpath -Wl,${INSTALL_DIR}/lib" 
+[root@umcc97-44 rrdbuild]# export PKG_CONFIG_PATH=${INSTALL_DIR}/lib/pkgconfig
+[root@umcc97-44 rrdbuild]# export PATH=$INSTALL_DIR/bin:$PATH
+[root@umcc97-44 rrdbuild]# 
+[root@umcc97-44 rrdbuild]# cd rrdtool-1.4.8/
+[root@umcc97-44 rrdtool-1.4.8]#  ./configure --prefix=$INSTALL_DIR --disable-tcl --disable-python
+[root@umcc97-44 rrdtool-1.4.8]# make clean
+[root@umcc97-44 rrdtool-1.4.8]# make 
+[root@umcc97-44 rrdtool-1.4.8]# make install
+
+## 安装完后，搞个例子玩玩   
+[root@umcc97-44 rrdtool-1.4.8]# cd /opt/rrdtool-1.4.8/share/rrdtool/examples/
+[root@umcc97-44 examples]# ll
+[root@umcc97-44 examples]# ./4charts.pl 
+This script has created 4charts.png in the current directory
+This demonstrates the use of the TIME and % RPN operators
+# 运行完后，会在当前目录生成不同尺寸的png的图片
+
+[hadoop@umcc97-44 ~]$ /opt/rrdtool-1.4.8/bin/rrdtool -v
+RRDtool 1.4.8  Copyright 1997-2013 by Tobias Oetiker &lt;tobi@oetiker.ch&gt;
+               Compiled Jul 17 2014 17:37:58
+
+Usage: rrdtool [options] command command_options
+Valid commands: create, update, updatev, graph, graphv,  dump, restore,
+        last, lastupdate, first, info, fetch, tune,
+        resize, xport, flushcached
+
+RRDtool is distributed under the Terms of the GNU General
+Public License Version 2. (www.gnu.org/copyleft/gpl.html)
+
+For more information read the RRD manpages
+</code></pre>
+
+<p>到这里rrd安装好，找对了资料按照步骤一步步的操作心里踏实，做事情自然就顺畅！</p>
+
+<p>同时认识到了pkg，其实类似于java的jar嘛，依赖包不一定非要安装在系统的默认位置，自己管理也是一种简单易行的方式。接下来安装gmetad/gmond也使用这样方式，为后面部署gmond带来便利，所有依赖的包都放在一个目录下嘛！
+接下来ganglia程序。</p>
+
+<h2>gmetad安装</h2>
+
+<p>需要用到的软件包：</p>
+
+<pre><code>./gangliabuild/ganglia-web-3.5.12
+./gangliabuild/apr-1.5.1
+./gangliabuild/apr-util-1.5.3
+./gangliabuild/confuse-2.7
+./gangliabuild/expat-2.0.1
+./gangliabuild/ganglia-3.6.0
+</code></pre>
+
+<p>整个安装过程，除了make的时刻rrd的库找不到的问题（通过LD_LIBRARY_PATH解决），其他都安装的很顺。</p>
+
+<pre><code>[root@umcc97-44 gangliabuild]#  cd ganglia-3.6.0
+# 开始就碰一鼻子灰！
+[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=/opt/ganglia --with-librrd=/opt/rrdtool-1.4.8 
+...
+No package 'apr-1' found
+
+Consider adjusting the PKG_CONFIG_PATH environment variable if you
+installed software in a non-standard prefix.
+
+Alternatively, you may set the environment variables APR_CFLAGS
+and APR_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details.
+
+[root@umcc97-44 ganglia-3.6.0]# cd ..
+[root@umcc97-44 gangliabuild]# ll
+total 5612
+-rw-rw-r--  1 hadoop hadoop 1020833 Jul 17 18:52 apr-1.5.1.tar.gz
+-rw-rw-r--  1 hadoop hadoop  874462 Jun 23 20:58 apr-util-1.5.3.tar.gz
+-rw-rw-r--  1 hadoop hadoop  517272 Jul 17 18:35 confuse-2.7.tar.gz
+-rw-rw-r--  1 hadoop hadoop  446456 Jul 17 18:35 expat-2.0.1.tar.gz
+drwxr-xr-x 18 root   root      4096 Jul 17 18:36 ganglia-3.6.0
+-rw-rw-r--  1 hadoop hadoop 1248273 Jun 23 19:57 ganglia-3.6.0.tar.gz
+drwxr-xr-x 16   1000   1000    4096 Jan  6  2014 ganglia-web-3.5.12
+-rw-rw-r--  1 hadoop hadoop 1595483 Jun 23 20:00 ganglia-web-3.5.12.tar.gz
+[root@umcc97-44 gangliabuild]# 
+
+[root@umcc97-44 gangliabuild]# find . -name "*.tar.gz" -exec tar zxvf {} \;
+
+[root@umcc97-44 gangliabuild]# cd expat-2.0.1
+[root@umcc97-44 expat-2.0.1]# INSTALL_DIR=/opt/ganglia
+[root@umcc97-44 expat-2.0.1]# ./configure --prefix=$INSTALL_DIR 
+[root@umcc97-44 expat-2.0.1]# make &amp;&amp; make install
+
+[root@umcc97-44 expat-2.0.1]# cd ../apr-1.5.1
+[root@umcc97-44 apr-1.5.1]# ./configure --prefix=$INSTALL_DIR 
+[root@umcc97-44 apr-1.5.1]# make &amp;&amp; make install
+
+# 没写prefix，后面又回来重编译
+[root@umcc97-44 apr-1.5.1]# cd ../apr-util-1.5.3
+[root@umcc97-44 apr-util-1.5.3]# ./configure --with-apr=/opt/ganglia --with-expat=/opt/ganglia
+[root@umcc97-44 apr-util-1.5.3]# make &amp;&amp; make install
+[root@umcc97-44 apr-util-1.5.3]# ./configure --with-apr=/opt/ganglia --with-expat=/opt/ganglia --prefix=$INSTALL_DIR 
+[root@umcc97-44 apr-util-1.5.3]# make &amp;&amp; make install
+
+[root@umcc97-44 apr-util-1.5.3]# cd ../confuse-2.7
+[root@umcc97-44 confuse-2.7]# ./configure CFLAGS=-fPIC --disable-nls --prefix=$INSTALL_DIR 
+[root@umcc97-44 confuse-2.7]# make &amp;&amp; make install
+
+[root@umcc97-44 confuse-2.7]# cd ../ganglia-3.6.0
+[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR --with-librrd=/opt/rrdtool-1.4.8 --with-libexpat=/opt/ganglia --with-libconfuse=/opt/ganglia  --with-gmetad --enable-gexec --enable-status -sysconfdir=/etc/ganglia
+...
+Checking for apr
+checking for APR... no
+configure: error: Package requirements (apr-1) were not met:
+
+No package 'apr-1' found
+
+Consider adjusting the PKG_CONFIG_PATH environment variable if you
+installed software in a non-standard prefix.
+
+Alternatively, you may set the environment variables APR_CFLAGS
+and APR_LIBS to avoid the need to call pkg-config.
+See the pkg-config man page for more details.
+
+[root@umcc97-44 ganglia-3.6.0]# export LDFLAGS="-Wl,--rpath -Wl,${INSTALL_DIR}/lib" 
+[root@umcc97-44 ganglia-3.6.0]# export PKG_CONFIG_PATH=${INSTALL_DIR}/lib/pkgconfig
+[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR --with-librrd=/opt/rrdtool-1.4.8 --with-libexpat=/opt/ganglia --with-libconfuse=/opt/ganglia  --with-gmetad --enable-gexec --enable-status -sysconfdir=/etc/ganglia
+...
+libpcre not found, specify --with-libpcre=no to build without PCRE support
+
+[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR --with-librrd=/opt/rrdtool-1.4.8 --with-libexpat=/opt/ganglia --with-libconfuse=/opt/ganglia --with-libpcre=no  --with-gmetad --enable-gexec --enable-status -sysconfdir=/etc/ganglia
+...
+Welcome to..
+     ______                  ___
+    / ____/___ _____  ____ _/ (_)___ _
+   / / __/ __ `/ __ \/ __ `/ / / __ `/
+  / /_/ / /_/ / / / / /_/ / / / /_/ /
+  \____/\__,_/_/ /_/\__, /_/_/\__,_/
+                   /____/
+
+Copyright (c) 2005 University of California, Berkeley
+
+Version: 3.6.0
+Library: Release 3.6.0 0:0:0
+
+Type "make" to compile.
+
+[root@umcc97-44 ganglia-3.6.0]# 
+[root@umcc97-44 ganglia-3.6.0]# make &amp;&amp; make install
+...
+/usr/bin/ld: cannot find -lrrd
+collect2: ld returned 1 exit status
+make[2]: *** [gmetad] Error 1
+make[2]: Leaving directory `/home/ganglia/gangliabuild/ganglia-3.6.0/gmetad'
+make[1]: *** [all-recursive] Error 1
+make[1]: Leaving directory `/home/ganglia/gangliabuild/ganglia-3.6.0'
+make: *** [all] Error 2
+
+# 设置rrd的LIB路径
+[root@umcc97-44 ganglia-3.6.0]# export LD_LIBRARY_PATH=/opt/rrdtool-1.4.8/lib
+[root@umcc97-44 ganglia-3.6.0]# make
+[root@umcc97-44 ganglia-3.6.0]# make install
+</code></pre>
+
+<p>接下来是配置gmetad</p>
+
+<pre><code>[root@umcc97-44 ganglia-3.6.0]#  cd gmetad
+[root@umcc97-44 gmetad]# cp gmetad.init /etc/init.d/gmetad
+
+# 这个配置的位置是不对的，下面配置gmond的时刻会改，移动到/etc/ganglia目录下
+[root@umcc97-44 gmetad]# cp gmetad.conf /etc/gmetad.conf
+[root@umcc97-44 gmetad]# chkconfig gmetad on
+
+[root@umcc97-44 gmetad]# chkconfig --list gmetad
+gmetad          0:off   1:off   2:on    3:on    4:on    5:on    6:off
+
+[root@umcc97-44 gmetad]# mkdir -p /var/lib/ganglia/rrds
+[root@umcc97-44 gmetad]# chown nobody:nobody /var/lib/ganglia/rrds
+[root@umcc97-44 gmetad]# 
+[root@umcc97-44 gmetad]# service gmetad start
+Starting GANGLIA gmetad: 
+[root@umcc97-44 gmetad]# 
+[root@umcc97-44 gmetad]# cat gmetad.init
+[root@umcc97-44 gmetad]# /usr/sbin/gmetad
+-bash: /usr/sbin/gmetad: No such file or directory
+[root@umcc97-44 gmetad]# ln -s /opt/ganglia/sbin/gmetad /usr/sbin/gmetad
+[root@umcc97-44 gmetad]# service gmetad start
+Starting GANGLIA gmetad: [  OK  ]
+
+[root@umcc97-44 gmetad]# vi /etc/gmetad.conf 
+ datasource "hadoop" localhost
+ rrd_rootdir "/var/lib/ganglia/rrds"
+
+[root@umcc97-44 gmetad]# service gmetad restart
+Shutting down GANGLIA gmetad: [  OK  ]
+
+Starting GANGLIA gmetad: [  OK  ]
+
+[root@umcc97-44 gmetad]# telnet localhost 8651
+</code></pre>
+
+<h2>gmond安装</h2>
+
+<pre><code>[root@umcc97-44 gmetad]# pwd
+/home/ganglia/gangliabuild/ganglia-3.6.0/gmetad
+[root@umcc97-44 gmetad]# cd ..
+[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR 
+...
+checking for pcre_compile in -lpcre... no
+libpcre not found, specify --with-libpcre=no to build without PCRE support
+[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR  --with-libpcre=no
+...
+Welcome to..
+     ______                  ___
+    / ____/___ _____  ____ _/ (_)___ _
+   / / __/ __ `/ __ \/ __ `/ / / __ `/
+  / /_/ / /_/ / / / / /_/ / / / /_/ /
+  \____/\__,_/_/ /_/\__, /_/_/\__,_/
+                   /____/
+
+Copyright (c) 2005 University of California, Berkeley
+
+Version: 3.6.0
+Library: Release 3.6.0 0:0:0
+
+Type "make" to compile.
+# 尽管检查通过了，但是make会报错
+
+[root@umcc97-44 ganglia-3.6.0]# make &amp;&amp; make install
+...
+ganglia.c:8:19: error: expat.h: No such file or directory
+ganglia.c: In function ‘gexec_cluster’:
+ganglia.c:255: error: ‘XML_Parser’ undeclared (first use in this function)
+ganglia.c:255: error: (Each undeclared identifier is reported only once
+ganglia.c:255: error: for each function it appears in.)
+ganglia.c:255: error: expected ‘;’ before ‘xml_parser’
+ganglia.c:276: error: ‘xml_parser’ undeclared (first use in this function)
+...
+make[2]: *** [ganglia.lo] Error 1
+make[2]: Leaving directory `/home/ganglia/gangliabuild/ganglia-3.6.0/lib'
+make[1]: *** [all-recursive] Error 1
+make[1]: Leaving directory `/home/ganglia/gangliabuild/ganglia-3.6.0'
+make: *** [all] Error 2
+
+# 需要指定lib包位置
+[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR  --with-libpcre=no  --with-libexpat=/opt/ganglia --with-libconfuse=/opt/ganglia
+[root@umcc97-44 ganglia-3.6.0]# make
+[root@umcc97-44 ganglia-3.6.0]# make install
+
+[root@umcc97-44 ganglia-3.6.0]# cd gmond/
+[root@umcc97-44 gmond]# ./gmond -t &gt; /etc/gmond.conf
+[root@umcc97-44 gmond]# cat gmond.init
+#!/bin/sh
+#
+# chkconfig: 2345 70 40
+# description: gmond startup script
+#
+GMOND=/usr/sbin/gmond
+
+...
+[root@umcc97-44 gmond]# ln -s /opt/ganglia/sbin/gmond /usr/sbin/gmond
+[root@umcc97-44 gmond]# cp gmond.init /etc/init.d/gmond
+[root@umcc97-44 gmond]# chkconfig --add gmond
+[root@umcc97-44 gmond]# chkconfig --list gmond
+gmond           0:off   1:off   2:on    3:on    4:on    5:on    6:off
+[root@umcc97-44 gmond]# service gmond start
+Starting GANGLIA gmond: Configuration file '/opt/ganglia/etc/gmond.conf' not found.
+
+[  OK  ]
+
+[root@umcc97-44 gmond]# service gmond stop
+Shutting down GANGLIA gmond: [  OK  ]
+
+# 配置目录不对再编一次
+[root@umcc97-44 gmond]# cd ..
+[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR  --with-libpcre=no  --with-libexpat=/opt/ganglia --with-libconfuse=/opt/ganglia -sysconfdir=/etc/ganglia
+[root@umcc97-44 ganglia-3.6.0]# make &amp;&amp; make install
+
+[root@umcc97-44 etc]# mv gmetad.conf ganglia/
+mv: overwrite `ganglia/gmetad.conf'? Y
+[root@umcc97-44 etc]# mv gmond.conf ganglia/
+[root@umcc97-44 etc]# 
+
+[root@umcc97-44 ganglia-3.6.0]# vi /etc/ganglia/gmond.conf 
+ cluster-name
+
+[root@umcc97-44 ganglia-3.6.0]# service gmond restart
+Shutting down GANGLIA gmond: [  OK  ]
+
+Starting GANGLIA gmond: [  OK  ]
+
+[root@umcc97-44 ganglia-3.6.0]# telnet localhost 8649
+</code></pre>
+
+<p>查看运行情况：</p>
+
+<pre><code>[root@umcc97-44 ganglia-3.6.0]# ldconfig -v
+[root@umcc97-44 ganglia-3.6.0]#  /opt/ganglia/bin/gstat -a
+</code></pre>
+
+<h2>apache和php环境安装</h2>
+
+<pre><code>[root@umcc97-44 webbuild]# tar zxvf httpd-2.4.9.tar.gz 
+[root@umcc97-44 webbuild]# cd httpd-2.4.9
+[root@umcc97-44 httpd-2.4.9]# ./configure -with-enable-so -sysconfdir=/etc/httpd
+...
+checking for APR... no
+configure: error: APR not found.  Please read the documentation.
+
+# 前面安装ganglia时也安装过APR但是安装的目录指定的，混用不是很好。查看官方安装2.4的安装文档，可以直接把apr放到srclib下，编译时会同时编译这些依赖
+[root@umcc97-44 httpd-2.4.9]# cd srclib/
+[root@umcc97-44 srclib]# cp -r /home/ganglia/gangliabuild/apr-1.5.1 ./
+[root@umcc97-44 srclib]# cp -r /home/ganglia/gangliabuild/apr-util-1.5.3 ./
+[root@umcc97-44 srclib]# mv apr-1.5.1 apr
+[root@umcc97-44 srclib]# mv apr-util-1.5.3 apr-util
+[root@umcc97-44 srclib]# ll
+[root@umcc97-44 srclib]# cd ..
+[root@umcc97-44 httpd-2.4.9]# ./configure --with-included-apr -with-enable-so -sysconfdir=/etc/httpd
+...
+checking for pcre-config... false
+configure: error: pcre-config for libpcre not found. PCRE is required and available from http://pcre.org/
+
+[root@umcc97-44 httpd-2.4.9]#  cd ../
+[root@umcc97-44 webbuild]# tar zxvf pcre-8.35.tar.gz 
+# 正则表达式的包，这里安装默认位置
+[root@umcc97-44 webbuild]# cd pcre-8.35
+[root@umcc97-44 pcre-8.35]# ./configure 
+[root@umcc97-44 pcre-8.35]# make &amp;&amp; make install
+
+[root@umcc97-44 pcre-8.35]# cd ../httpd-2.4.9
+[root@umcc97-44 httpd-2.4.9]# ./configure --with-included-apr -with-enable-so -sysconfdir=/etc/httpd
+[root@umcc97-44 httpd-2.4.9]# make &amp;&amp; make install
+
+[root@umcc97-44 httpd-2.4.9]# cd /usr/local/apache2/
+[root@umcc97-44 apache2]# cd /etc/httpd
+
+[root@umcc97-44 httpd]# cd /home/ganglia/webbuild/
+[root@umcc97-44 webbuild]# tar zxvf php-5.5.14\ \(2\).tar.gz 
+[root@umcc97-44 webbuild]# cd php-5.5.14
+# 用了安装rrd时的libxml
+[root@umcc97-44 php-5.5.14]# ./configure -with-apxs2=/usr/local/apache2/bin/apxs --with-libxml-dir=/opt/rrdtool-1.4.8/ -sysconfdir=/etc -with-config-file-path=/etc -with-config-file-scan-dir=/usr/etc/php.d -with-zlib
+[root@umcc97-44 php-5.5.14]# make &amp;&amp; make install
+
+[root@umcc97-44 php-5.5.14]#  
+[root@umcc97-44 php-5.5.14]#  vi /etc/httpd/httpd.conf
+ DocumentRoot "/var/www/html"
+ &lt;Directory "/var/www/html"&gt;
+ PHP Module
+ ADDType
+
+[root@umcc97-44 php-5.5.14]# /usr/local/apache2/bin/apachectl start
+AH00526: Syntax error on line 215 of /etc/httpd/httpd.conf:
+DocumentRoot must be a directory
+
+[root@umcc97-44 php-5.5.14]# mkdir -p /var/www/html
+[root@umcc97-44 php-5.5.14]# /usr/local/apache2/bin/apachectl start
+AH00558: httpd: Could not reliably determine the server's fully qualified domain name, using 10.18.97.44. Set the 'ServerName' directive globally to suppress this message
+
+[root@umcc97-44 php-5.5.14]#  vi /etc/httpd/httpd.conf
+ ServerName
+[root@umcc97-44 php-5.5.14]#/usr/local/apache2/bin/apachectl start
+httpd (pid 31416) already running
+
+[root@umcc97-44 php-5.5.14]# cp /usr/local/apache2/bin/apachectl /etc/init.d/httpd
+[root@umcc97-44 php-5.5.14]# chkconfig --add httpd
+service httpd does not support chkconfig
+
+[root@umcc97-44 ~]# vi /etc/init.d/httpd 
+ #chkconfig: 2345 10 90
+ #description: Activates/Deactivates Apache Web Server
+
+[root@umcc97-44 ~]# service httpd start
+
+[root@umcc97-44 ~]# cd /var/www/html/
+[root@umcc97-44 ~]# vi index.php
+# http://umcc97-44 浏览器查看下结果
+
+# /usr/local/apache2/bin/apachectl -k stop
+[root@umcc97-44 ganglia-web]# service httpd -k stop 
+# 等apache结束
+[root@umcc97-44 ganglia-web]# tail -f /usr/local/apache2/logs/error_log 
+</code></pre>
+
+<p>部署ganglia-web：</p>
+
+<pre><code>[root@umcc97-44 ~]# cd /home/ganglia/gangliabuild/ganglia-web-3.5.12
+[root@umcc97-44 ganglia-web-3.5.12]# ls
+[root@umcc97-44 ganglia-web-3.5.12]# make install
+rsync --exclude "rpmbuild" --exclude "*.gz" --exclude "Makefile" --exclude "*debian*" --exclude "ganglia-web-3.5.12" --exclude ".git*" --exclude "*.in" --exclude "*~" --exclude "#*#" --exclude "ganglia-web.spec" --exclude "apache.conf" -a . ganglia-web-3.5.12
+mkdir -p //var/lib/ganglia-web/dwoo/compiled &amp;&amp; \
+    mkdir -p //var/lib/ganglia-web/dwoo/cache &amp;&amp; \
+    mkdir -p //var/lib/ganglia-web &amp;&amp; \
+    rsync -a ganglia-web-3.5.12/conf //var/lib/ganglia-web &amp;&amp; \
+    mkdir -p //usr/share/ganglia-webfrontend &amp;&amp; \
+    rsync --exclude "conf" -a ganglia-web-3.5.12/* //usr/share/ganglia-webfrontend &amp;&amp; \
+    chown -R root:root //var/lib/ganglia-web
+
+[root@umcc97-44 ganglia-web-3.5.12]# mv /usr/share/ganglia-webfrontend /var/www/html/ganglia
+[root@umcc97-44 ganglia-web-3.5.12]# cd /var/www/html/ganglia/  
+[root@umcc97-44 ganglia]# cp conf_default.php conf.php  
+
+[root@umcc97-44 ganglia]# cd /var/lib/ganglia-web/
+[root@umcc97-44 ganglia-web]# cd dwoo/
+[root@umcc97-44 dwoo]# ll
+total 8
+drwxr-xr-x 2 root root 4096 Jul 17 21:34 cache
+drwxr-xr-x 2 root root 4096 Jul 17 21:34 compiled
+[root@umcc97-44 dwoo]# chmod 777 *  
+# http://umcc97-44/ganglia
+</code></pre>
+
+<p>部署gmond到其他集群节点</p>
+
+<pre><code>
+[root@umcc97-44 opt]# cat /etc/init.d/gmond 
+#!/bin/sh
+#
+# chkconfig: 2345 70 40
+# description: gmond startup script
+#
+GMOND=/usr/sbin/gmond   
+
+[root@umcc97-44 opt]# vi /etc/ganglia/gmetad.conf   
+ data_source
+ # 重启gmetad
+[root@umcc97-44 opt]# ssh-copy-id -i ~/.ssh/id_rsa.pub umcc97-144
+[root@umcc97-44 opt]# scp /etc/init.d/gmond umcc97-144:/etc/init.d/
+[root@umcc97-44 opt]# ssh umcc97-144 'mkdir /etc/ganglia' 
+[root@umcc97-44 opt]# scp /etc/ganglia/gmond.conf  umcc97-144:/etc/ganglia/
+[root@umcc97-44 opt]# rsync -vaz ganglia umcc97-144:/opt/
+[root@umcc97-44 opt]# ssh umcc97-144
+Last login: Tue Jun 10 12:08:47 2014
+
+[root@umcc97-144 ~]# ln -s /opt/ganglia/sbin/gmond /usr/sbin/gmond
+[root@umcc97-144 ~]# chkconfig --add gmond
+[root@umcc97-144 ~]# service gmond start
+Starting GANGLIA gmond: [  OK  ]
+
+[root@umcc97-144 ~]# 
+</code></pre>
+
+<h2>Hadoop/Hbase Metrics配置</h2>
+
+<pre><code>[hadoop@umcc97-44 ~]$ cat hadoop-2.2.0/etc/hadoop/hadoop-metrics*
+#
+#   Licensed to the Apache Software Foundation (ASF) under one or more
+#   contributor license agreements.  See the NOTICE file distributed with
+#   this work for additional information regarding copyright ownership.
+#   The ASF licenses this file to You under the Apache License, Version 2.0
+#   (the "License"); you may not use this file except in compliance with
+#   the License.  You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+#
+
+# syntax: [prefix].[source|sink].[instance].[options]
+# See javadoc of package-info.java for org.apache.hadoop.metrics2 for details
+
+# @changed
+#*.sink.file.class=org.apache.hadoop.metrics2.sink.FileSink
+# default sampling period, in seconds
+#*.period=10
+
+# The namenode-metrics.out will contain metrics from all context
+#namenode.sink.file.filename=namenode-metrics.out
+# Specifying a special sampling period for namenode:
+#namenode.sink.*.period=8
+
+#datanode.sink.file.filename=datanode-metrics.out
+
+# the following example split metrics of different
+# context to different sinks (in this case files)
+#jobtracker.sink.file_jvm.context=jvm
+#jobtracker.sink.file_jvm.filename=jobtracker-jvm-metrics.out
+#jobtracker.sink.file_mapred.context=mapred
+#jobtracker.sink.file_mapred.filename=jobtracker-mapred-metrics.out
+
+#tasktracker.sink.file.filename=tasktracker-metrics.out
+
+#maptask.sink.file.filename=maptask-metrics.out
+
+#reducetask.sink.file.filename=reducetask-metrics.out
+
+
+
+*.sink.ganglia.class=org.apache.hadoop.metrics2.sink.ganglia.GangliaSink31
+*.sink.ganglia.period=10
+
+*.sink.ganglia.slope=jvm.metrics.gcCount=zero,jvm.metrics.memHeapUsedM=both
+*.sink.ganglia.dmax=jvm.metrics.threadsBlocked=70,jvm.metrics.memHeapUsedM=40
+
+namenode.sink.ganglia.servers=umcc97-44:8649
+resourcemanager.sink.ganglia.servers=umcc97-44:8649
+
+datanode.sink.ganglia.servers=umcc97-44:8649
+nodemanager.sink.ganglia.servers=umcc97-44:8649
+
+maptask.sink.ganglia.servers=umcc97-44:8649
+reducetask.sink.ganglia.servers=umcc97-44:8649
+
+
+
+# Configuration of the "dfs" context for null
+dfs.class=org.apache.hadoop.metrics.spi.NullContext
+
+# Configuration of the "dfs" context for file
+#dfs.class=org.apache.hadoop.metrics.file.FileContext
+#dfs.period=10
+#dfs.fileName=/tmp/dfsmetrics.log
+
+# Configuration of the "dfs" context for ganglia
+# Pick one: Ganglia 3.0 (former) or Ganglia 3.1 (latter)
+# dfs.class=org.apache.hadoop.metrics.ganglia.GangliaContext
+# dfs.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
+# dfs.period=10
+# dfs.servers=localhost:8649
+
+
+# Configuration of the "mapred" context for null
+mapred.class=org.apache.hadoop.metrics.spi.NullContext
+
+# Configuration of the "mapred" context for file
+#mapred.class=org.apache.hadoop.metrics.file.FileContext
+#mapred.period=10
+#mapred.fileName=/tmp/mrmetrics.log
+
+# Configuration of the "mapred" context for ganglia
+# Pick one: Ganglia 3.0 (former) or Ganglia 3.1 (latter)
+# mapred.class=org.apache.hadoop.metrics.ganglia.GangliaContext
+# mapred.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
+# mapred.period=10
+# mapred.servers=localhost:8649
+
+
+# Configuration of the "jvm" context for null
+#jvm.class=org.apache.hadoop.metrics.spi.NullContext
+
+# Configuration of the "jvm" context for file
+#jvm.class=org.apache.hadoop.metrics.file.FileContext
+#jvm.period=10
+#jvm.fileName=/tmp/jvmmetrics.log
+
+# Configuration of the "jvm" context for ganglia
+# jvm.class=org.apache.hadoop.metrics.ganglia.GangliaContext
+# jvm.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
+# jvm.period=10
+# jvm.servers=localhost:8649
+
+# Configuration of the "rpc" context for null
+rpc.class=org.apache.hadoop.metrics.spi.NullContext
+
+# Configuration of the "rpc" context for file
+#rpc.class=org.apache.hadoop.metrics.file.FileContext
+#rpc.period=10
+#rpc.fileName=/tmp/rpcmetrics.log
+
+# Configuration of the "rpc" context for ganglia
+# rpc.class=org.apache.hadoop.metrics.ganglia.GangliaContext
+# rpc.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
+# rpc.period=10
+# rpc.servers=localhost:8649
+
+
+# Configuration of the "ugi" context for null
+ugi.class=org.apache.hadoop.metrics.spi.NullContext
+
+# Configuration of the "ugi" context for file
+#ugi.class=org.apache.hadoop.metrics.file.FileContext
+#ugi.period=10
+#ugi.fileName=/tmp/ugimetrics.log
+
+# Configuration of the "ugi" context for ganglia
+# ugi.class=org.apache.hadoop.metrics.ganglia.GangliaContext
+# ugi.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
+# ugi.period=10
+# ugi.servers=localhost:8649
+
+[hadoop@umcc97-44 ~]$ cat hbase-0.98.3-hadoop2/conf/hadoop-metrics2-hbase.properties 
+# syntax: [prefix].[source|sink].[instance].[options]
+# See javadoc of package-info.java for org.apache.hadoop.metrics2 for details
+
+#*.sink.file*.class=org.apache.hadoop.metrics2.sink.FileSink
+# default sampling period
+#*.period=10
+
+# Below are some examples of sinks that could be used
+# to monitor different hbase daemons.
+
+# hbase.sink.file-all.class=org.apache.hadoop.metrics2.sink.FileSink
+# hbase.sink.file-all.filename=all.metrics
+
+# hbase.sink.file0.class=org.apache.hadoop.metrics2.sink.FileSink
+# hbase.sink.file0.context=hmaster
+# hbase.sink.file0.filename=master.metrics
+
+# hbase.sink.file1.class=org.apache.hadoop.metrics2.sink.FileSink
+# hbase.sink.file1.context=thrift-one
+# hbase.sink.file1.filename=thrift-one.metrics
+
+# hbase.sink.file2.class=org.apache.hadoop.metrics2.sink.FileSink
+# hbase.sink.file2.context=thrift-two
+# hbase.sink.file2.filename=thrift-one.metrics
+
+# hbase.sink.file3.class=org.apache.hadoop.metrics2.sink.FileSink
+# hbase.sink.file3.context=rest
+# hbase.sink.file3.filename=rest.metrics
+
+
+*.sink.ganglia.class=org.apache.hadoop.metrics2.sink.ganglia.GangliaSink31
+*.sink.ganglia.period=10
+
+hbase.sink.ganglia.period=10
+hbase.sink.ganglia.servers=umcc97-44:8649
+</code></pre>
+
+<p>然后properties配置同步到集群的从节点（datanode/regionserver），重启集群。等一会儿就能在ganglia-web界面看到多了很多很多的指标量。</p>
+
+<h2>参考</h2>
+
+<h3>ganglia</h3>
+
+<ul>
+<li><a href="http://oss.oetiker.ch/rrdtool/doc/rrdbuild.en.html#IBUILDING_DEPENDENCIES">RRDTool安装</a></li>
+<li><a href="http://www.cnblogs.com/qq78292959/archive/2012/05/30/2526761.html">CFLAGS=&ldquo;-O3 -fPIC"为64位编译参数</a></li>
+<li><a href="http://www.codesky.net/article/201107/174186.html">pkgconfig作用处理包依赖</a></li>
+<li><a href="http://blog.chinaunix.net/uid-23916356-id-3290237.html">gmetad和gmond安装以及配置</a></li>
+<li><a href="http://wenku.baidu.com/link?url=RH4EhSP3U_dp4I7goEVA_DFkb0DrgZ3uWw_mSt2hhaRb6mQJLtWxaa75RrwETwtY5e8BvOCI_p9RNrmXn_qbEexTE-PGlgtf6f5T3cGglKq">gmond节点拷贝安装</a></li>
+<li><a href="http://blog.chinaunix.net/uid-11121450-id-3147002.html">http://blog.chinaunix.net/uid-11121450-id-3147002.html</a></li>
+<li><a href="http://blog.chinaunix.net/uid-23916356-id-3290237.html">http://blog.chinaunix.net/uid-23916356-id-3290237.html</a></li>
+<li><a href="http://wenku.baidu.com/link?url=qY7vCTyodgSCsoIg6c2UiHXWv0nEGkS9nd0DbQERxFGEaTvgvi7FMQTKv5Sn1L9H8CX5_gDgAbJJ5jaQh3KhZED7PoB2Bgr2I6mS-vDc1LS">虚拟机操作从零开始弄, 搭了个本地源, 配置</a></li>
+<li><a href="http://www.linuxidc.com/Linux/2014-01/95804p2.htm">Hadoop/Hbase metrics2配置</a></li>
+<li><a href="https://github.com/cbuchner1/CudaMiner/issues/23">https://github.com/cbuchner1/CudaMiner/issues/23</a></li>
+<li><a href="http://bbs.csdn.net/topics/390546319">http://bbs.csdn.net/topics/390546319</a> LIBRARY_PATH是编译时使用的，LD_LIBRARY_PATH是运行时使用的。</li>
+</ul>
+
+
+<h3>apache web</h3>
+
+<ul>
+<li><a href="http://blog.sina.com.cn/s/blog_70121e200100lq0h.html">apache程序安装</a></li>
+<li><a href="http://blog.sina.com.cn/s/blog_5d15305b0101ceft.html">apache服务安装配置</a></li>
+<li><a href="http://www.cnblogs.com/yuboyue/archive/2011/07/18/2109875.html">apache关闭服务</a></li>
+<li><a href="http://www.soadmin.com/zonghe/operating-system/1008085.htm">目录权限处理</a></li>
+<li><a href="http://blog.163.com/figo_2007@126/blog/static/2318076520111149413935/">http://blog.163.com/figo_2007@126/blog/static/2318076520111149413935/</a></li>
+<li><a href="http://blog.sina.com.cn/s/blog_70121e200100lq0h.html">http://blog.sina.com.cn/s/blog_70121e200100lq0h.html</a></li>
+<li><a href="http://blog.sina.com.cn/s/blog_815611fb0101cxnl.html">http://blog.sina.com.cn/s/blog_815611fb0101cxnl.html</a></li>
+</ul>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[GIT操作记录手册]]></title>
+    <link href="http://winse.github.io/blog/2014/03/30/git-cheatsheet/"/>
+    <updated>2014-03-30T22:15:11+08:00</updated>
+    <id>http://winse.github.io/blog/2014/03/30/git-cheatsheet</id>
+    <content type="html"><![CDATA[<p>Git的每次提交都有一个<strong>唯一的ID</strong>与之对应，所有的TAG/Branch/Master/HEAD等等，都是一个<strong>软链接/别名</strong>而已！这个是理解好Git的基础！</p>
+
+<h2>提交最佳实践</h2>
+
+<ul>
+<li>commit 只改一件事情。</li>
+<li>如果一个文档有多个变更，使用<code>git add --patch</code>只选择文档中的<strong>部分变更</strong>进入stage。具体怎么使用，键入命令后在输入<code>?</code></li>
+<li>写清楚 commit message</li>
+</ul>
+
+
+<h2>配置</h2>
+
+<h3>内建的图形化 git：</h3>
+
+<pre><code>gitk
+</code></pre>
+
+<h3>git服务器</h3>
+
+<p>搭建git服务器也很方便，有很多web-server的版本，我试用了下<a href="http://www.scm-manager.org/download/">scm-manager</a>使用挺简单的！
+如果已经有了SVN的服务器，可以直接使用git-svn检出到本地！！</p>
+
+<h3>配置环境</h3>
+
+<pre><code>git config --global user.email "XXX"
+git config --global user.name "XXX"
+</code></pre>
+
+<h3>换行（\r\n）提交检出均不转换</h3>
+
+<p>基本上都在windows操作系统上工作，不需要进行转换！</p>
+
+<pre><code>git config --global core.autocrlf false
+</code></pre>
+
+<ul>
+<li>true 提交时转换为LF，检出时转换为CRLF</li>
+<li>input 提交时转换为LF，检出时不转换</li>
+<li>false 提交检出均不转换</li>
+</ul>
+
+
+<h3>core.safecrlf</h3>
+
+<ul>
+<li>true 拒绝提交包含混合换行符的文件</li>
+<li>false 允许提交包含混合换行符的文件</li>
+<li>warn 提交包含混合换行符的文件时给出警告</li>
+</ul>
+
+
+<h3>默认分支</h3>
+
+<p>.git/config如下的内容：</p>
+
+<pre><code>[branch "master"]
+    remote = origin
+    merge = refs/heads/master
+</code></pre>
+
+<p>这等于告诉git两件事:
+1. 当你处于master branch, 默认的remote就是origin。
+2. 当你在master branch上使用git pull时，没有指定remote和branch，那么git就会采用默认的remote（也就是origin）来merge在master branch上所有的改变</p>
+
+<p>如果不想或者不会编辑config文件的话，可以在bush上输入如下命令行：</p>
+
+<pre><code>$ git config branch.master.remote origin 
+$ git config branch.master.merge refs/heads/master 
+</code></pre>
+
+<p>之后再重新git pull下。最后git push你的代码，到此步顺利完成时，则可以在Github上看到你新建的仓库以及你提交到仓库中文件了OK。</p>
+
+<h3>修改默认Git编辑器</h3>
+
+<pre><code>$ git config core.editor vim
+
+$ git config --global core.editor vi
+</code></pre>
+
+<h2>常用基本操作</h2>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;"> 操作                                          </th>
+<th style="text-align:left;"> 说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;"> git init                                      </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git init &ndash;bare                               </td>
+<td style="text-align:left;"> 服务端使用bare（空架子，赤裸）的方式</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git status                                    </td>
+<td style="text-align:left;"> 使用git打的最多的就是status命令，查看状态的同时会提示下一步的操作！</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git diff                                      </td>
+<td style="text-align:left;"> 工作空间和index/stage进行对比</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git diff &ndash;cached                             </td>
+<td style="text-align:left;"> index/stage与本地仓库进行对比</td>
+</tr>
+<tr>
+<td style="text-align:left;"><strong>增加到变更(index/stage)</strong>                    </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git add .                                     </td>
+<td style="text-align:left;"> 将当前目录添加到git仓库中，常用命令！</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git add -A                                    </td>
+<td style="text-align:left;"> 添加所有改动的文档</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git add -u                                    </td>
+<td style="text-align:left;"> 只加修改过的文件,新增的文件不加入</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git rm &ndash;cached <file>&hellip;                     </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"><strong>添加到本地库</strong>                               </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git commit                                    </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git commit -m &ldquo;msg&rdquo;                           </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git commit -a                                 </td>
+<td style="text-align:left;"> -a是把所有的修改的（tracked）文件都commit</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git commit &ndash;amend -m &ldquo;commit message.&rdquo;       </td>
+<td style="text-align:left;"> 未push到远程分支的提交，快捷的回退再提交。修补提交（修补最近一次的提交而不创建新的提交），可结合git add使用！</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git commit -v                                 </td>
+<td style="text-align:left;"> -v 可以看到文件哪些内容被修改</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git reset                                     </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git reset HEAD^                               </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git reset &ndash;hard HEAD^                        </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git checkout file                             </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git rebase                                    </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git merge                                     </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"><strong>日志</strong>                                       </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log                                       </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;oneline &ndash;decorate &ndash;graph          </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;stat                                </td>
+<td style="text-align:left;"> 查看提交信息及更新的文件</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;stat -p -1 &ndash;format=raw          </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log -3 <file-name>                        </td>
+<td style="text-align:left;"> 文件的最近3次提交的历史版本记录</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;stat -2                             </td>
+<td style="text-align:left;"> 查看最近两次的提交描述及修改文件信息</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log -p -2                                 </td>
+<td style="text-align:left;"> 展开显示每次提交的内容差异，类似git show功能</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;name-status                         </td>
+<td style="text-align:left;"> 仅显示文件的D/M/A的状态</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;summary                             </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;dirstat -5                          </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;pretty=format:&ldquo;%h %s&rdquo; &ndash;graph       </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git log &ndash;pretty=oneline                      </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git reflog                                    </td>
+<td style="text-align:left;"> 查看本地操作历史。 ref log</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git show                                      </td>
+<td style="text-align:left;"> 查看某版本文件的内容，版本库中最新提交的diff！</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git show master:index.md                      </td>
+<td style="text-align:left;"> 查看历史版本的文件内容</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git show &lt;哈希值:文件目录/文件>               </td>
+<td style="text-align:left;"> 查看内容</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git cat-file                                  </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"><strong>分支</strong>                                       </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git branch                                    </td>
+<td style="text-align:left;"> 查看本地分支</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git branch <branch>                           </td>
+<td style="text-align:left;"> 添加新分支，新分支创建后不会自动切换！！</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git branch &ndash;set-upstream branch-name origin/branch-name      </td>
+<td style="text-align:left;"> * 建立本地分支和远程分支的关联</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git branch -a                                 </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git branch &ndash;list &ndash;merged                    </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git branch -r                                 </td>
+<td style="text-align:left;"> 查看远程分支</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git checkout &ndash;orphan <new-branch>            </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git checkout <branch>                         </td>
+<td style="text-align:left;"> 切换分支</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git checkout -b [new_branch_name]             </td>
+<td style="text-align:left;"> 创建新分支并立即切换到新分支。git checkout -b branch-name origin/branch-name，本地和远程分支的名称最好一致</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git branch -d branch_name                     </td>
+<td style="text-align:left;"> -d选项只能删除已经参与了合并的分支，对于未有合并的分支是无法删除的。如果想强制删除一个分支，可以使用-D选项</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git branch -d -r remote_name/branch_name      </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git merge origin/local-branch                 </td>
+<td style="text-align:left;"> 本地分支与主分支合并</td>
+</tr>
+<tr>
+<td style="text-align:left;"><strong>推/拉</strong>                                      </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git pull                                      </td>
+<td style="text-align:left;"> * 等价于git fetch &amp;&amp; git merge</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git fetch                                     </td>
+<td style="text-align:left;"> 先把git的东西fetch到你本地然后merge后再push</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push &ndash;rebase                             </td>
+<td style="text-align:left;"> *</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push                                      </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push &ndash;set-upstream origin <branch>       </td>
+<td style="text-align:left;"> To push the current branch and set the remote as upstream</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push origin branch-name                   </td>
+<td style="text-align:left;"> 创建远程分支(本地分支push到远程)，从本地推送分支。如果推送失败，先用git pull抓取远程的新提交</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push -u origin master                     </td>
+<td style="text-align:left;"> 将代码从本地回传到仓库</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push origin test:master                   </td>
+<td style="text-align:left;"> 提交本地test分支作为远程的master分支</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push -f                                   </td>
+<td style="text-align:left;"> * 强推(&ndash;force)，即利用强覆盖方式用你本地的代码替代git仓库内的内容，这种方式不建议使用。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git pull [remoteName] [localBranchName]       </td>
+<td style="text-align:left;"> 获取远程版本库提交与本地提交进行合并</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push [remoteName] [localBranchName]       </td>
+<td style="text-align:left;"> 提交、推送远程仓库</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push &ndash;tags                               </td>
+<td style="text-align:left;"> 提交时带上标签信息</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push <git-url> master                     </td>
+<td style="text-align:left;"> 把本地仓库提交到远程仓库的master分支中</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push origin :branch_name                  </td>
+<td style="text-align:left;"> 删除远端分支,(如果:左边的分支为空，那么将删除:右边的远程的分支。)远程的test将被删除，但是本地还会保存的，不用担心。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git push origin :/refs/tags/tagname           </td>
+<td style="text-align:left;"> 删除远端标签</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git clone <a href="http://path/to/git.git">http://path/to/git.git</a>              </td>
+<td style="text-align:left;"> clone的内容会放在当前目录下的新目录</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git clone &ndash;branch <remote-branch> <git-url>  </td>
+<td style="text-align:left;"> 获取指定分支，检出远程版本的分支。 git clone &ndash;branch unity /d/winsegit/hello helloclone</td>
+</tr>
+<tr>
+<td style="text-align:left;"><strong>TAG</strong>                                        </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git tag                                       </td>
+<td style="text-align:left;"> 查看标签</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git tag <tag>                                 </td>
+<td style="text-align:left;"> 添加标签</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git tag -d <tag>                              </td>
+<td style="text-align:left;"> 删除标签</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git tag -r                                    </td>
+<td style="text-align:left;"> 查看远程标签</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git show <tag>                                </td>
+<td style="text-align:left;"> 查看标签的信息</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git tag -a <tag> <msg>                        </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"><strong>REMOTE</strong>                                     </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git remote [show]                             </td>
+<td style="text-align:left;"> 查看远程仓库</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git remote -v                                 </td>
+<td style="text-align:left;"> 查看远程仓库</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git remote add [name] [url]                   </td>
+<td style="text-align:left;"> 添加远程仓库</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git remote set-url &ndash;push[name][newUrl]       </td>
+<td style="text-align:left;"> 修改远程仓库</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git remote show origin                        </td>
+<td style="text-align:left;"> 远程库origin的详细信息。缺省值推送分支，有哪些远端分支还没有同步到本地，哪些已同步到本地的远端分支在远端服务器上已被删除，git pull 时将自动合并哪些分支！</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git remote show <remote-name>                 </td>
+<td style="text-align:left;"> 远程版本信息查看</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git remote add origin <git-url>               </td>
+<td style="text-align:left;"> 设置仓库</td>
+</tr>
+<tr>
+<td style="text-align:left;"> git remote rm [name]                          </td>
+<td style="text-align:left;"> 删除远程仓库</td>
+</tr>
+<tr>
+<td style="text-align:left;"><strong>打包</strong>                                       </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git archive &ndash;format tar &ndash;output <tar> master</td>
+<td style="text-align:left;"> 将 master以tar格式打包到指定文件</td>
+</tr>
+</tbody>
+</table>
+
+
+<h2>按功能点完整的操作步骤</h2>
+
+<h3>查看指定版本文件内容</h3>
+
+<pre><code>Administrator@WINSELIU /e/git/hello (master)
+$ git ls-tree master
+100644 blob 139b30f9054cf77bd2eeabcebaf6ca3f32cd1d50    abc
+
+Administrator@WINSELIU /e/git/hello (master)
+$ git cat-file -p 139b30f9054cf77bd2eeabcebaf6ca3f32cd1d50
+</code></pre>
+
+<h3>查看提交版本的指定文件内容</h3>
+
+<pre><code>git log abc  # 获取文件提交ID
+git cat-file -p &lt;commit-id&gt;  # 获取treeID
+git cat-file -p &lt;tree-id&gt;  # 获取当前tree的列表
+git cat-file -p &lt;file-blob-id&gt;
+</code></pre>
+
+<h3>根据格式输出日志</h3>
+
+<pre><code>$ git log --pretty=oneline
+$ git log --pretty=short
+$ git log --pretty=format:'%h was %an, %ar, message: %s'
+$ git log --pretty=format:'%h : %s' --graph
+$ git log --pretty=format:'%h : %s' --topo-order --graph
+$ git log --pretty=format:'%h : %s' --date-order --graph
+</code></pre>
+
+<p>你也可用‘medium',&lsquo;full&rsquo;,&lsquo;fuller&rsquo;,&lsquo;email&rsquo; 或‘raw'. 如果这些格式不完全符合你的相求， 你也可以用‘&ndash;pretty=format'参数(参见：git log)来创建你自己的"格式“.</p>
+
+<h3>本地提交后再次修改</h3>
+
+<p><strong>修改注释</strong></p>
+
+<pre><code>git commit --amend 
+</code></pre>
+
+<p><strong>内容修改</strong></p>
+
+<pre><code> # edit file
+git add file
+git commit --amend
+</code></pre>
+
+<p><strong>提交了不该提交的，并撤回</strong></p>
+
+<p>刚刚提交的不完整，想修改一些东西，加到刚才的提交中</p>
+
+<p>commit -> modify -> add -> amend</p>
+
+<pre><code>git reset HEAD^
+git status
+cat abc
+git diff
+git commit -a -m "for test reset"
+git log
+git diff
+
+vi abc
+git add abc
+git commit --amend
+
+git status
+git diff
+git show master:abc
+git log
+</code></pre>
+
+<h3>没有push到远程库的提交，本地可以做的事情</h3>
+
+<ul>
+<li>git reset: 用于回溯，回到原来的提交节点，多次提交合并为一个</li>
+<li>git rebase <origin>：在origin分支的基础上，合并当前分支上的提交，形成线性提交历史。 会把当前分支的提交保存为patch，然后切到origin分支应用patch，形成线性的提交，common-origin-current。</li>
+</ul>
+
+
+<p>rebase冲突处理时，使用git add &amp;&amp; git rebase &ndash;continue。如果你使用了git add &amp;&amp; git commit，那么当前冲突使用git rebase &ndash;skip即可。</p>
+
+<h3>处理本地和服务器之间冲突的方式</h3>
+
+<ul>
+<li>以本地为主。 git push -f</li>
+<li>归并merge。 git pull 或者 git fetch &amp;&amp; git merge</li>
+<li></li>
+</ul>
+
+
+<h3>从Github远程服务上拿其他分支：</h3>
+
+<pre><code>Administrator@WINSELIU /e/git/to-markdown (master)
+$ git branch -r
+  origin/HEAD -&gt; origin/master
+  origin/gh-pages
+  origin/jquery
+  origin/master
+
+$ git checkout -b jquery origin/jquery
+</code></pre>
+
+<h3>把本地的git项目发布到Github</h3>
+
+<pre><code>touch README.md
+git init
+git add README.md
+git commit -m "first commit"
+git remote add origin git@github.com:winse/flickr-uploader.git
+git push -u origin master
+</code></pre>
+
+<p>Push an existing repository from the command line：</p>
+
+<pre><code>git remote add origin git@github.com:winse/flickr-uploader.git
+git push -u origin master
+</code></pre>
+
+<p>如果已经存在remote origin，使用下面的方式修改远程的地址：</p>
+
+<pre><code>Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
+$ git remote set-url --add origin  git@github.com:winse/flickr-uploader.git
+
+Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
+$ git remote show origin
+Warning: Permanently added 'github.com,192.30.252.128' (RSA) to the list of known hosts.
+* remote origin
+  Fetch URL: git@github.com:winse/flickr-uploader.git
+  Push  URL: git@github.com:winse/flickr-uploader.git
+  HEAD branch: (unknown)
+</code></pre>
+
+<h3>git查看本地领先远程的提交</h3>
+
+<pre><code>Administrator@WINSELIU /d/winsegit/winse.github.com (master)
+$ git status
+# On branch master
+# Your branch is ahead of 'origin/master' by 2 commits.
+#   (use "git push" to publish your local commits)
+#
+# Changes not staged for commit:
+#   (use "git add &lt;file&gt;..." to update what will be committed)
+#   (use "git checkout -- &lt;file&gt;..." to discard changes in working directory)
+#
+#       modified:   about.md
+#       modified:   blog/_posts/2014-01-21-monitoring-mobile-networks.md
+#
+# Untracked files:
+#   (use "git add &lt;file&gt;..." to include in what will be committed)
+#
+#       default.html
+no changes added to commit (use "git add" and/or "git commit -a")
+
+Administrator@WINSELIU /d/winsegit/winse.github.com (master)
+$ git log --oneline --decorate -5
+0425ec5 (HEAD, master) 增加日志Github修改历史功能
+f3a4a58 把TAG定位到首页，并分页以及按照年分类
+d5097e3 (origin/master, origin/HEAD) plugins disabled in github page!
+e75d62b test
+876dd42 修复根目录下的md不能通过npp-windows请求编辑的BUG
+
+Administrator@WINSELIU /d/winsegit/winse.github.com (master)
+$ git cherry
++ f3a4a58cfead3aa76e4b92de3342bee5970accb7
++ 0425ec548aa4e3dd29cd6fbfa1b656543e85058e
+</code></pre>
+
+<h3>找回游离的提交</h3>
+
+<p><strong>绑定到新分支</strong></p>
+
+<pre><code>git reflog # 查看本地操作历史
+git branch head23 HEAD@{23} # 把分支head23指向/绑定到游离的提交
+</code></pre>
+
+<p>git的版本都是从分支开始查找的，如果没有被分支管理的提交就游离在版本库中！
+所以在reset重新修改时，最好建立分支然后再提交！
+如果发现类似的提交问题，就需要尽快的修复，不然提交的ID找不到就S了！</p>
+
+<blockquote><p>那些老的提交会被丢弃。 如果运行垃圾收集命令(pruning garbage collection), 这些被丢弃的提交就会删除. （请查看 git gc)</p></blockquote>
+
+<p><strong>重置HEAD</strong></p>
+
+<pre><code>git reset --hard HEAD@{23}
+</code></pre>
+
+<h3>删除提交</h3>
+
+<p>删除提交E：</p>
+
+<pre><code>$ git tag F
+$ git tag E HEAD^
+$ git tag D HEAD^^
+$ git checkout D
+$ git cherry-pick master # 把master-patch应用到TAG-D
+# fix conflicts
+$ git status # 提交
+$ git checkout master # checkout到master分支
+$ git reset --hard HEAD@{1} # 重置master到删除E后的提交
+</code></pre>
+
+<h3>Git浏览特定版本的文件列表</h3>
+
+<pre><code>git ls-tree --name-only  -rt &lt;SHA-ID&gt;
+</code></pre>
+
+<h3>删除没有被git track的文件</h3>
+
+<pre><code>git clean -fd # -f force branch switch/ignore unmerged entries， -d if you have new directory
+git clean -x -fd
+
+git reset --hard ( or git reset then back to 1. )
+git checkout . ( or specify with file names )
+git reset --hard ( or git reset then back to 3. )
+</code></pre>
+
+<h3>检出SVN项目</h3>
+
+<pre><code>Administrator@ZGC-20130605LYE /e/git
+$ git svn clone http://chrome-hosts-manager.googlecode.com/svn/trunk/
+</code></pre>
+
+<p><a href="http://www.worldhello.net/2010/02/01/339.html">http://www.worldhello.net/2010/02/01/339.html</a>下面提到的有意思：</p>
+
+<blockquote><p>Git-svn 是 Subversion 的最佳伴侣，可以用 Git 来操作 Subversion 版本库。这带来一个非常有意思的副产品——部分检出：
+可以用 git-svn 来对 Subversion 代码库的任何目录进行克隆，克隆出来的是一个git版本库
+可以在部分克隆的版本库中用 Git 进行本地提交。
+部分克隆版本库中的本地提交可以提交到上游 Subversion 版本库的相应目录中</p></blockquote>
+
+<h3>Github添加项目主页github page(gh-pages)</h3>
+
+<p>提交后就可以访问了<a href="http://winse.github.io/flickr-uploader/popup.html">页面</a>了。</p>
+
+<pre><code>Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
+$ git branch -a
+* master
+  remotes/origin/master
+
+Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
+$ git push origin master:gh-pages
+Warning: Permanently added 'github.com,192.30.252.128' (RSA) to the list of known hosts.
+Total 0 (delta 0), reused 0 (delta 0)
+To git@github.com:winse/flickr-uploader.git
+ * [new branch]      master -&gt; gh-pages
+
+Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
+$ git branch -a
+* master
+  remotes/origin/gh-pages
+  remotes/origin/master
+</code></pre>
+
+<p><strong><a href="https://help.github.com/articles/creating-project-pages-manually">Creating Project Pages manually</a></strong></p>
+
+<blockquote><pre><code>  cd repository
+
+  git checkout --orphan gh-pages
+  # Creates our branch, without any parents (it's an orphan!)
+  # Switched to a new branch 'gh-pages'
+
+  git rm -rf .
+  # Remove all files from the old working tree
+  # rm '.gitignore'
+
+  echo "My GitHub Page" &gt; index.html
+  git add index.html
+  git commit -a -m "First pages commit"
+  git push origin gh-pages
+</code></pre></blockquote>
+
+<h3>子模块操作</h3>
+
+<p><a href="http://josephjiang.com/entry.php?id=342">git-submodule教程！</a></p>
+
+<pre><code>Administrator@WINSELIU /d/winsegit/jae_winse (master)
+$ git submodule add git@github.com:winse/flickr-uploader.git src/main/webapp/flickr
+
+Administrator@WINSELIU /d/winsegit/jae_winse (master)
+$ git submodule status
+ 635090c5a754eebf5ce6566b7f8c65446b764f51 src/main/webapp/flickr (heads/master)
+
+Administrator@WINSELIU /d/winsegit/jae_winse (master)
+$ git commit -m "add submodule"
+[master c7dc8c7] add submodule
+warning: LF will be replaced by CRLF in .gitmodules.
+The file will have its original line endings in your working directory.
+ 2 files changed, 4 insertions(+)
+ create mode 100644 .gitmodules
+ create mode 160000 src/main/webapp/flickr
+</code></pre>
+
+<p>如：$ git submodule add git://github.com/soberh/ui-libs.git src/main/webapp/ui-libs</p>
+
+<p>初始化子模块：$ git submodule init &mdash;-只在首次检出仓库时运行一次就行</p>
+
+<p>更新子模块：$ git submodule update &mdash;-每次更新或切换分支后都需要运行一下</p>
+
+<p>删除子模块：（分4步走哦）</p>
+
+<ol>
+<li>$ git rm &ndash;cached [path]</li>
+<li>编辑“.gitmodules”文件，将子模块的相关配置节点删除掉</li>
+<li>编辑“.git/config”文件，将子模块的相关配置节点删除掉</li>
+<li>手动删除子模块残留的目录</li>
+</ol>
+
+
+<h2>其他偶尔使用命令</h2>
+
+<pre><code>git diff --check # 检查行尾有没有多余的空白
+git remote prune &lt;remotename&gt;
+git ls-remote --heads origin
+git gc --prune=now
+git ls-remote --heads &lt;remote-name&gt;
+git rm -r --cached *
+</code></pre>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://blog.csdn.net/trochiluses/article/details/8996431">回溯 与 合并:git rebase与git reset</a></li>
+<li><a href="http://ihower.tw/git/">git教程的一个站点</a></li>
+<li><a href="http://ihower.tw/git/basic.html">git基本操作</a></li>
+<li><a href="http://ihower.tw/git/vcs.html">版本管理介绍</a></li>
+<li><a href="http://blog.csdn.net/ithomer/article/details/7529841">速查表</a></li>
+<li><a href="http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E6%9F%A5%E7%9C%8B%E6%8F%90%E4%BA%A4%E5%8E%86%E5%8F%B2">Git 基础 - 查看提交历史</a></li>
+<li><p><a href="http://gitbook.liuhui998.com/3_4.html">查看历史 －Git日志</a></p></li>
+<li><p><a href="http://git-scm.com/book/zh/Git-%E5%B7%A5%E5%85%B7-%E9%87%8D%E5%86%99%E5%8E%86%E5%8F%B2">http://git-scm.com/book/zh/Git-%E5%B7%A5%E5%85%B7-%E9%87%8D%E5%86%99%E5%8E%86%E5%8F%B2</a></p></li>
+<li><a href="http://ihower.tw/blog/archives/2622">http://ihower.tw/blog/archives/2622</a></li>
+<li><a href="http://git-scm.com/docs/git-rebase">http://git-scm.com/docs/git-rebase</a></li>
+<li><a href="http://xiewenbo.iteye.com/blog/1285693">http://xiewenbo.iteye.com/blog/1285693</a></li>
+<li><a href="http://gitready.com/">http://gitready.com/</a></li>
+<li><a href="http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E6%9F%A5%E7%9C%8B%E6%8F%90%E4%BA%A4%E5%8E%86%E5%8F%B2">http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E6%9F%A5%E7%9C%8B%E6%8F%90%E4%BA%A4%E5%8E%86%E5%8F%B2</a></li>
+<li><a href="http://josephjiang.com/entry.php?id=342">http://josephjiang.com/entry.php?id=342</a> git-submodule没有更好的教程了</li>
+<li><a href="http://www.cnblogs.com/william9/archive/2012/09/01/2666767.html">http://www.cnblogs.com/william9/archive/2012/09/01/2666767.html</a></li>
+<li><a href="http://marklodato.github.io/visual-git-guide/index-zh-cn.html">http://marklodato.github.io/visual-git-guide/index-zh-cn.html</a></li>
+<li><a href="http://www.16kan.com/question/detail/321093.html">http://www.16kan.com/question/detail/321093.html</a></li>
+<li><a href="http://gitbook.liuhui998.com/3_4.html">http://gitbook.liuhui998.com/3_4.html</a></li>
+<li><a href="http://www.bootcss.com/p/git-guide/">http://www.bootcss.com/p/git-guide/</a></li>
+<li><a href="http://blog.csdn.net/ithomer/article/details/7529022">http://blog.csdn.net/ithomer/article/details/7529022</a></li>
+<li><a href="http://git-scm.com/book/zh/Git-%E5%88%86%E6%94%AF-%E8%BF%9C%E7%A8%8B%E5%88%86%E6%94%AF">http://git-scm.com/book/zh/Git-%E5%88%86%E6%94%AF-%E8%BF%9C%E7%A8%8B%E5%88%86%E6%94%AF</a></li>
+<li><a href="http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E8%BF%9C%E7%A8%8B%E4%BB%93%E5%BA%93%E7%9A%84%E4%BD%BF%E7%94%A8">http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E8%BF%9C%E7%A8%8B%E4%BB%93%E5%BA%93%E7%9A%84%E4%BD%BF%E7%94%A8</a></li>
+<li><a href="http://blog.csdn.net/trochiluses/article/details/14517379">http://blog.csdn.net/trochiluses/article/details/14517379</a></li>
+</ul>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[[Windows运行]快速打开程序]]></title>
+    <link href="http://winse.github.io/blog/2014/02/23/quickly-open-program-in-windows/"/>
+    <updated>2014-02-23T00:00:00+08:00</updated>
+    <id>http://winse.github.io/blog/2014/02/23/quickly-open-program-in-windows</id>
+    <content type="html"><![CDATA[<p>由于种种原因，一直都在Windows下进行编程。如eclipse/Office/QQ/&hellip;的软件拖住了切换平台的决心！</p>
+
+<p>在使用windows的同时，形成了一些自己的习惯。使用<code>WIN + r</code>来快速打开应用，如regedit/notepad/mspaint/magnify/cmd等。</p>
+
+<p>希望能直接运行Git Shell/Cygwin Terminal这些在<strong>开始</strong>中的菜单。但，在<strong>运行</strong>窗口直接输入的命令都得在PATH所在的路径下。如果把路径全部加入到PATH又没有这个必要，并且命令都是以lnk的快捷方式存储。</p>
+
+<pre><code>C:\Users\Administrator\AppData\Local\GitHub\GitHub.appref-ms --open-shell
+
+C:\cygwin\bin\mintty.exe -i /Cygwin-Terminal.ico -
+
+"C:\Program Files\Vim\vim74\vim.exe"
+"C:\Program Files\Vim\vim74\gvim.exe"
+</code></pre>
+
+<p>在已经打开命令行窗口情况下，可以通过定义alias（别名）来实现。具体请<a href="http://blog.sina.com.cn/s/blog_9bf4cb690101byho.html">参考</a>。</p>
+
+<pre><code>C:\Users\Administrator&gt;doskey cygwin=C:\cygwin\bin\mintty.exe -i /Cygwin-Terminal.ico -
+
+C:\Users\Administrator&gt;doskey /MACROS
+cygwin=C:\cygwin\bin\mintty.exe -i /Cygwin-Terminal.ico -
+
+C:\Users\Administrator&gt;cygwin
+</code></pre>
+
+<p>通过别名可以简化命令，但是必须在已经打开命令行窗口的情况下！！</p>
+
+<p><strong>解决办法：</strong>
+最后妥协了，定义一个路径<code>D:\local\bin</code>，加入到<em>PATH</em>环境变量。把需要使用通过<strong>运行</strong>打开的程序在<em>bin</em>目录下建立一个快键指向。使用mklink是一个软链接。（当然也可以创建个快捷方式，然后改名称）</p>
+
+<pre><code>D:\local\bin&gt;mklink git.lnk "C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\GitHub, Inc\Git Shell.lnk"
+
+D:\local\bin&gt;mklink cygwin.lnk "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Cygwin\Cygwin Terminal.lnk"
+
+D:\local\bin&gt;mklink vim.lnk "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Vim 7.4\Vim.lnk"
+</code></pre>
+
+<p>建立指向后的效果如下：</p>
+
+<pre><code>D:\local\bin&gt;dir
+ 驱动器 D 中的卷是 Software
+ 卷的序列号是 C83F-14A7
+
+ D:\local\bin 的目录
+
+2014/02/01  01:57    &lt;DIR&gt;          .
+2014/02/01  01:57    &lt;DIR&gt;          ..
+2014/02/01  01:56    &lt;SYMLINK&gt;      cygwin.lnk [C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Cygwin\Cygwin Terminal.lnk]
+2014/02/01  01:55    &lt;SYMLINK&gt;      git.lnk [C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\GitHub, Inc\Git Shell.lnk]
+2014/02/01  01:57    &lt;SYMLINK&gt;      vim.lnk [C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Vim 7.4\Vim.lnk]
+               3 个文件              0 字节
+               2 个目录  9,673,441,280 可用字节
+</code></pre>
+
+<p>按照上面的操作[解决办法]，就可以通过<code>WIN + r</code>然后输入<code>git</code>打开<em>Git Shell</em>。</p>
+
+<p>本文所处理的问题，在Windows下有<strong>现成的工具</strong><a href="http://www.launchy.net/">Launcher</a>可以查找指定路径下的所有程序/文档。</p>
+
+<h2>其他快键</h2>
+
+<p>通过<code>WIN + ↑</code>可以最大化当前窗口。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://xbeta.info/win-run.htm">最绿色最高效，用win+r启动常用程序和文档</a></li>
+</ul>
+
+
+<hr />
+
+<p><a href="http://winseliu.logdown.com/posts/2014/02/23/quickly-open-program-in-windows">【原文地址】</a></p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Maven合并打包依赖的git项目]]></title>
+    <link href="http://winse.github.io/blog/2014/02/19/maven-package-dependent-git-projects/"/>
+    <updated>2014-02-19T09:56:00+08:00</updated>
+    <id>http://winse.github.io/blog/2014/02/19/maven-package-dependent-git-projects</id>
+    <content type="html"><![CDATA[<p>JD的云引擎可以提供一个网站搭建的Java编译发布环境。但是所有源码都要放在下面。
+我只是想把JD提供的环境作为一个门面，来展现内容。自己的东西自己管理。（网上解决是使用submodule，强烈推荐看看.<a href="http://josephjiang.com/entry.php?id=342">戳</a>）</p>
+
+<p>我建了一个源码库flickrUpload在Github上，如果我想把它放到JD的云引擎上运行，需要复制代码然后再提交一次到jd-code。但不想源码版本库分支混乱，并且JD云上仅仅是为了展示，不进行修改。最终实现使用Maven来检出依赖项目，再进行编译打包实现在JD的展示功能。</p>
+
+<h2>本地环境使用scm和antrun插件，实现先更新依赖源码再打包</h2>
+
+<h3>检出依赖源码库</h3>
+
+<p>由于对Maven不太熟悉，首先想到的是额外执行系统的命令。</p>
+
+<pre><code class="">&lt;project&gt;
+    &lt;profiles&gt;
+        &lt;profile&gt;
+            &lt;id&gt;win&lt;/id&gt;
+            &lt;activation&gt;
+                &lt;activeByDefault&gt;false&lt;/activeByDefault&gt;
+                &lt;os&gt;
+                    &lt;family&gt;Windows&lt;/family&gt;
+                &lt;/os&gt;
+            &lt;/activation&gt;
+            &lt;properties&gt;
+                &lt;flickrUploader&gt;uploader-git-clone.bat&lt;/flickrUploader&gt;
+            &lt;/properties&gt;
+        &lt;/profile&gt;
+        &lt;profile&gt;
+            &lt;id&gt;linux&lt;/id&gt;
+            &lt;activation&gt;
+                &lt;activeByDefault&gt;true&lt;/activeByDefault&gt;
+                &lt;os&gt;
+                    &lt;family&gt;Linux&lt;/family&gt;
+                &lt;/os&gt;
+            &lt;/activation&gt;
+            &lt;properties&gt;
+                &lt;flickrUploader&gt;uploader-git-clone.sh&lt;/flickrUploader&gt;
+            &lt;/properties&gt;
+        &lt;/profile&gt;
+    &lt;/profiles&gt;
+
+    &lt;build&gt;
+        &lt;finalName&gt;product&lt;/finalName&gt;
+
+        &lt;plugins&gt;
+            &lt;plugin&gt;
+                &lt;artifactId&gt;maven-war-plugin&lt;/artifactId&gt;
+                &lt;configuration&gt;
+                    &lt;webResources&gt;
+                        &lt;resource&gt;
+                            &lt;directory&gt;dist&lt;/directory&gt;
+                        &lt;/resource&gt;
+                    &lt;/webResources&gt;
+                &lt;/configuration&gt;
+            &lt;/plugin&gt;
+            &lt;plugin&gt;
+                &lt;groupId&gt;org.codehaus.mojo&lt;/groupId&gt;
+                &lt;artifactId&gt;exec-maven-plugin&lt;/artifactId&gt;
+                &lt;version&gt;1.1.1&lt;/version&gt;
+                &lt;executions&gt;
+                    &lt;execution&gt;
+                        &lt;id&gt;some-execution&lt;/id&gt;
+                        &lt;phase&gt;compile&lt;/phase&gt;
+                        &lt;goals&gt;
+                            &lt;goal&gt;exec&lt;/goal&gt;
+                        &lt;/goals&gt;
+                    &lt;/execution&gt;
+                &lt;/executions&gt;
+                &lt;configuration&gt;
+                    &lt;executable&gt;${basedir}/script/${flickrUploader}&lt;/executable&gt;
+                &lt;/configuration&gt;
+            &lt;/plugin&gt;
+        &lt;/plugins&gt;
+    &lt;/build&gt;
+</code></pre>
+
+<p>根据profile来配置来判断环境，执行特定的命令（bat/sh）。</p>
+
+<ul>
+<li>Windows脚本
+```
+
+<h1>uploader-git-clone.bat</h1>
+
+<p>del /s /q /f dist\Hello-World
+rmdir /s /q dist\Hello-World
+&ldquo;C:\Program Files\Git\bin\git.exe&rdquo; clone <a href="https://github.com/octocat/Hello-World.git">https://github.com/octocat/Hello-World.git</a> dist\Hello-World
+```</p></li>
+<li>Linux脚本
+```
+
+<h1>uploader-git-clone.sh</h1>
+
+<p>rm -rf dist/Hello-World
+git clone <a href="https://github.com/octocat/Hello-World.git">https://github.com/octocat/Hello-World.git</a> dist/Hello-World
+```</p></li>
+</ul>
+
+
+<p>测试在本地window已经能实现自己的要求，能把checkout项目的内容放在了发布包的根目录下面。</p>
+
+<p>执行<code>mvn package</code>后的target目录结构如下：
+<img src="http://farm8.staticflickr.com/7371/12624988843_ccce073e1a_o.png" alt="" /></p>
+
+<h3>源码库路径重定位</h3>
+
+<p>发布时把源码库文件放置到war的根目录下面，有考虑过COPY：如<a href="http://evgeny-goldin.com/wiki/Copy-maven-plugin">Copy-maven-plugin</a>，还有如下outputDirectory的形式（<a href="http://outofmemory.cn/code-snippet/2547/maven-copy-file-card-usage">参考</a>）：</p>
+
+<blockquote><pre><code>&lt;project&gt;
+  ...
+  &lt;build&gt;
+    &lt;plugins&gt;
+      &lt;plugin&gt;
+        &lt;artifactId&gt;maven-resources-plugin&lt;/artifactId&gt;
+        &lt;version&gt;2.6&lt;/version&gt;
+        &lt;executions&gt;
+          &lt;execution&gt;
+            &lt;id&gt;copy-resources&lt;/id&gt;
+            &lt;!-- here the phase you need --&gt;
+            &lt;phase&gt;validate&lt;/phase&gt;
+            &lt;goals&gt;
+              &lt;goal&gt;copy-resources&lt;/goal&gt;
+            &lt;/goals&gt;
+            &lt;configuration&gt;
+              &lt;outputDirectory&gt;${basedir}/target/extra-resources&lt;/outputDirectory&gt;
+              &lt;resources&gt;          
+                &lt;resource&gt;
+                  &lt;directory&gt;src/non-packaged-resources&lt;/directory&gt;
+                  &lt;filtering&gt;true&lt;/filtering&gt;
+                &lt;/resource&gt;
+              &lt;/resources&gt;              
+            &lt;/configuration&gt;            
+          &lt;/execution&gt;
+        &lt;/executions&gt;
+      &lt;/plugin&gt;
+    &lt;/plugins&gt;
+    ...
+  &lt;/build&gt;
+  ...
+&lt;/project&gt;
+</code></pre></blockquote>
+
+<h2>最终实现</h2>
+
+<p>上面就要解决两个问题：源码检出和资源重定位。</p>
+
+<p>后面发现war可以<strong>包含</strong>特定目录的资源，资源重定位实现就用war的webResources实现了。
+同时为了把检出源码的清理工作提取到clean任务下，添加使用antrun插件。同时发现scm插件就实现了检出源码的功能<a href="http://maven.apache.org/scm/maven-scm-plugin/">maven-scm-plugin</a>。</p>
+
+<p>使用antrun和scm完全使用Maven实现，最终的插件配置如下：</p>
+
+<pre><code>    &lt;project&gt;
+        &lt;build&gt;
+            &lt;finalName&gt;product&lt;/finalName&gt;
+
+            &lt;plugins&gt;
+
+                &lt;plugin&gt;
+                    &lt;artifactId&gt;maven-antrun-plugin&lt;/artifactId&gt;
+                    &lt;executions&gt;
+                        &lt;execution&gt;
+                            &lt;phase&gt;clean&lt;/phase&gt;
+                            &lt;configuration&gt;
+                                &lt;tasks&gt;
+                                    &lt;delete includeEmptyDirs="true"&gt;
+                                        &lt;fileset dir="${scm-dist}" /&gt;
+                                    &lt;/delete&gt;
+
+                                    &lt;mkdir dir="${scm-dist}" /&gt;
+                                &lt;/tasks&gt;
+                            &lt;/configuration&gt;
+                            &lt;goals&gt;
+                                &lt;goal&gt;run&lt;/goal&gt;
+                            &lt;/goals&gt;
+                        &lt;/execution&gt;
+                    &lt;/executions&gt;
+                &lt;/plugin&gt;
+
+                &lt;plugin&gt;
+                    &lt;artifactId&gt;maven-scm-plugin&lt;/artifactId&gt;
+                    &lt;version&gt;1.9&lt;/version&gt;
+                    &lt;configuration&gt;
+                        &lt;skipCheckoutIfExists&gt;true&lt;/skipCheckoutIfExists&gt;
+                        &lt;checkoutDirectory&gt;${scm-dist}/flikr&lt;/checkoutDirectory&gt;
+                        &lt;connectionUrl&gt;scm:git:https://github.com/octocat/Hello-World.git&lt;/connectionUrl&gt;
+                    &lt;/configuration&gt;
+                    &lt;executions&gt;
+                        &lt;execution&gt;
+                            &lt;phase&gt;clean&lt;/phase&gt;
+                            &lt;goals&gt;
+                                &lt;goal&gt;checkout&lt;/goal&gt;
+                            &lt;/goals&gt;
+                        &lt;/execution&gt;
+                    &lt;/executions&gt;
+                &lt;/plugin&gt;
+
+                &lt;plugin&gt;
+                    &lt;artifactId&gt;maven-war-plugin&lt;/artifactId&gt;
+                    &lt;configuration&gt;
+                        &lt;webResources&gt;
+                            &lt;resource&gt;
+                                &lt;directory&gt;${scm-dist}&lt;/directory&gt;
+                            &lt;/resource&gt;
+                        &lt;/webResources&gt;
+                    &lt;/configuration&gt;
+                &lt;/plugin&gt;
+
+            &lt;/plugins&gt;
+        &lt;/build&gt;
+
+        &lt;properties&gt;
+            &lt;!-- for scm --&gt;
+            &lt;scm-dist&gt;dist&lt;/scm-dist&gt;
+        &lt;/properties&gt;
+</code></pre>
+
+<p>现在使用<code>mvn clean package</code>就可以实现先checkout项目再打包发布了。最终效果全部使用maven实现，无需额外考虑平台之间的差异处理。</p>
+
+<h2>JD的云引擎Maven编译不支持scm插件</h2>
+
+<blockquote><p>不支持的插件：'maven-scm-plugin' 在pom文件中被发现,编译将终止,请检查并更新代码!</p></blockquote>
+
+<p>然后部署到云引擎的时刻，发现antrun和scm的插件都不行，exec也不行！
+也尝试过submodule，但是邮件JD的回复说是云上引用内部的才有效！</p>
+
+<p>发布到云引擎最终还是用最土的方法，先删除旧的版本库，然后检出，在提交到云引擎的版本库中。</p>
+
+<pre><code class=""># flickr-upload-commit.sh
+rm -rf src/main/webapp/flickr
+git clone git@github.com:winse/flickr-uploader.git src/main/webapp/flickr
+rm -rf src/main/webapp/flickr/.git
+git add -A &amp;&amp; git commit -m "update uploader, please see https://github.com/winse/flickr-uploader" &amp;&amp; git push
+</code></pre>
+
+<h2>其他</h2>
+
+<ul>
+<li>子模块基本操作命令</li>
+</ul>
+
+
+<blockquote><p>$ git submodule add <a href="mailto:%67%69%74@%67%69%74%68%75%62.%63%6f%6d">git@github.com</a>:josephj/javascript-platform-yui.git static/platform <br/>
+$ git add .gitmodules static/platform
+$ git submodule init</p>
+
+<p>$ cd static/platform<br/>
+$ git pull origin master<br/>
+$ cd ../../ <br/>
+$ git add static/platform   <br/>
+$ git commit -m &ldquo;static/platform submodule updated&rdquo;</p>
+
+<p>$ git submodule init    <br/>
+$ git submodule update</p>
+
+<p>$ cd static/platform<br/>
+$ vim README # 做些修改 <br/>
+$ git add README<br/>
+$ git commit -m &ldquo;Add comments&rdquo;  <br/>
+$ git push  <br/>
+$ git add static/platform   <br/>
+$ git commit -m &lsquo;Submodule updated  <br/>
+$ git push</p>
+
+<p>$ git rm &ndash;cached [欲移除的目錄]  <br/>
+$ rm -rf [欲移除的目錄]   <br/>
+$ vim .gitmodules   <br/>
+$ vim .git/config   <br/>
+$ git add .gitmodules   <br/>
+$ git commit -m &ldquo;Remove a submodule&rdquo;<br/>
+$ git submodule sync</p></blockquote>
+
+<h3>参考</h3>
+
+<ul>
+<li><a href="http://gavin-chen.iteye.com/blog/336607">Maven plugin中的lifecycle、phase、goal、mojo概念及作用的理解</a></li>
+<li><a href="http://stackoverflow.com/questions/9571859/how-to-use-master-pom-file-to-checkout-all-modules-of-a-web-application-and-buil">How to use master pom file to checkout all modules of a web application and build all modules</a> 这个和我要实现的问题类似</li>
+<li><a href="http://stackoverflow.com/questions/520546/ant-task-to-run-an-ant-target-only-if-a-file-exists">Ant task to run an Ant target only if a file exists?</a></li>
+<li><a href="http://blog.csdn.net/eg366/article/details/9398681">MAVEN常用插件</a> 牛逼啊！</li>
+<li><a href="http://stackoverflow.com/questions/15021439/maven-antrun-plugin-skip-target-if-any-of-two-possible-conditions-holds">maven-antrun-plugin skip target if any of two possible conditions holds</a></li>
+<li><a href="http://stackoverflow.com/questions/1971912/how-to-execute-tasks-conditionally-using-the-maven-antrun-plugin">How to execute tasks conditionally using the maven-antrun-plugin?</a></li>
+<li><a href="http://maven.apache.org/scm-archives/scm-LATEST/maven-scm-providers/maven-scm-providers-git/maven-scm-provider-jgit/">maven-scm-provider-jgit</a></li>
+<li><a href="http://josephjiang.com/entry.php?id=342">Git Submodule 的認識與正確使用！</a> 非常详尽</li>
+</ul>
+
+
+<hr />
+
+<p><a href="http://winseliu.logdown.com/posts/2014/02/19/using-maven-checkout-dependent-git-projects">【原文地址】</a></p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Cygwin兼容配置]]></title>
+    <link href="http://winse.github.io/blog/2013/11/24/cygwin-compatible-setting/"/>
+    <updated>2013-11-24T20:20:00+08:00</updated>
+    <id>http://winse.github.io/blog/2013/11/24/cygwin-compatible-setting</id>
+    <content type="html"><![CDATA[<p>换了新电脑后，以及hadoop2/hbase/zookeeper都提供了基于windows的命令。使用cygwin的驱动力弱化了。现在主要用于git/jekyll/sed/awk/find等基础工具的使用。同时多窗口运行需求比较少。当前主要使用自带的mintty。</p>
+
+<h2>.vimrc</h2>
+
+<p>默认Vim的insert模式下使用上下方向键使用会变成其他的输入(方向键变成ABCD)，操作很麻烦。需要对vim进行一些设置。</p>
+
+<pre><code>    Winseliu@WINSE ~
+    $ cat .vimrc 
+    set nocompatible 
+    set backspace=indent,eol,start 
+    set bs=2 
+</code></pre>
+
+<p><strong>参考</strong> ： <a href="http://ruby-china.org/topics/4866">http://ruby-china.org/topics/4866</a> 第19楼的回复</p>
+
+<h2>/etc/fstab 文件权限</h2>
+
+<pre><code>    none /cygdrive cygdrive binary,noacl,posix=0,user 0 0   
+</code></pre>
+
+<h2>打开windows窗口</h2>
+
+<pre><code>    explorer '/select,' "$(cygpath -C ANSI -w "$XPATH")"
+</code></pre>
+
+<p><strong>参考</strong> ： <a href="http://oldratlee.com/post/2012-12-22/stunning-cygwin">http://oldratlee.com/post/2012-12-22/stunning-cygwin</a></p>
+
+<h2>SecureCRT</h2>
+
+<h2>java查找文件路径</h2>
+
+<pre><code>    Winseliu@WINSE /cygdrive/d/winsegit
+    $ antlr4
+    Error: Unable to access jarfile /cygdrive/d/winsegit/lib/antlr-4.1-complete.jar
+</code></pre>
+
+<p>由于java在window环境下需要的路径是c:\，需要通过cygpath进行转换。</p>
+
+<pre><code>    alias antlr4='java -jar `cygpath -w $WINSE_HOME/lib/antlr-*-complete.jar`'
+    export CLASSPATH=".;`cygpath -w $WINSE_HOME/lib/antlr-*-complete.jar`;$CLASSPATH"
+</code></pre>
+
+<h2>字符集</h2>
+
+<p>Linux和window不同，Linux默认的字符集是UTF8，而Windows为GBK。
+为了统一两个环境的字符，需要对Cygwin的字符集进行设置。</p>
+
+<pre><code class="">    #.bashrc
+    export LANG="zh_CN.GB2312"
+    export OUTPUT_CHARSET="GB2312"
+</code></pre>
+
+<p>还需要把连接工具的编码也改成gb2312。</p>
+
+<p><strong>参考</strong> ： <a href="http://www.cygwin.cn/site/info/show.php?IID=1006">http://www.cygwin.cn/site/info/show.php?IID=1006</a></p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://stackoverflow.com/questions/13427288/cygdrive-prefix-does-not-work-in-bash-script">http://stackoverflow.com/questions/13427288/cygdrive-prefix-does-not-work-in-bash-script</a></li>
+<li><a href="http://www.cygwin.com/ml/cygwin/2008-01/msg00095.html">http://www.cygwin.com/ml/cygwin/2008-01/msg00095.html</a></li>
+</ul>
+
+]]></content>
+  </entry>
+  
+</feed>
