@@ -63,3 +63,11 @@ rake page name="pages/about"
 * [mytharcher.github.com](https://github.com/mytharcher/mytharcher.github.com)
 * <http://tekkub.net/>
 * [README.textile](https://github.com/mojombo/jekyll/blob/master/README.textile)
+
+## 参考
+
+* <http://docs.shopify.com/themes/liquid-basics/output>
+* <http://jekyllrb.com/docs/variables/>
+* <http://hi.baidu.com/pluto632/item/5007737da31344326f29f666>
+* <http://msdn.microsoft.com/en-us/library/aa767914(VS.85).aspx>
+* <http://stackoverflow.com/questions/636381/what-is-the-best-way-to-do-a-substring-in-a-batch-file>
