@@ -243,9 +243,9 @@ Starting GANGLIA gmetad:
 [root@umcc97-44 gmetad]# service gmetad start
 Starting GANGLIA gmetad: [  OK  ]
 
-# 这个配置的位置是不对的，下面配置gmond的时刻会改，移动到/etc/ganglia目录下
+# 配置
 [root@umcc97-44 gmetad]# cp gmetad.conf /etc/ganglia/gmetad.conf
-[root@umcc97-44 gmetad]# vi /etc/gmetad.conf 
+[root@umcc97-44 gmetad]# vi /etc/ganglia/gmetad.conf 
  datasource "hadoop" localhost
  rrd_rootdir "/var/lib/ganglia/rrds"
 
