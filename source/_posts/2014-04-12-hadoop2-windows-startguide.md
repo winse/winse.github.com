@@ -15,8 +15,6 @@ Windows作为开发屌丝必备，在windows上如何跑集群方便开发调试
 2. windows-eclipse提交任务到linux集群
 3. 导入源码到eclipse
 
-部署的基本操作，以及在linux如何部署环境，请查阅[linux配置hadoop2环境]({{ BASE_PATH }}{{ page.previous.url }})。
-
 这篇文章并非按照操作的时间顺序来进行编写。而是，如果再安装第二遍的话，自己应该如何去操作来组织下文。
 
 ## 一、Windows伪分布式部署

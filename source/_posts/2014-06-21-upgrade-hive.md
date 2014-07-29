@@ -193,3 +193,38 @@ Transaction isolation: TRANSACTION_REPEATABLE_READ
 
 ```
 
+上一篇tez的安装使用中由于hive的缘故进行了回退，现在升级到hive-0.13后，也在hive上试下tez的功能：
+
+* 本地添加tez依赖，设置环境变量
+* MR添加tez依赖，添加tez-site.xml
+* 切换到tez的engine
+
+```
+# 已上传到HDFS
+$ cat etc/hadoop/tez-site.xml 
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+<!-- Put site-specific property overrides in this file. -->
+
+<configuration>
+  <property>
+    <name>tez.lib.uris</name>
+    <value>${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/</value>
+  </property>
+</configuration>
+
+$ export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
+$ apache-hive-0.13.1-bin/bin/hive
+hive> set hive.execution.engine=tez;
+hive> select count(*) from t_ods_idc_isp_log2 ;
+Time taken: 24.926 seconds, Fetched: 1 row(s)
+
+hive> set hive.execution.engine=mr;                              
+hive> select count(*) from t_ods_idc_isp_log2 where day=20140720;
+Time taken: 40.585 seconds, Fetched: 1 row(s)
+```
+
+简单从时间上看，还是有效果的。
+
+![](http://file.bmob.cn/M00/04/A2/wKhkA1PSPSeAb1wWAAER_4gjIug339.png)

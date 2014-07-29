@@ -163,7 +163,7 @@ rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 umcc97-44:~/
 
 ### 回滚，使用时临时修改环境变量即可
 
-使用了tez后，使用hive-0.12.0不能运行了。由于其他同事需要用hive，得把配置全部修改回去。
+使用了tez后，使用hive-0.12.0不能运行了。由于其他同事需要用hive，得把配置全部修改回去【[hive-0.13中使用tez]({{ BASE_PATH }}/blog/2014/06/21/upgrade-hive/)】。
 
 其实在**提交任务**时指定配置参数即可。
 
