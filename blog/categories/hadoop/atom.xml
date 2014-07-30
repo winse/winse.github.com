@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2014-07-29T22:10:40+08:00</updated>
+  <updated>2014-07-30T11:05:43+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -14,7 +14,199 @@
 
   
   <entry>
-    <title type="html"><![CDATA[Hadoop2 Use ShortCircuit Local Reading]]></title>
+    <title type="html"><![CDATA[Hadoop2 Snappy Compress]]></title>
+    <link href="http://winse.github.io/blog/2014/07/30/hadoop2-snappy-compress/"/>
+    <updated>2014-07-30T00:25:39+08:00</updated>
+    <id>http://winse.github.io/blog/2014/07/30/hadoop2-snappy-compress</id>
+    <content type="html"><![CDATA[<p>网上查了很多资料说的很复杂，要叉叉叉叉叉！其实hadoop2已经集成了hadoop-snappy，只要安装snappy即可。但是也没有一些文章说的只要编译snappy然后放到lib/native路径下即可，还需要重新编译libhadoop的library包。</p>
+
+<p>查找hadoop-snappy的源码的时刻，在C代码里面定义了<code>HADOOP_SNAPPY_LIBRARY</code>，然后理着这个思路去查找，发现在CMakeFile文件中也定义了对应的变量，然后再查找pom.xml的native profile中定义了snappy.prefix的属性。最后就有了下面的步骤。</p>
+
+<p>1) build snappy</p>
+
+<p>编译Snappy，并把lib拷贝/同步到hadoop的native目录下。</p>
+
+<pre><code>tar zxf snappy-1.1.1.tar.gz 
+cd snappy-1.1.1
+./configure --prefix=/home/hadoop/snappy
+make
+make install
+
+cd snappy
+cd lib/
+rysnc -vaz * ~/hadoop-2.2.0/lib/native/
+</code></pre>
+
+<p>2) rebuild hadoop common project</p>
+
+<p>重新编译hadoop的lib，覆盖原来的文件。</p>
+
+<pre><code>[hadoop@master1 hadoop-common]$ mvn package -Dmaven.javadoc.skip=true -DskipTests -Dsnappy.prefix=/home/hadoop/snappy -Drequire.snappy=true -Pnative 
+
+[hadoop@master1 hadoop-common]$ cd ~/hadoop-2.2.0-src/hadoop-common-project/hadoop-common/
+[hadoop@master1 hadoop-common]$ cd target/native/target/usr/local/lib/
+[hadoop@master1 lib]$ ll
+total 1252
+-rw-rw-r--. 1 hadoop hadoop 820824 Jul 30 00:18 libhadoop.a
+lrwxrwxrwx. 1 hadoop hadoop     18 Jul 30 00:18 libhadoop.so -&gt; libhadoop.so.1.0.0
+-rwxrwxr-x. 1 hadoop hadoop 455542 Jul 30 00:18 libhadoop.so.1.0.0
+[hadoop@master1 lib]$ rsync -vaz * ~/hadoop-2.2.0/lib/native/
+sending incremental file list
+libhadoop.a
+libhadoop.so.1.0.0
+
+sent 409348 bytes  received 53 bytes  818802.00 bytes/sec
+total size is 1276384  speedup is 3.12
+[hadoop@master1 lib]$ 
+</code></pre>
+
+<p>3) check</p>
+
+<p>检查程序snappy是否已经配置成功</p>
+
+<pre><code>[hadoop@master1 ~]$ hadoop checknative -a
+14/07/30 00:22:14 WARN bzip2.Bzip2Factory: Failed to load/initialize native-bzip2 library system-native, will use pure-Java version
+14/07/30 00:22:14 INFO zlib.ZlibFactory: Successfully loaded &amp; initialized native-zlib library
+Native library checking:
+hadoop: true /home/hadoop/hadoop-2.2.0/lib/native/libhadoop.so.1.0.0
+zlib:   true /lib64/libz.so.1
+snappy: true /home/hadoop/hadoop-2.2.0/lib/native/libsnappy.so.1
+lz4:    true revision:43
+bzip2:  false 
+14/07/30 00:22:14 INFO util.ExitUtil: Exiting with status 1
+[hadoop@master1 ~]$ 
+</code></pre>
+
+<p>4) 跑一个压缩程序</p>
+
+<p>先参考网上的，直接用hbase的带的测试类运行（前提：需要在hbase-env.sh中配置HADOOP_HOME，这样hbase才能找到hadoop下的lib本地库）</p>
+
+<pre><code>[hadoop@master1 ~]$ hbase-0.98.3-hadoop2/bin/hbase org.apache.hadoop.hbase.util.CompressionTest file:///tmp/abc.snappy snappy
+2014-07-30 08:50:42,617 INFO  [main] Configuration.deprecation: hadoop.native.lib is deprecated. Instead, use io.native.lib.available
+SLF4J: Class path contains multiple SLF4J bindings.
+SLF4J: Found binding in [jar:file:/home/hadoop/hbase-0.98.3-hadoop2/lib/slf4j-log4j12-1.6.4.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+SLF4J: Found binding in [jar:file:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/slf4j-log4j12-1.7.5.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+2014-07-30 08:50:44,515 INFO  [main] util.ChecksumType: Checksum using org.apache.hadoop.util.PureJavaCrc32
+2014-07-30 08:50:44,522 INFO  [main] util.ChecksumType: Checksum can use org.apache.hadoop.util.PureJavaCrc32C
+2014-07-30 08:50:45,388 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
+2014-07-30 08:50:45,408 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
+2014-07-30 08:50:45,430 ERROR [main] hbase.KeyValue: Unexpected getShortMidpointKey result, fakeKey:testkey, firstKeyInBlock:testkey
+2014-07-30 08:50:47,088 INFO  [main] compress.CodecPool: Got brand-new decompressor [.snappy]
+SUCCESS
+[hadoop@master1 ~]$ 
+</code></pre>
+
+<p>看到最后的<strong>SUCCESS</strong>就说明安装配置成功了！</p>
+
+<p>接下来自己写程序测试压缩/解压缩，首先编写java类：</p>
+
+<pre><code>import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+
+import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.io.compress.CompressionInputStream;
+import org.apache.hadoop.io.compress.CompressionOutputStream;
+import org.apache.hadoop.io.compress.SnappyCodec;
+import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.zookeeper.common.IOUtils;
+
+public class SnappyCompressTest {
+
+        public static void main(String[] args) throws FileNotFoundException, IOException {
+                try {
+                        execute(args);
+                } catch (Exception e) {
+                        System.out.println("Usage: $0 read|write file[.snappy]");
+                }
+        }
+
+        private static void execute(String[] args) throws FileNotFoundException, IOException {
+                String op = args[0];
+                String file = args[1];
+                String snappyFile = file + ".snappy";
+
+                Class&lt;? extends CompressionCodec&gt; clazz = SnappyCodec.class;
+                CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
+
+                if (StringUtils.equalsIgnoreCase(op, "read")) {
+                        FileInputStream fin = new FileInputStream(snappyFile);
+                        CompressionInputStream in = codec.createInputStream(fin);
+                        FileOutputStream fout = new FileOutputStream(file);
+                        IOUtils.copyBytes(in, fout, 4096, true);
+                } else {
+                        FileInputStream fin = new FileInputStream(file);
+                        CompressionOutputStream out = codec.createOutputStream(new FileOutputStream(snappyFile));
+                        IOUtils.copyBytes(fin, out, 4096, true);
+                }
+        }
+
+}
+</code></pre>
+
+<p>编译运行，测试读写功能。使用hadoop命令可以简化很多工作，把当前路径加入到<code>HADOOP_CLASSPATH</code>。</p>
+
+<pre><code>[hadoop@master1 test]$ javac -cp `hadoop classpath` SnappyCompressTest.java 
+[hadoop@master1 test]$ export HADOOP_CLASSPATH=$PWD
+[hadoop@master1 test]$ hadoop SnappyCompressTest 
+Usage: $0 read|write file[.snappy]
+[hadoop@master1 test]$ hadoop SnappyCompressTest write test.txt 
+[hadoop@master1 test]$ ll
+total 16
+-rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
+-rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
+-rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:23 test.txt
+-rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
+[hadoop@master1 test]$ rm test.txt
+[hadoop@master1 test]$ hadoop SnappyCompressTest read test.txt 
+[hadoop@master1 test]$ ll
+total 16
+-rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
+-rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
+-rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:28 test.txt
+-rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
+[hadoop@master1 test]$ cat test.txt
+abc
+abc
+abc
+</code></pre>
+
+<p>5) hbase中添加压缩</p>
+
+<p>把所有library，以及hbase的配置同步其他所有从节点。对hbase的表使用Snappy压缩。</p>
+
+<pre><code>hbase(main):001:0&gt; create 'st1', 'f1'
+hbase(main):005:0&gt; alter 'st1', {NAME=&gt;'f1', COMPRESSION=&gt;'snappy'}
+Updating all regions with the new schema...
+0/1 regions updated.
+1/1 regions updated.
+Done.
+0 row(s) in 2.7880 seconds
+
+hbase(main):010:0&gt; create 'sst1','f1'
+0 row(s) in 0.5730 seconds
+
+=&gt; Hbase::Table - sst1
+hbase(main):011:0&gt; flush 'sst1'
+0 row(s) in 2.5380 seconds
+
+hbase(main):012:0&gt; flush 'st1'
+0 row(s) in 7.5470 seconds
+</code></pre>
+
+<p>对于hbase来说，使用压缩消耗还是挺大的。插入10w数据中间进行compaction时停顿比较久。最后flush写数据的时间也长了很多！
+下面是文件写入后的文件大小对比（由于是进行简单的测试，写入的数据重复比较多。具体比例没有参考价值）：</p>
+
+<p><img src="http://file.bmob.cn/M00/05/5A/wKhkA1PYz9CAB-TdAAEWX8LGpUo149.png" alt="" /></p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Hadoop2 ShortCircuit Local Reading]]></title>
     <link href="http://winse.github.io/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/"/>
     <updated>2014-07-29T20:11:58+08:00</updated>
     <id>http://winse.github.io/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading</id>
@@ -37,7 +229,7 @@
 &lt;/property&gt;
 </code></pre>
 
-<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的读权限，要么仅root可读。</p>
+<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的写权限，要么仅root可写。</p>
 
 <p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png" alt="" /></p>
 
@@ -993,227 +1185,6 @@ rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 umcc97-44:~/
 <p>org.apache.tez.mapreduce.examples.OrderedWordCount不仅计算出了结果，同时按个数大小进行了排序。</p>
 
 <p>问题： tez的任务的history还不知道怎么弄的，启动historyserver没作用。</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[远程调试hadoop2以及错误处理方法]]></title>
-    <link href="http://winse.github.io/blog/2014/04/22/remote-debug-hadoop2/"/>
-    <updated>2014-04-22T06:47:48+08:00</updated>
-    <id>http://winse.github.io/blog/2014/04/22/remote-debug-hadoop2</id>
-    <content type="html"><![CDATA[<p>了解程序运行过程，除了一行行代码的扫射源代码。更快捷的方式是运行调试源码，通过F6/F7来一步步的带领我们熟悉程序。针对特定细节具体数据，打个断点调试则是水到渠成的方式。</p>
-
-<h2>Java远程调试</h2>
-
-<pre><code> * JDK 1.3 or earlier -Xnoagent -Djava.compiler=NONE -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=6006
- * JDK 1.4(linux ok) -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=6006
- * newer JDK(win7 &amp; jdk7) -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=6006
-</code></pre>
-
-<h2>同一操作系统任务提交</h2>
-
-<p>windows提交到windows，linux提交到linux，可以直接通过命令行添加参数调试wordcount任务：</p>
-
-<pre><code>E:\local\dotfile&gt;hdfs dfs -rmr /out # native-lib放在非path路径下，cmd脚本中有对其进行处理
-
-E:\local\dotfile&gt;hadoop org.apache.hadoop.examples.WordCount  "-Dmapreduce.map.java.opts=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090 -Djava.library.path=E:\local\libs\big\hadoop-2.2.0\lib\native -Dmapreduce.reduce.java.opts=-Djava.library.path=E:\local\libs\big\hadoop-2.2.0\lib\native"  /in /out
-</code></pre>
-
-<p><strong>suspend设置为y，会等待客户端连接再运行</strong>。在eclipse中在WordCount$TokenizerMapper#map打个断点，然后再使用<code>Remote Java Application</code>就可以调试程序了。</p>
-
-<h2>Hadoop集群环境下调试任务</h2>
-
-<p>hadoop有很多的程序，同样有对应的环境变量选项来进行设置！</p>
-
-<ul>
-<li>主程序-调试Job提交
-
-<ul>
-<li><code>set HADOOP_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090"</code></li>
-<li>可以在配置文件中进行设置。需要注意可能会覆盖已经设置的该参数的值。</li>
-</ul>
-</li>
-<li>Nodemanager调试
-
-<ul>
-<li><code>set HADOOP_NODEMANAGER_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=8092"</code></li>
-<li>(linux下需要定义在文件中)<code>YARN_NODEMANAGER_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8092"</code></li>
-</ul>
-</li>
-<li>ResourceManager调试
-
-<ul>
-<li>HADOOP_RESOURCEMANAGER_OPTS</li>
-<li><code>export YARN_RESOURCEMANAGER_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8091"</code></li>
-</ul>
-</li>
-</ul>
-
-
-<p>Linux上的设置略有不同，通过SSH再调用的进程(如NodeManager)需要把其OPTS写到命令行脚本文件中！！
-linux需要远程调试NodeManager的话，需要写到etc/hadoop/yarn-env.sh文件中！不然，nodemanger不生效（通过ssh去执行的）！</p>
-
-<h3>其他调试技巧</h3>
-
-<p>调试测试集群环境，比本地windows开发环境复杂点。毕竟本地windows的就一个主一个从。而把<strong>任务放到分布式集群</strong>上时，例如调试分布式缓存的！
-那么就需要一些小技巧来获取任务运行所在的机器！下面的步骤中有具体操作命令。</p>
-
-<h3>任务配置及运行</h3>
-
-<p>eclipse下windows提交job到linux的补丁，查阅<a href="https://issues.apache.org/jira/browse/MAPREDUCE-5655">[MAPREDUCE-5655]</a></p>
-
-<pre><code># 配置
-    &lt;property&gt;
-        &lt;name&gt;mapred.remote.os&lt;/name&gt;
-        &lt;value&gt;Linux&lt;/value&gt;
-    &lt;/property&gt;
-    &lt;property&gt;
-        &lt;name&gt;mapreduce.job.jar&lt;/name&gt;
-        &lt;value&gt;dta-analyser-all.jar&lt;/value&gt;
-    &lt;/property&gt;
-
-    &lt;property&gt;
-        &lt;name&gt;mapreduce.map.java.opts&lt;/name&gt;
-        &lt;value&gt;-Xmx1024m -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090&lt;/value&gt;
-    &lt;/property&gt;
-
-    &lt;property&gt;
-        &lt;name&gt;mapred.task.timeout&lt;/name&gt;
-        &lt;value&gt;1800000&lt;/value&gt;
-    &lt;/property&gt;
-
-# 代码，map/reduce数都设置为1   
-job.setNumReduceTasks(1);
-job.getConfiguration().setInt(MRJobConfig.NUM_MAPS, 1);
-</code></pre>
-
-<ul>
-<li>调试的时刻把超时时间设置的久一点，否则：</li>
-</ul>
-
-
-<pre><code> Got exception: java.net.SocketTimeoutException: Call From winseliu/127.0.0.1 to winse.com:2850 failed on socket timeout exception: java.net.SocketTimeoutException: 60000 millis timeout while waiting for channel to be ready for read. ch :
-</code></pre>
-
-<ul>
-<li>调试main方法参数设置</li>
-</ul>
-
-
-<p>调试main（转瞬即逝的把suspend设置为true！），map的调试选项的语句写在配置文件里面</p>
-
-<pre><code>export HADOOP_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8073"
-
-Administrator@winseliu ~/hadoop
-$ sh -x bin/hadoop org.apache.hadoop.examples.WordCount /in /out 
-</code></pre>
-
-<h3>遍历所有子节点，查找节点运行map程序的信息</h3>
-
-<p>map调试的端口配置为18090，根据这个选项来查找程序运行的机器。</p>
-
-<pre><code>[hadoop@umcc97-44 ~]$ for h in `cat hadoop-2.2.0/etc/hadoop/slaves` ; do ssh $h 'ps aux|grep java | grep 18090'; echo $h;  done
-hadoop    8667  0.0  0.0  63888  1268 ?        Ss   18:21   0:00 bash -c ps aux|grep java | grep 18090
-umcc97-142
-hadoop   12686  0.0  0.0  63868  1260 ?        Ss   18:21   0:00 bash -c ps aux|grep java | grep 18090
-umcc97-143
-hadoop   23516  0.0  0.0  63856  1108 ?        Ss   18:11   0:00 /bin/bash -c /home/java/jdk1.7.0_45/bin/java -Djava.net.preferIPv4Stack=true -Dhadoop.metrics.log.level=WARN  -Xmx256m -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 -Djava.io.tmpdir=/home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1605/container_1397006359464_1605_01_000002/tmp -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1605/container_1397006359464_1605_01_000002 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA org.apache.hadoop.mapred.YarnChild 10.18.97.143 57576 attempt_1397006359464_1605_m_000000_0 2 1&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1605/container_1397006359464_1605_01_000002/stdout 2&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1605/container_1397006359464_1605_01_000002/stderr 
-hadoop   23522  0.0  0.0 605136 15728 ?        Sl   18:11   0:00 /home/java/jdk1.7.0_45/bin/java -Djava.net.preferIPv4Stack=true -Dhadoop.metrics.log.level=WARN -Xmx256m -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 -Djava.io.tmpdir=/home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1605/container_1397006359464_1605_01_000002/tmp -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1605/container_1397006359464_1605_01_000002 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA org.apache.hadoop.mapred.YarnChild 10.18.97.143 57576 attempt_1397006359464_1605_m_000000_0 2
-hadoop   23665  0.0  0.0  63856  1264 ?        Ss   18:21   0:00 bash -c ps aux|grep java | grep 18090
-umcc97-144
-</code></pre>
-
-<p>仅打印运行map的节点名称</p>
-
-<pre><code>[hadoop@umcc97-44 ~]$ for h in `cat hadoop-2.2.0/etc/hadoop/slaves` ; do ssh $h 'if ps aux|grep -v grep | grep java | grep 18090 | grep -v bash 2&gt;&amp;1 1&gt;/dev/null ; then echo `hostname`; fi'; done
-umcc97-142
-[hadoop@umcc97-44 ~]$ 
-</code></pre>
-
-<p>后面的操作就和普通的java程序调试步骤一样了。不再赘述。</p>
-
-<h2>任务运行过程中的数据</h2>
-
-<h4>辅助运行的两个bash程序</h4>
-
-<p>运行的第一个程序（000001）为AppMaster，第二程序（000002）才是我们提交job的map任务。</p>
-
-<pre><code>[hadoop@umcc97-143 ~]$ cd hadoop-2.2.0/tmp/nm-local-dir/nmPrivate
-[hadoop@umcc97-143 nmPrivate]$ ls -Rl
-.:
-total 12
-drwxrwxr-x 4 hadoop hadoop 4096 Apr 21 18:34 application_1397006359464_1606
--rw-rw-r-- 1 hadoop hadoop    6 Apr 21 18:34 container_1397006359464_1606_01_000001.pid
--rw-rw-r-- 1 hadoop hadoop    6 Apr 21 18:34 container_1397006359464_1606_01_000002.pid
-
-./application_1397006359464_1606:
-total 8
-drwxrwxr-x 2 hadoop hadoop 4096 Apr 21 18:34 container_1397006359464_1606_01_000001
-drwxrwxr-x 2 hadoop hadoop 4096 Apr 21 18:34 container_1397006359464_1606_01_000002
-
-./application_1397006359464_1606/container_1397006359464_1606_01_000001:
-total 8
--rw-r--r-- 1 hadoop hadoop   95 Apr 21 18:34 container_1397006359464_1606_01_000001.tokens
--rw-r--r-- 1 hadoop hadoop 3121 Apr 21 18:34 launch_container.sh
-
-./application_1397006359464_1606/container_1397006359464_1606_01_000002:
-total 8
--rw-r--r-- 1 hadoop hadoop  129 Apr 21 18:34 container_1397006359464_1606_01_000002.tokens
--rw-r--r-- 1 hadoop hadoop 3532 Apr 21 18:34 launch_container.sh
-[hadoop@umcc97-143 nmPrivate]$ 
-[hadoop@umcc97-143 nmPrivate]$ jps
-4692 NodeManager
-4173 DataNode
-13497 YarnChild
-7538 HRegionServer
-13376 MRAppMaster
-13574 Jps
-[hadoop@umcc97-143 nmPrivate]$ cat *.pid
-13366
-13491
-[hadoop@umcc97-143 nmPrivate]$ ps aux | grep 13366
-hadoop   13366  0.0  0.0  63868  1088 ?        Ss   18:34   0:00 /bin/bash -c /home/java/jdk1.7.0_45/bin/java -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000001 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA  -Xmx1024m org.apache.hadoop.mapreduce.v2.app.MRAppMaster 1&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000001/stdout 2&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000001/stderr 
-hadoop   13594  0.0  0.0  61204   760 pts/2    S+   18:36   0:00 grep 13366
-[hadoop@umcc97-143 nmPrivate]$ ps aux | grep 13491
-hadoop   13491  0.0  0.0  63868  1100 ?        Ss   18:34   0:00 /bin/bash -c /home/java/jdk1.7.0_45/bin/java -Djava.net.preferIPv4Stack=true -Dhadoop.metrics.log.level=WARN  -Xmx256m -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 -Djava.io.tmpdir=/home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1606/container_1397006359464_1606_01_000002/tmp -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000002 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA org.apache.hadoop.mapred.YarnChild 10.18.97.143 52046 attempt_1397006359464_1606_m_000000_0 2 1&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000002/stdout 2&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000002/stderr 
-hadoop   13599  0.0  0.0  61204   760 pts/2    S+   18:37   0:00 grep 13491
-[hadoop@umcc97-143 nmPrivate]$ 
-</code></pre>
-
-<h4>程序运行本地缓存数据</h4>
-
-<pre><code>[hadoop@umcc97-143 container_1397006359464_1606_01_000002]$ ls -l
-total 28
--rw-r--r-- 1 hadoop hadoop  129 Apr 21 18:34 container_tokens
--rwx------ 1 hadoop hadoop  516 Apr 21 18:34 default_container_executor.sh
-lrwxrwxrwx 1 hadoop hadoop   65 Apr 21 18:34 filter.io -&gt; /home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/filecache/10/filter.io
-lrwxrwxrwx 1 hadoop hadoop  120 Apr 21 18:34 job.jar -&gt; /home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1606/filecache/10/job.jar
-lrwxrwxrwx 1 hadoop hadoop  120 Apr 21 18:34 job.xml -&gt; /home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1606/filecache/13/job.xml
--rwx------ 1 hadoop hadoop 3532 Apr 21 18:34 launch_container.sh
-drwx--x--- 2 hadoop hadoop 4096 Apr 21 18:34 tmp
-[hadoop@umcc97-143 container_1397006359464_1606_01_000002]$ 
-</code></pre>
-
-<h2>处理问题方法</h2>
-
-<ul>
-<li>打印DEBUG日志：<code>export HADOOP_ROOT_LOGGER=DEBUG,console</code>
-
-<ul>
-<li>日志文件放置在nodemanager节点的logs/userlogs目录下。</li>
-</ul>
-</li>
-<li>打印DEBUG日志也搞不定时，可以在源码里面sysout信息然后把<strong>class覆盖</strong>，来进行定位配置的问题。</li>
-<li>如果不清楚shell的执行过程，可以通过<code>sh -x [CMD]</code>，或者在脚本文件的操作前加上<code>set -x</code>。相当于windows-batch的<code>echo on</code>功能。</li>
-</ul>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://stackoverflow.com/questions/975271/remote-debugging-a-java-application">remote debugger opts</a></li>
-</ul>
-
 ]]></content>
   </entry>
   

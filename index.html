@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白， &hellip;">
+  <meta name="description" content="网上查了很多资料说的很复杂，要叉叉叉叉叉！其实hadoop2已经集成了hadoop-snappy，只要安装snappy即可。但是也没有一些文章说的只要编译snappy然后放到lib/native路径下即可，还需要重新编译libhadoop的library包。 查找hadoop- &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -86,7 +86,362 @@
       
   <header>
     
-      <h1 class="entry-title"><a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 Use ShortCircuit Local Reading</a></h1>
+      <h1 class="entry-title"><a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-07-30T00:25:39+08:00" pubdate data-updated="true">Wed 2014-07-30 00:25</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>网上查了很多资料说的很复杂，要叉叉叉叉叉！其实hadoop2已经集成了hadoop-snappy，只要安装snappy即可。但是也没有一些文章说的只要编译snappy然后放到lib/native路径下即可，还需要重新编译libhadoop的library包。</p>
+
+<p>查找hadoop-snappy的源码的时刻，在C代码里面定义了<code>HADOOP_SNAPPY_LIBRARY</code>，然后理着这个思路去查找，发现在CMakeFile文件中也定义了对应的变量，然后再查找pom.xml的native profile中定义了snappy.prefix的属性。最后就有了下面的步骤。</p>
+
+<p>1) build snappy</p>
+
+<p>编译Snappy，并把lib拷贝/同步到hadoop的native目录下。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>tar zxf snappy-1.1.1.tar.gz 
+</span><span class='line'>cd snappy-1.1.1
+</span><span class='line'>./configure --prefix=/home/hadoop/snappy
+</span><span class='line'>make
+</span><span class='line'>make install
+</span><span class='line'>
+</span><span class='line'>cd snappy
+</span><span class='line'>cd lib/
+</span><span class='line'>rysnc -vaz * ~/hadoop-2.2.0/lib/native/</span></code></pre></td></tr></table></div></figure>
+
+
+<p>2) rebuild hadoop common project</p>
+
+<p>重新编译hadoop的lib，覆盖原来的文件。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-common]$ mvn package -Dmaven.javadoc.skip=true -DskipTests -Dsnappy.prefix=/home/hadoop/snappy -Drequire.snappy=true -Pnative 
+</span><span class='line'>
+</span><span class='line'>[hadoop@master1 hadoop-common]$ cd ~/hadoop-2.2.0-src/hadoop-common-project/hadoop-common/
+</span><span class='line'>[hadoop@master1 hadoop-common]$ cd target/native/target/usr/local/lib/
+</span><span class='line'>[hadoop@master1 lib]$ ll
+</span><span class='line'>total 1252
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 820824 Jul 30 00:18 libhadoop.a
+</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop     18 Jul 30 00:18 libhadoop.so -&gt; libhadoop.so.1.0.0
+</span><span class='line'>-rwxrwxr-x. 1 hadoop hadoop 455542 Jul 30 00:18 libhadoop.so.1.0.0
+</span><span class='line'>[hadoop@master1 lib]$ rsync -vaz * ~/hadoop-2.2.0/lib/native/
+</span><span class='line'>sending incremental file list
+</span><span class='line'>libhadoop.a
+</span><span class='line'>libhadoop.so.1.0.0
+</span><span class='line'>
+</span><span class='line'>sent 409348 bytes  received 53 bytes  818802.00 bytes/sec
+</span><span class='line'>total size is 1276384  speedup is 3.12
+</span><span class='line'>[hadoop@master1 lib]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<p>3) check</p>
+
+<p>检查程序snappy是否已经配置成功</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ hadoop checknative -a
+</span><span class='line'>14/07/30 00:22:14 WARN bzip2.Bzip2Factory: Failed to load/initialize native-bzip2 library system-native, will use pure-Java version
+</span><span class='line'>14/07/30 00:22:14 INFO zlib.ZlibFactory: Successfully loaded & initialized native-zlib library
+</span><span class='line'>Native library checking:
+</span><span class='line'>hadoop: true /home/hadoop/hadoop-2.2.0/lib/native/libhadoop.so.1.0.0
+</span><span class='line'>zlib:   true /lib64/libz.so.1
+</span><span class='line'>snappy: true /home/hadoop/hadoop-2.2.0/lib/native/libsnappy.so.1
+</span><span class='line'>lz4:    true revision:43
+</span><span class='line'>bzip2:  false 
+</span><span class='line'>14/07/30 00:22:14 INFO util.ExitUtil: Exiting with status 1
+</span><span class='line'>[hadoop@master1 ~]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<p>4) 跑一个压缩程序</p>
+
+<p>先参考网上的，直接用hbase的带的测试类运行（前提：需要在hbase-env.sh中配置HADOOP_HOME，这样hbase才能找到hadoop下的lib本地库）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ hbase-0.98.3-hadoop2/bin/hbase org.apache.hadoop.hbase.util.CompressionTest file:///tmp/abc.snappy snappy
+</span><span class='line'>2014-07-30 08:50:42,617 INFO  [main] Configuration.deprecation: hadoop.native.lib is deprecated. Instead, use io.native.lib.available
+</span><span class='line'>SLF4J: Class path contains multiple SLF4J bindings.
+</span><span class='line'>SLF4J: Found binding in [jar:file:/home/hadoop/hbase-0.98.3-hadoop2/lib/slf4j-log4j12-1.6.4.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+</span><span class='line'>SLF4J: Found binding in [jar:file:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/slf4j-log4j12-1.7.5.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+</span><span class='line'>SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+</span><span class='line'>2014-07-30 08:50:44,515 INFO  [main] util.ChecksumType: Checksum using org.apache.hadoop.util.PureJavaCrc32
+</span><span class='line'>2014-07-30 08:50:44,522 INFO  [main] util.ChecksumType: Checksum can use org.apache.hadoop.util.PureJavaCrc32C
+</span><span class='line'>2014-07-30 08:50:45,388 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
+</span><span class='line'>2014-07-30 08:50:45,408 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
+</span><span class='line'>2014-07-30 08:50:45,430 ERROR [main] hbase.KeyValue: Unexpected getShortMidpointKey result, fakeKey:testkey, firstKeyInBlock:testkey
+</span><span class='line'>2014-07-30 08:50:47,088 INFO  [main] compress.CodecPool: Got brand-new decompressor [.snappy]
+</span><span class='line'>SUCCESS
+</span><span class='line'>[hadoop@master1 ~]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<p>看到最后的<strong>SUCCESS</strong>就说明安装配置成功了！</p>
+
+<p>接下来自己写程序测试压缩/解压缩，首先编写java类：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>import java.io.FileInputStream;
+</span><span class='line'>import java.io.FileNotFoundException;
+</span><span class='line'>import java.io.FileOutputStream;
+</span><span class='line'>import java.io.IOException;
+</span><span class='line'>
+</span><span class='line'>import org.apache.commons.lang.StringUtils;
+</span><span class='line'>import org.apache.hadoop.conf.Configuration;
+</span><span class='line'>import org.apache.hadoop.io.compress.CompressionCodec;
+</span><span class='line'>import org.apache.hadoop.io.compress.CompressionInputStream;
+</span><span class='line'>import org.apache.hadoop.io.compress.CompressionOutputStream;
+</span><span class='line'>import org.apache.hadoop.io.compress.SnappyCodec;
+</span><span class='line'>import org.apache.hadoop.util.ReflectionUtils;
+</span><span class='line'>import org.apache.zookeeper.common.IOUtils;
+</span><span class='line'>
+</span><span class='line'>public class SnappyCompressTest {
+</span><span class='line'>
+</span><span class='line'>        public static void main(String[] args) throws FileNotFoundException, IOException {
+</span><span class='line'>                try {
+</span><span class='line'>                        execute(args);
+</span><span class='line'>                } catch (Exception e) {
+</span><span class='line'>                        System.out.println("Usage: $0 read|write file[.snappy]");
+</span><span class='line'>                }
+</span><span class='line'>        }
+</span><span class='line'>
+</span><span class='line'>        private static void execute(String[] args) throws FileNotFoundException, IOException {
+</span><span class='line'>                String op = args[0];
+</span><span class='line'>                String file = args[1];
+</span><span class='line'>                String snappyFile = file + ".snappy";
+</span><span class='line'>
+</span><span class='line'>                Class&lt;? extends CompressionCodec&gt; clazz = SnappyCodec.class;
+</span><span class='line'>                CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
+</span><span class='line'>
+</span><span class='line'>                if (StringUtils.equalsIgnoreCase(op, "read")) {
+</span><span class='line'>                        FileInputStream fin = new FileInputStream(snappyFile);
+</span><span class='line'>                        CompressionInputStream in = codec.createInputStream(fin);
+</span><span class='line'>                        FileOutputStream fout = new FileOutputStream(file);
+</span><span class='line'>                        IOUtils.copyBytes(in, fout, 4096, true);
+</span><span class='line'>                } else {
+</span><span class='line'>                        FileInputStream fin = new FileInputStream(file);
+</span><span class='line'>                        CompressionOutputStream out = codec.createOutputStream(new FileOutputStream(snappyFile));
+</span><span class='line'>                        IOUtils.copyBytes(fin, out, 4096, true);
+</span><span class='line'>                }
+</span><span class='line'>        }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>编译运行，测试读写功能。使用hadoop命令可以简化很多工作，把当前路径加入到<code>HADOOP_CLASSPATH</code>。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 test]$ javac -cp `hadoop classpath` SnappyCompressTest.java 
+</span><span class='line'>[hadoop@master1 test]$ export HADOOP_CLASSPATH=$PWD
+</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest 
+</span><span class='line'>Usage: $0 read|write file[.snappy]
+</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest write test.txt 
+</span><span class='line'>[hadoop@master1 test]$ ll
+</span><span class='line'>total 16
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:23 test.txt
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
+</span><span class='line'>[hadoop@master1 test]$ rm test.txt
+</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest read test.txt 
+</span><span class='line'>[hadoop@master1 test]$ ll
+</span><span class='line'>total 16
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:28 test.txt
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
+</span><span class='line'>[hadoop@master1 test]$ cat test.txt
+</span><span class='line'>abc
+</span><span class='line'>abc
+</span><span class='line'>abc</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5) hbase中添加压缩</p>
+
+<p>把所有library，以及hbase的配置同步其他所有从节点。对hbase的表使用Snappy压缩。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hbase(main):001:0&gt; create 'st1', 'f1'
+</span><span class='line'>hbase(main):005:0&gt; alter 'st1', {NAME=&gt;'f1', COMPRESSION=&gt;'snappy'}
+</span><span class='line'>Updating all regions with the new schema...
+</span><span class='line'>0/1 regions updated.
+</span><span class='line'>1/1 regions updated.
+</span><span class='line'>Done.
+</span><span class='line'>0 row(s) in 2.7880 seconds
+</span><span class='line'>
+</span><span class='line'>hbase(main):010:0&gt; create 'sst1','f1'
+</span><span class='line'>0 row(s) in 0.5730 seconds
+</span><span class='line'>
+</span><span class='line'>=&gt; Hbase::Table - sst1
+</span><span class='line'>hbase(main):011:0&gt; flush 'sst1'
+</span><span class='line'>0 row(s) in 2.5380 seconds
+</span><span class='line'>
+</span><span class='line'>hbase(main):012:0&gt; flush 'st1'
+</span><span class='line'>0 row(s) in 7.5470 seconds</span></code></pre></td></tr></table></div></figure>
+
+
+<p>对于hbase来说，使用压缩消耗还是挺大的。插入10w数据中间进行compaction时停顿比较久。最后flush写数据的时间也长了很多！
+下面是文件写入后的文件大小对比（由于是进行简单的测试，写入的数据重复比较多。具体比例没有参考价值）：</p>
+
+<p><img src="http://file.bmob.cn/M00/05/5A/wKhkA1PYz9CAB-TdAAEWX8LGpUo149.png" alt="" /></p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 ShortCircuit Local Reading</a></h1>
     
     
       <p class="meta">
@@ -137,7 +492,7 @@
 </span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
 
 
-<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的读权限，要么仅root可读。</p>
+<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的写权限，要么仅root可写。</p>
 
 <p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png" alt="" /></p>
 
@@ -1695,462 +2050,6 @@ ls
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/06/21/upgrade-hive/">Upgrade Hive: 0.12.0 to 0.13.1</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-06-21T02:34:59+08:00" pubdate data-updated="true">Sat 2014-06-21 02:34</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>由于hive-0.12.0的FileSystem使用不当导致内存溢出问题，最终考虑升级hive。升级的过程没想象中的那么可怕，步骤很简单：对源数据库执行升级脚本，拷贝原hive-0.12.0的配置和jar，然后把添加jar重启hiverserver2即可。</p>
-
-<h2>修改环境变量</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>HIVE_HOME=/home/hadoop/apache-hive-0.13.1-bin
-</span><span class='line'>PATH=$JAVA_HOME/bin:$HIVE_HOME/bin:$PATH</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>升级metadata</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-<span class='line-number'>146</span>
-<span class='line-number'>147</span>
-<span class='line-number'>148</span>
-<span class='line-number'>149</span>
-<span class='line-number'>150</span>
-<span class='line-number'>151</span>
-<span class='line-number'>152</span>
-<span class='line-number'>153</span>
-<span class='line-number'>154</span>
-<span class='line-number'>155</span>
-<span class='line-number'>156</span>
-<span class='line-number'>157</span>
-<span class='line-number'>158</span>
-<span class='line-number'>159</span>
-<span class='line-number'>160</span>
-<span class='line-number'>161</span>
-<span class='line-number'>162</span>
-<span class='line-number'>163</span>
-<span class='line-number'>164</span>
-<span class='line-number'>165</span>
-<span class='line-number'>166</span>
-<span class='line-number'>167</span>
-<span class='line-number'>168</span>
-<span class='line-number'>169</span>
-<span class='line-number'>170</span>
-<span class='line-number'>171</span>
-<span class='line-number'>172</span>
-<span class='line-number'>173</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@ismp0 ~]$ cd apache-hive-0.13.1-bin/scripts/metastore/upgrade/mysql/
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 mysql]$ mysql -uXXX -hXXX -pXXX
-</span><span class='line'>mysql&gt; use hive
-</span><span class='line'>Reading table information for completion of table and column names
-</span><span class='line'>You can turn off this feature to get a quicker startup with -A
-</span><span class='line'>
-</span><span class='line'>Database changed
-</span><span class='line'>mysql&gt; source upgrade-0.12.0-to-0.13.0.mysql.sql
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>|                                                  |
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>| Upgrading MetaStore schema from 0.12.0 to 0.13.0 |
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>|                                                                       |
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>| &lt; HIVE-5700 enforce single date format for partition column storage &gt; |
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.22 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>|                                            |
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>| &lt; HIVE-6386: Add owner filed to database &gt; |
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.33 sec)
-</span><span class='line'>Records: 1  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.16 sec)
-</span><span class='line'>Records: 1  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>|                                                                                             |
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>| &lt;HIVE-6458 Add schema upgrade scripts for metastore changes related to permanent functions&gt; |
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>|                                                                                  |
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>| &lt;HIVE-6757 Remove deprecated parquet classes from outside of org.apache package&gt; |
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.04 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.12 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.15 sec)
-</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.07 sec)
-</span><span class='line'>Rows matched: 1  Changed: 1  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>|                                                           |
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>| Finished upgrading MetaStore schema from 0.12.0 to 0.13.0 |
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>mysql&gt; 
-</span><span class='line'>mysql&gt; 
-</span><span class='line'>mysql&gt; exit
-</span><span class='line'>Bye
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 ~]$ vi .bash_profile
-</span><span class='line'>[hadoop@ismp0 ~]$ source .bash_profile
-</span><span class='line'>[hadoop@ismp0 ~]$ cd apache-hive-0.13.1-bin
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ cd conf/
-</span><span class='line'>[hadoop@ismp0 conf]$ cp ~/hive-0.12.0/conf/hive-site.xml ./
-</span><span class='line'>[hadoop@ismp0 conf]$ cd ..
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ cp ~/hive-0.12.0/lib/mysql-connector-java-5.1.21-bin.jar lib/
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ hive
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ hive
-</span><span class='line'>
-</span><span class='line'>hive&gt;  select count(*) from t_ods_idc_isp_log2 where day=20140624;
-</span><span class='line'>Total jobs = 1
-</span><span class='line'>Launching Job 1 out of 1
-</span><span class='line'>Number of reduce tasks determined at compile time: 1
-</span><span class='line'>In order to change the average load for a reducer (in bytes):
-</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
-</span><span class='line'>In order to limit the maximum number of reducers:
-</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
-</span><span class='line'>In order to set a constant number of reducers:
-</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
-</span><span class='line'>Starting Job = job_1403006477300_3403, Tracking URL = http://umcc97-79:8088/proxy/application_1403006477300_3403/
-</span><span class='line'>Kill Command = /home/hadoop/hadoop-2.2.0/bin/hadoop job  -kill job_1403006477300_3403
-</span><span class='line'>Hadoop job information for Stage-1: number of mappers: 2; number of reducers: 1
-</span><span class='line'>2014-06-24 17:19:07,618 Stage-1 map = 0%,  reduce = 0%
-</span><span class='line'>2014-06-24 17:19:15,283 Stage-1 map = 50%,  reduce = 0%, Cumulative CPU 2.37 sec
-</span><span class='line'>2014-06-24 17:19:16,360 Stage-1 map = 100%,  reduce = 0%, Cumulative CPU 5.49 sec
-</span><span class='line'>2014-06-24 17:19:22,749 Stage-1 map = 100%,  reduce = 100%, Cumulative CPU 7.99 sec
-</span><span class='line'>MapReduce Total cumulative CPU time: 7 seconds 990 msec
-</span><span class='line'>Ended Job = job_1403006477300_3403
-</span><span class='line'>MapReduce Jobs Launched: 
-</span><span class='line'>Job 0: Map: 2  Reduce: 1   Cumulative CPU: 7.99 sec   HDFS Read: 19785618 HDFS Write: 6 SUCCESS
-</span><span class='line'>Total MapReduce CPU Time Spent: 7 seconds 990 msec
-</span><span class='line'>OK
-</span><span class='line'>77625
-</span><span class='line'>Time taken: 36.387 seconds, Fetched: 1 row(s)
-</span><span class='line'>hive&gt; 
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ nohup bin/hiveserver2 &
-</span><span class='line'>
-</span><span class='line'># 测试hive-jdbc
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ bin/beeline 
-</span><span class='line'>Beeline version 0.13.1 by Apache Hive
-</span><span class='line'>beeline&gt; !connect jdbc:hive2://10.18.97.22:10000/
-</span><span class='line'>scan complete in 7ms
-</span><span class='line'>Connecting to jdbc:hive2://10.18.97.22:10000/
-</span><span class='line'>Enter username for jdbc:hive2://10.18.97.22:10000/: hadoop
-</span><span class='line'>Enter password for jdbc:hive2://10.18.97.22:10000/: 
-</span><span class='line'>Connected to: Apache Hive (version 0.13.1)
-</span><span class='line'>Driver: Hive JDBC (version 0.13.1)
-</span><span class='line'>Transaction isolation: TRANSACTION_REPEATABLE_READ
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt; show tables;
-</span><span class='line'>+-------------------------+
-</span><span class='line'>|        tab_name         |
-</span><span class='line'>+-------------------------+
-</span><span class='line'>...
-</span><span class='line'>| test_123                |
-</span><span class='line'>+-------------------------+
-</span><span class='line'>10 rows selected (2.547 seconds)
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt;  select count(*) from t_ods_idc_isp_log2 where day=20140624;
-</span><span class='line'>+--------+
-</span><span class='line'>|  _c0   |
-</span><span class='line'>+--------+
-</span><span class='line'>| 77625  |
-</span><span class='line'>+--------+
-</span><span class='line'>1 row selected (37.463 seconds)
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt; 
-</span><span class='line'>
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>上一篇tez的安装使用中由于hive的缘故进行了回退，现在升级到hive-0.13后，也在hive上试下tez的功能：</p>
-
-<ul>
-<li>本地添加tez依赖，设置环境变量</li>
-<li>MR添加tez依赖，添加tez-site.xml</li>
-<li>切换到tez的engine</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 已上传到HDFS
-</span><span class='line'>$ cat etc/hadoop/tez-site.xml 
-</span><span class='line'>&lt;?xml version="1.0"?&gt;
-</span><span class='line'>&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;!-- Put site-specific property overrides in this file. --&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;configuration&gt;
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>    &lt;name&gt;tez.lib.uris&lt;/name&gt;
-</span><span class='line'>    &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>
-</span><span class='line'>$ export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>$ apache-hive-0.13.1-bin/bin/hive
-</span><span class='line'>hive&gt; set hive.execution.engine=tez;
-</span><span class='line'>hive&gt; select count(*) from t_ods_idc_isp_log2 ;
-</span><span class='line'>Time taken: 24.926 seconds, Fetched: 1 row(s)
-</span><span class='line'>
-</span><span class='line'>hive&gt; set hive.execution.engine=mr;                              
-</span><span class='line'>hive&gt; select count(*) from t_ods_idc_isp_log2 where day=20140720;
-</span><span class='line'>Time taken: 40.585 seconds, Fetched: 1 row(s)</span></code></pre></td></tr></table></div></figure>
-
-
-<p>简单从时间上看，还是有效果的。</p>
-
-<p><img src="http://file.bmob.cn/M00/04/A2/wKhkA1PSPSeAb1wWAAER_4gjIug339.png" alt="" /></p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/2">&larr; Older</a>
@@ -2171,7 +2070,11 @@ ls
   <ul id="recent_posts">
     
       <li class="post">
-        <a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 Use ShortCircuit Local Reading</a>
+        <a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 ShortCircuit Local Reading</a>
       </li>
     
       <li class="post">
@@ -2184,10 +2087,6 @@ ls
     
       <li class="post">
         <a href="/blog/2014/07/18/install-ganglia-on-redhat/">Install Ganglia on Redhat5+</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2014/06/21/upgrade-hive/">Upgrade Hive: 0.12.0 to 0.13.1</a>
       </li>
     
   </ul>
@@ -2216,7 +2115,7 @@ ls
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (17) 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (18) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2253,7 +2152,7 @@ ls
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (41)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (42)</li>
 	</ul>
 	
 </section>
