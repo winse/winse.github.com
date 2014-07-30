@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "hadoop2 use ShortCircuit local reading"
+title: "hadoop2 ShortCircuit local reading"
 date: 2014-07-29 20:11:58 +0800
 comments: true
 categories: [hadoop]
@@ -26,7 +26,7 @@ hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP�
 </property>
 ```
 
-注意：socket路径的权限控制的比较严格。dn_socket**所有的父路径**要么仅有当前启动用户的读权限，要么仅root可读。
+注意：socket路径的权限控制的比较严格。dn_socket**所有的父路径**要么仅有当前启动用户的写权限，要么仅root可写。
 
 ![](http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png)
 
