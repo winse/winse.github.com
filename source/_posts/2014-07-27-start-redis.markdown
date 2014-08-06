@@ -1,0 +1,770 @@
+---
+layout: post
+title: "[读读书]Redis入门指南"
+date: 2014-07-27 01:20:44 +0800
+comments: true
+categories: [redis, books]
+---
+
+## 第一章 简介
+
+* 讲了redis的产生的缘由
+* Salvtore Sanfilippo/Pieter Noordhuis被招到VMware专门负责redis
+* redis的源码可以从github下载编译。
+
+redis相比keyvalue，提供了更加丰富的值类型：字符串/散列/列表/集合/有序集合，数据提供多种持久化(RDB/AOF)的方式。
+
+在一台普通的笔记本电脑上，Redis可以在一秒内读写超过十万个键值。
+
+功能丰富，提供TTL，可以做(阻塞)队列、缓冲系统、发布/订阅消息模式。redis是单线程模型，相比memcached的多线程，可以启动多个redis实例。
+
+
+## 第二章 准备
+
+默认的生产环境使用linux，windows操作系统下也有对应的版本但是版本比较旧。
+在linux下，下载完成后直接`make`就可以使用src目录下生成的命令了，`make install`会把命令拷贝到/usr/local/bin目录下。同时有介绍iOS和Windows下怎么安装redis。
+
+### 启动Redis2.8.3
+
+```
+src/redis-server # default port 6379
+src/redis-server --port 6380
+```
+
+初始化脚本启动Redis
+
+```
+	#!/bin/sh
+	#
+	# Simple Redis init.d script conceived to work on linux systems
+	# as it does use of the /proc filesystem.
+
+	REDISPORT=6379
+	EXEC=/usr/local/bin/redis-server
+	CLIEXEC=/usr/local/bin/redis-cli
+
+	PIDFILE=/var/run/redis_${REDISPORT}.pid
+	CONF=/etc/redis/${REDISPORT}.conf
+
+	case "$1" in
+	start)
+		if [ -f $PIDFILE ]
+		then
+			echo "$PIDFILE exists, process is already running or crashed"
+		else
+			echo "Starting Redis server..."
+			$EXEC $CONF
+		fi
+		::
+	stop)
+		if [ ! -f $PIDFILE ]
+		then
+			echo "$PIDFILE does not exists, process is not running"
+		else
+			PID=$(cat $PIDFILE)
+			echo "Stopping..."
+			$CLIEXEC -p $REDISPORT shutdown
+			while [ -x /proc/$PID ]
+			do 
+				echo "Waiting for Redis to shutdown..."
+				sleep 1
+			done
+			echo "Redis stopped"
+		fi
+		::
+	*)
+		echo "Please use start or stop as first argument"
+		::
+	esac
+```
+
+### 停止Redis
+
+不要直接强制终止程序(`kill -9`)。使用redis提供的shutdown来停，会等所有操作都flush到磁盘后再关闭。保证数据不会丢失。
+当然也可以使用SIGTERM信号来处理，使用`kill PID`命令，Redis妥善的处理与发送shutdown命令效果一样。
+
+```
+src/redis-cli shutdown
+```
+
+### 命令行客户端(cli Command-Line-Interface)
+
+```
+redis-cli -h IP -p PORT
+
+[hadoop@master1 src]$ ./redis-cli PING
+PONG
+
+[hadoop@master1 src]$ ./redis-cli
+127.0.0.1:6379> PING
+PONG
+127.0.0.1:6379> echo hi
+"hi"
+```
+
+各种返回值
+
+```
+127.0.0.1:6379> errorcommand
+(error) ERR unknown command 'errorcommand'
+127.0.0.1:6379> incr foo
+(integer) 1
+127.0.0.1:6379> get foo
+"1"
+127.0.0.1:6379> get noexists
+(nil)
+127.0.0.1:6379> keys *
+1) "foo"
+```
+
+### 配置
+
+```
+redis-server CONFPATH --loglevel warning
+```
+
+也可以通过客户端设置值
+
+```
+127.0.0.1:6379> config set loglevel warning
+OK
+127.0.0.1:6379> config get loglevel
+1) "loglevel"
+2) "warning"
+```
+
+### 多数据库
+
+默认启动的程序启用了16个库（0-15，`databases 16`），客户端与Redis建立连接后，会自动选择0号数据库，不过可以通过SELECT命令更换数据库:
+
+```
+127.0.0.1:6379> select 1
+OK
+127.0.0.1:6379[1]> get foo
+(nil)
+127.0.0.1:6379[1]> set foo 1
+OK
+127.0.0.1:6379[1]> get foo
+"1"
+```
+
+redis不支持为每个数据库设置不同的访问密码，一个客户端要么可以访问全部数据库，要么连一个数据库也没有权限访问。最重要的一点是多个数据库并不是完全的隔离，比如flushall命令可以清空Redis实例中所有的数据库中的数据。所以这些数据库更像是一个命名空间，而不是适合存储不同应用的数据。
+
+但是可以使用0号数据库存储A应用的生产数据而使用1号数据库存储A应用的测试数据，不同的应用应该使用不同的Redis实例存储数据。由于Redis非常轻量级，一个空Redis实例占用内存只有1M左右，所以不用担心多个Redis实例会额外占用很多内存。
+
+## 第三章 入门
+
+### 热身
+
+获取符合规则的键名（glob风格 ?/*/\X/[]） : `KEYS pattern`
+
+```
+127.0.0.1:6379[1]> KEYS *
+1) "foq"
+2) "foo"
+3) "fop"
+127.0.0.1:6379[1]> keys fo[a-p]
+1) "foo"
+2) "fop"
+
+127.0.0.1:6379[1]> exists foa
+(integer) 0 #不存在
+127.0.0.1:6379[1]> exists foo
+(integer) 1 #存在
+
+127.0.0.1:6379[1]> del foo
+(integer) 1
+127.0.0.1:6379[1]> del foa
+(integer) 0
+127.0.0.1:6379[1]> keys *
+1) "fop"
+```
+
+keys会遍历Redis中的所有键，当数量比较多是会影响性能，不建议在生产环境使用。
+
+del可以删除多个键值，返回值为删除的个数。del命令的参数不支持通配符，但可以通过linux的实现批量删除`redis-cli DEL $(redis-cli KEYS "user:*")`（有长度限制）来达到效果，效果比xargs效果更好。
+
+获取keyvalue值的类型
+
+```
+127.0.0.1:6379> set foo 1
+OK
+127.0.0.1:6379> lpush foo 1
+(error) WRONGTYPE Operation against a key holding the wrong kind of value
+127.0.0.1:6379> lpush foa 1
+(integer) 1
+127.0.0.1:6379> type foo
+string
+127.0.0.1:6379> type foa
+list
+```
+
+### 字符串类型
+
+```
+set key value
+get key
+
+incr key # 对应的值需为数值
+
+set foo 1
+incr foo
+set foo b
+incr foo
+# (error) ERR value is not an integer or out of range
+
+# 增加指定的整数
+
+incrby key increment
+decr key 
+decr key decrement
+increbyfloat key increment
+
+append key value
+strlen key # 字节数，和java字符串的length不同
+
+mget key [key ...]
+mset key value [key value ...]
+
+getbit key offset
+setbit key offset value
+bitcount key [start] [end]
+bitop operation destkey key [key ...] # AND OR XOR NOT
+
+set foo1 bar
+set foo2 aar
+BITOP OR res foo1 foo2 # 位操作命令可以非常紧凑地存储布尔值
+GET res
+```
+
+### 散列值
+
+```
+hset key field value
+hget key field
+hmset key field value [field value ...]
+hmget key field [field ...]
+hgetall key
+
+hexists key field
+hsetnx key field value # 当字段不存在时赋值 if not exists
+
+hincrby key field increment
+
+hdel key field [field ...]
+
+hkeys key # 仅key
+hvals key # 仅value
+hlen key  # 字段数量
+```
+
+### 列表
+
+双端队列型列表
+
+```
+lpush key value [value ...]
+rpush key value [value ...]
+lpop key
+rpop key
+llen key
+lrange key start stop # 可以使用负索引，从0开始，包括最右边的元素
+
+lrem key count value 
+# 删除列表中前count个值为value的元素，返回的是实际删除的元素个数。
+# count为负数是从右边开始删除
+# count为0时删除所有值为value的元素
+
+# 获得/设置指定索引的元素值
+
+lindex key index # index为负数是从右边开始
+lset key index value
+
+ltrim key start end # 只保留列表指定的片段
+linsert key BEFORE/AFTER pivotvalue value
+
+poplpush source destination # 将元素从给一个列表转到另一个列表
+```
+
+### 集合类型
+
+```
+sadd key member [member ...]
+srem key member [member ...]
+smembers key # 获取集合中的元素
+sismember key member # 判断元素是否在集合中
+
+sdiff key [key ...] # 差集 A-B
+sinter key [key ...] # A ∩ B
+sunion key [key ...] # A ∪ B
+
+scard key # 获取集合中元素个数
+
+sdiffstore destination key [key ...]
+sinterstore destination key [key ...]
+sunionstore destination key [key ...]
+
+srandmember key [count] 
+# 随机获取集合中的元素，count参数来一次性获取多个元素
+# count为负数时，会随机从集合里获得|count|个的元素，这里元素有可能相同。
+
+spop key # 从集合中随机弹出一个元素
+```
+
+### 有序集合
+
+列表类型是通过链表实现的，获取靠近两端的数据速度极快，而当元素增多后，访问中间数据的速度会较慢，所以它更加适合实现和“新鲜事”或“日志”这样很少访问中间元素的应用。有序集合类型是使用散列和跳跃表（Skip list）实现的，所以即使读取位于中间的数据也很快（时间复杂度是O(log(N))）。列表中不能简单地调整某个元素的位置，但是有序集合可以（通过更改这个元素的分数）。有序集合要比列表类型更耗费内存。
+
+```
+zadd key score member [score member ...]
+# 如果该元素已经存在则会用新的分数替换原有的分数。zadd命令的返回值是新加入到集合中的元素个数（不包含之前已经存在的元素）。
+# 其中+inf和-inf分别表示正无穷和负无穷
+
+zscore key member
+
+zrange key start stop [withscores] # 获取排名在某个范围的元素列表
+zrevrange key start stop [withscores] 
+# 负数代表从后向前查找（-1表示最后一个元素），O(logn+m)
+
+zrangebyscore key min max [withscores] [limit offset  count]
+
+# 命令按照元素分数从小到大的顺序返回分数的min和max之间（包含min和max）的元素。
+# 如果希望分数范围不包含端点值，可以在分数前加上"("符号。例如，希望返回80分到100分的数据，可以含80分，但不包含100分。则稍微修改一下上面的命令即可：
+zrangebyscore scoreboard 80 (100
+zrangebyscore scoreboard (80 +inf
+# 本命令中LIMIT offset count与SQL中的用法基本相同。获取分数低于或等于100的前3个人
+zrevrangebyscore scoreboard 100 0 limit 0 3
+
+zincrby key increment memeber # 增加某个元素的分数
+
+zcard key # 获取集合中元素的数量
+zcount key min max # 获得指定分数范围内的元素个数
+zrem key member [memeber ...] # 删除一个或多个元素，返回成功删除的元素数量
+
+# 按照排名范围删除元素, 并返回删除的元素数量
+zremrangebyrank key start stop
+# 按照分数范围删除元素
+zremrangebyscore key min max
+
+zrank key member
+zrevrank key memeber
+
+zinterstore destination numkeys key [key ...] [WEIGHTS weight [weight ...]] [aggregate sum|min|max]
+zunionstore ...
+
+```
+
+## 第四章 进阶
+
+### 事务
+
+```
+multi
+sadd "user:1:following" 2
+sadd "user:2:followers" 1
+exec
+```
+
+脚本语法有错，命令不能执行。但是当数据类型等逻辑运行错误时，事务里面的命令会被redis接受并执行。
+
+如果事务里的一条命令出现错误，事务里的其他命令依然会继续执行（包括出错到最后的命令）。对应的返回值会返回错误信息。
+
+```
+127.0.0.1:6379> multi
+OK
+127.0.0.1:6379> set key 1
+QUEUED
+127.0.0.1:6379> sadd key 2
+QUEUED
+127.0.0.1:6379> set key 3
+QUEUED
+127.0.0.1:6379> exec
+1) OK
+2) (error) WRONGTYPE Operation against a key holding the wrong kind of value
+3) OK
+127.0.0.1:6379> get key
+"3"
+```
+
+redis的事务没有回滚的功能，出现错误事务时必须自己负责收拾剩下的摊子（将数据库复原事务执行前的状态等）。不过由于redis不支持回滚功能，也使得redis在事务上可以保持简洁和快速。其中语法错误完全可以再开发时找出并解决。另外如果能够很好的规划数据库（保证键名规范等）的使用，是不会出现命令与数据类型不匹配这样的错误的。
+
+**watch命令**
+
+在一个事务中只有当所有命令都依次执行完后才能得到每个结果的返回值。可是有些情况下需要先获得一条命令的返回值，然后再根据这个值执行下一条命令。
+如increment的操作，在增加1的是时刻没法保证数据还是原来的数据。为了解决这个问题，可以在GET获取值后保证该键值不会被其他客户端修改，知道函数执行完成后才允许其他客户端修改该键值，这样也可以防止竞态条件。watch命令可以监控一个或多个键，一旦其中一个键被修改（或删除），之后的事务就不会被执行。监控一直持续到exec命令。
+
+```
+127.0.0.1:6379> watch key
+OK
+127.0.0.1:6379> set key 2
+OK
+127.0.0.1:6379> multi
+OK
+127.0.0.1:6379> set key 3
+QUEUED
+127.0.0.1:6379> exec
+(nil)
+127.0.0.1:6379> get key
+"2"
+```
+
+执行exec命令会取消对所有键的监控，如果不想执行事务中的命令也可以使用unwatch命令来取消监控。
+
+### 生存时间TTL
+
+```
+expire key seconds
+
+ttl key
+
+127.0.0.1:6379> get key
+"2"
+127.0.0.1:6379> ttl key
+(integer) -1
+127.0.0.1:6379> expire key 10
+(integer) 1
+127.0.0.1:6379> ttl key
+(integer) 6
+127.0.0.1:6379> ttl key
+(integer) 1
+127.0.0.1:6379> ttl key
+(integer) -2
+
+pexpire milliseconds #时间的单位为毫秒
+expireat UTC
+pexpireat 毫秒（UTC*1000）
+```
+
+除了persist命令之外，使用set和getset命令为键赋值也会同时清除键的生存时间。使用expire命令会重新设置键的生存时间。其他对键值进行操作的命令（如incr、lpush、hset、zrem）均不会影响键的生存时间。
+
+提示： 如果使用watch命令监测一个拥有生存时间的键，该键时间到期自动删除并不会被watch命令认为该键被改变。
+
+### 缓冲
+
+expire + maxmemory maxmemory-policy(LRU)
+
+### 排序
+
+可以使用multi, zintestore, zrange, del, exec来实现，但太麻烦！
+
+sort命令，可用于集合、列表类型和有序集合类型
+
+```
+sort key [ALPHA] [BY PREFIXKYE:*->property] [DESC] [LIMIT offset count] 
+
+127.0.0.1:6379> lpush mylist 7 1 3 9 0
+(integer) 5
+127.0.0.1:6379> sort mylist
+1) "0"
+2) "1"
+3) "3"
+4) "7"
+5) "9"
+```
+
+针对有序集合排序时会忽略元素的分数，只针对元素自身的值进行排序。
+集合类型中所有元素是无序的，但经常被用于存储对象的ID，很多情况下都是整数。所以redis多这种情况进行了特殊的优化，元素的顺序是有序的。
+
+```
+127.0.0.1:6379> sadd myset 5 2 6 1 8 1 9 0
+(integer) 7
+127.0.0.1:6379> smembers myset
+1) "0"
+2) "1"
+3) "2"
+4) "5"
+5) "6"
+6) "8"
+7) "9"
+```
+
+除了直接对元素排序排序外，还可以通过BY操作来获取关联值来进行排序。BY参数的语法为“BY参考键”，其中参考键可以使字符串类型或者是散列类型键的某个字段（表示为键名->字段名）。如果提供了BY参数，sort命令将不再依据元素自身的值进行排序，而是对每个元素使用元素的值替换参考键中的第一个`*`并获取取值，然后依据该值对元素排序。
+
+```
+sort tag:ruby:posts BY post:*->time desc
+sort sortbylist BY itemsore:* desc
+```
+
+当参考键不包括`*`时（即常量键名，与元素值无关）。SORT命令将不会执行排序操作，因为redis认为这种情况没有意义（因为所有要比较的值都一样）。没有执行排序操作，在不需要排序但需要借组sort命令获得与元素相关联的数据时，常量键名是很有用的！
+
+如果几个元素的参考键值相同，则SORT命令会在比较元素本身的值来决定元素的顺序。
+当某个元素的参考键不存在时，会默认参考键的值为0。
+参考键虽然支持散列类型，但是`*`只能在`->`符号前面（即键名部分）才有用，在`->`后（即字段名部分）会被当成字段名本身名本身而不会作为占位符被元素的值替换，即常量键名。但是实际运行时会发现一个有趣的结果。
+
+```
+sort sortbylist BY somekey->somefield:* 
+```
+
+上面提到了当参考键名是常量键名时SORT命令将不会执行排序操作，然而上例中却是进行了排序，而且只是对元素本身进行排序。这是因为Redis判断参考键名是不是常量键名的方式是判断参考键名中是否包含`*`，而`somekey->somefield:*`中包含`*`所以不是常量键名。所以在排序的时刻Redis对每个元素都会读取键somekey中的`somefield:*`字段（`*`不会被替换）。无论能否获得其值，每个元素的参考键值是相同的，所以redis被按照元素本身的大小排序。
+
+GET参考不影响排序，它的作用是使SORT命令的返回结果不在是元素自身的值。而是GET参数中指定的键值。GET参数的规则和BY参数一样，GET参数也支持字符串类型和散列类型的值，并使用`*`作为占位符。要实现在排序后直接返回ID对应的违章标题，可以这样写：
+
+```
+127.0.0.1:6379> lpush tag:ruby:posts 1 2 3
+(integer) 3
+127.0.0.1:6379> hmset post:1 time 140801 name HelloWorld
+OK
+127.0.0.1:6379> hmset post:2 time 140802 name HelloWorld2
+OK
+127.0.0.1:6379> hmset post:3 time 140803 name HelloWorld3
+OK
+127.0.0.1:6379> sort tag:ruby:posts BY post:*->time desc
+1) "3"
+2) "2"
+3) "1"
+127.0.0.1:6379> sort tag:ruby:posts BY post:*->time DESC GET post:*->name
+1) "HelloWorld3"
+2) "HelloWorld2"
+3) "HelloWorld"
+```
+
+一个sort命令中可以有多个GET参数（而BY参数只能有一个），所以还可以这样用：
+
+```
+127.0.0.1:6379> sort tag:ruby:posts BY post:*->time desc GET post:*->name GET post:*->time
+1) "HelloWorld3"
+2) "140803"
+3) "HelloWorld2"
+4) "140802"
+5) "HelloWorld"
+6) "140801"
+```
+
+如果还需要返回文章ID，可以使用`GET #`获得，也就是返回元素本身的值。
+
+```
+127.0.0.1:6379> sort tag:ruby:posts BY post:*->time desc GET post:*->name GET post:*->time GET #
+1) "HelloWorld3"
+2) "140803"
+3) "3"
+4) "HelloWorld2"
+5) "140802"
+6) "2"
+7) "HelloWorld"
+8) "140801"
+9) "1"
+```
+
+默认情况下SORT会直接返回排序结果，如果希望保存排序结果，可以使用STORE参数。保存后的键的类型为列表类型，如果键已经存在则会覆盖它，加上STORE参数后的SORT命令的返回值的结果的个数。
+
+```
+127.0.0.1:6379> sort tag:ruby:posts BY post:*->time desc GET post:*->name GET post:*->time GET # STORE tag.ruby.posts.sort
+(integer) 9
+127.0.0.1:6379> lrange tag.ruby.posts.sort 0 -1
+1) "HelloWorld3"
+2) "140803"
+3) "3"
+4) "HelloWorld2"
+5) "140802"
+6) "2"
+7) "HelloWorld"
+8) "140801"
+9) "1"
+```
+
+SORT命令的时间复杂度是O(n+mlogm)，其中n表示要排序的列表（集合或有序集合）中的元素个数，m表示要返回的元素个数。当n较大时SORT命令的性能相对较低，并且redis在排序前会建立一个长度为n的容器来存储排序的元素（当键类型为有序集合且参考键为常量键名时容器大小为m而不是n），虽然是一个临时的过程，但如果同时进行较多的大数据量排序操作则会严重影响性能。
+
+### 消息通知
+
+producer/consumer，松耦合，易于扩展，而且可以分布在不同的服务器中！
+
+```
+BLPOP key [key ...] timeout
+BRPOP key [key ...] timeoutseconds
+# 超时时间设置为0时，表示不限制等待的时间，即如果没有新元素加入列表就会永远阻塞下去。
+```
+
+BRPOP可以同时接收多个键，同时检测多个键，如果所有键都没有元素则阻塞，其中有一个键有元素则会从该键中弹出元素。如果存在键都有元素则从左到右的顺序取第一个键中的一个元素。借此特性可以实现优先级的队列任务。
+
+publish/subscribe模式，发布/订阅模式同样可以实现进程间的消息传递。
+
+```
+PUBLISH channel.1 hi
+SUBSCRIBE channel.1
+```
+
+执行SUBSCRIBE命令后，客户端会进入订阅状态，处于此状态下客户端不能使用SUBSCRIBE/UNSUBSCRIBE/PSUBSCRIBE（支持glob风格通配符格式）/PUNSUBSCRIBE这4个属于发布/订阅模式的命令之外的命令，否则会报错。
+
+消息类型： subscribe/message/unsubscribe
+
+```
+psubscribe channel.?*
+```
+
+### 管道pipelining
+
+在执行多个命令时每条命令都需要等待上一条命令执行完才能执行，即使命令不需要上一条命令的执行结果。通过管道可以一次性发送多条命令并在执行完后一次性将结果返回，当一组命令中每条命令都不依赖与之前命令的执行结果就可以将这一组命令一起通过管道发出。管道通过减少客户端与redis的通信次数来实现降低往返时延。（
+
+### 节省空间
+
+* 精简键名和键值 `VIP<-very.important.person`
+* 内部编码优化（存储和效率的取舍）
+
+如果想查看一个键的内部编码方式可以使用`OBJECT ENCODING foo`
+
+## 第五章 实践
+
+* php用户登录，忘记密码邮件发送队列
+* ruby自动完成
+* python在线好友
+* nodejs的IP段地址查询
+
+## 第六章 脚本
+
+代码块多次请求，以及事务竞态等问题，需要用到WATCH，多次请求在网络传输上浪费很多时间。redis的脚本类似于数据库的function，在服务端执行。这种方式不仅代码简单、没有竞态条件（redis的命令都是原子的），而且减少了通过网络发送和接收命令的传输开销。
+
+从2.6开始，允许开发者使用Lua语言编写脚本传到redis中执行。在Lua脚本中可以调用大部分的redis命令。减少网络传输时延，原子操作，复用（发送的脚本永久存储在redis中，其他客户端可以复用）。
+
+**访问频率**
+
+```
+localtimes=redis.call('incr', KEYS[1])
+if times==1 then
+redis.call('expire', KEYS[1], ARGV[1])
+end
+
+if times>tonumber(ARGV[2]) then
+return 0
+end
+
+return 1
+# redis-cli --eval ratelimiting.lua rate.limiting:127.0.0.1 , 10 3 逗号前的是键，后面的是参数
+```
+
+### lua语法（和shell脚本有点像，更简洁）
+
+```
+本地变量 local x=10
+注释 --xxx
+多行注释 --[[xxxx]]
+赋值 local a,b=1,2 # a=1, b=2
+   local a={1,2,3}
+   a[1]=5
+数字操作符的操作数如果是字符串会自动转成数字
+tonumber
+tostring
+只要操作数不是nil或者false，逻辑操作符就认为操作数为真，否则为假！
+用..来实现字符串连接
+取长度 print(#"hello") -- 5
+
+```
+
+### 使用脚本
+
+```
+EVAL script numkeys key [key ...] arg [arg ...]
+
+redis> eval "return redis.call('SET', KEYS[1], ARGV[1])" 1 foo bar
+
+EVALSHA sha1 numkeys key [key ...] arg [arg ...]
+```
+
+同时获取多个散列类型键的键值
+
+```
+local result={}
+for i,v in ipairs(KEYS) do
+result[i]=redis.call("HGETALL", v)
+end
+return result
+```
+
+获取并删除有序集合中分数最小的元素
+
+```
+local element=redis.call("ZRANGE", KEY[1], 0, 0)[1]
+if element the
+redis.call('ZREM', KEYS[1], element)
+end
+return element
+```
+
+处理JSON
+
+```
+local sum=0
+local users=redis.call('mget', unpack(KEYS))
+for _,user in ipairs(users) do 
+local courses=cjson.decode(user).course
+for _,score in pairs(courses) do
+sum=sum+score
+end
+end
+return sum
+```
+
+redis脚本禁用使用lua标准库中与文件或系统调用相关的函数，在脚本中只允许对redis的数据进行处理。并且redis还通过禁用脚本的全局变量的方式保证每个脚本都是相对隔离的们不会互相干扰。
+使用沙盒不仅是为了保证服务器的安全性，而且还确保了脚本的执行结果值和脚本本身和执行时传递的参数有关，不依赖外界条件（如系统时间、系统中某个文件的内存。。）。这是因为在执行复制和AOF持久化操作时记录的是脚本的内容而不是脚本调用的命令，所以必须保证在脚本内容和参数一样的前提下脚本的执行进行特殊的处理。
+
+```
+script load 'return 1'
+script exists sha1
+script flush #清空脚本缓冲
+
+script kill
+script nosave
+```
+
+为了限制某个脚本执行时间过长导致redis无法提供服务（如死循环），redis提供了lua-time-limit参数限制脚本的最长运行时间，默认5s。 
+
+## 第七章 管理
+
+* 持久化 rdb/AOF
+```
+save 900 1
+save 300 10
+save 60 10000
+SAVE
+BGSAVE
+appendonly yes
+appendfilename appendonly.aof
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+BGREWRITEAOF
+#appendfsync always
+appendfsync everysec
+#appendfsync no
+```
+* 复制
+```
+redis-server --port 6380 --slaveof 127.0.0.1 6379
+SLAVEOF 127.0.0.1 6379
+SLAVEOF NO ONE
+```
+* 读写分离
+* 耗时日志查询
+```
+SLOWLOG GET # slowlog-log-slower-than slowlog-max-len
+MONITOR
+```
+
+## redis3集群安装cluster
+
+编译安装和2.8一样，configuration/make/makeinstall即可。
+
+```
+[hadoop@umcc97-44 cluster-test]$ cat cluster.conf 
+port .
+cluster-enabled yes
+cluster-config-file nodes.conf
+cluster-node-timeout 5000
+appendonly yes
+```
+
+比较苦逼的是需要安装ruby，服务器不能上网！其实ruby在能访问的机器上面安装就可以了！初始化集群的脚本其实就是客户端连接服务端，初始化集群而已。
+还有就是在调用命令的时刻要加上`-c`，这样才是使用集群模式，不然仅仅连单机，读写其他集群服务会报错！
+
+![](http://file.bmob.cn/M00/04/DB/wKhkA1PVx5-Ab4jaAAA9_Lg7l-I862.png)
+
+![](http://file.bmob.cn/M00/04/DB/wKhkA1PVyXSAC5iEAABfrrHCfuI114.png)
+
+![](http://file.bmob.cn/M00/04/DB/wKhkA1PVzBSAc3KOAADvQfFIPrs908.png)
+
+![](http://file.bmob.cn/M00/04/DF/wKhkA1PWCc-AXZ3EAAHoKZnb1nQ426.png)
+
+![](http://file.bmob.cn/M00/04/DF/wKhkA1PWCkWAZYuLAAAWM5VoXJI861.png)
+
+![](http://file.bmob.cn/M00/04/DF/wKhkA1PWCuSAAuXxAABB-LpH1nQ340.png)
+
+![](http://file.bmob.cn/M00/05/5F/wKhkA1PZBrSAPaMTAAAcSnjmhXE093.png)
+

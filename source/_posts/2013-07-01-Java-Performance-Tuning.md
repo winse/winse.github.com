@@ -3,6 +3,8 @@ layout: post
 title: 【读读书】Java程序性能优化
 date: 2013-8-20 17:51:10
 keywords: java, 性能优化, Java程序性能优化
+comments: true
+categories: [java, books]
 ---
 
 这是一本实践过的人写的书，在书中能学到作者的实践成果，测试结果都以数字来说明参数的作用。
