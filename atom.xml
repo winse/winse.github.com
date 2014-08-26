@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winse.github.io/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2014-08-21T19:38:35+08:00</updated>
+  <updated>2014-08-26T21:27:52+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,148 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[查找逐步定位Java程序OOM的异常实践]]></title>
+    <link href="http://winse.github.io/blog/2014/08/25/step-by-step-found-java-oom-error/"/>
+    <updated>2014-08-25T21:12:13+08:00</updated>
+    <id>http://winse.github.io/blog/2014/08/25/step-by-step-found-java-oom-error</id>
+    <content type="html"><![CDATA[<p>类C语言，继C++之后的最辉煌耀眼的明星都属Java，其中最突出的又数内存管理。JVM对运行在其上的程序进行内存自动化分配和管理，减少开发人员的工作量之外便于统一的维护和管理。JDK提供了各种各样的工具来让开发实施人员了解运行的运行状态。</p>
+
+<ul>
+<li>jps -l -v -m</li>
+<li>jstat -gcutil 2000 100</li>
+<li>jmap</li>
+<li>jinfo <a href="http://file.bmob.cn/M00/03/AD/wKhkA1PE2MGAB4-fAAGTqUeu-cE940.png">查看参数例子</a></li>
+<li>jstack</li>
+<li>jvisualvm/jconsole</li>
+<li>mat(MemoryAnalyzer)</li>
+<li>btrace</li>
+<li>jclasslib（查看局部变量表）</li>
+</ul>
+
+
+<p>前段时间，接手(前面已经有成型的东西)使用Hadoop存储转换的项目，但是生产环境的程序总是隔三差五的OOM，同时使用的hive0.12.0也偶尔出现内存异常。这对于运维来说就是灭顶之灾！搞不好什么时刻程序就挂了！！必须咬咬牙把这个问题处理解决，开始把老古董们请出来，翻来基本不看的后半部分&ndash;Java内存管理。</p>
+
+<ul>
+<li>《Java程序性能优化-让你的Java程序更快、更稳定》第5章JVM调优/第6章Java性能调优工具</li>
+<li>《深入理解Java虚拟机-JVM高级特性与最佳实践》第二部分自动内存管理机制</li>
+</ul>
+
+
+<p>这里用到的理论知识比较少。主要用Java自带的工具，加上内存堆分析工具（mat/jvisualvm）找出大对象，同时结合源代码定位问题。</p>
+
+<p>下面主要讲讲实践，查找问题的思路。在本地进行测试的话，我们可以打断点，可以通过jvisualvm来查看整个运行过程内存的变化趋势图。但是到了linux服务器，并且还是生产环境的话，想要有本地一样的图形化工具来监控是比较困难的！一般服务器的内存都设置的比较大，而windows设置的内存又有限！所以内存达到1G左右，立马dump一个堆的内存快照然后下载到本地进行来分析（可以通过<code>-J-Xmx</code><a href="http://file.bmob.cn/M00/09/83/wKhkA1P7TV-ABDnOAAB-OnVBQic050.png">调整jvisualvm的内存</a>）。</p>
+
+<ul>
+<li>首先，由于报错是在Configuration加载配置文件时抛出OOM，第一反应肯定Configuraiton对象太多导致！同时查看dump的堆内存也佐证了这一点。直接把程序中的Configuration改成单例。</li>
+</ul>
+
+
+<p>程序对象内存占比排行（<code>jmap -histo PID</code>）：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7S8yARYSkAAiFW9cVN5w526.png" alt="" /></p>
+
+<p>使用mat或者jvisualvm查看堆，确实Configuration对象过多（<code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code>）：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TbmAIdDEAAq3ktPBs6Q266.png" alt="" /></p>
+
+<ul>
+<li><p>修改后再次运行，但是没多大用！还是OOM！！</p></li>
+<li><p>进一步分析，发现在Configuration中的属性/缓冲的都是弱引用是weakhashmap。</p></li>
+</ul>
+
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TfaAf4nwAAbcdgFiyXs804.png" alt="" /></p>
+
+<p>OOM最终问题不在Configuration对象中的属性，哪谁hold住了Configuration对象呢？？</p>
+
+<ul>
+<li>再次从根源开始查找问题。程序中FileSystem对象使用<code>FileSystem.get(URI, Configuration, String)</code>获取，然后调用<code>get(URI,Configuration)</code>方法，其中的<strong>CACHE</strong>很是刺眼啊！</li>
+</ul>
+
+
+<p><img src="http://file.bmob.cn/M00/09/8D/wKhkA1P72pmAAMdnAAEYMjHFUAI853.png" alt="" /></p>
+
+<p>缓冲FileSystem的Cache对象的Key是URI和UserGroupInformation两个属性来判断是否相等的。对于一个程序来说一般就读取一个HDFS的数据即URI前部分是确定的，重点在UserGroupInformation是通过<code>UserGroupInformation.getCurrentUser()</code>来获取的。</p>
+
+<p>即获取在get时<code>UserGroupInformation.getBestUGI</code>得到的对象。而这个对象在UnSecure情况下每次都是调用<code>createRemoteUser</code>创建新的对象！也就是每调用一次<code>FileSystem.get(URI, Configuration, String)</code>就会缓存一个FileSystem对象，以及其hold住的Configuration都会被保留在内存中。
+<img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TBSAaYEoAAhzUA5j5MI991.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TJ2AfwJzAAhEVFjK7Ek367.png" alt="" /></p>
+
+<p>只消耗不释放终究会坐吃山空啊！到最后也就必然OOM了。从mat的UserGroupInformation的个数查询，以及Cache对象的总量可以印证。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TNeAB7JAAAdMg-udeR8285.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TU-ACoaCAApK4n-52hI027.png" alt="" /></p>
+
+<h2>问题处理</h2>
+
+<p>把程序涉及到FileSystem.get调用去掉user参数，使两个参数的方法。由于都使用getCurrentUser获取对象，也就是说程序整个运行过程中就一个FileSystem对象，但是与此同时就不能关闭获取到的FileSystem，如果当前运行的用户与集群所属用户不同，需要设置环境变量指定当前操作的用户！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>System.setProperty("HADOOP_USER_NAME", "hadoop");</span></code></pre></td></tr></table></div></figure>
+
+
+<p>查找代码中调用了FileSystem#close是一个痛苦的过程，由于FileSystem实现的是Closeable的close方法，用<strong>Open Call Hierarchy</strong>基本是大海捞中啊，根本不知道那个代码是自己的！！这里用btrace神器让咋也高大上一把。。。</p>
+
+<p>当时操作的步骤找不到了，下图是调用Cache#getInternal方法监控代码<a href="https://gist.github.com/winse/161f6fe9120f2ec6b024">GIST</a>：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7UD2AFk2cAAXRQWzniL0296.png" alt="" /></p>
+
+<h2>hive0.12内存溢出问题</h2>
+
+<p>hive0.12.0查询程序MR内容溢出</p>
+
+<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7StSAOgX1AAoW9v-Fd4s439.png" alt="" /></p>
+
+<p>在hive-0.13前官网文档中有提到内存溢出这一点，可以对应到FileSystem中代码的判断。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/85/wKhkA1P7UP-ACRVdAAJHBKNTq94580.png" alt="" /></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>String disableCacheName = String.format("fs.%s.impl.disable.cache", scheme);
+</span><span class='line'>if (conf.getBoolean(disableCacheName, false)) {
+</span><span class='line'>  return createFileSystem(uri, conf);
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>hive0.13.1处理</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T_CAcxVqAARr7CGiDvY177.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T6KAKoUiAAvODPwh1po815.png" alt="" /></p>
+
+<p>新版本在每次查询（session）结束后都会把本次涉及到的FileSystem关闭掉。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T9uAQQB3AAWrj_efwZU495.png" alt="" /></p>
+
+<h2>理论知识</h2>
+
+<p>从GC类型开始讲，对自动化内存的垃圾收集有个整体的感知： 新生代/s0（survivor space0、from space）/s1（survivor space1、to space）/永久代。虚拟机参数<code>-Xmx</code>,<code>-Xms</code>,<code>-Xmn</code>（<code>-Xss</code>）来调节各个代的大小和比例。</p>
+
+<ul>
+<li><code>-Xss</code> 参数来设置栈的大小。栈的大小直接决定了函数的调用可达深度</li>
+<li><code>-XX:PrintGCDetails -XX:SurvivorRatio=8 -XX:MaxTenuringThreshold=15 -Xms40m -Xmx40m -Xmn20m</code></li>
+<li><code>-XX:NewSize</code>和<code>-XX:MaxNewSize</code></li>
+<li><code>-XX:NewRatio</code>和<code>-XX:SurvivorRatio</code></li>
+<li><code>-XX:PermSize=2m -XX:MaxPermSize=4m -XX:+PrintGCDetails</code></li>
+<li><code>-verbose:gc</code></li>
+<li><code>-XX:+PrintGC</code></li>
+<li><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/bug.hprof -XX:OnOutOfMemoryError=/reset.sh</code></li>
+<li><code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code></li>
+<li><code>jmap -histo PID &gt; /tmp/s.txt</code></li>
+<li><code>jstack -l PID</code></li>
+</ul>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[巧用Equals和Hashcode]]></title>
@@ -6188,6 +6330,10 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 <td style="text-align:left;"> -v 可以看到文件哪些内容被修改</td>
 </tr>
 <tr>
+<td style="text-align:left;"> git commit -m &lsquo;v1.2.0-final&rsquo; &ndash;allow-empty    </td>
+<td></td>
+</tr>
+<tr>
 <td style="text-align:left;"> git reset                                     </td>
 <td></td>
 </tr>
@@ -6201,6 +6347,10 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 </tr>
 <tr>
 <td style="text-align:left;"> git checkout file                             </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> git checkout &ndash;orphan <branchname>; git rm &ndash;cached -r . </td>
 <td></td>
 </tr>
 <tr>
@@ -6228,7 +6378,7 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 <td style="text-align:left;"> 查看提交信息及更新的文件</td>
 </tr>
 <tr>
-<td style="text-align:left;"> git log &ndash;stat -p -1 &ndash;format=raw          </td>
+<td style="text-align:left;"> git log &ndash;stat -p -1 &ndash;format=raw             </td>
 <td></td>
 </tr>
 <tr>
@@ -8055,119 +8205,6 @@ C:\Ruby193\lib\ruby\gems\1.9.1\gems\jekyll-1.0.3\lib\jekyll\convertible.rb</p>
 
 
 <p>由于cygwin下默认是utf8编码，并且已经有了linux的各种命令，安装起来很简单。</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[[Windows运行]快速打开程序]]></title>
-    <link href="http://winse.github.io/blog/2014/02/23/quickly-open-program-in-windows/"/>
-    <updated>2014-02-23T00:00:00+08:00</updated>
-    <id>http://winse.github.io/blog/2014/02/23/quickly-open-program-in-windows</id>
-    <content type="html"><![CDATA[<p>由于种种原因，一直都在Windows下进行编程。如eclipse/Office/QQ/&hellip;的软件拖住了切换平台的决心！</p>
-
-<p>在使用windows的同时，形成了一些自己的习惯。使用<code>WIN + r</code>来快速打开应用，如regedit/notepad/mspaint/magnify/cmd等。</p>
-
-<p>希望能直接运行Git Shell/Cygwin Terminal这些在<strong>开始</strong>中的菜单。但，在<strong>运行</strong>窗口直接输入的命令都得在PATH所在的路径下。如果把路径全部加入到PATH又没有这个必要，并且命令都是以lnk的快捷方式存储。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>C:\Users\Administrator\AppData\Local\GitHub\GitHub.appref-ms --open-shell
-</span><span class='line'>
-</span><span class='line'>C:\cygwin\bin\mintty.exe -i /Cygwin-Terminal.ico -
-</span><span class='line'>
-</span><span class='line'>"C:\Program Files\Vim\vim74\vim.exe"
-</span><span class='line'>"C:\Program Files\Vim\vim74\gvim.exe"
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>在已经打开命令行窗口情况下，可以通过定义alias（别名）来实现。具体请<a href="http://blog.sina.com.cn/s/blog_9bf4cb690101byho.html">参考</a>。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>C:\Users\Administrator&gt;doskey cygwin=C:\cygwin\bin\mintty.exe -i /Cygwin-Terminal.ico -
-</span><span class='line'>
-</span><span class='line'>C:\Users\Administrator&gt;doskey /MACROS
-</span><span class='line'>cygwin=C:\cygwin\bin\mintty.exe -i /Cygwin-Terminal.ico -
-</span><span class='line'>
-</span><span class='line'>C:\Users\Administrator&gt;cygwin
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>通过别名可以简化命令，但是必须在已经打开命令行窗口的情况下！！</p>
-
-<p><strong>解决办法：</strong>
-最后妥协了，定义一个路径<code>D:\local\bin</code>，加入到<em>PATH</em>环境变量。把需要使用通过<strong>运行</strong>打开的程序在<em>bin</em>目录下建立一个快键指向。使用mklink是一个软链接。（当然也可以创建个快捷方式，然后改名称）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>D:\local\bin&gt;mklink git.lnk "C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\GitHub, Inc\Git Shell.lnk"
-</span><span class='line'>
-</span><span class='line'>D:\local\bin&gt;mklink cygwin.lnk "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Cygwin\Cygwin Terminal.lnk"
-</span><span class='line'>
-</span><span class='line'>D:\local\bin&gt;mklink vim.lnk "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Vim 7.4\Vim.lnk"
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>建立指向后的效果如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>D:\local\bin&gt;dir
-</span><span class='line'> 驱动器 D 中的卷是 Software
-</span><span class='line'> 卷的序列号是 C83F-14A7
-</span><span class='line'>
-</span><span class='line'> D:\local\bin 的目录
-</span><span class='line'>
-</span><span class='line'>2014/02/01  01:57    &lt;DIR&gt;          .
-</span><span class='line'>2014/02/01  01:57    &lt;DIR&gt;          ..
-</span><span class='line'>2014/02/01  01:56    &lt;SYMLINK&gt;      cygwin.lnk [C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Cygwin\Cygwin Terminal.lnk]
-</span><span class='line'>2014/02/01  01:55    &lt;SYMLINK&gt;      git.lnk [C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\GitHub, Inc\Git Shell.lnk]
-</span><span class='line'>2014/02/01  01:57    &lt;SYMLINK&gt;      vim.lnk [C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Vim 7.4\Vim.lnk]
-</span><span class='line'>               3 个文件              0 字节
-</span><span class='line'>               2 个目录  9,673,441,280 可用字节
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>按照上面的操作[解决办法]，就可以通过<code>WIN + r</code>然后输入<code>git</code>打开<em>Git Shell</em>。</p>
-
-<p>本文所处理的问题，在Windows下有<strong>现成的工具</strong><a href="http://www.launchy.net/">Launcher</a>可以查找指定路径下的所有程序/文档。</p>
-
-<h2>其他快键</h2>
-
-<p>通过<code>WIN + ↑</code>可以最大化当前窗口。</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://xbeta.info/win-run.htm">最绿色最高效，用win+r启动常用程序和文档</a></li>
-</ul>
-
-
-<hr />
-
-<p><a href="http://winseliu.logdown.com/posts/2014/02/23/quickly-open-program-in-windows">【原文地址】</a></p>
 ]]></content>
   </entry>
   
