@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2014-09-04T14:42:55+08:00</updated>
+  <updated>2014-09-05T16:24:34+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -186,6 +186,56 @@ $#hive-site.xml
 <li><a href="http://www.geek521.com/?p=4814">深入学习《Programing Hive》：数据压缩</a></li>
 </ul>
 
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[[读码] Hadoop2 Balancer磁盘空间平衡（上）]]></title>
+    <link href="http://winse.github.io/blog/2014/08/06/read-hadoop-balancer-source-part1/"/>
+    <updated>2014-08-06T22:14:29+08:00</updated>
+    <id>http://winse.github.io/blog/2014/08/06/read-hadoop-balancer-source-part1</id>
+    <content type="html"><![CDATA[<h2>javadoc</h2>
+
+<p>在一些节点满了或者加入了新的节点情况下，使用balancer工具可以平衡HDFS集群磁盘空间使用率。该功能作为一个单独的程序，能同时与集群的其他文件操作一起进行。</p>
+
+<p>threshold（阀值）参数是个介于1%~100%的值，默认情况下是10%。指定了集群达到平衡的指标值。当节点的利用率（所在节点的磁盘使用率，只HDFS可利用的部分）与集群利用率（集群HDFS的使用率）之间的差不大于阀值threshold就表示集群已经处于平衡状态。所以，阀值threshold越小，集群各节点数据分布越平衡（集群越平衡），当然这也会耗费更多的时间来达到小的平衡阀值。同时，当数据同时又在进行读写操作时，可能平衡并不能达到非常小的阀值。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/95/wKhkA1QJH2uAa8UEAABq7RCSLQ0452.png" alt="" /></p>
+
+<p>这个工具依次地把磁盘使用率高的机器的块移动到使用率低的数据节点上。每次迭代移动/接受的数据小于10G或者节点容量的阀值百分比（In each iteration a datanode moves or receives no more than the lesser of 10G bytes or the threshold fraction of its capacity. ）。每次迭代不会大于20分钟。每次迭代完成后，balancer把数据节点信息更新到namenode，重新计算利用率后，再进行下一次迭代直到集群利用率阀值。</p>
+
+<p>配置<code>dfs.balance.bandwidthPerSec</code>控制balancer操作传输的带宽，默认配置是1048576（1M/s）这个属性决定了一个块从一个数据节点移动到另一个节点的最大速率。默认是1M/s。bandwidth越高集群达到平衡越快，但是程序之间的竞争会更激烈。如果通过配置文件来修改这个属性，需要在下次启动HDFS才能生效。可以通过<code>hdfs dfsadmin -setBalancerBandwidth 10485760</code>来动态的设置。</p>
+
+<p>每次迭代会输出开始时间，迭代的次数，上一次迭代移动的数据量，集群达到平衡还需要移动的数据量，该次迭代将移动的数据量。一般情况下，“Bytes Already Moved”将会增加同时“Bytes Left To Move”将会减少（但是如果此时有大数据量写入，那么Bytes Left To Move可能不减反增）。</p>
+
+<pre><code>Time Stamp               Iteration#  Bytes Already Moved  Bytes Left To Move  Bytes Being Moved
+</code></pre>
+
+<p>多个balancer程序不能同时运行。</p>
+
+<p>balancer程序会自动退出当存在以下情况：</p>
+
+<ul>
+<li>集群已经平衡</li>
+<li>没有块将会被移动</li>
+<li>连续5次的处理没有块移动</li>
+<li>连接namenode时出现IOException</li>
+<li>另一个balancer程序在跑</li>
+</ul>
+
+
+<p>根据上面的5中情况，balancer程序退出，同时会打印如下的信息：</p>
+
+<ul>
+<li>The cluster is balanced. Exiting</li>
+<li>No block can be moved. Exiting&hellip;</li>
+<li>No block has been moved for 5 iterations. Exiting&hellip;</li>
+<li>Received an IO exception: failure reason. Exiting&hellip;</li>
+<li>Another balancer is running. Exiting&hellip;</li>
+</ul>
+
+
+<p>当balancer运行时，管理员可以随时运行stop-balancer.sh来中断balancer程序。</p>
 ]]></content>
   </entry>
   
@@ -641,73 +691,6 @@ export HADOOP_HOME=/home/hadoop/hadoop-2.2.0
 <li><a href="http://archive.cloudera.com/cdh4/cdh/4/hadoop/hadoop-project-dist/hadoop-hdfs/ShortCircuitLocalReads.html">HDFS Short-Circuit Local Reads</a></li>
 </ul>
 
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop安全的关闭datanode节点]]></title>
-    <link href="http://winse.github.io/blog/2014/07/29/safely-remove-datanode/"/>
-    <updated>2014-07-29T15:08:41+08:00</updated>
-    <id>http://winse.github.io/blog/2014/07/29/safely-remove-datanode</id>
-    <content type="html"><![CDATA[<p>hadoop默认就有冗余（dfs.replication）的机制，所以一般情况下，一台机器挂了也没所谓。集群会自动的进行复制均衡处理。</p>
-
-<p>作为测试，如果dfs.replication设置为1的情况下，怎么安全的把datanode节点服务关闭呢？例如说，刚刚开始搭建环境是把namenode、datanode放在一台机器上，后面增加了机器如何把datanode分离出来呢？</p>
-
-<p>借助于<strong>dfs.hosts.exclude</strong>即可完成顺序的完成此项任务。</p>
-
-<p>修改hdfs-site.xml配置。我操作的时刻仅修改了master1上的hdfs-site.xml。把<strong>master1</strong>值写入到对应的文件中。</p>
-
-<pre><code>    [hadoop@master1 hadoop]$ cat hdfs-site.xml 
-    ...
-    &lt;property&gt;
-            &lt;name&gt;dfs.hosts.exclude&lt;/name&gt;
-            &lt;value&gt;/home/hadoop/hadoop-2.2.0/etc/hadoop/exclude&lt;/value&gt;
-    &lt;/property&gt;
-
-    &lt;/configuration&gt;
-    [hadoop@master1 hadoop]$ cat /home/hadoop/hadoop-2.2.0/etc/hadoop/exclude
-    master1
-</code></pre>
-
-<p>修改完成后，刷新节点即可(完全没有必要重启集dfs)。</p>
-
-<pre><code>hadoop dfsadmin -refreshNodes
-</code></pre>
-
-<p>可以通过<code>dfsadmin -report</code>或者网页查看master1已经变成<em>Decommission In Progress</em>了。</p>
-
-<p><img src="http://file.bmob.cn/M00/05/4C/wKhkA1PXUMOAVvvWAAED6CN-3Rg187.png" alt="" /></p>
-
-<p>注：</p>
-
-<p>问题一： 在新建节点是slaver1的防火墙没关闭，由于master1已经被exclude，而slaver1不能提供服务，上传文件时报错：</p>
-
-<pre><code>[hadoop@master1 hadoop]$ hadoop fs -put slaves  /
-14/07/29 15:18:21 WARN hdfs.DFSClient: DataStreamer Exception
-org.apache.hadoop.ipc.RemoteException(java.io.IOException): File /slaves._COPYING_ could only be replicated to 0 nodes instead of minReplication (=1).  There are 2 datanode(s) running and no node(s) are excluded in this operation.
-        at org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.chooseTarget(BlockManager.java:1384)
-        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getAdditionalBlock(FSNamesystem.java:2477)
-</code></pre>
-
-<p>关闭防火墙一样再次上传，还是报同样的错误。此时，也可以通过刷新节点<code>hadoop dfsadmin -refreshNodes</code>来解决。</p>
-
-<p>问题二： 设置备份数量</p>
-
-<pre><code>[hadoop@master1 hadoop]$ hadoop fs -setrep 3 /slaves 
-Replication 3 set: /slaves
-</code></pre>
-
-<p>问题三： 新增节点</p>
-
-<p>拷贝程序到新增节点，然后启动</p>
-
-<pre><code>[hadoop@master1 ~]$ tar zc hadoop-2.2.0 --exclude=logs | ssh slaver2 'cat | tar zx'
-
-[hadoop@slaver2 ~]$ cd hadoop-2.2.0/
-[hadoop@slaver2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start datanode
-</code></pre>
-
-<p>也可以修改master上的slavers文件再<code>sbin/start-dfs.sh</code>启动。</p>
 ]]></content>
   </entry>
   
