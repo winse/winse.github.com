@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2014-09-05T16:24:34+08:00</updated>
+  <updated>2014-09-05T17:10:30+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,247 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[[读码] Hadoop2 Balancer磁盘空间平衡（中）]]></title>
+    <link href="http://winse.github.io/blog/2014/09/05/read-hadoop-balancer-source-part2/"/>
+    <updated>2014-09-05T14:57:25+08:00</updated>
+    <id>http://winse.github.io/blog/2014/09/05/read-hadoop-balancer-source-part2</id>
+    <content type="html"><![CDATA[<h2>code</h2>
+
+<p>执行<code>hadoop-2.2.0/bin/hadoop balancer -h</code>查看可以设置的参数（和sbin/start-balancer.sh一样）。</p>
+
+<pre><code>Usage: java Balancer
+    [-policy &lt;policy&gt;]  the balancing policy: datanode or blockpool
+    [-threshold &lt;threshold&gt;]    Percentage of disk capacity
+</code></pre>
+
+<p>main方法入口，可以接受threshold（大于等于1小于等于100， 默认值10）和policy（可取datanode[dfsused]/blockpool[
+blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇中的javadoc的描述。</p>
+
+<p>然后通过ToolRunner解析参数，并运行Cli工具类来执行HDFS的平衡。</p>
+
+<h3>Cli类获取初始化参数</h3>
+
+<p>1 设置检查</p>
+
+<p><code>WIN_WIDTH</code>(默认1.5h) 已移动的数据会记录movedBlocks（list）变量中，在移动成功的数据<code>CUR_WIN</code>的值经过该<code>WIN_WIDTH</code>时间后会被移动到<code>OLD_WIN</code>&mdash;现在感觉作用不大，为了减少map的大小？</p>
+
+<p><code>checkReplicationPolicyCompatibility()</code>方法检查<code>dfs.block.replicator.classname</code>是否为BlockPlacementPolicyDefault子类：满足3份备份的策略（1st本地，2nd另一个rack，3rd和第二份拷贝不同rack的节点）？</p>
+
+<p>2 获取nameserviceuris</p>
+
+<p>通过<code>DFSUtil#getNsServiceRpcUris()</code>来获取namenodes URI的结果集：</p>
+
+<pre><code>+ nsId &lt;- dfs.nameservices
+  ? ha  &lt;- dfs.namenode.rpc-address + [dfs.nameservices] + [dfs.ha.namenodes]
+    Y+ =&gt; hdfs://nsId
+    N+ =&gt; hdfs://[dfs.namenode.servicerpc-address.[nsId]] 或 hdfs://[dfs.namenode.rpc-address.[nsId]] 第二个满足条件的加入到nonPreferredUris
++ hdfs://[dfs.namenode.servicerpc-address] 或 hdfs://[dfs.namenode.rpc-address]  第二个满足条件的加入到nonPreferredUris
+? [fs.defaultFs] 以hfds开头，且不在nonPreferredUris集合中
+</code></pre>
+
+<p>HA情况下的配置项可以查看<a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/HDFSHighAvailabilityWithQJM.html">官网的文档</a></p>
+
+<pre><code>dfs.nameservices
+dfs.ha.namenodes.[nameservice ID]
+dfs.namenode.rpc-address.[nameservice ID].[name node ID] 
+</code></pre>
+
+<p>3 解析threshold和policy参数</p>
+
+<p>默认值: <strong>BalancingPolicy.Node.INSTANCE, 10.0</strong>，打印的日志中也有该参数信息。</p>
+
+<pre><code>2014-09-05 10:55:12,183 INFO Balancer: Using a threshold of 1.0
+2014-09-05 10:55:12,186 INFO Balancer: namenodes = [hdfs://umcc97-44:9000]
+2014-09-05 10:55:12,186 INFO Balancer: p         = Balancer.Parameters[BalancingPolicy.Node, threshold=1.0]
+2014-09-05 10:55:13,744 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+2014-09-05 10:55:18,154 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.142:50010
+2014-09-05 10:55:18,249 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.144:50010
+2014-09-05 10:55:18,311 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.143:50010
+2014-09-05 10:55:18,319 INFO Balancer: 2 over-utilized: [Source[10.18.97.144:50010, utilization=8.288283273062705], Source[10.18.97.143:50010, utilization=8.302032354001554]]
+2014-09-05 10:55:18,320 INFO Balancer: 1 underutilized: [BalancerDatanode[10.18.97.142:50010, utilization=4.716543864576553]]
+</code></pre>
+
+<h3>执行Balancer</h3>
+
+<p>4 调用Balancer#run执行</p>
+
+<pre><code> export HADOOP_OPTS=" -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8087 "
+ sbin/start-balancer.sh 
+</code></pre>
+
+<p>Balancer的静态方法run，循环处理所有namenodes。实例化namenode的NameNodeConnector对象时，会把当前运行balancer程序的hostname写入到HDFS的<code>/system/balancer.id</code>文件中。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/96/wKhkA1QJJNqAXxeaAAAho0g2bEU520.png" alt="" /></p>
+
+<p>再就是实例化Balancer，并调用实例方法run来处理每个namenode的平衡。</p>
+
+<p>这里是一个双层循环，要么<strong>出错</strong>要么就是平衡<strong>顺利完成</strong>才算结束。run方法可能的返回状态值机器含义可以查看javadoc（上）篇。</p>
+
+<pre><code>      boolean done = false;
+      for(int iteration = 0; !done; iteration++) {
+        done = true;
+        Collections.shuffle(connectors);
+        for(NameNodeConnector nnc : connectors) {
+          final Balancer b = new Balancer(nnc, p, conf);
+          final ReturnStatus r = b.run(iteration, formatter, conf);
+          // clean all lists
+          b.resetData(conf);
+          if (r == ReturnStatus.IN_PROGRESS) {
+            done = false;
+          } else if (r != ReturnStatus.SUCCESS) {
+            //must be an error statue, return.
+            return r.code;
+          }
+        }
+
+        if (!done) {
+          Thread.sleep(sleeptime);
+        }
+      }
+</code></pre>
+
+<p>5 针对每个namenode的平衡处理</p>
+
+<p>针对每个namenode的每次迭代，又可以分出初始化节点、选择移动节点、移动/分发数据三个阶段。</p>
+
+<pre><code>  private ReturnStatus run(int iteration, Formatter formatter, Configuration conf) {
+...
+      final long bytesLeftToMove = initNodes(nnc.client.getDatanodeReport(DatanodeReportType.LIVE));
+      if (bytesLeftToMove == 0) {
+        System.out.println("The cluster is balanced. Exiting...");
+        return ReturnStatus.SUCCESS;
+      }
+
+      final long bytesToMove = chooseNodes();
+      if (bytesToMove == 0) {
+        System.out.println("No block can be moved. Exiting...");
+        return ReturnStatus.NO_MOVE_BLOCK;
+      }
+
+      if (!this.nnc.shouldContinue(dispatchBlockMoves())) {
+        return ReturnStatus.NO_MOVE_PROGRESS;
+      }
+
+      return ReturnStatus.IN_PROGRESS;
+...
+  }
+</code></pre>
+
+<p>5.1 初始化节点</p>
+
+<p>获取集群Live Datanode节点的信息（和通过50070网页呈现的信息差不多），然后调用initNode()方法。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/CE/wKhkA1QJfcSAIvuAAAAeoThXFMU356.png" alt="" /></p>
+
+<p><code>initNodes()</code>中获取每个Datanode的capacity和dfsUsed数据，计算整个集群dfs的平均使用率avgUtilization。
+然后根据每个节点的使用率与集群使用率，以及阀值进行比较划分为4种情况：
+<code>overUtilizedDatanodes</code>，<code>aboveAvgUtilizedDatanodes</code>，<code>belowAvgUtilizedDatanodes</code>，<code>underUtilizedDatanodes</code>。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/95/wKhkA1QJH2uAa8UEAABq7RCSLQ0452.png" alt="" /></p>
+
+<p>同时取<strong>超出平均+阀值</strong>和<strong>低于平均-阀值</strong>的字节数最大值，即集群达到平衡需要移动的字节数。</p>
+
+<hr />
+
+<p>为了测试，如果集群已经平衡，可以搞点数据让集群不平衡，方便查看调试。</p>
+
+<pre><code>bin/hadoop fs -D dfs.replication=1 -put XXXXX /abc
+
+sbin/start-balancer.sh -threshold 1
+</code></pre>
+
+<p>5.2 选择节点</p>
+
+<p>初始化节点后，同时计算出了需要移动的数据量。接下来就是选择移动数据的节点<code>chooseNodes</code>，以及接收对应数据的节点。</p>
+
+<pre><code>  private long chooseNodes() {
+    // First, match nodes on the same node group if cluster is node group aware
+    if (cluster.isNodeGroupAware()) {
+      chooseNodes(SAME_NODE_GROUP);
+    }
+
+    chooseNodes(SAME_RACK);
+    chooseNodes(ANY_OTHER);
+
+    long bytesToMove = 0L;
+    for (Source src : sources) {
+      bytesToMove += src.scheduledSize;
+    }
+    return bytesToMove;
+  }
+  private void chooseNodes(final Matcher matcher) {
+    chooseDatanodes(overUtilizedDatanodes, underUtilizedDatanodes, matcher);
+    chooseDatanodes(overUtilizedDatanodes, belowAvgUtilizedDatanodes, matcher);
+    chooseDatanodes(underUtilizedDatanodes, aboveAvgUtilizedDatanodes, matcher);
+  }
+
+  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt; void 
+      chooseDatanodes(Collection&lt;D&gt; datanodes, Collection&lt;C&gt; candidates,
+          Matcher matcher) {
+    for (Iterator&lt;D&gt; i = datanodes.iterator(); i.hasNext();) {
+      final D datanode = i.next();
+      for(; chooseForOneDatanode(datanode, candidates, matcher); );
+      if (!datanode.hasSpaceForScheduling()) {
+        i.remove(); // “超出”部分全部有去处了
+      }
+    }
+  }
+
+  private &lt;C extends BalancerDatanode&gt; boolean chooseForOneDatanode(
+      BalancerDatanode dn, Collection&lt;C&gt; candidates, Matcher matcher) {
+    final Iterator&lt;C&gt; i = candidates.iterator();
+    final C chosen = chooseCandidate(dn, i, matcher);
+
+    if (chosen == null) {
+      return false;
+    }
+    if (dn instanceof Source) {
+      matchSourceWithTargetToMove((Source)dn, chosen);
+    } else {
+      matchSourceWithTargetToMove((Source)chosen, dn);
+    }
+    if (!chosen.hasSpaceForScheduling()) {
+      i.remove(); // 可用的空间已经全部分配出去了
+    }
+    return true;
+  }
+
+  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt;
+      C chooseCandidate(D dn, Iterator&lt;C&gt; candidates, Matcher matcher) {
+    if (dn.hasSpaceForScheduling()) {
+      for(; candidates.hasNext(); ) {
+        final C c = candidates.next();
+        if (!c.hasSpaceForScheduling()) {
+          candidates.remove();
+        } else if (matcher.match(cluster, dn.getDatanode(), c.getDatanode())) {
+          return c;
+        }
+      }
+    }
+    return null;
+  }  
+</code></pre>
+
+<p>选择到<strong>接收节点</strong>后，接下来计算可以移动的数据量（取双方的available的最小值），然后把<strong>接收节点</strong>和<strong>数据量</strong>的信息NodeTask存储到需移动数据节点Source的NodeTasks对象中。</p>
+
+<pre><code>  private void matchSourceWithTargetToMove(
+      Source source, BalancerDatanode target) {
+    long size = Math.min(source.availableSizeToMove(), target.availableSizeToMove());
+    NodeTask nodeTask = new NodeTask(target, size);
+    source.addNodeTask(nodeTask);
+    target.incScheduledSize(nodeTask.getSize());
+    sources.add(source);
+    targets.add(target);
+  }
+</code></pre>
+
+<p>5.3 移动数据</p>
+
+<p>（待）</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Hadoop2 Mapreduce输入输出压缩]]></title>
@@ -620,77 +861,6 @@ export HADOOP_CLASSPATH=.
 # snappyfile on hdfs
 hadoop DecompressTest /user/hive/t_ods_access_log2/month=201408/day=20140828/hour=2014082808/t_ods_access_log2-2014082808.our.snappy.1409187524328
 </code></pre>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop2 ShortCircuit Local Reading]]></title>
-    <link href="http://winse.github.io/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/"/>
-    <updated>2014-07-29T20:11:58+08:00</updated>
-    <id>http://winse.github.io/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading</id>
-    <content type="html"><![CDATA[<p>hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白，最终大致就是通过linux的<strong>文件描述符</strong>来实现功能同时保证文件的权限。</p>
-
-<p>由于仅在自己的机器上面配置来查询hbase的数据，性能方面提升感觉不是很明显。等以后整到正式环境再对比对比。</p>
-
-<p>配置如下。</p>
-
-<p>1 修改hdfs-site.xml</p>
-
-<pre><code>&lt;property&gt;
-        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
-        &lt;value&gt;true&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
-        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
-&lt;/property&gt;
-</code></pre>
-
-<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的写权限，要么仅root可写。</p>
-
-<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png" alt="" /></p>
-
-<p>2 修改hbase的配置，并添加HADOOP_HOME（hbase查找hadoop-native）</p>
-
-<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXhRKAZDs6AAChrEauBoU738.png" alt="" /></p>
-
-<p>hbase的脚本找到hadoop命令后，会把hadoop的java.library.path的路径加入到hbase的启动脚本中。</p>
-
-<pre><code>[hadoop@master1 ~]$ tail -15 hbase-0.98.3-hadoop2/conf/hbase-site.xml 
-    &lt;name&gt;hbase.tmp.dir&lt;/name&gt;
-    &lt;value&gt;/home/hadoop/data/hbase&lt;/value&gt;
-  &lt;/property&gt;
-
-&lt;property&gt;
-        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
-        &lt;value&gt;true&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
-        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;/configuration&gt;
-
-[hadoop@master1 ~]$ cat hbase-0.98.3-hadoop2/conf/hbase-env.sh
-...
-export HADOOP_HOME=/home/hadoop/hadoop-2.2.0
-...
-</code></pre>
-
-<p>3 同步到其他节点，然后重启hdfs,hbase</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://vdisk.weibo.com/s/z_44nz36hNM3Z">hive-tuning</a></li>
-<li><a href="http://blog.cloudera.com/blog/2013/08/how-improved-short-circuit-local-reads-bring-better-performance-and-security-to-hadoop/">How Improved Short-Circuit Local Reads Bring Better Performance and Security to Hadoop</a></li>
-<li><a href="http://hbase.apache.org/book/perf.hdfs.html">HDFS&ndash;Apache HBase Performance Tuning</a></li>
-<li><a href="http://archive.cloudera.com/cdh4/cdh/4/hadoop/hadoop-project-dist/hadoop-hdfs/ShortCircuitLocalReads.html">HDFS Short-Circuit Local Reads</a></li>
-</ul>
-
 ]]></content>
   </entry>
   

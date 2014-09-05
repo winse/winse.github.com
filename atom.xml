@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winse.github.io/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2014-09-05T16:24:34+08:00</updated>
+  <updated>2014-09-05T17:10:30+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,394 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[[读码] Hadoop2 Balancer磁盘空间平衡（中）]]></title>
+    <link href="http://winse.github.io/blog/2014/09/05/read-hadoop-balancer-source-part2/"/>
+    <updated>2014-09-05T14:57:25+08:00</updated>
+    <id>http://winse.github.io/blog/2014/09/05/read-hadoop-balancer-source-part2</id>
+    <content type="html"><![CDATA[<h2>code</h2>
+
+<p>执行<code>hadoop-2.2.0/bin/hadoop balancer -h</code>查看可以设置的参数（和sbin/start-balancer.sh一样）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Usage: java Balancer
+</span><span class='line'>  [-policy &lt;policy&gt;]    the balancing policy: datanode or blockpool
+</span><span class='line'>  [-threshold &lt;threshold&gt;]  Percentage of disk capacity</span></code></pre></td></tr></table></div></figure>
+
+
+<p>main方法入口，可以接受threshold（大于等于1小于等于100， 默认值10）和policy（可取datanode[dfsused]/blockpool[
+blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇中的javadoc的描述。</p>
+
+<p>然后通过ToolRunner解析参数，并运行Cli工具类来执行HDFS的平衡。</p>
+
+<h3>Cli类获取初始化参数</h3>
+
+<p>1 设置检查</p>
+
+<p><code>WIN_WIDTH</code>(默认1.5h) 已移动的数据会记录movedBlocks（list）变量中，在移动成功的数据<code>CUR_WIN</code>的值经过该<code>WIN_WIDTH</code>时间后会被移动到<code>OLD_WIN</code>&mdash;现在感觉作用不大，为了减少map的大小？</p>
+
+<p><code>checkReplicationPolicyCompatibility()</code>方法检查<code>dfs.block.replicator.classname</code>是否为BlockPlacementPolicyDefault子类：满足3份备份的策略（1st本地，2nd另一个rack，3rd和第二份拷贝不同rack的节点）？</p>
+
+<p>2 获取nameserviceuris</p>
+
+<p>通过<code>DFSUtil#getNsServiceRpcUris()</code>来获取namenodes URI的结果集：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>+ nsId &lt;- dfs.nameservices
+</span><span class='line'>  ? ha  &lt;- dfs.namenode.rpc-address + [dfs.nameservices] + [dfs.ha.namenodes]
+</span><span class='line'>    Y+ =&gt; hdfs://nsId
+</span><span class='line'>    N+ =&gt; hdfs://[dfs.namenode.servicerpc-address.[nsId]] 或 hdfs://[dfs.namenode.rpc-address.[nsId]] 第二个满足条件的加入到nonPreferredUris
+</span><span class='line'>+ hdfs://[dfs.namenode.servicerpc-address] 或 hdfs://[dfs.namenode.rpc-address]  第二个满足条件的加入到nonPreferredUris
+</span><span class='line'>? [fs.defaultFs] 以hfds开头，且不在nonPreferredUris集合中</span></code></pre></td></tr></table></div></figure>
+
+
+<p>HA情况下的配置项可以查看<a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/HDFSHighAvailabilityWithQJM.html">官网的文档</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>dfs.nameservices
+</span><span class='line'>dfs.ha.namenodes.[nameservice ID]
+</span><span class='line'>dfs.namenode.rpc-address.[nameservice ID].[name node ID] </span></code></pre></td></tr></table></div></figure>
+
+
+<p>3 解析threshold和policy参数</p>
+
+<p>默认值: <strong>BalancingPolicy.Node.INSTANCE, 10.0</strong>，打印的日志中也有该参数信息。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2014-09-05 10:55:12,183 INFO Balancer: Using a threshold of 1.0
+</span><span class='line'>2014-09-05 10:55:12,186 INFO Balancer: namenodes = [hdfs://umcc97-44:9000]
+</span><span class='line'>2014-09-05 10:55:12,186 INFO Balancer: p         = Balancer.Parameters[BalancingPolicy.Node, threshold=1.0]
+</span><span class='line'>2014-09-05 10:55:13,744 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>2014-09-05 10:55:18,154 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.142:50010
+</span><span class='line'>2014-09-05 10:55:18,249 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.144:50010
+</span><span class='line'>2014-09-05 10:55:18,311 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.143:50010
+</span><span class='line'>2014-09-05 10:55:18,319 INFO Balancer: 2 over-utilized: [Source[10.18.97.144:50010, utilization=8.288283273062705], Source[10.18.97.143:50010, utilization=8.302032354001554]]
+</span><span class='line'>2014-09-05 10:55:18,320 INFO Balancer: 1 underutilized: [BalancerDatanode[10.18.97.142:50010, utilization=4.716543864576553]]</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>执行Balancer</h3>
+
+<p>4 调用Balancer#run执行</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'> export HADOOP_OPTS=" -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8087 "
+</span><span class='line'> sbin/start-balancer.sh </span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>Balancer的静态方法run，循环处理所有namenodes。实例化namenode的NameNodeConnector对象时，会把当前运行balancer程序的hostname写入到HDFS的<code>/system/balancer.id</code>文件中。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/96/wKhkA1QJJNqAXxeaAAAho0g2bEU520.png" alt="" /></p>
+
+<p>再就是实例化Balancer，并调用实例方法run来处理每个namenode的平衡。</p>
+
+<p>这里是一个双层循环，要么<strong>出错</strong>要么就是平衡<strong>顺利完成</strong>才算结束。run方法可能的返回状态值机器含义可以查看javadoc（上）篇。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  boolean done = false;
+</span><span class='line'>  for(int iteration = 0; !done; iteration++) {
+</span><span class='line'>    done = true;
+</span><span class='line'>    Collections.shuffle(connectors);
+</span><span class='line'>    for(NameNodeConnector nnc : connectors) {
+</span><span class='line'>      final Balancer b = new Balancer(nnc, p, conf);
+</span><span class='line'>      final ReturnStatus r = b.run(iteration, formatter, conf);
+</span><span class='line'>      // clean all lists
+</span><span class='line'>      b.resetData(conf);
+</span><span class='line'>      if (r == ReturnStatus.IN_PROGRESS) {
+</span><span class='line'>        done = false;
+</span><span class='line'>      } else if (r != ReturnStatus.SUCCESS) {
+</span><span class='line'>        //must be an error statue, return.
+</span><span class='line'>        return r.code;
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    if (!done) {
+</span><span class='line'>      Thread.sleep(sleeptime);
+</span><span class='line'>    }
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5 针对每个namenode的平衡处理</p>
+
+<p>针对每个namenode的每次迭代，又可以分出初始化节点、选择移动节点、移动/分发数据三个阶段。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private ReturnStatus run(int iteration, Formatter formatter, Configuration conf) {
+</span><span class='line'>...
+</span><span class='line'>      final long bytesLeftToMove = initNodes(nnc.client.getDatanodeReport(DatanodeReportType.LIVE));
+</span><span class='line'>      if (bytesLeftToMove == 0) {
+</span><span class='line'>        System.out.println("The cluster is balanced. Exiting...");
+</span><span class='line'>        return ReturnStatus.SUCCESS;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      final long bytesToMove = chooseNodes();
+</span><span class='line'>      if (bytesToMove == 0) {
+</span><span class='line'>        System.out.println("No block can be moved. Exiting...");
+</span><span class='line'>        return ReturnStatus.NO_MOVE_BLOCK;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      if (!this.nnc.shouldContinue(dispatchBlockMoves())) {
+</span><span class='line'>        return ReturnStatus.NO_MOVE_PROGRESS;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      return ReturnStatus.IN_PROGRESS;
+</span><span class='line'>...
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>5.1 初始化节点</p>
+
+<p>获取集群Live Datanode节点的信息（和通过50070网页呈现的信息差不多），然后调用initNode()方法。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/CE/wKhkA1QJfcSAIvuAAAAeoThXFMU356.png" alt="" /></p>
+
+<p><code>initNodes()</code>中获取每个Datanode的capacity和dfsUsed数据，计算整个集群dfs的平均使用率avgUtilization。
+然后根据每个节点的使用率与集群使用率，以及阀值进行比较划分为4种情况：
+<code>overUtilizedDatanodes</code>，<code>aboveAvgUtilizedDatanodes</code>，<code>belowAvgUtilizedDatanodes</code>，<code>underUtilizedDatanodes</code>。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/95/wKhkA1QJH2uAa8UEAABq7RCSLQ0452.png" alt="" /></p>
+
+<p>同时取<strong>超出平均+阀值</strong>和<strong>低于平均-阀值</strong>的字节数最大值，即集群达到平衡需要移动的字节数。</p>
+
+<hr />
+
+<p>为了测试，如果集群已经平衡，可以搞点数据让集群不平衡，方便查看调试。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>bin/hadoop fs -D dfs.replication=1 -put XXXXX /abc
+</span><span class='line'>
+</span><span class='line'>sbin/start-balancer.sh -threshold 1</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5.2 选择节点</p>
+
+<p>初始化节点后，同时计算出了需要移动的数据量。接下来就是选择移动数据的节点<code>chooseNodes</code>，以及接收对应数据的节点。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private long chooseNodes() {
+</span><span class='line'>    // First, match nodes on the same node group if cluster is node group aware
+</span><span class='line'>    if (cluster.isNodeGroupAware()) {
+</span><span class='line'>      chooseNodes(SAME_NODE_GROUP);
+</span><span class='line'>    }
+</span><span class='line'>    
+</span><span class='line'>    chooseNodes(SAME_RACK);
+</span><span class='line'>    chooseNodes(ANY_OTHER);
+</span><span class='line'>
+</span><span class='line'>    long bytesToMove = 0L;
+</span><span class='line'>    for (Source src : sources) {
+</span><span class='line'>      bytesToMove += src.scheduledSize;
+</span><span class='line'>    }
+</span><span class='line'>    return bytesToMove;
+</span><span class='line'>  }
+</span><span class='line'>  private void chooseNodes(final Matcher matcher) {
+</span><span class='line'>    chooseDatanodes(overUtilizedDatanodes, underUtilizedDatanodes, matcher);
+</span><span class='line'>    chooseDatanodes(overUtilizedDatanodes, belowAvgUtilizedDatanodes, matcher);
+</span><span class='line'>    chooseDatanodes(underUtilizedDatanodes, aboveAvgUtilizedDatanodes, matcher);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt; void 
+</span><span class='line'>      chooseDatanodes(Collection&lt;D&gt; datanodes, Collection&lt;C&gt; candidates,
+</span><span class='line'>          Matcher matcher) {
+</span><span class='line'>    for (Iterator&lt;D&gt; i = datanodes.iterator(); i.hasNext();) {
+</span><span class='line'>      final D datanode = i.next();
+</span><span class='line'>      for(; chooseForOneDatanode(datanode, candidates, matcher); );
+</span><span class='line'>      if (!datanode.hasSpaceForScheduling()) {
+</span><span class='line'>        i.remove(); // “超出”部分全部有去处了
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;C extends BalancerDatanode&gt; boolean chooseForOneDatanode(
+</span><span class='line'>      BalancerDatanode dn, Collection&lt;C&gt; candidates, Matcher matcher) {
+</span><span class='line'>    final Iterator&lt;C&gt; i = candidates.iterator();
+</span><span class='line'>    final C chosen = chooseCandidate(dn, i, matcher);
+</span><span class='line'>
+</span><span class='line'>    if (chosen == null) {
+</span><span class='line'>      return false;
+</span><span class='line'>    }
+</span><span class='line'>    if (dn instanceof Source) {
+</span><span class='line'>      matchSourceWithTargetToMove((Source)dn, chosen);
+</span><span class='line'>    } else {
+</span><span class='line'>      matchSourceWithTargetToMove((Source)chosen, dn);
+</span><span class='line'>    }
+</span><span class='line'>    if (!chosen.hasSpaceForScheduling()) {
+</span><span class='line'>      i.remove(); // 可用的空间已经全部分配出去了
+</span><span class='line'>    }
+</span><span class='line'>    return true;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt;
+</span><span class='line'>      C chooseCandidate(D dn, Iterator&lt;C&gt; candidates, Matcher matcher) {
+</span><span class='line'>    if (dn.hasSpaceForScheduling()) {
+</span><span class='line'>      for(; candidates.hasNext(); ) {
+</span><span class='line'>        final C c = candidates.next();
+</span><span class='line'>        if (!c.hasSpaceForScheduling()) {
+</span><span class='line'>          candidates.remove();
+</span><span class='line'>        } else if (matcher.match(cluster, dn.getDatanode(), c.getDatanode())) {
+</span><span class='line'>          return c;
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>    return null;
+</span><span class='line'>  }  </span></code></pre></td></tr></table></div></figure>
+
+
+<p>选择到<strong>接收节点</strong>后，接下来计算可以移动的数据量（取双方的available的最小值），然后把<strong>接收节点</strong>和<strong>数据量</strong>的信息NodeTask存储到需移动数据节点Source的NodeTasks对象中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private void matchSourceWithTargetToMove(
+</span><span class='line'>      Source source, BalancerDatanode target) {
+</span><span class='line'>    long size = Math.min(source.availableSizeToMove(), target.availableSizeToMove());
+</span><span class='line'>    NodeTask nodeTask = new NodeTask(target, size);
+</span><span class='line'>    source.addNodeTask(nodeTask);
+</span><span class='line'>    target.incScheduledSize(nodeTask.getSize());
+</span><span class='line'>    sources.add(source);
+</span><span class='line'>    targets.add(target);
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5.3 移动数据</p>
+
+<p>（待）</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[计算出从1到100之间所有奇数的平方之和]]></title>
@@ -6874,990 +7262,6 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 </pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu ~/hadoop
 </span><span class='line'>$ ssh localhost
 </span><span class='line'>ssh_exchange_identification: read: Connection reset by peer</span></code></pre></td></tr></table></div></figure>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[GIT操作记录手册]]></title>
-    <link href="http://winse.github.io/blog/2014/03/30/git-cheatsheet/"/>
-    <updated>2014-03-30T22:15:11+08:00</updated>
-    <id>http://winse.github.io/blog/2014/03/30/git-cheatsheet</id>
-    <content type="html"><![CDATA[<p>Git的每次提交都有一个<strong>唯一的ID</strong>与之对应，所有的TAG/Branch/Master/HEAD等等，都是一个<strong>软链接/别名</strong>而已！这个是理解好Git的基础！</p>
-
-<h2>提交最佳实践</h2>
-
-<ul>
-<li>commit 只改一件事情。</li>
-<li>如果一个文档有多个变更，使用<code>git add --patch</code>只选择文档中的<strong>部分变更</strong>进入stage。具体怎么使用，键入命令后在输入<code>?</code></li>
-<li>写清楚 commit message</li>
-</ul>
-
-
-<h2>配置</h2>
-
-<h3>内建的图形化 git：</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>gitk</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>git服务器</h3>
-
-<p>搭建git服务器也很方便，有很多web-server的版本，我试用了下<a href="http://www.scm-manager.org/download/">scm-manager</a>使用挺简单的！
-如果已经有了SVN的服务器，可以直接使用git-svn检出到本地！！</p>
-
-<h3>配置环境</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git config --global user.email "XXX"
-</span><span class='line'>git config --global user.name "XXX"</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>换行（\r\n）提交检出均不转换</h3>
-
-<p>基本上都在windows操作系统上工作，不需要进行转换！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git config --global core.autocrlf false</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>true 提交时转换为LF，检出时转换为CRLF</li>
-<li>input 提交时转换为LF，检出时不转换</li>
-<li>false 提交检出均不转换</li>
-</ul>
-
-
-<h3>core.safecrlf</h3>
-
-<ul>
-<li>true 拒绝提交包含混合换行符的文件</li>
-<li>false 允许提交包含混合换行符的文件</li>
-<li>warn 提交包含混合换行符的文件时给出警告</li>
-</ul>
-
-
-<h3>默认分支</h3>
-
-<p>.git/config如下的内容：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[branch "master"]
-</span><span class='line'>    remote = origin
-</span><span class='line'>    merge = refs/heads/master</span></code></pre></td></tr></table></div></figure>
-
-
-<p>这等于告诉git两件事:
-1. 当你处于master branch, 默认的remote就是origin。
-2. 当你在master branch上使用git pull时，没有指定remote和branch，那么git就会采用默认的remote（也就是origin）来merge在master branch上所有的改变</p>
-
-<p>如果不想或者不会编辑config文件的话，可以在bush上输入如下命令行：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ git config branch.master.remote origin 
-</span><span class='line'>$ git config branch.master.merge refs/heads/master </span></code></pre></td></tr></table></div></figure>
-
-
-<p>之后再重新git pull下。最后git push你的代码，到此步顺利完成时，则可以在Github上看到你新建的仓库以及你提交到仓库中文件了OK。</p>
-
-<h3>修改默认Git编辑器</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ git config core.editor vim
-</span><span class='line'>
-</span><span class='line'>$ git config --global core.editor vi</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>常用基本操作</h2>
-
-<table>
-<thead>
-<tr>
-<th style="text-align:left;"> 操作                                          </th>
-<th style="text-align:left;"> 说明</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align:left;"> git init                                      </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git init &ndash;bare                               </td>
-<td style="text-align:left;"> 服务端使用bare（空架子，赤裸）的方式</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git status                                    </td>
-<td style="text-align:left;"> 使用git打的最多的就是status命令，查看状态的同时会提示下一步的操作！</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git diff                                      </td>
-<td style="text-align:left;"> 工作空间和index/stage进行对比</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git diff &ndash;cached                             </td>
-<td style="text-align:left;"> index/stage与本地仓库进行对比</td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>增加到变更(index/stage)</strong>                    </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git add .                                     </td>
-<td style="text-align:left;"> 将当前目录添加到git仓库中，常用命令！</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git add -A                                    </td>
-<td style="text-align:left;"> 添加所有改动的文档</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git add -u                                    </td>
-<td style="text-align:left;"> 只加修改过的文件,新增的文件不加入</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git rm &ndash;cached <file>&hellip;                     </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>添加到本地库</strong>                               </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git commit                                    </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git commit -m &ldquo;msg&rdquo;                           </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git commit -a                                 </td>
-<td style="text-align:left;"> -a是把所有的修改的（tracked）文件都commit</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git commit &ndash;amend -m &ldquo;commit message.&rdquo;       </td>
-<td style="text-align:left;"> 未push到远程分支的提交，快捷的回退再提交。修补提交（修补最近一次的提交而不创建新的提交），可结合git add使用！</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git commit -v                                 </td>
-<td style="text-align:left;"> -v 可以看到文件哪些内容被修改</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git commit -m &lsquo;v1.2.0-final&rsquo; &ndash;allow-empty    </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git reset                                     </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git reset HEAD^                               </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git reset &ndash;hard HEAD^                        </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git checkout file                             </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git checkout &ndash;orphan <branchname>; git rm &ndash;cached -r . </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git rebase                                    </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git merge                                     </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>日志</strong>                                       </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log                                       </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;oneline &ndash;decorate &ndash;graph          </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;stat                                </td>
-<td style="text-align:left;"> 查看提交信息及更新的文件</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;stat -p -1 &ndash;format=raw             </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log -3 <file-name>                        </td>
-<td style="text-align:left;"> 文件的最近3次提交的历史版本记录</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;stat -2                             </td>
-<td style="text-align:left;"> 查看最近两次的提交描述及修改文件信息</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log -p -2                                 </td>
-<td style="text-align:left;"> 展开显示每次提交的内容差异，类似git show功能</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;name-status                         </td>
-<td style="text-align:left;"> 仅显示文件的D/M/A的状态</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;summary                             </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;dirstat -5                          </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;pretty=format:&ldquo;%h %s&rdquo; &ndash;graph       </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git log &ndash;pretty=oneline                      </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git reflog                                    </td>
-<td style="text-align:left;"> 查看本地操作历史。 ref log</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git show                                      </td>
-<td style="text-align:left;"> 查看某版本文件的内容，版本库中最新提交的diff！</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git show master:index.md                      </td>
-<td style="text-align:left;"> 查看历史版本的文件内容</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git show &lt;哈希值:文件目录/文件>               </td>
-<td style="text-align:left;"> 查看内容</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git cat-file                                  </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>分支</strong>                                       </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git branch                                    </td>
-<td style="text-align:left;"> 查看本地分支</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git branch <branch>                           </td>
-<td style="text-align:left;"> 添加新分支，新分支创建后不会自动切换！！</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git branch &ndash;set-upstream branch-name origin/branch-name      </td>
-<td style="text-align:left;"> * 建立本地分支和远程分支的关联</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git branch -a                                 </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git branch &ndash;list &ndash;merged                    </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git branch -r                                 </td>
-<td style="text-align:left;"> 查看远程分支</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git checkout &ndash;orphan <new-branch>            </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git checkout <branch>                         </td>
-<td style="text-align:left;"> 切换分支</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git checkout -b [new_branch_name]             </td>
-<td style="text-align:left;"> 创建新分支并立即切换到新分支。git checkout -b branch-name origin/branch-name，本地和远程分支的名称最好一致</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git branch -d branch_name                     </td>
-<td style="text-align:left;"> -d选项只能删除已经参与了合并的分支，对于未有合并的分支是无法删除的。如果想强制删除一个分支，可以使用-D选项</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git branch -d -r remote_name/branch_name      </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git merge origin/local-branch                 </td>
-<td style="text-align:left;"> 本地分支与主分支合并</td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>推/拉</strong>                                      </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git pull                                      </td>
-<td style="text-align:left;"> * 等价于git fetch &amp;&amp; git merge</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git fetch                                     </td>
-<td style="text-align:left;"> 先把git的东西fetch到你本地然后merge后再push</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push &ndash;rebase                             </td>
-<td style="text-align:left;"> *</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push                                      </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push &ndash;set-upstream origin <branch>       </td>
-<td style="text-align:left;"> To push the current branch and set the remote as upstream</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push origin branch-name                   </td>
-<td style="text-align:left;"> 创建远程分支(本地分支push到远程)，从本地推送分支。如果推送失败，先用git pull抓取远程的新提交</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push -u origin master                     </td>
-<td style="text-align:left;"> 将代码从本地回传到仓库</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push origin test:master                   </td>
-<td style="text-align:left;"> 提交本地test分支作为远程的master分支</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push -f                                   </td>
-<td style="text-align:left;"> * 强推(&ndash;force)，即利用强覆盖方式用你本地的代码替代git仓库内的内容，这种方式不建议使用。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git pull [remoteName] [localBranchName]       </td>
-<td style="text-align:left;"> 获取远程版本库提交与本地提交进行合并</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push [remoteName] [localBranchName]       </td>
-<td style="text-align:left;"> 提交、推送远程仓库</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push &ndash;tags                               </td>
-<td style="text-align:left;"> 提交时带上标签信息</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push <git-url> master                     </td>
-<td style="text-align:left;"> 把本地仓库提交到远程仓库的master分支中</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push origin :branch_name                  </td>
-<td style="text-align:left;"> 删除远端分支,(如果:左边的分支为空，那么将删除:右边的远程的分支。)远程的test将被删除，但是本地还会保存的，不用担心。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git push origin :/refs/tags/tagname           </td>
-<td style="text-align:left;"> 删除远端标签</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git clone <a href="http://path/to/git.git">http://path/to/git.git</a>              </td>
-<td style="text-align:left;"> clone的内容会放在当前目录下的新目录</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git clone &ndash;branch <remote-branch> <git-url>  </td>
-<td style="text-align:left;"> 获取指定分支，检出远程版本的分支。 git clone &ndash;branch unity /d/winsegit/hello helloclone</td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>TAG</strong>                                        </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git tag                                       </td>
-<td style="text-align:left;"> 查看标签</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git tag <tag>                                 </td>
-<td style="text-align:left;"> 添加标签</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git tag -d <tag>                              </td>
-<td style="text-align:left;"> 删除标签</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git tag -r                                    </td>
-<td style="text-align:left;"> 查看远程标签</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git show <tag>                                </td>
-<td style="text-align:left;"> 查看标签的信息</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git tag -a <tag> <msg>                        </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>REMOTE</strong>                                     </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git remote [show]                             </td>
-<td style="text-align:left;"> 查看远程仓库</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git remote -v                                 </td>
-<td style="text-align:left;"> 查看远程仓库</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git remote add [name] [url]                   </td>
-<td style="text-align:left;"> 添加远程仓库</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git remote set-url &ndash;push[name][newUrl]       </td>
-<td style="text-align:left;"> 修改远程仓库</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git remote show origin                        </td>
-<td style="text-align:left;"> 远程库origin的详细信息。缺省值推送分支，有哪些远端分支还没有同步到本地，哪些已同步到本地的远端分支在远端服务器上已被删除，git pull 时将自动合并哪些分支！</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git remote show <remote-name>                 </td>
-<td style="text-align:left;"> 远程版本信息查看</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git remote add origin <git-url>               </td>
-<td style="text-align:left;"> 设置仓库</td>
-</tr>
-<tr>
-<td style="text-align:left;"> git remote rm [name]                          </td>
-<td style="text-align:left;"> 删除远程仓库</td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>文件列表</strong>                                   </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;">git ls-tree &ndash;name-only  -rt <SHA-ID></td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"><strong>打包</strong>                                       </td>
-<td></td>
-</tr>
-<tr>
-<td style="text-align:left;"> git archive &ndash;format tar &ndash;output <tar> master</td>
-<td style="text-align:left;"> 将 master以tar格式打包到指定文件</td>
-</tr>
-</tbody>
-</table>
-
-
-<h2>按功能点完整的操作步骤</h2>
-
-<h3>查看指定版本文件内容</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@WINSELIU /e/git/hello (master)
-</span><span class='line'>$ git ls-tree master
-</span><span class='line'>100644 blob 139b30f9054cf77bd2eeabcebaf6ca3f32cd1d50    abc
-</span><span class='line'>
-</span><span class='line'>Administrator@WINSELIU /e/git/hello (master)
-</span><span class='line'>$ git cat-file -p 139b30f9054cf77bd2eeabcebaf6ca3f32cd1d50</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>查看提交版本的指定文件内容</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git log abc  # 获取文件提交ID
-</span><span class='line'>git cat-file -p &lt;commit-id&gt;  # 获取treeID
-</span><span class='line'>git cat-file -p &lt;tree-id&gt;  # 获取当前tree的列表
-</span><span class='line'>git cat-file -p &lt;file-blob-id&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>根据格式输出日志</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ git log --pretty=oneline
-</span><span class='line'>$ git log --pretty=short
-</span><span class='line'>$ git log --pretty=format:'%h was %an, %ar, message: %s'
-</span><span class='line'>$ git log --pretty=format:'%h : %s' --graph
-</span><span class='line'>$ git log --pretty=format:'%h : %s' --topo-order --graph
-</span><span class='line'>$ git log --pretty=format:'%h : %s' --date-order --graph</span></code></pre></td></tr></table></div></figure>
-
-
-<p>你也可用‘medium&#8217;,&lsquo;full&rsquo;,&lsquo;fuller&rsquo;,&lsquo;email&rsquo; 或‘raw&#8217;. 如果这些格式不完全符合你的相求， 你也可以用‘&ndash;pretty=format&#8217;参数(参见：git log)来创建你自己的&#8221;格式“.</p>
-
-<h3>本地提交后再次修改</h3>
-
-<p><strong>修改注释</strong></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git commit --amend </span></code></pre></td></tr></table></div></figure>
-
-
-<p><strong>内容修改</strong></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'> # edit file
-</span><span class='line'>git add file
-</span><span class='line'>git commit --amend</span></code></pre></td></tr></table></div></figure>
-
-
-<p><strong>提交了不该提交的，并撤回</strong></p>
-
-<p>刚刚提交的不完整，想修改一些东西，加到刚才的提交中</p>
-
-<p>commit -> modify -> add -> amend</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git reset HEAD^
-</span><span class='line'>git status
-</span><span class='line'>cat abc
-</span><span class='line'>git diff
-</span><span class='line'>git commit -a -m "for test reset"
-</span><span class='line'>git log
-</span><span class='line'>git diff
-</span><span class='line'>
-</span><span class='line'>vi abc
-</span><span class='line'>git add abc
-</span><span class='line'>git commit --amend
-</span><span class='line'>
-</span><span class='line'>git status
-</span><span class='line'>git diff
-</span><span class='line'>git show master:abc
-</span><span class='line'>git log</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>没有push到远程库的提交，本地可以做的事情</h3>
-
-<ul>
-<li>git reset: 用于回溯，回到原来的提交节点，多次提交合并为一个</li>
-<li>git rebase <origin>：在origin分支的基础上，合并当前分支上的提交，形成线性提交历史。 会把当前分支的提交保存为patch，然后切到origin分支应用patch，形成线性的提交，common-origin-current。</li>
-</ul>
-
-
-<p>rebase冲突处理时，使用git add &amp;&amp; git rebase &ndash;continue。如果你使用了git add &amp;&amp; git commit，那么当前冲突使用git rebase &ndash;skip即可。</p>
-
-<h3>处理本地和服务器之间冲突的方式</h3>
-
-<ul>
-<li>以本地为主。 git push -f</li>
-<li>归并merge。 git pull 或者 git fetch &amp;&amp; git merge</li>
-<li></li>
-</ul>
-
-
-<h3>从Github远程服务上拿其他分支：</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@WINSELIU /e/git/to-markdown (master)
-</span><span class='line'>$ git branch -r
-</span><span class='line'>  origin/HEAD -&gt; origin/master
-</span><span class='line'>  origin/gh-pages
-</span><span class='line'>  origin/jquery
-</span><span class='line'>  origin/master
-</span><span class='line'>
-</span><span class='line'>$ git checkout -b jquery origin/jquery</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>把本地的git项目发布到Github</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>touch README.md
-</span><span class='line'>git init
-</span><span class='line'>git add README.md
-</span><span class='line'>git commit -m "first commit"
-</span><span class='line'>git remote add origin git@github.com:winse/flickr-uploader.git
-</span><span class='line'>git push -u origin master</span></code></pre></td></tr></table></div></figure>
-
-
-<p>Push an existing repository from the command line：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git remote add origin git@github.com:winse/flickr-uploader.git
-</span><span class='line'>git push -u origin master</span></code></pre></td></tr></table></div></figure>
-
-
-<p>如果已经存在remote origin，使用下面的方式修改远程的地址：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
-</span><span class='line'>$ git remote set-url --add origin  git@github.com:winse/flickr-uploader.git
-</span><span class='line'>
-</span><span class='line'>Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
-</span><span class='line'>$ git remote show origin
-</span><span class='line'>Warning: Permanently added 'github.com,192.30.252.128' (RSA) to the list of known hosts.
-</span><span class='line'>* remote origin
-</span><span class='line'>  Fetch URL: git@github.com:winse/flickr-uploader.git
-</span><span class='line'>  Push  URL: git@github.com:winse/flickr-uploader.git
-</span><span class='line'>  HEAD branch: (unknown)</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>git查看本地领先远程的提交</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@WINSELIU /d/winsegit/winse.github.com (master)
-</span><span class='line'>$ git status
-</span><span class='line'># On branch master
-</span><span class='line'># Your branch is ahead of 'origin/master' by 2 commits.
-</span><span class='line'>#   (use "git push" to publish your local commits)
-</span><span class='line'>#
-</span><span class='line'># Changes not staged for commit:
-</span><span class='line'>#   (use "git add &lt;file&gt;..." to update what will be committed)
-</span><span class='line'>#   (use "git checkout -- &lt;file&gt;..." to discard changes in working directory)
-</span><span class='line'>#
-</span><span class='line'>#       modified:   about.md
-</span><span class='line'>#       modified:   blog/_posts/2014-01-21-monitoring-mobile-networks.md
-</span><span class='line'>#
-</span><span class='line'># Untracked files:
-</span><span class='line'>#   (use "git add &lt;file&gt;..." to include in what will be committed)
-</span><span class='line'>#
-</span><span class='line'>#       default.html
-</span><span class='line'>no changes added to commit (use "git add" and/or "git commit -a")
-</span><span class='line'>
-</span><span class='line'>Administrator@WINSELIU /d/winsegit/winse.github.com (master)
-</span><span class='line'>$ git log --oneline --decorate -5
-</span><span class='line'>0425ec5 (HEAD, master) 增加日志Github修改历史功能
-</span><span class='line'>f3a4a58 把TAG定位到首页，并分页以及按照年分类
-</span><span class='line'>d5097e3 (origin/master, origin/HEAD) plugins disabled in github page!
-</span><span class='line'>e75d62b test
-</span><span class='line'>876dd42 修复根目录下的md不能通过npp-windows请求编辑的BUG
-</span><span class='line'>
-</span><span class='line'>Administrator@WINSELIU /d/winsegit/winse.github.com (master)
-</span><span class='line'>$ git cherry
-</span><span class='line'>+ f3a4a58cfead3aa76e4b92de3342bee5970accb7
-</span><span class='line'>+ 0425ec548aa4e3dd29cd6fbfa1b656543e85058e</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>找回游离的提交</h3>
-
-<p><strong>绑定到新分支</strong></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git reflog # 查看本地操作历史
-</span><span class='line'>git branch head23 HEAD@{23} # 把分支head23指向/绑定到游离的提交</span></code></pre></td></tr></table></div></figure>
-
-
-<p>git的版本都是从分支开始查找的，如果没有被分支管理的提交就游离在版本库中！
-所以在reset重新修改时，最好建立分支然后再提交！
-如果发现类似的提交问题，就需要尽快的修复，不然提交的ID找不到就S了！</p>
-
-<blockquote><p>那些老的提交会被丢弃。 如果运行垃圾收集命令(pruning garbage collection), 这些被丢弃的提交就会删除. （请查看 git gc)</p></blockquote>
-
-<p><strong>重置HEAD</strong></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git reset --hard HEAD@{23}</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>删除提交</h3>
-
-<p>删除提交E：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ git tag F
-</span><span class='line'>$ git tag E HEAD^
-</span><span class='line'>$ git tag D HEAD^^
-</span><span class='line'>$ git checkout D
-</span><span class='line'>$ git cherry-pick master # 把master-patch应用到TAG-D
-</span><span class='line'># fix conflicts
-</span><span class='line'>$ git status # 提交
-</span><span class='line'>$ git checkout master # checkout到master分支
-</span><span class='line'>$ git reset --hard HEAD@{1} # 重置master到删除E后的提交
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>Git浏览特定版本的文件列表</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git ls-tree --name-only  -rt &lt;SHA-ID&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>删除没有被git track的文件</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git clean -fd # -f force branch switch/ignore unmerged entries， -d if you have new directory
-</span><span class='line'>git clean -x -fd
-</span><span class='line'>
-</span><span class='line'>git reset --hard ( or git reset then back to 1. )
-</span><span class='line'>git checkout . ( or specify with file names )
-</span><span class='line'>git reset --hard ( or git reset then back to 3. )</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>检出SVN项目</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@ZGC-20130605LYE /e/git
-</span><span class='line'>$ git svn clone http://chrome-hosts-manager.googlecode.com/svn/trunk/</span></code></pre></td></tr></table></div></figure>
-
-
-<p><a href="http://www.worldhello.net/2010/02/01/339.html">http://www.worldhello.net/2010/02/01/339.html</a>下面提到的有意思：</p>
-
-<blockquote><p>Git-svn 是 Subversion 的最佳伴侣，可以用 Git 来操作 Subversion 版本库。这带来一个非常有意思的副产品——部分检出：
-可以用 git-svn 来对 Subversion 代码库的任何目录进行克隆，克隆出来的是一个git版本库
-可以在部分克隆的版本库中用 Git 进行本地提交。
-部分克隆版本库中的本地提交可以提交到上游 Subversion 版本库的相应目录中</p></blockquote>
-
-<h3>Github添加项目主页github page(gh-pages)</h3>
-
-<p>提交后就可以访问了<a href="http://winse.github.io/flickr-uploader/popup.html">页面</a>了。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
-</span><span class='line'>$ git branch -a
-</span><span class='line'>* master
-</span><span class='line'>  remotes/origin/master
-</span><span class='line'>
-</span><span class='line'>Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
-</span><span class='line'>$ git push origin master:gh-pages
-</span><span class='line'>Warning: Permanently added 'github.com,192.30.252.128' (RSA) to the list of known hosts.
-</span><span class='line'>Total 0 (delta 0), reused 0 (delta 0)
-</span><span class='line'>To git@github.com:winse/flickr-uploader.git
-</span><span class='line'> * [new branch]      master -&gt; gh-pages
-</span><span class='line'>
-</span><span class='line'>Administrator@WINSELIU /d/winsegit/flickr_uploader/chrome (master)
-</span><span class='line'>$ git branch -a
-</span><span class='line'>* master
-</span><span class='line'>  remotes/origin/gh-pages
-</span><span class='line'>  remotes/origin/master
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><strong><a href="https://help.github.com/articles/creating-project-pages-manually">Creating Project Pages manually</a></strong></p>
-
-<blockquote><pre><code>  cd repository
-
-  git checkout --orphan gh-pages
-  # Creates our branch, without any parents (it's an orphan!)
-  # Switched to a new branch 'gh-pages'
-
-  git rm -rf .
-  # Remove all files from the old working tree
-  # rm '.gitignore'
-
-  echo "My GitHub Page" &gt; index.html
-  git add index.html
-  git commit -a -m "First pages commit"
-  git push origin gh-pages
-</code></pre></blockquote>
-
-<h3>子模块操作</h3>
-
-<p><a href="http://josephjiang.com/entry.php?id=342">git-submodule教程！</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@WINSELIU /d/winsegit/jae_winse (master)
-</span><span class='line'>$ git submodule add git@github.com:winse/flickr-uploader.git src/main/webapp/flickr
-</span><span class='line'>
-</span><span class='line'>Administrator@WINSELIU /d/winsegit/jae_winse (master)
-</span><span class='line'>$ git submodule status
-</span><span class='line'> 635090c5a754eebf5ce6566b7f8c65446b764f51 src/main/webapp/flickr (heads/master)
-</span><span class='line'>
-</span><span class='line'>Administrator@WINSELIU /d/winsegit/jae_winse (master)
-</span><span class='line'>$ git commit -m "add submodule"
-</span><span class='line'>[master c7dc8c7] add submodule
-</span><span class='line'>warning: LF will be replaced by CRLF in .gitmodules.
-</span><span class='line'>The file will have its original line endings in your working directory.
-</span><span class='line'> 2 files changed, 4 insertions(+)
-</span><span class='line'> create mode 100644 .gitmodules
-</span><span class='line'> create mode 160000 src/main/webapp/flickr</span></code></pre></td></tr></table></div></figure>
-
-
-<p>如：$ git submodule add git://github.com/soberh/ui-libs.git src/main/webapp/ui-libs</p>
-
-<p>初始化子模块：$ git submodule init &mdash;-只在首次检出仓库时运行一次就行</p>
-
-<p>更新子模块：$ git submodule update &mdash;-每次更新或切换分支后都需要运行一下</p>
-
-<p>删除子模块：（分4步走哦）</p>
-
-<ol>
-<li>$ git rm &ndash;cached [path]</li>
-<li>编辑“.gitmodules”文件，将子模块的相关配置节点删除掉</li>
-<li>编辑“.git/config”文件，将子模块的相关配置节点删除掉</li>
-<li>手动删除子模块残留的目录</li>
-</ol>
-
-
-<h2>其他偶尔使用命令</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git diff --check # 检查行尾有没有多余的空白
-</span><span class='line'>git remote prune &lt;remotename&gt;
-</span><span class='line'>git ls-remote --heads origin
-</span><span class='line'>git gc --prune=now
-</span><span class='line'>git ls-remote --heads &lt;remote-name&gt;
-</span><span class='line'>git rm -r --cached *</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://blog.csdn.net/trochiluses/article/details/8996431">回溯 与 合并:git rebase与git reset</a></li>
-<li><a href="http://ihower.tw/git/">git教程的一个站点</a></li>
-<li><a href="http://ihower.tw/git/basic.html">git基本操作</a></li>
-<li><a href="http://ihower.tw/git/vcs.html">版本管理介绍</a></li>
-<li><a href="http://blog.csdn.net/ithomer/article/details/7529841">速查表</a></li>
-<li><a href="http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E6%9F%A5%E7%9C%8B%E6%8F%90%E4%BA%A4%E5%8E%86%E5%8F%B2">Git 基础 - 查看提交历史</a></li>
-<li><p><a href="http://gitbook.liuhui998.com/3_4.html">查看历史 －Git日志</a></p></li>
-<li><p><a href="http://git-scm.com/book/zh/Git-%E5%B7%A5%E5%85%B7-%E9%87%8D%E5%86%99%E5%8E%86%E5%8F%B2">http://git-scm.com/book/zh/Git-%E5%B7%A5%E5%85%B7-%E9%87%8D%E5%86%99%E5%8E%86%E5%8F%B2</a></p></li>
-<li><a href="http://ihower.tw/blog/archives/2622">http://ihower.tw/blog/archives/2622</a></li>
-<li><a href="http://git-scm.com/docs/git-rebase">http://git-scm.com/docs/git-rebase</a></li>
-<li><a href="http://xiewenbo.iteye.com/blog/1285693">http://xiewenbo.iteye.com/blog/1285693</a></li>
-<li><a href="http://gitready.com/">http://gitready.com/</a></li>
-<li><a href="http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E6%9F%A5%E7%9C%8B%E6%8F%90%E4%BA%A4%E5%8E%86%E5%8F%B2">http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E6%9F%A5%E7%9C%8B%E6%8F%90%E4%BA%A4%E5%8E%86%E5%8F%B2</a></li>
-<li><a href="http://josephjiang.com/entry.php?id=342">http://josephjiang.com/entry.php?id=342</a> git-submodule没有更好的教程了</li>
-<li><a href="http://www.cnblogs.com/william9/archive/2012/09/01/2666767.html">http://www.cnblogs.com/william9/archive/2012/09/01/2666767.html</a></li>
-<li><a href="http://marklodato.github.io/visual-git-guide/index-zh-cn.html">http://marklodato.github.io/visual-git-guide/index-zh-cn.html</a></li>
-<li><a href="http://www.16kan.com/question/detail/321093.html">http://www.16kan.com/question/detail/321093.html</a></li>
-<li><a href="http://gitbook.liuhui998.com/3_4.html">http://gitbook.liuhui998.com/3_4.html</a></li>
-<li><a href="http://www.bootcss.com/p/git-guide/">http://www.bootcss.com/p/git-guide/</a></li>
-<li><a href="http://blog.csdn.net/ithomer/article/details/7529022">http://blog.csdn.net/ithomer/article/details/7529022</a></li>
-<li><a href="http://git-scm.com/book/zh/Git-%E5%88%86%E6%94%AF-%E8%BF%9C%E7%A8%8B%E5%88%86%E6%94%AF">http://git-scm.com/book/zh/Git-%E5%88%86%E6%94%AF-%E8%BF%9C%E7%A8%8B%E5%88%86%E6%94%AF</a></li>
-<li><a href="http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E8%BF%9C%E7%A8%8B%E4%BB%93%E5%BA%93%E7%9A%84%E4%BD%BF%E7%94%A8">http://git-scm.com/book/zh/Git-%E5%9F%BA%E7%A1%80-%E8%BF%9C%E7%A8%8B%E4%BB%93%E5%BA%93%E7%9A%84%E4%BD%BF%E7%94%A8</a></li>
-<li><a href="http://blog.csdn.net/trochiluses/article/details/14517379">http://blog.csdn.net/trochiluses/article/details/14517379</a></li>
-</ul>
 
 ]]></content>
   </entry>
