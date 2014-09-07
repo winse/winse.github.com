@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winse.github.io/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2014-09-07T10:32:00+08:00</updated>
+  <updated>2014-09-07T17:04:30+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,177 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Expect-批量实现SSH无密钥登录]]></title>
+    <link href="http://winse.github.io/blog/2014/09/07/expect-automate-and-batch-config-ssh/"/>
+    <updated>2014-09-07T16:11:18+08:00</updated>
+    <id>http://winse.github.io/blog/2014/09/07/expect-automate-and-batch-config-ssh</id>
+    <content type="html"><![CDATA[<p>在安装部署Hadoop集群的首要步骤就是配置SSH的无密钥登陆。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh-keygen -t rsa -P '' -f ~/.ssh/id_rsa
+</span><span class='line'>cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys
+</span><span class='line'>
+</span><span class='line'>ssh-copy-id -i ~/.ssh/id_rsa.pub root@$ip</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后，可以通过ssh命令来进行批量的操作。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh root@$ip 'cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys'
+</span><span class='line'>scp -o StrictHostKeyChecking=no /etc/hosts root@${ip}:/etc/</span></code></pre></td></tr></table></div></figure>
+
+
+<p>但是，一些需要密码的dialogue形式的输入时，部署N台datanode就需要输入N遍！同时新建用户也是需要输入用户密码的操作！！</p>
+
+<p>Linux Expect就是用来自动化处理这些需求的。Except能根据提示来实现相应的输入。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ ssh-copy-id localhost
+</span><span class='line'>The authenticity of host 'localhost (::1)' can't be established.
+</span><span class='line'>RSA key fingerprint is 4e:fe:7a:0a:98:6e:9a:ab:af:e4:65:51:9b:3d:e0:99.
+</span><span class='line'>Are you sure you want to continue connecting (yes/no)? yes
+</span><span class='line'>Warning: Permanently added 'localhost' (RSA) to the list of known hosts.
+</span><span class='line'>hadoop@localhost's password: 
+</span><span class='line'>Now try logging into the machine, with "ssh 'localhost'", and check in:
+</span><span class='line'>
+</span><span class='line'>  .ssh/authorized_keys
+</span><span class='line'>
+</span><span class='line'>to make sure we haven't added extra keys that you weren't expecting.</span></code></pre></td></tr></table></div></figure>
+
+
+<p>根据需要<strong>提示信息</strong>，以及需要<strong>输入的信息</strong>，可以编写对应expect脚本来进行自动化。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ cat bin/ssh-copy-id.expect 
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 [user@]host password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set password [lrange $argv 1 1] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>spawn ssh-copy-id $host ;
+</span><span class='line'>
+</span><span class='line'>expect {
+</span><span class='line'>  "(yes/no)?" { send yes\n; exp_continue; }
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>同样新建用户初始化密码的操作一样可以使用expect来使用：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ cat bin/passwd.expect
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 host username password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set username [lrange $argv 1 1];
+</span><span class='line'>set password [lrange $argv 2 2] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>spawn ssh $host useradd $username ;
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;
+</span><span class='line'>
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>spawn ssh $host passwd $username ;
+</span><span class='line'>
+</span><span class='line'>## password and repasswd all use this
+</span><span class='line'>expect {
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>有了上面的脚本，预定义每台机器的root密码，使用ssh-copy-id.expect建立到各台datanode机器的无密钥登录；然后passwd.expect脚本分发给各台机器，然后使用ssh进行运行脚本建立用户初始化密码。</p>
+
+<p>Expect仅在master机器上安装就可以。安装程序的如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>yum install expect</span></code></pre></td></tr></table></div></figure>
+
+
+<p>or</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>rpm -ivh tcl-8.5.7-6.el6.x86_64.rpm
+</span><span class='line'>rpm -ivh expect-5.44.1.15-5.el6_4.x86_64.rpm</span></code></pre></td></tr></table></div></figure>
+
+
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[[读码] Hadoop2 Balancer磁盘空间平衡（下）]]></title>
@@ -6043,145 +6214,6 @@ linux需要远程调试NodeManager的话，需要写到etc/hadoop/yarn-env.sh文
 
 <ul>
 <li><a href="http://stackoverflow.com/questions/975271/remote-debugging-a-java-application">remote debugger opts</a></li>
-</ul>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop2学习过程/资源]]></title>
-    <link href="http://winse.github.io/blog/2014/04/22/hadoop-category/"/>
-    <updated>2014-04-22T06:37:20+08:00</updated>
-    <id>http://winse.github.io/blog/2014/04/22/hadoop-category</id>
-    <content type="html"><![CDATA[<p>接触集群，起始为毕业论文觉得做一个SSH的内容管理系统觉得无趣，选择了Hadoop相关的选题。尽管做的很烂，但是当时做出来一个东西还是挺开心的。中间断了近一年，但是在鼎象做游戏的时刻部署系统/维护查日志，对linux熟悉了不少。在科韵开始做插件开发，神马都的看源码。而后，真正的做了一个hadoop的项目，相比2年前，对编程和学习的方式都有了提升。hadoop，kettle这些都是很牛掰的很火热软件，但是中文资料相对较少，变化也很快。慢慢的觉得自己看代码和英文的资源都过得去。</p>
-
-<p>再碌碌无为的过了一年，而今又接触hadoop，时代变了，但是基本的技术还是相同的。从hadoop1升级到hadoop2，尽管变化很大，熟悉的过程中再次遇到很多的问题。觉得无能无力，原来的日子好似白过了！记录是一种美德，不仅是走过路过的足迹，亦是摘树后人乘凉的盛举。</p>
-
-<p>要弄hadoop，首先得把对english的偏见放下！如果还是baidu查找你遇到的问题，那或许你会多走很多的弯路！</p>
-
-<h2>书籍</h2>
-
-<p>开始还是推荐下中文资料：</p>
-
-<ul>
-<li>[Hadoop权威指南/Hadoop The Definitive Guide] 大师写的书，值的膜拜</li>
-<li>[hadoop实战/Hadoop in Action] 相对来说是也是一本不错的</li>
-</ul>
-
-
-<h2>网页资源</h2>
-
-<ol>
-<li>Linux部署Hadoop
-
-<ul>
-<li><a href="http://developer.yahoo.com/hadoop/tutorial/">Hadoop Tutorial - YDN</a></li>
-<li><a href="http://shiyanjun.cn/archives/561.html">Hadoop-2.2.0集群安装配置实践</a></li>
-<li><a href="http://www.cnblogs.com/i80386/p/3548132.html">hadoop2.2.0 单机伪分布式（含64位hadoop编译）及 eclipse hadoop开发环境搭建</a></li>
-</ul>
-</li>
-<li>Windows部署Hadoop
-
-<ul>
-<li><a href="http://yangshangchuan.iteye.com/blog/1839812">配置Cygwin支持无密码SSH登陆</a></li>
-<li><a href="http://wiki.apache.org/hadoop/Hadoop2OnWindows">Hadoop2OnWindows - Hadoop Wiki</a></li>
-<li><a href="https://issues.apache.org/jira/browse/MAPREDUCE-5655">[MAPREDUCE-5655] job submit from windows to a linux hadoop cluster fails due to wrong classpath</a></li>
-<li><a href="http://stackoverflow.com/questions/11821378/what-does-bashno-job-control-in-this-shell-mean">linux - what does &ldquo;bash:no job control in this shell” mean? - Stack Overflow</a></li>
-<li><a href="http://stackoverflow.com/questions/18630019/running-apache-hadoop-2-1-0-on-windows">Running Apache Hadoop 2.1.0 on Windows - Stack Overflow</a></li>
-<li><a href="http://stackoverflow.com/questions/10888391/error-link-fatal-error-lnk1123-failure-during-conversion-to-coff-file-inval">Error &lsquo;LINK : fatal error LNK1123: failure during conversion to COFF: file invalid or corrupt&rsquo;</a></li>
-<li><a href="http://blog.csdn.net/xzz_hust/article/details/9450289">VS2010 error: LINK : fatal error LNK1123: failure during conversion to COFF: file invalid or corrupt</a></li>
-<li><a href="https://issues.apache.org/jira/browse/HADOOP-10144">[HADOOP-10144] Error on build in windows 7 box</a></li>
-<li><a href="http://www.srccodes.com/p/article/38/build-install-configure-run-apache-hadoop-2.2.0-microsoft-windows-os#comment-1150229068">Build, Install, Configure and Run Apache Hadoop 2.2.0 in Microsoft Windows OS</a></li>
-<li><a href="http://blog.csdn.net/bamuta/article/details/13506843">hadoop2.2.0遇到NativeLibraries错误的解决过程</a></li>
-<li><a href="http://blog.csdn.net/bamuta/article/details/13506893">hadoop2.2.0遇到64位操作系统平台报错，重新编译hadoop</a></li>
-<li><a href="http://stackoverflow.com/questions/19943766/hadoop-unable-to-load-native-hadoop-library-for-your-platform-error-on-centos">Hadoop &ldquo;Unable to load native-hadoop library for your platform&rdquo; error on CentOS</a></li>
-</ul>
-</li>
-<li>eclipse直接访问HDFS/提交任务
-
-<ul>
-<li><a href="http://zy19982004.iteye.com/blog/2031172">Hadoop学习三十二：Win7下无法提交MapReduce Job到集群环境</a></li>
-<li><a href="http://blog.csdn.net/fansy1990/article/details/22896249">Eclipse调用hadoop2运行MR程序</a></li>
-</ul>
-</li>
-<li>cygwin部署hadoop
-
-<ul>
-<li><a href="http://blog.csdn.net/needle2/article/details/5416571">cygwin sshd 安装配置</a></li>
-<li><a href="http://www.ipv6bbs.cn/thread-209-1-1.html">如何确定自己是否已接入IPv6网络及故障分析（提问必看）</a></li>
-<li><a href="http://www.ipv6bbs.cn/thread-151-1-1.html">在IPv4网络下接入IPv6网络的方法（隧道与第三方软件）</a></li>
-</ul>
-</li>
-<li>hdfs脚本文件系统</li>
-<li>编译源码
-
-<ul>
-<li><a href="http://blog.163.com/universsky@126/blog/static/112760232201362743156735/">maven工程pom添加log4j依赖 Missing artifact javax.jms:jms:jar:1.1:compile 为pom.xml添加dependency，编译报错缺少jar包，但是本地库中有这个包</a></li>
-<li><a href="http://www.cnblogs.com/sysuys/p/3492791.html">找不到org.mortbay.component.AbstractLifeCycle的类文件</a></li>
-<li><a href="https://issues.apache.org/jira/browse/HADOOP-10110">[HADOOP-10110]hadoop-auth has a build break due to missing dependency</a></li>
-<li><a href="http://blog.csdn.net/superye1983/article/details/16884097">Hadoop CDH5 手动安装伪分布式模式 </a></li>
-</ul>
-</li>
-<li>远程调试
-
-<ul>
-<li><a href="http://stackoverflow.com/questions/975271/remote-debugging-a-java-application">Remote debugging a Java application</a></li>
-<li><a href="http://liugang594.iteye.com/blog/154710">Eclipse调试框架的学习与理解</a></li>
-<li><a href="http://duming115.iteye.com/blog/791218">Java的远程debug</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/opensource/os-eclipse-javadebug/index.html">使用 Eclipse 远程调试 Java 应用程序</a></li>
-</ul>
-</li>
-<li>与正式环境有关
-
-<ul>
-<li><a href="http://cn.mzcart.com/2012/04/24.html">putty – 使用putty命令行参数</a></li>
-<li><a href="http://www.ctohome.com/FuWuQi/0b/301.html">Windows下使用ssh代理来访问国外的youtube和twitter/fackbook等网站</a></li>
-<li><a href="http://hejianhuacn.iteye.com/blog/1972033">使用SecureCRT的SSH端口转发，使用PLSQL访问内网数据库</a></li>
-<li><a href="http://qn-lf.iteye.com/blog/859662">用ssh端口转发功能访问远程服务器</a></li>
-<li><a href="http://blog.csdn.net/linuxoostudy/article/details/7097418">SecureCRT设置SSH端口转发详解</a></li>
-</ul>
-</li>
-<li>开发参考的资源/代码访问集群
-
-<ul>
-<li><a href="http://www.ibm.com/developerworks/cn/opensource/os-cn-hadoop-yarn/">Hadoop 新 MapReduce 框架 Yarn 详解</a></li>
-<li><a href="http://dongxicheng.org/mapreduce-nextgen/hadoop-2-0-jobhistory-log/">Hadoop 2.0中作业日志收集原理以及配置方法</a></li>
-<li><a href="http://dongxicheng.org/mapreduce-nextgen/hadoop-logs-placement/">Hadoop日志到底存在哪里？</a></li>
-<li><a href="http://dongxicheng.org/mapreduce-nextgen/hadoop-distributedcache-details/">Hadoop DistributedCache详解</a></li>
-<li><a href="http://hpuxtbjvip0.blog.163.com/blog/static/3674131320132794940734/">Hadoop DistributedCache使用及原理</a></li>
-</ul>
-</li>
-</ol>
-
-
-<h2>工具</h2>
-
-<ul>
-<li>lrzsz</li>
-<li>SecureCRT</li>
-<li>WinSCP</li>
-<li>w3m # 最后使用SSH代理访问取代！</li>
-</ul>
-
-
-<h2>思维</h2>
-
-<ul>
-<li>化整为零</li>
-</ul>
-
-
-<h2>技巧</h2>
-
-<ul>
-<li>查看jar列表：<code>jar tvf JAR</code></li>
-<li>ssh-copy-id</li>
-<li>rsync</li>
-<li>find</li>
-<li>ls -Sl</li>
-<li>while/for</li>
-<li><p><code>cat unknown.txt | cut -b 62- | sort | uniq</code></p></li>
-<li><p>持续的更新 -</p></li>
 </ul>
 
 ]]></content>
