@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2014-09-05T17:10:30+08:00</updated>
+  <updated>2014-09-07T10:32:00+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,201 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[[读码] Hadoop2 Balancer磁盘空间平衡（下）]]></title>
+    <link href="http://winse.github.io/blog/2014/09/05/read-hadoop-balancer-source-part3/"/>
+    <updated>2014-09-05T16:31:15+08:00</updated>
+    <id>http://winse.github.io/blog/2014/09/05/read-hadoop-balancer-source-part3</id>
+    <content type="html"><![CDATA[<p>前面讲到了节点的初始化，根据节点使用率与集群dfs使用率比较分为
+<code>overUtilizedDatanodes</code>，<code>aboveAvgUtilizedDatanodes</code>，<code>belowAvgUtilizedDatanodes</code>，<code>underUtilizedDatanodes</code>，同时进行了节点数据量从Source到Target的配对。</p>
+
+<p>接下来就是最后的数据移动部分了。</p>
+
+<p>5.3 移动数据</p>
+
+<pre><code>  private ReturnStatus run(int iteration, Formatter formatter,
+      Configuration conf) {
+      ...
+      if (!this.nnc.shouldContinue(dispatchBlockMoves())) {
+        return ReturnStatus.NO_MOVE_PROGRESS;
+      }
+      ...
+  }    
+</code></pre>
+
+<p>针对一个namenode如果连续5次没有移动数据，就会退出平衡操作，是在<code>NameNodeConnector#shouldContinue(long)</code>中处理的。</p>
+
+<p>由于这里需要进行大量计算，以及耗时的文件传输等操作，这里使用了executorservice，分别为moverExecutor和dispatcherExecutor，有两个配置<code>dfs.balancer.moverThreads</code>（1000）和<code>dfs.balancer.dispatcherThreads</code>（200）来设置线程池的大小。</p>
+
+<pre><code>  Balancer(NameNodeConnector theblockpool, Parameters p, Configuration conf) {
+        ...
+    this.moverExecutor = Executors.newFixedThreadPool(
+            conf.getInt(DFSConfigKeys.DFS_BALANCER_MOVERTHREADS_KEY,
+                        DFSConfigKeys.DFS_BALANCER_MOVERTHREADS_DEFAULT));
+    this.dispatcherExecutor = Executors.newFixedThreadPool(
+            conf.getInt(DFSConfigKeys.DFS_BALANCER_DISPATCHERTHREADS_KEY,
+                        DFSConfigKeys.DFS_BALANCER_DISPATCHERTHREADS_DEFAULT));
+  }
+</code></pre>
+
+<p>其中<code>dispatchBlockMoves()</code>包装了数据移动的操作，把source的块移动到target节点中。</p>
+
+<pre><code>  private long dispatchBlockMoves() throws InterruptedException {
+    long bytesLastMoved = bytesMoved.get();
+    Future&lt;?&gt;[] futures = new Future&lt;?&gt;[sources.size()];
+    int i=0;
+    for (Source source : sources) {
+         // / 新线程来执行块的分发
+      futures[i++] = dispatcherExecutor.submit(source.new BlockMoveDispatcher());
+    }
+
+    // wait for all dispatcher threads to finish
+    // / 等待分发操作完成
+    for (Future&lt;?&gt; future : futures) { 
+        future.get(); 
+    }
+
+    // wait for all block moving to be done
+    // / 等待块的数据移动完成，相当于等待moverExecutor的Future完成
+    waitForMoveCompletion(); 
+
+    return bytesMoved.get()-bytesLastMoved;
+  }
+  private void waitForMoveCompletion() {
+    boolean shouldWait;
+    do {
+      shouldWait = false;
+      for (BalancerDatanode target : targets) {
+        // / 块从source移动到target完成后,会从Pending的列表中移除 @see PendingBlockMove#dispatch()
+        if (!target.isPendingQEmpty()) { 
+          shouldWait = true;
+        }
+      }
+      if (shouldWait) {
+        try {
+          Thread.sleep(blockMoveWaitTime);
+        } catch (InterruptedException ignored) {
+        }
+      }
+    } while (shouldWait);
+  }
+</code></pre>
+
+<p>上面是分发功能主程序执行的代码，调用分发线程和等待执行结果的代码。主要业务逻辑在线程中调用执行。</p>
+
+<p>分发线程dispatcher先获取Source上指定大小的block块，对应到<code>getBlockList()</code>方法。除了用于<strong>块同步</strong>的globalBlockList变量、以及记录当前Source获取的srcBlockList、最重要的当属用于判断获取的块是否符合条件的方法<code>isGoodBlockCandidate(block)</code>。在移动块的选择也会用到该方法，单独拿出来在后面讲。</p>
+
+<p>然后选择Source下哪些块将移动到Targets目标节点。在<code>chooseNodes</code>步骤中把移动和接收<strong>数据</strong>的流向确定了，相关信息存储在Source的nodeTasks列表对象中。这里<code>PendingBlockMove.chooseBlockAndProxy()</code>把Sources需要移动的<strong>块</strong>确定下来，把从Source获取到的srcBlockList分配给Target。然后交给moverExecutor去执行。</p>
+
+<p>其中通过<code>isGoodBlockCandidate</code>和<code>chooseProxySource</code>（选择从那个目标获取block的真实数据，不一定是Source节点哦！）方法筛选合适的符合条件的块，并加入到movedBlocks对象。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/FA/wKhkA1QLCqqASDGHAAMJbC1ZgZQ339.png" alt="" /></p>
+
+<p>调用的dispatchBlocks方法第一次循环是不会有数据移动的，此时Source对象中srcBlockList可移动块为空，从Source中获取块后再进行块的移动操作<code>chooseNextBlockToMove()</code>。</p>
+
+<p>先讲下Source类属性blocksToReceive，初始值为2*scheduledSize，有三个地方：dispatchBlocks初始化大小，getBlockList从Source节点获取block的量同时减去获取到的block的字节数，还有就是shouldFetchMoreBlocks用于判断是否还有数据需要获取或者移动dispatchBlocks。这个属性其实也就是<strong>设置一个阀</strong>，不管block是否为最终移动的block，获取到块的信息后就会从blocksToReceive减去相应的字节数。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/D7/wKhkA1QJjnGAT2T-AACHmpdgZc0077.png" alt="" /></p>
+
+<p>前面获取Source block和分配到Target block都使用了isGoodBlockCandidate方法，这里涉及到怎么去评估<strong>块</strong>获取和分配是否合理的问题。需同时满足下面三个条件：</p>
+
+<ul>
+<li>当前选中的移动的块，不在已移动块的名单中<code>movedBlocks.contains</code></li>
+<li>移动的块在目的机器上没有备份</li>
+<li>移动的块不减少含有该数据的机架数量
+
+<ul>
+<li>多机架的情况下<code>cluster.isNodeGroupAware()</code>，移动的块在目的机器的机架上没有备份</li>
+<li>YES source和target在同一个机架上。</li>
+<li>YES source和target不在同一机架上，且该块没有一个备份在target的机架上</li>
+<li>YES source和target不在同一机架上，且该块有另一个备份和source在同一机架上</li>
+</ul>
+</li>
+</ul>
+
+
+<h2>疑问</h2>
+
+<p>一个Datanode只能同时移动/接收5个Block（即MAX_NUM_CONCURRENT_MOVES值），结合<code>chooseProxySource</code>的代码的addTo调用，看的很是辛苦！如block-A所有块都在A机架上，在选择proxySource时，会把该块的<strong>两个</strong>datanode都加上一个pendingBlock，显然这不大合理！！</p>
+
+<p>如果备用的proxySource节点恰好还是target的话，waitForMoveCompletion方法永远不能结束！！应该把没有找到同机架的源情况移到for循环外面进行处理。</p>
+
+<pre><code>    private boolean chooseProxySource() {
+      final DatanodeInfo targetDN = target.getDatanode();
+      boolean find = false;
+      for (BalancerDatanode loc : block.getLocations()) {
+        // check if there is replica which is on the same rack with the target
+        if (cluster.isOnSameRack(loc.getDatanode(), targetDN) &amp;&amp; addTo(loc)) {
+          find = true;
+          // if cluster is not nodegroup aware or the proxy is on the same 
+          // nodegroup with target, then we already find the nearest proxy
+          if (!cluster.isNodeGroupAware() 
+              || cluster.isOnSameNodeGroup(loc.getDatanode(), targetDN)) {
+            return true;
+          }
+        }
+
+        if (!find) {
+          // 这里的non-busy指的是，pendingBlock小于5份节点
+          // find out a non-busy replica out of rack of target
+          find = addTo(loc);
+        }
+      }
+
+      return find;
+    }
+</code></pre>
+
+<p><img src="http://file.bmob.cn/M00/0D/06/wKhkA1QLuziAKEZdAAA8zGjPMGQ901.png" alt="" /></p>
+
+<p>不过无需庸人自扰，一般都在一个rack上，这种问题就不存在了！同时这个也不是能一步到位，加了很多限制（一次迭代一个datanode最多处理10G，获取一次srcBlockList仅2G还限制就一次迭代就5个block），会执行很多次。</p>
+
+<h2>总结</h2>
+
+<p>总体的代码大致就是这样子了。根据集群使用率和阀值，计算需要进行数据接收和移动的节点（初始化），然后进行配对（选择），再进行块的选取和接收节点进行配对（分发），最后就是数据的移动（理解为socket数据传递就好了，调用了HDFS的协议代码。表示看不明），并等待该轮操作结束。</p>
+
+<h2>举例</h2>
+
+<p>除了指定threshold为5，其他是默认参数。由于仅单namenode和单rack，所以直接分析第五部分的namenode平衡处理。</p>
+
+<p>根据所给的数据，（initNodes）第一步计算使用率，得出需要移动的数据量，把datanodes对号入座到over/above/below/under四个分类中。</p>
+
+<p><img src="http://file.bmob.cn/M00/0D/08/wKhkA1QLwxiAOEV3AAAu5v9zggc374.png" alt="" /></p>
+
+<p>（chooseNodes）第二步进行Source到Target节点的计划移动数据量计算。</p>
+
+<p>在初始化BalancerDatanode的时刻，就计算出了节点的maxSize2Move。从给出的数据，只有一个节点超过阀值，另外两个是都在阀值内，一个高于平均值一个低于平均值。</p>
+
+<p>这里就是把A1超出部分的数据（小于10G）移到A2，计算Source和Target的scheduledSize的大小。</p>
+
+<pre><code>chooseDatanodes(overUtilizedDatanodes, belowAvgUtilizedDatanodes, matcher);
+chooseForOneDatanode(datanode, candidates, matcher)
+chooseCandidate(dn, i, matcher)
+// 把所有A1超出部分全部移到A2，并NodeTask(A2, 8428571.429)存储到Source：A1的nodeTaskList对象中
+matchSourceWithTargetToMove((Source)dn, chosen);
+</code></pre>
+
+<p>（dispatchBlockMoves）第三步就是分发进行块的转移。</p>
+
+<p>先设置blocksToReceive（2*scheduledSize=16857142.86）</p>
+
+<pre><code>chooseNextBlockToMove
+chooseBlockAndProxy
+markMovedIfGoodBlock
+isGoodBlockCandidate
+chooseProxySource
+
+scheduleBlockMove
+
+getBlockList
+</code></pre>
+
+<p>从Source获取块时，可能在A2上已经有了，会通过isGoodBlockCandidate来进行过滤。然后就是把它交给moverExecutor执行数据块的移动，完成后修改处理的数据量byteMoved，把移动的块从target和proxySource的pendingBlockList中删除。</p>
+
+<p>重复进行以上步骤，直到全部所有节点的使用率都在阀值内，顺利结束本次平衡处理。</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[[读码] Hadoop2 Balancer磁盘空间平衡（中）]]></title>
@@ -30,29 +225,29 @@
 <p>main方法入口，可以接受threshold（大于等于1小于等于100， 默认值10）和policy（可取datanode[dfsused]/blockpool[
 blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇中的javadoc的描述。</p>
 
-<p>然后通过ToolRunner解析参数，并运行Cli工具类来执行HDFS的平衡。</p>
+<h3>获取初始化参数</h3>
 
-<h3>Cli类获取初始化参数</h3>
+<p>然后通过ToolRunner解析参数，并运行Cli工具类来执行HDFS的平衡。</p>
 
 <p>1 设置检查</p>
 
-<p><code>WIN_WIDTH</code>(默认1.5h) 已移动的数据会记录movedBlocks（list）变量中，在移动成功的数据<code>CUR_WIN</code>的值经过该<code>WIN_WIDTH</code>时间后会被移动到<code>OLD_WIN</code>&mdash;现在感觉作用不大，为了减少map的大小？</p>
+<p><code>WIN_WIDTH</code>(默认1.5h) 已移动的数据会记录movedBlocks（list）变量中，在移动成功的数据<code>CUR_WIN</code>的值经过该时间后会被移动到<code>OLD_WIN</code>&mdash;现在感觉作用不大，为了减少map的大小？</p>
 
-<p><code>checkReplicationPolicyCompatibility()</code>方法检查<code>dfs.block.replicator.classname</code>是否为BlockPlacementPolicyDefault子类：满足3份备份的策略（1st本地，2nd另一个rack，3rd和第二份拷贝不同rack的节点）？</p>
+<p><code>checkReplicationPolicyCompatibility()</code>检查配置<code>dfs.block.replicator.classname</code>是否为BlockPlacementPolicyDefault子类，即是否满足3份备份的策略（1st本地，2nd另一个rack，3rd和第二份拷贝不同rack的节点）？</p>
 
 <p>2 获取nameserviceuris</p>
 
-<p>通过<code>DFSUtil#getNsServiceRpcUris()</code>来获取namenodes URI的结果集：</p>
+<p>通过<code>DFSUtil#getNsServiceRpcUris()</code>来获取namenodes，调用<code>getNameServiceUris()</code>来得到一个URI的结果集：</p>
 
 <pre><code>+ nsId &lt;- dfs.nameservices
   ? ha  &lt;- dfs.namenode.rpc-address + [dfs.nameservices] + [dfs.ha.namenodes]
     Y+ =&gt; hdfs://nsId
     N+ =&gt; hdfs://[dfs.namenode.servicerpc-address.[nsId]] 或 hdfs://[dfs.namenode.rpc-address.[nsId]] 第二个满足条件的加入到nonPreferredUris
 + hdfs://[dfs.namenode.servicerpc-address] 或 hdfs://[dfs.namenode.rpc-address]  第二个满足条件的加入到nonPreferredUris
-? [fs.defaultFs] 以hfds开头，且不在nonPreferredUris集合中
+? [fs.defaultFs] 以hfds开头，且不在nonPreferredUris集合中是加入结果集
 </code></pre>
 
-<p>HA情况下的配置项可以查看<a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/HDFSHighAvailabilityWithQJM.html">官网的文档</a></p>
+<p>HA情况下的地址相关配置项可以查看<a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/HDFSHighAvailabilityWithQJM.html">官网的文档</a></p>
 
 <pre><code>dfs.nameservices
 dfs.ha.namenodes.[nameservice ID]
@@ -61,7 +256,7 @@ dfs.namenode.rpc-address.[nameservice ID].[name node ID]
 
 <p>3 解析threshold和policy参数</p>
 
-<p>默认值: <strong>BalancingPolicy.Node.INSTANCE, 10.0</strong>，打印的日志中也有该参数信息。</p>
+<p>默认值: <strong>BalancingPolicy.Node.INSTANCE, 10.0</strong>。运行打印的日志如下，INFO日志中包括了初始化的参数信息。</p>
 
 <pre><code>2014-09-05 10:55:12,183 INFO Balancer: Using a threshold of 1.0
 2014-09-05 10:55:12,186 INFO Balancer: namenodes = [hdfs://umcc97-44:9000]
@@ -72,25 +267,37 @@ dfs.namenode.rpc-address.[nameservice ID].[name node ID]
 2014-09-05 10:55:18,311 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.143:50010
 2014-09-05 10:55:18,319 INFO Balancer: 2 over-utilized: [Source[10.18.97.144:50010, utilization=8.288283273062705], Source[10.18.97.143:50010, utilization=8.302032354001554]]
 2014-09-05 10:55:18,320 INFO Balancer: 1 underutilized: [BalancerDatanode[10.18.97.142:50010, utilization=4.716543864576553]]
+2014-09-05 10:55:33,918 INFO Balancer: Need to move 3.86 GB to make the cluster balanced.
+2014-09-05 11:21:16,875 INFO Balancer: Decided to move 2.43 GB bytes from 10.18.97.144:50010 to 10.18.97.142:50010
+2014-09-05 11:24:16,712 INFO Balancer: Decided to move 1.84 GB bytes from 10.18.97.143:50010 to 10.18.97.142:50010
+2014-09-05 11:25:55,726 INFO Balancer: Will move 4.27 GB in this iteration
 </code></pre>
 
 <h3>执行Balancer</h3>
 
 <p>4 调用Balancer#run执行</p>
 
-<pre><code> export HADOOP_OPTS=" -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8087 "
+<pre><code> # 调试命令
+ export HADOOP_OPTS=" -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8087 "
  sbin/start-balancer.sh 
 </code></pre>
 
-<p>Balancer的静态方法run，循环处理所有namenodes。实例化namenode的NameNodeConnector对象时，会把当前运行balancer程序的hostname写入到HDFS的<code>/system/balancer.id</code>文件中。</p>
+<p>Balancer的静态方法run，循环处理所有namenodes。在实例化namenode的NameNodeConnector对象时，会把当前运行balancer程序的hostname写入到HDFS的<code>/system/balancer.id</code>文件中，可以用来控制同时只有一个balancer运行。</p>
 
 <p><img src="http://file.bmob.cn/M00/0C/96/wKhkA1QJJNqAXxeaAAAho0g2bEU520.png" alt="" /></p>
 
-<p>再就是实例化Balancer，并调用实例方法run来处理每个namenode的平衡。</p>
+<p>在循环处理的时刻使用<code>Collections.shuffle(connectors)</code>打乱了namenodes的顺序。</p>
 
-<p>这里是一个双层循环，要么<strong>出错</strong>要么就是平衡<strong>顺利完成</strong>才算结束。run方法可能的返回状态值机器含义可以查看javadoc（上）篇。</p>
+<p>Balancer的静态方法run中是一个双层循环，实例化Balancer并调用实例方法run来处理每个namenode的平衡。运行后要么<strong>出错</strong>要么就是平衡<strong>顺利完成</strong>才算结束。平衡的返回状态值及其含义可以查看javadoc（上）篇。</p>
 
-<pre><code>      boolean done = false;
+<pre><code>  static int run(Collection&lt;URI&gt; namenodes, final Parameters p,
+      Configuration conf) throws IOException, InterruptedException {
+      ...
+      for (URI uri : namenodes) {
+        connectors.add(new NameNodeConnector(uri, conf));
+      }
+
+      boolean done = false;
       for(int iteration = 0; !done; iteration++) {
         done = true;
         Collections.shuffle(connectors);
@@ -111,14 +318,16 @@ dfs.namenode.rpc-address.[nameservice ID].[name node ID]
           Thread.sleep(sleeptime);
         }
       }
+      ...
+  }
 </code></pre>
 
-<p>5 针对每个namenode的平衡处理</p>
+<p>5 <strong>针对每个namenode的平衡处理</strong></p>
 
-<p>针对每个namenode的每次迭代，又可以分出初始化节点、选择移动节点、移动/分发数据三个阶段。</p>
+<p>针对每个namenode的每次迭代，又可以分出初始化节点、选择移动节点、移动数据三个部分。</p>
 
 <pre><code>  private ReturnStatus run(int iteration, Formatter formatter, Configuration conf) {
-...
+      ...
       final long bytesLeftToMove = initNodes(nnc.client.getDatanodeReport(DatanodeReportType.LIVE));
       if (bytesLeftToMove == 0) {
         System.out.println("The cluster is balanced. Exiting...");
@@ -136,15 +345,15 @@ dfs.namenode.rpc-address.[nameservice ID].[name node ID]
       }
 
       return ReturnStatus.IN_PROGRESS;
-...
+      ...
   }
 </code></pre>
 
+<p>获取集群Live Datanode节点的信息，和通过50070查看的信息差不多，然后调用initNode()方法。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/8F/wKhkA1QJFgaAAsSNAAD4HDo1RfA678.png" alt="" /></p>
+
 <p>5.1 初始化节点</p>
-
-<p>获取集群Live Datanode节点的信息（和通过50070网页呈现的信息差不多），然后调用initNode()方法。</p>
-
-<p><img src="http://file.bmob.cn/M00/0C/CE/wKhkA1QJfcSAIvuAAAAeoThXFMU356.png" alt="" /></p>
 
 <p><code>initNodes()</code>中获取每个Datanode的capacity和dfsUsed数据，计算整个集群dfs的平均使用率avgUtilization。
 然后根据每个节点的使用率与集群使用率，以及阀值进行比较划分为4种情况：
@@ -152,9 +361,7 @@ dfs.namenode.rpc-address.[nameservice ID].[name node ID]
 
 <p><img src="http://file.bmob.cn/M00/0C/95/wKhkA1QJH2uAa8UEAABq7RCSLQ0452.png" alt="" /></p>
 
-<p>同时取<strong>超出平均+阀值</strong>和<strong>低于平均-阀值</strong>的字节数最大值，即集群达到平衡需要移动的字节数。</p>
-
-<hr />
+<p>同时取超出<strong>平均+阀值</strong>和<strong>低于平均-阀值</strong>的字节数最大值，即集群达到平衡需要移动的字节数。</p>
 
 <p>为了测试，如果集群已经平衡，可以搞点数据让集群不平衡，方便查看调试。</p>
 
@@ -165,7 +372,7 @@ sbin/start-balancer.sh -threshold 1
 
 <p>5.2 选择节点</p>
 
-<p>初始化节点后，同时计算出了需要移动的数据量。接下来就是选择移动数据的节点<code>chooseNodes</code>，以及接收对应数据的节点。</p>
+<p>初始化节点后，计算出了需要移动的数据量。接下来就是选择移动数据的节点<code>chooseNodes</code>，以及接收对应数据的节点。</p>
 
 <pre><code>  private long chooseNodes() {
     // First, match nodes on the same node group if cluster is node group aware
@@ -235,7 +442,7 @@ sbin/start-balancer.sh -threshold 1
   }  
 </code></pre>
 
-<p>选择到<strong>接收节点</strong>后，接下来计算可以移动的数据量（取双方的available的最小值），然后把<strong>接收节点</strong>和<strong>数据量</strong>的信息NodeTask存储到需移动数据节点Source的NodeTasks对象中。</p>
+<p>选择到<strong>接收节点</strong>后，接下来计算可以移动的数据量（取双方的available的最大值），然后把<strong>接收节点</strong>和<strong>数据量</strong>的信息NodeTask存储到Source的NodeTasks对象中。</p>
 
 <pre><code>  private void matchSourceWithTargetToMove(
       Source source, BalancerDatanode target) {
@@ -621,246 +828,6 @@ Usage: java Balancer
 <li><a href="http://blog.csdn.net/lingzihan1215/article/details/8700532">hadoop的datanode多磁盘空间处理</a></li>
 </ul>
 
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop2 Snappy Compress]]></title>
-    <link href="http://winse.github.io/blog/2014/07/30/hadoop2-snappy-compress/"/>
-    <updated>2014-07-30T00:25:39+08:00</updated>
-    <id>http://winse.github.io/blog/2014/07/30/hadoop2-snappy-compress</id>
-    <content type="html"><![CDATA[<p>网上查了很多资料说的很复杂，要叉叉叉叉叉！其实hadoop2已经集成了hadoop-snappy，只要安装snappy即可。但是也没有一些文章说的只要编译snappy然后放到lib/native路径下即可，还需要重新编译libhadoop的library包。</p>
-
-<p>查找hadoop-snappy的源码的时刻，在C代码里面定义了<code>HADOOP_SNAPPY_LIBRARY</code>，然后理着这个思路去查找，发现在CMakeFile文件中也定义了对应的变量，然后再查找pom.xml的native profile中定义了snappy.prefix的属性。最后就有了下面的步骤。</p>
-
-<p>1) build snappy</p>
-
-<p>编译Snappy，并把lib拷贝/同步到hadoop的native目录下。</p>
-
-<pre><code>tar zxf snappy-1.1.1.tar.gz 
-cd snappy-1.1.1
-./configure --prefix=/home/hadoop/snappy
-make
-make install
-
-cd snappy
-cd lib/
-rysnc -vaz * ~/hadoop-2.2.0/lib/native/
-</code></pre>
-
-<p>2) rebuild hadoop common project</p>
-
-<p>重新编译hadoop的lib，覆盖原来的文件。</p>
-
-<pre><code>[hadoop@master1 hadoop-common]$ mvn package -Dmaven.javadoc.skip=true -DskipTests -Dsnappy.prefix=/home/hadoop/snappy -Drequire.snappy=true -Pnative 
-
-[hadoop@master1 hadoop-common]$ cd ~/hadoop-2.2.0-src/hadoop-common-project/hadoop-common/
-[hadoop@master1 hadoop-common]$ cd target/native/target/usr/local/lib/
-[hadoop@master1 lib]$ ll
-total 1252
--rw-rw-r--. 1 hadoop hadoop 820824 Jul 30 00:18 libhadoop.a
-lrwxrwxrwx. 1 hadoop hadoop     18 Jul 30 00:18 libhadoop.so -&gt; libhadoop.so.1.0.0
--rwxrwxr-x. 1 hadoop hadoop 455542 Jul 30 00:18 libhadoop.so.1.0.0
-[hadoop@master1 lib]$ rsync -vaz * ~/hadoop-2.2.0/lib/native/
-sending incremental file list
-libhadoop.a
-libhadoop.so.1.0.0
-
-sent 409348 bytes  received 53 bytes  818802.00 bytes/sec
-total size is 1276384  speedup is 3.12
-[hadoop@master1 lib]$ 
-</code></pre>
-
-<p>3) check</p>
-
-<p>检查程序snappy是否已经配置成功</p>
-
-<pre><code>[hadoop@master1 ~]$ hadoop checknative -a
-14/07/30 00:22:14 WARN bzip2.Bzip2Factory: Failed to load/initialize native-bzip2 library system-native, will use pure-Java version
-14/07/30 00:22:14 INFO zlib.ZlibFactory: Successfully loaded &amp; initialized native-zlib library
-Native library checking:
-hadoop: true /home/hadoop/hadoop-2.2.0/lib/native/libhadoop.so.1.0.0
-zlib:   true /lib64/libz.so.1
-snappy: true /home/hadoop/hadoop-2.2.0/lib/native/libsnappy.so.1
-lz4:    true revision:43
-bzip2:  false 
-14/07/30 00:22:14 INFO util.ExitUtil: Exiting with status 1
-[hadoop@master1 ~]$ 
-</code></pre>
-
-<p>4) 跑一个压缩程序</p>
-
-<p>先参考网上的，直接用hbase的带的测试类运行（前提：需要在hbase-env.sh中配置HADOOP_HOME，这样hbase才能找到hadoop下的lib本地库）</p>
-
-<pre><code>[hadoop@master1 ~]$ hbase-0.98.3-hadoop2/bin/hbase org.apache.hadoop.hbase.util.CompressionTest file:///tmp/abc.snappy snappy
-2014-07-30 08:50:42,617 INFO  [main] Configuration.deprecation: hadoop.native.lib is deprecated. Instead, use io.native.lib.available
-SLF4J: Class path contains multiple SLF4J bindings.
-SLF4J: Found binding in [jar:file:/home/hadoop/hbase-0.98.3-hadoop2/lib/slf4j-log4j12-1.6.4.jar!/org/slf4j/impl/StaticLoggerBinder.class]
-SLF4J: Found binding in [jar:file:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/slf4j-log4j12-1.7.5.jar!/org/slf4j/impl/StaticLoggerBinder.class]
-SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
-2014-07-30 08:50:44,515 INFO  [main] util.ChecksumType: Checksum using org.apache.hadoop.util.PureJavaCrc32
-2014-07-30 08:50:44,522 INFO  [main] util.ChecksumType: Checksum can use org.apache.hadoop.util.PureJavaCrc32C
-2014-07-30 08:50:45,388 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
-2014-07-30 08:50:45,408 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
-2014-07-30 08:50:45,430 ERROR [main] hbase.KeyValue: Unexpected getShortMidpointKey result, fakeKey:testkey, firstKeyInBlock:testkey
-2014-07-30 08:50:47,088 INFO  [main] compress.CodecPool: Got brand-new decompressor [.snappy]
-SUCCESS
-[hadoop@master1 ~]$ 
-</code></pre>
-
-<p>看到最后的<strong>SUCCESS</strong>就说明安装配置成功了！</p>
-
-<p>接下来自己写程序测试压缩/解压缩，首先编写java类：</p>
-
-<pre><code>import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
-import java.io.IOException;
-
-import org.apache.commons.lang.StringUtils;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.compress.CompressionCodec;
-import org.apache.hadoop.io.compress.CompressionInputStream;
-import org.apache.hadoop.io.compress.CompressionOutputStream;
-import org.apache.hadoop.io.compress.SnappyCodec;
-import org.apache.hadoop.util.ReflectionUtils;
-import org.apache.zookeeper.common.IOUtils;
-
-public class SnappyCompressTest {
-
-        public static void main(String[] args) throws FileNotFoundException, IOException {
-                try {
-                        execute(args);
-                } catch (Exception e) {
-                        System.out.println("Usage: $0 read|write file[.snappy]");
-                }
-        }
-
-        private static void execute(String[] args) throws FileNotFoundException, IOException {
-                String op = args[0];
-                String file = args[1];
-                String snappyFile = file + ".snappy";
-
-                Class&lt;? extends CompressionCodec&gt; clazz = SnappyCodec.class;
-                CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
-
-                if (StringUtils.equalsIgnoreCase(op, "read")) {
-                        FileInputStream fin = new FileInputStream(snappyFile);
-                        CompressionInputStream in = codec.createInputStream(fin);
-                        FileOutputStream fout = new FileOutputStream(file);
-                        IOUtils.copyBytes(in, fout, 4096, true);
-                } else {
-                        FileInputStream fin = new FileInputStream(file);
-                        CompressionOutputStream out = codec.createOutputStream(new FileOutputStream(snappyFile));
-                        IOUtils.copyBytes(fin, out, 4096, true);
-                }
-        }
-
-}
-</code></pre>
-
-<p>编译运行，测试读写功能。使用hadoop命令可以简化很多工作，把当前路径加入到<code>HADOOP_CLASSPATH</code>。</p>
-
-<pre><code>[hadoop@master1 test]$ javac -cp `hadoop classpath` SnappyCompressTest.java 
-[hadoop@master1 test]$ export HADOOP_CLASSPATH=$PWD
-[hadoop@master1 test]$ hadoop SnappyCompressTest 
-Usage: $0 read|write file[.snappy]
-[hadoop@master1 test]$ hadoop SnappyCompressTest write test.txt 
-[hadoop@master1 test]$ ll
-total 16
--rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
--rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
--rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:23 test.txt
--rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
-[hadoop@master1 test]$ rm test.txt
-[hadoop@master1 test]$ hadoop SnappyCompressTest read test.txt 
-[hadoop@master1 test]$ ll
-total 16
--rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
--rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
--rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:28 test.txt
--rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
-[hadoop@master1 test]$ cat test.txt
-abc
-abc
-abc
-</code></pre>
-
-<p>5) hbase中添加压缩</p>
-
-<p>把所有library，以及hbase的配置同步其他所有从节点。对hbase的表使用Snappy压缩。</p>
-
-<pre><code>hbase(main):001:0&gt; create 'st1', 'f1'
-hbase(main):005:0&gt; alter 'st1', {NAME=&gt;'f1', COMPRESSION=&gt;'snappy'}
-Updating all regions with the new schema...
-0/1 regions updated.
-1/1 regions updated.
-Done.
-0 row(s) in 2.7880 seconds
-
-hbase(main):010:0&gt; create 'sst1','f1'
-0 row(s) in 0.5730 seconds
-
-=&gt; Hbase::Table - sst1
-hbase(main):011:0&gt; flush 'sst1'
-0 row(s) in 2.5380 seconds
-
-hbase(main):012:0&gt; flush 'st1'
-0 row(s) in 7.5470 seconds
-</code></pre>
-
-<p>对于hbase来说，使用压缩消耗还是挺大的。插入10w数据中间进行compaction时停顿比较久。最后flush写数据的时间也长了很多！
-下面是文件写入后的文件大小对比（由于是进行简单的测试，写入的数据重复比较多。具体比例没有参考价值）：</p>
-
-<p><img src="http://file.bmob.cn/M00/05/5A/wKhkA1PYz9CAB-TdAAEWX8LGpUo149.png" alt="" /></p>
-
-<p>6) 正式环境下解压snappy文件</p>
-
-<pre><code>
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.compress.CompressionCodec;
-import org.apache.hadoop.io.compress.CompressionInputStream;
-import org.apache.hadoop.io.compress.SnappyCodec;
-import org.apache.hadoop.util.ReflectionUtils;
-import org.apache.zookeeper.common.IOUtils;
-
-public class DecompressTest {
-    public static void main(String[] args) throws IOException {
-
-        Configuration conf = new Configuration();
-        Path path = new Path(args[0]);
-        FileSystem fs = path.getFileSystem(conf);
-
-        Class&lt;? extends CompressionCodec&gt; clazz = SnappyCodec.class;
-        CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
-
-        InputStream fin = fs.open(path);
-        CompressionInputStream in = codec.createInputStream(fin);
-
-        IOUtils.copyBytes(in, System.out, 4096, true);
-
-        fin.close();
-
-        System.out.println("SUCCESS");
-
-    }
-}
-
-// build &amp; run
-
-&gt;DecompressTest.java 
-vi DecompressTest.java 
-javac -cp `hadoop classpath`  DecompressTest.java 
-export HADOOP_CLASSPATH=.
-# snappyfile on hdfs
-hadoop DecompressTest /user/hive/t_ods_access_log2/month=201408/day=20140828/hour=2014082808/t_ods_access_log2-2014082808.our.snappy.1409187524328
-</code></pre>
 ]]></content>
   </entry>
   
