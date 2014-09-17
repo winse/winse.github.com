@@ -9,9 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="第一章 简介 讲了redis的产生的缘由
-Salvtore Sanfilippo/Pieter Noordhuis被招到VMware专门负责redis
-redis的源码可以从github下载编译。 redis相比keyvalue，提供了更加丰富的值类型：字符串/散列/列表/集合/有序集合， &hellip;">
+  <meta name="description" content="hadoop默认就有冗余（dfs.replication）的机制，所以一般情况下，一台机器挂了也没所谓。集群会自动的进行复制均衡处理。 作为测试，如果dfs.replication设置为1的情况下，怎么安全的把datanode节点服务关闭呢？例如说，刚刚开始搭建环境是把namenode、 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -84,6 +82,125 @@ redis的源码可以从github下载编译。 redis相比keyvalue，提供了更�
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/07/29/safely-remove-datanode/">Hadoop安全的关闭datanode节点</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-07-29T15:08:41+08:00" pubdate data-updated="true">Tue 2014-07-29 15:08</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>hadoop默认就有冗余（dfs.replication）的机制，所以一般情况下，一台机器挂了也没所谓。集群会自动的进行复制均衡处理。</p>
+
+<p>作为测试，如果dfs.replication设置为1的情况下，怎么安全的把datanode节点服务关闭呢？例如说，刚刚开始搭建环境是把namenode、datanode放在一台机器上，后面增加了机器如何把datanode分离出来呢？</p>
+
+<p>借助于<strong>dfs.hosts.exclude</strong>即可完成顺序的完成此项任务。</p>
+
+<p>修改hdfs-site.xml配置。我操作的时刻仅修改了master1上的hdfs-site.xml。把<strong>master1</strong>值写入到对应的文件中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ cat hdfs-site.xml 
+</span><span class='line'>...
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.hosts.exclude&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;/home/hadoop/hadoop-2.2.0/etc/hadoop/exclude&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;/configuration&gt;
+</span><span class='line'>[hadoop@master1 hadoop]$ cat /home/hadoop/hadoop-2.2.0/etc/hadoop/exclude
+</span><span class='line'>master1
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>修改完成后，刷新节点即可(完全没有必要重启集dfs)。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hadoop dfsadmin -refreshNodes</span></code></pre></td></tr></table></div></figure>
+
+
+<p>可以通过<code>dfsadmin -report</code>或者网页查看master1已经变成<em>Decommission In Progress</em>了。</p>
+
+<p><img src="http://file.bmob.cn/M00/05/4C/wKhkA1PXUMOAVvvWAAED6CN-3Rg187.png" alt="" /></p>
+
+<p>注：</p>
+
+<p>问题一： 在新建节点是slaver1的防火墙没关闭，由于master1已经被exclude，而slaver1不能提供服务，上传文件时报错：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ hadoop fs -put slaves  /
+</span><span class='line'>14/07/29 15:18:21 WARN hdfs.DFSClient: DataStreamer Exception
+</span><span class='line'>org.apache.hadoop.ipc.RemoteException(java.io.IOException): File /slaves._COPYING_ could only be replicated to 0 nodes instead of minReplication (=1).  There are 2 datanode(s) running and no node(s) are excluded in this operation.
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.chooseTarget(BlockManager.java:1384)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getAdditionalBlock(FSNamesystem.java:2477)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>关闭防火墙一样再次上传，还是报同样的错误。此时，也可以通过刷新节点<code>hadoop dfsadmin -refreshNodes</code>来解决。</p>
+
+<p>问题二： 设置备份数量</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ hadoop fs -setrep 3 /slaves 
+</span><span class='line'>Replication 3 set: /slaves</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>问题三： 新增节点</p>
+
+<p>拷贝程序到新增节点，然后启动</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ tar zc hadoop-2.2.0 --exclude=logs | ssh slaver2 'cat | tar zx'
+</span><span class='line'>
+</span><span class='line'>[hadoop@slaver2 ~]$ cd hadoop-2.2.0/
+</span><span class='line'>[hadoop@slaver2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start datanode</span></code></pre></td></tr></table></div></figure>
+
+
+<p>也可以修改master上的slavers文件再<code>sbin/start-dfs.sh</code>启动。</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -3198,316 +3315,6 @@ ls
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/06/18/hadoop-tez-firststep/">Tez编译及使用</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-06-18T04:22:58+08:00" pubdate data-updated="true">Wed 2014-06-18 04:22</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>初步了解</h2>
-
-<p>hadoop2自带的mapreduce任务中间只能传递一次，也即一个任务只能聚合一次。而tez项目是对原有yarn架构的一个拓展，使用DAG（无环有向图）实现MRR的任务框架。</p>
-
-<p><img src="http://farm6.staticflickr.com/5571/14256993179_4990fc86d5_o.png" alt="" /></p>
-
-<p>上图中，左边的MR任务完成一个步骤后，需要进行<strong>数据存储</strong>后再执行另一个任务来进行第二个“reduce”； 而tez则可以在reduce后继续执行reduce，减少了中间过程的IO以及mapreduce的启动时间。</p>
-
-<h2>环境整合</h2>
-
-<ul>
-<li><a href="http://tez.incubator.apache.org/install.html">Install/Deploy</a></li>
-<li>hadoop-2.2.0（umcc97-44：hdfs， umcc97-79：yarn）</li>
-<li>windows下使用Cygwin编译</li>
-</ul>
-
-
-<h3>下载编译tez</h3>
-
-<p>首先下载<a href="http://apache.fayea.com/apache-mirror/incubator/tez/tez-0.4.0-incubating/">tez-0.4.0-incubating.tar.gz</a>，同时还需要<a href="http://code.google.com/p/protobuf">protoc</a>的程序支持（编译<a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/SingleCluster.html">hadoop源码</a>也需要这个的）。
-解压后，使用mvn编译。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
-</span><span class='line'>$ tar zxvf tez-0.4.0-incubating.tar.gz
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
-</span><span class='line'>$ cd tez-0.4.0-incubating/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
-</span><span class='line'>$ mvn install -DskipTests -Dmaven.javadoc.skip
-</span><span class='line'>...
-</span><span class='line'>[INFO] Reactor Summary:
-</span><span class='line'>[INFO]
-</span><span class='line'>[INFO] tez ............................................... SUCCESS [1.518s]
-</span><span class='line'>[INFO] tez-api ........................................... SUCCESS [8.890s]
-</span><span class='line'>[INFO] tez-common ........................................ SUCCESS [0.725s]
-</span><span class='line'>[INFO] tez-runtime-internals ............................. SUCCESS [2.529s]
-</span><span class='line'>[INFO] tez-runtime-library ............................... SUCCESS [5.100s]
-</span><span class='line'>[INFO] tez-mapreduce ..................................... SUCCESS [3.666s]
-</span><span class='line'>[INFO] tez-mapreduce-examples ............................ SUCCESS [2.692s]
-</span><span class='line'>[INFO] tez-dag ........................................... SUCCESS [13.943s]
-</span><span class='line'>[INFO] tez-tests ......................................... SUCCESS [1.691s]
-</span><span class='line'>[INFO] tez-dist .......................................... SUCCESS [14.370s]
-</span><span class='line'>[INFO] Tez ............................................... SUCCESS [0.245s]
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] BUILD SUCCESS
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] Total time: 55.791s
-</span><span class='line'>[INFO] Finished at: Tue Jun 17 17:33:45 CST 2014
-</span><span class='line'>[INFO] Final Memory: 35M/151M
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>上传tez程序的jars到HDFS</h3>
-
-<p>为了简单我直接把tez放到开发环境的集群上面去测试了。放到本地环境应该也类似。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
-</span><span class='line'>$ cd tez-dist/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist
-</span><span class='line'>$ cd target/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
-</span><span class='line'>$ export HADOOP_USER_NAME=hadoop
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
-</span><span class='line'>$  hadoop dfs -put tez-0.4.0-incubating/tez-0.4.0-incubating/ hdfs://umcc97-44:9000/apps/
-</span><span class='line'>DEPRECATED: Use of this script to execute hdfs command is deprecated.
-</span><span class='line'>Instead use the hdfs command for it.
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>配置集群环境</h3>
-
-<p>首先看下原来集群的classpath路径，由于已经包括了etc/hadoop目录，所以这里我直接把<code>tez-site.xml</code>放到该目录下。把所有的tez-lib上传到share目录下，并添加到HADOOP_CLASSPATH。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  [hadoop@umcc97-79 hadoop]$ hadoop classpath
-</span><span class='line'>  /home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
-</span><span class='line'>  
-</span><span class='line'>  # 用于map/reduce
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ cat tez-site.xml 
-</span><span class='line'>  &lt;?xml version="1.0"?&gt;
-</span><span class='line'>  &lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-</span><span class='line'>  
-</span><span class='line'>  &lt;!-- Put site-specific property overrides in this file. --&gt;
-</span><span class='line'>  
-</span><span class='line'>  &lt;configuration&gt;
-</span><span class='line'>    &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;tez.lib.uris&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
-</span><span class='line'>    &lt;/property&gt;
-</span><span class='line'>  &lt;/configuration&gt;
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ 
-</span><span class='line'>  
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ cd ~/hadoop-2.2.0/share/hadoop/tez/
-</span><span class='line'>  [hadoop@umcc97-79 tez]$ ll
-</span><span class='line'>  total 9616
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  303139 Jun 17 17:33 avro-1.7.4.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop   41123 Jun 17 17:33 commons-cli-1.2.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  610259 Jun 17 17:33 commons-collections4-4.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop 1648200 Jun 17 17:33 guava-11.0.2.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  710492 Jun 17 17:33 guice-3.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  656365 Jun 17 17:33 hadoop-mapreduce-client-common-2.2.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop 1455001 Jun 17 17:33 hadoop-mapreduce-client-core-2.2.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop   21537 Jun 17 17:33 hadoop-mapreduce-client-shuffle-2.2.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop   81743 Jun 17 17:33 jettison-1.3.4.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  533455 Jun 17 17:33 protobuf-java-2.5.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  995968 Jun 17 17:33 snappy-java-1.0.4.1.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  749917 Jun 17 17:33 tez-api-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop   34049 Jun 17 17:33 tez-common-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  970987 Jun 17 17:33 tez-dag-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  246409 Jun 17 17:33 tez-mapreduce-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  199934 Jun 17 17:33 tez-mapreduce-examples-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  114692 Jun 17 17:33 tez-runtime-internals-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  352177 Jun 17 17:33 tez-runtime-library-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop    6845 Jun 17 17:33 tez-tests-0.4.0-incubating.jar
-</span><span class='line'>  [hadoop@umcc97-79 tez]$ 
-</span><span class='line'>  
-</span><span class='line'>  # 用于client任务提交
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ grep HADOOP_CLASSPATH hadoop-env.sh
-</span><span class='line'>  export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>  
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ sed -n 19,23p mapred-site.xml
-</span><span class='line'>  &lt;configuration&gt;
-</span><span class='line'>    &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.framework.name&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;yarn-tez&lt;/value&gt;
-</span><span class='line'>    &lt;/property&gt;
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>同步，重启yarn</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>for h in `cat hadoop-2.2.0/etc/hadoop/slaves ` ; do rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 $h:~/ ; done
-</span><span class='line'>
-</span><span class='line'>rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 umcc97-44:~/</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>测试效果</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  [hadoop@umcc97-79 ~]$ hadoop classpath
-</span><span class='line'>  /home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/lib/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
-</span><span class='line'>  [hadoop@umcc97-79 ~]$ cd hadoop-2.2.0/share/hadoop/mapreduce/
-</span><span class='line'>  [hadoop@umcc97-79 mapreduce]$ hadoop jar hadoop-mapreduce-client-jobclient-2.2.0-tests.jar sleep -mt 1 -rt 1 -m 1 -r 1
-</span><span class='line'>  
-</span><span class='line'>    hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount  /hello/in /hello/out
-</span><span class='line'>    hadoop fs -put hadoop-2.2.0/logs/yarn-hadoop-resourcemanager-umcc97-79.* /hello/in
-</span><span class='line'>    hadoop fs -rmr /hello/out
-</span><span class='line'>    hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount  /hello/in /hello/out
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>回滚，使用时临时修改环境变量即可</h3>
-
-<p>使用了tez后，使用hive-0.12.0不能运行了。由于其他同事需要用hive，得把配置全部修改回去【<a href="/blog/2014/06/21/upgrade-hive/">hive-0.13中使用tez</a>】。</p>
-
-<p>其实在<strong>提交任务</strong>时指定配置参数即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-79 ~]$ export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>[hadoop@umcc97-79 ~]$ hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount -Dmapreduce.framework.name=yarn-tez  /hello/in /hello/out</span></code></pre></td></tr></table></div></figure>
-
-
-<p>org.apache.tez.mapreduce.examples.OrderedWordCount不仅计算出了结果，同时按个数大小进行了排序。</p>
-
-<p>问题： tez的任务的history还不知道怎么弄的，启动historyserver没作用。</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/5">&larr; Older</a>
@@ -3528,6 +3335,10 @@ ls
 <section>
   <h1>Recent Posts</h1>
   <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2014/09/17/windows-hadoop2-test-your-mapreduce-feature/">在windows开发测试mapreduce几种方式</a>
+      </li>
     
       <li class="post">
         <a href="/blog/2014/09/12/scala-wordcount-on-hadoop/">Scala Wordcount on Hadoop2</a>
@@ -3555,10 +3366,6 @@ ls
     
       <li class="post">
         <a href="/blog/2014/09/01/hadoop2-mapreduce-compress/">Hadoop2 Mapreduce输入输出压缩</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2014/08/29/xamarin-application-use-adt-eclipse-debug-java-code/">用ADT调试Xamarin程序中的Java库</a>
       </li>
     
   </ul>
@@ -3595,7 +3402,7 @@ ls
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (24) 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (25) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3640,7 +3447,7 @@ ls
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (59)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (60)</li>
 	</ul>
 	
 </section>
