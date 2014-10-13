@@ -1,18 +1,21 @@
 ---
 layout: post
-title: "hadoop datanode config should equals"
+title: "hadoop的datanode数据节点软/硬件配置应该一致"
 date: 2014-08-02 22:21:12 +0800
 comments: true
 categories: [hadoop]
 ---
 
+最好的就是集群的所有的datanode的节点的**硬件配置一样**！当然系统时间也的一致，hosts等等这些。机器配置一样时可以使用脚本进行批量处理，给维护带来很大的便利性。
+
 今天收到运维的信息，说集群的一台机器硬盘爆了！上到环境查看`df -h`发现硬盘配置和其他datanode的不同！但是hadoop hdfs-site.xml的`dfs.datanode.data.dir`却是一样的！
 
-经验： dir的配置应该是一个系统设备对应一个路径，而不是一个系统目录对应dir的一个路径！最好的就是集群的所有的datanode的节点的**硬件配置一样**！当然系统时间也的一致，hosts等等这些。
+经验： dir的配置应该是一个系统设备对应一个路径，而不是一个系统目录对应dir的一个路径！
+
 
 ## 问题现象以及根源
 
-问题机器的磁盘情况：
+问题机器A的磁盘情况：
 
 ```
 [hadoop@hadoop-slaver8 ~]$ df -h
@@ -68,7 +71,7 @@ tmpfs                  32G   88K   32G   1% /dev/shm
 /dev/sdb15            1.8T  469G  1.3T  27% /data15
 ```
 
-问题机器没有挂存储，仅仅是建立了对应的目录结构。但是并不是把目录挂载到单独的设备。
+出问题机器没有挂存储，仅仅是建立了对应的目录结构，并不是把目录挂载到单独的存储设备上。
 
 同时查看50070的前面的信息，hadoop把每个逗号分隔后的路径默认都做一个磁盘设备来计算！
 
@@ -104,7 +107,7 @@ hadoop-slaver8	192.168.32.28:50010	1	In Service	37.94	2.46	34.71	0.77	6.48		2.03
 </property>
 ```
 
-设置了reserved保留空间后，再看LIVE页面slaver8的容量变少了且正好等于(盘的容量2.7T-430G~=2.26T 源码在`FsVolumeImpl.getCapacity()`)。
+设置了reserved保留空间后，再看LIVE页面slaver8的容量变少了且正好等于(盘的容量2.7T-430G~=2.26T 计算容量的hdfs源码在`FsVolumeImpl.getCapacity()`)。
 
 ```
 hadoop-slaver8	192.168.32.28:50010	1	In Service	2.26	2.23	0.00	0.03	98.66

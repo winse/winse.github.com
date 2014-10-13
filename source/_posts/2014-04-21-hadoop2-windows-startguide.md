@@ -3,6 +3,8 @@ layout: post
 title: "Windows下部署/配置/调试hadoop2"
 date: 2014-4-21 8:27:11
 categories: [hadoop]
+comments: true
+recommend: true
 ---
 
 Windows作为开发屌丝必备，在windows上如何跑集群方便开发调试，以及怎么把eclipse写好的任务mapreduce提交到测试的集群(linux)上面去跑？这些都是需要直面并解决的问题。
@@ -62,42 +64,40 @@ Windows作为开发屌丝必备，在windows上如何跑集群方便开发调试
 hadoop2.2.0操作本地文件针对平台的进行了处理。也就是只要在windows运行集群，不管怎么样，你都得先把winutils.exe、hadoop.dll编译出来，用来处理对本地文件赋权、软链接等（类似Linux-Shell的功能）。否则会看到下面的错误：
 
 * 命令执行出错，少了winutils.exe
-	
-	```
-	14/04/14 20:07:58 ERROR util.Shell: Failed to locate the winutils binary in the hadoop binary path
-	java.io.IOException: Could not locate executable null\bin\winutils.exe in the Hadoop binaries.
-		at org.apache.hadoop.util.Shell.getQualifiedBinPath(Shell.java:278)
-		at org.apache.hadoop.util.Shell.getWinUtilsPath(Shell.java:300)
-		at org.apache.hadoop.util.Shell.<clinit>(Shell.java:293)
+```
+14/04/14 20:07:58 ERROR util.Shell: Failed to locate the winutils binary in the hadoop binary path
+java.io.IOException: Could not locate executable null\bin\winutils.exe in the Hadoop binaries.
+	at org.apache.hadoop.util.Shell.getQualifiedBinPath(Shell.java:278)
+	at org.apache.hadoop.util.Shell.getWinUtilsPath(Shell.java:300)
+	at org.apache.hadoop.util.Shell.<clinit>(Shell.java:293)
 
-	14/04/17 21:22:32 INFO service.AbstractService: Service org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerServic
-	e failed in state INITED; cause: java.lang.NullPointerException
-	java.lang.NullPointerException
-			at java.lang.ProcessBuilder.start(ProcessBuilder.java:1010)
-			at org.apache.hadoop.util.Shell.runCommand(Shell.java:404)
-			at org.apache.hadoop.util.Shell.run(Shell.java:379)
-			at org.apache.hadoop.util.Shell$ShellCommandExecutor.execute(Shell.java:589)
-			at org.apache.hadoop.util.Shell.execCommand(Shell.java:678)
-			at org.apache.hadoop.util.Shell.execCommand(Shell.java:661)
-			at org.apache.hadoop.fs.RawLocalFileSystem.setPermission(RawLocalFileSystem.java:639)
-			at org.apache.hadoop.fs.RawLocalFileSystem.mkdirs(RawLocalFileSystem.java:435)
-	```
+14/04/17 21:22:32 INFO service.AbstractService: Service org.apache.hadoop.yarn.server.nodemanager.LocalDirsHandlerServic
+e failed in state INITED; cause: java.lang.NullPointerException
+java.lang.NullPointerException
+		at java.lang.ProcessBuilder.start(ProcessBuilder.java:1010)
+		at org.apache.hadoop.util.Shell.runCommand(Shell.java:404)
+		at org.apache.hadoop.util.Shell.run(Shell.java:379)
+		at org.apache.hadoop.util.Shell$ShellCommandExecutor.execute(Shell.java:589)
+		at org.apache.hadoop.util.Shell.execCommand(Shell.java:678)
+		at org.apache.hadoop.util.Shell.execCommand(Shell.java:661)
+		at org.apache.hadoop.fs.RawLocalFileSystem.setPermission(RawLocalFileSystem.java:639)
+		at org.apache.hadoop.fs.RawLocalFileSystem.mkdirs(RawLocalFileSystem.java:435)
+```
 
 * 少了hadoop.dll的本地库文件
-	
-	```
-	14/04/17 21:30:27 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-ja
-	va classes where applicable
-	14/04/17 21:30:29 FATAL datanode.DataNode: Exception in secureMain
-	java.lang.UnsatisfiedLinkError: org.apache.hadoop.io.nativeio.NativeIO$Windows.access0(Ljava/lang/String;I)Z
-			at org.apache.hadoop.io.nativeio.NativeIO$Windows.access0(Native Method)
-			at org.apache.hadoop.io.nativeio.NativeIO$Windows.access(NativeIO.java:435)
-			at org.apache.hadoop.fs.FileUtil.canRead(FileUtil.java:977)
-			at org.apache.hadoop.util.DiskChecker.checkAccessByFileMethods(DiskChecker.java:177)
-			at org.apache.hadoop.util.DiskChecker.checkDirAccess(DiskChecker.java:164)
-			at org.apache.hadoop.util.DiskChecker.checkDir(DiskChecker.java:147)
-			at org.apache.hadoop.hdfs.server.datanode.DataNode$DataNodeDiskChecker.checkDir(DataNode.java:1698)
-	```
+```
+14/04/17 21:30:27 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-ja
+va classes where applicable
+14/04/17 21:30:29 FATAL datanode.DataNode: Exception in secureMain
+java.lang.UnsatisfiedLinkError: org.apache.hadoop.io.nativeio.NativeIO$Windows.access0(Ljava/lang/String;I)Z
+		at org.apache.hadoop.io.nativeio.NativeIO$Windows.access0(Native Method)
+		at org.apache.hadoop.io.nativeio.NativeIO$Windows.access(NativeIO.java:435)
+		at org.apache.hadoop.fs.FileUtil.canRead(FileUtil.java:977)
+		at org.apache.hadoop.util.DiskChecker.checkAccessByFileMethods(DiskChecker.java:177)
+		at org.apache.hadoop.util.DiskChecker.checkDirAccess(DiskChecker.java:164)
+		at org.apache.hadoop.util.DiskChecker.checkDir(DiskChecker.java:147)
+		at org.apache.hadoop.hdfs.server.datanode.DataNode$DataNodeDiskChecker.checkDir(DataNode.java:1698)
+```
 
 #### 下载源码进行编译
 
@@ -122,13 +122,13 @@ Switched to a new branch 'branch-2.2.0'
 jira: https://issues.apache.org/jira/browse/HADOOP-9922		
 patch: https://issues.apache.org/jira/secure/attachment/12600760/HADOOP-9922.patch
 
-native.sln-patch有点问题下面通过vs修改，使用Visual Studio修改native的活动平台
+native.sln-patch有点问题，下面通过vs修改，使用Visual Studio修改native的活动平台
 
-![](http://farm4.staticflickr.com/3784/13895015882_c7cd95ece5_o.png)
+![](http://file.bmob.cn/M00/0B/2A/wKhkA1QFebmAcNJsAATafRp0jDs763.png)
 
 第三步 在`Visual Studio 命令提示(2010)`命令行进行Maven编译(仅需编译hadoop-common)
 
-![](http://farm4.staticflickr.com/3704/13918439233_8b2693c462_o.png)
+![](http://file.bmob.cn/M00/0B/2A/wKhkA1QFeeGAfZgdAAWIDc_jnSM492.png)
 
 ```
 E:\git\hadoop-common\hadoop-common-project\hadoop-common>mvn package -Pdist,native-win -DskipTests -Dtar -Dmaven.javadoc.skip=true
@@ -159,7 +159,7 @@ windows的本地库的路径就是PATH环境变量。所以**windows下最好还
 可以直接把linux伪分布式的配置cp过来用。然后修改namenode/datanode/yarn文件的存储路径就可以了。
 这里有个坑，`hdfs-default.xml`中的路径前面都加了`file://`前缀！所以hdfs配置中涉及到路径的，这里都得进行了修改。
 
-~~Notepad++的Ctrl+D是一个好功能啊~~
+**Notepad++的Ctrl+D是一个好功能啊**
 
 | 属性                                    | 值
 |:----------------------------------------|:-------------------------
@@ -204,7 +204,7 @@ windows的本地库的路径就是PATH环境变量。所以**windows下最好还
 如果是用windows的cmd的话，到这里已经基本ok了！**格式化namenode**（`hadoop namenode -format`），启动就ok了！
 ~~发现自己其实很傻×，固执的要用cygwin启动运行！用windows的cmd启动，然后用cygwin的终端查看数据不就行了！两不耽误！~~
 
-cmd命令**默认**是去bin目录下找hadoop.dll的，同时hadoop命令会把bin加入到java.library.path路径下。可以直接把hadoop.dll放到bin路径（强烈推荐）。
+cmd命令**默认**是去bin目录下找hadoop.dll的，同时hadoop命令会把bin加入到java.library.path路径下。再次强调/推荐：直接把hadoop.dll放到bin路径。
 设置环境变量，启动文件系统：
 
 ```
@@ -227,14 +227,14 @@ Found 1 items
 -rw-r--r--   1 Administrator supergroup       1366 2014-04-22 22:20 /README.txt
 ```
 
-JAVA_HOME的路径中最好不要有空格！
+JAVA_HOME的路径中最好不要有空格！否则测试下面的方式进行处理：
 > instead e.g. c:\Progra~1\Java\... instead of c:\Program Files\Java\....
 
-![](http://farm8.staticflickr.com/7460/13923348422_494288017b_o.png)
+![](http://file.bmob.cn/M00/0B/2A/wKhkA1QFehCATjV7AAVxPp-3G94526.png)
 
 好处也是明显的，直接是windows执行，可以使用jdk自带的工具查看运行情况。
 
-![](http://farm4.staticflickr.com/3668/13946643214_8e4666d636_o.png)
+![](http://file.bmob.cn/M00/0B/2A/wKhkA1QFejOAbQmkAAZxcxSbXv0535.png)
 
 ?疑问： log日志都写在hadoop.log文件中了？反正我是没看到hadoop.log的文件！
 
@@ -280,27 +280,27 @@ E:\>hadoop org.apache.hadoop.examples.WordCount /in /out
 	while true ; do cp -rf nm-local-dir/ backup/ ; sleep 0.5; done
 	```
 	
-	![](http://farm3.staticflickr.com/2897/13977296505_22cc6b1ca5_o.png)
+	![](http://file.bmob.cn/M00/0B/2A/wKhkA1QFe0aAKlntAAg2A_A0xS0493.png)
 		
 * 查看缓存文件
 	* 真正启动Mapreduce(yarnchild)的脚本文件launch_container.cmd
 	* 查看系统日志，确定错误
 		
-		![](http://farm8.staticflickr.com/7396/13977741284_54a3abccf7_o.png)
+		![](http://file.bmob.cn/M00/0B/28/wKhkA1QFd1GAMcbxAAIU6umDgu4394.png)
 		
 	* classpath路径
 		
-		![](http://farm3.staticflickr.com/2904/13977751494_f5520c5899_o.png)
+		![](http://file.bmob.cn/M00/0B/28/wKhkA1QFdsqAVo5pAAlRz9SLM3s104.png)
 		
 	* Job任务类型。第三个参数！
 		
-		![](http://farm3.staticflickr.com/2914/13977758184_bc40407385_o.png)
+		![](http://file.bmob.cn/M00/0B/28/wKhkA1QFd4qAJKJAAAr2lBOh9yU947.png)
 
 这里可以查看脚本，确认HADOOP的相关目录是否正确！以及查看classpath的MANIFEST.MF查看依赖的jar是否完整！也可以通过任务的名称了解相关信息。
 
 * 路径问题，不影响大局（可以不关注/不修改）
 
-![](http://farm4.staticflickr.com/3764/13947513865_da5c490c9e_o.png)
+![](http://file.bmob.cn/M00/0B/28/wKhkA1QFd8uAR1y0AAcQFk5KVVo655.png)
 
 * 调试map/reduce
 
@@ -656,7 +656,7 @@ lib-ext>jar tvf window-client-mapreduce-patch.jar
  18879 Tue Apr 15 11:42:42 CST 2014 org/apache/hadoop/mapreduce/v2/util/MRApps.java
 ```
 
-![](http://farm3.staticflickr.com/2935/13958663143_a434fb0da7_o.png)
+![](http://file.bmob.cn/M00/0B/2A/wKhkA1QFe3eATYhNAAifW_Xk8HI644.png)
 
 ### 参考：
 
@@ -710,7 +710,7 @@ mvn eclipse:eclipse
 1. stream工程的conf源码包找不到。修改为在.project文件中引用，然后把conf引用加入到.classpath。
 2. common下的test代码报错。把`target/generated-test-sources/java`文件夹的也作为源码包即可。
 
-![](http://farm8.staticflickr.com/7295/13945793574_1d5c0ea62e_o.png)
+![](http://file.bmob.cn/M00/0B/29/wKhkA1QFeTmAStwwAAuCI-ODX3Q346.png)
 
 eclipse的maven插件你得安装了（要用到M2_REPO路径），同时引用正确conf\settings.xml的Maven配置路径。
 
@@ -875,7 +875,7 @@ $ ping localhost
 
 ```
 
-还不能再hosts文件中加！如，指定localhost为127.0.0.1后，得到结果为：
+还不能在hosts文件中加！如，指定localhost为127.0.0.1后，得到结果为：
 
 ```
 Administrator@winseliu ~/hadoop

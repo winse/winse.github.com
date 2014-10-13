@@ -1,0 +1,81 @@
+---
+layout: post
+title: "用ADT调试Xamarin程序中的Java库"
+date: 2014-08-29 12:08:11 +0800
+comments: true
+categories: [java, android]
+---
+
+在编写SDK的时刻，有用户需要使用Xamarin来开发应用。我们这边暂时没有这个方面的经验，有点瞎扯扯意味，路是崎岖的前进是痛苦的。
+
+## 封装Android-SDK
+
+Xamarin是使用C#语言来编写代码的，所以需要先把Android的jar库包装成为C#的代码。[可选方式有3种](http://developer.xamarin.com/guides/android/advanced_topics/java_integration_overview/))，这里选用Wrapper的形式，不过多讲解，看文章[Binding a Java Library - Consuming .JARs from C#](http://developer.xamarin.com/guides/android/advanced_topics/java_integration_overview/binding_a_java_library_(.jar)/)。
+
+建立Binding项目，把依赖的包加入到Jars目录下。由于Bmob-Android官方的包是进行混淆的，有些代码不会用到的/没有必要Wrapper生成jni代码调用的，可以通过removenote去掉不生成C#的wrapper类。第二点就是java的泛型是会被抹掉的，而C#的是会编入程序中的，遇到Comparable这种类型的方法时，需要进行参数强制转换下。第三点就是接口回调，有多个方法时会导致名称冲突，需要为每个接口的方法都配置一个Args的节点属性。这些都是官网的例子中有说明，有需要可以具体参考上面链接的文章内容。
+
+```
+	<metadata>
+		<remove-node path="/api/package[@name='cn.bmob.im.db']" />
+
+	  <attr path="/api/package[@name='cn.bmob.im.inteface']/interface[@name='DownloadListener']/method[@name='onError']" name="argsType">DownloadListenerErrorEventArgs</attr>
+	</metadata>
+
+	<enum-method-mappings>
+	  <mapping jni-class="cn/bmob/im/bean/BmobRecent">
+	    <method jni-name="compareTo" parameter="p0" clr-enum-type="Java.Lang.Object" />
+	  </mapping>
+	  <mapping jni-class="cn/bmob/im/BmobDownloadManager">
+	    <method jni-name="doInBackground" parameter="p0" clr-enum-type="Java.Lang.Object[]" />
+	  </mapping>
+	</enum-method-mappings>
+```
+
+还有另一个坑是，混淆后内部类会被扁平化，导致jar2xml执行时获取类的getSimpleName名称会抛异常，我这里直接反编译源码改成getName就好了，仅仅是代码中全路径和仅类名的却别，暂时来看没啥印象。
+
+然后编译，加入到主项目的依赖中就可以使用该库的Java功能了。名称可能并不能全部对应上，与Java中的方法名和常量名大小写、下划线的不同罢了。
+
+## 调试
+
+下面是重点，但是很简短。
+
+作为写SDK的，肯定不仅仅要用特定的工具，还的把中间的过程也扭顺，即既要做一个好点（example），又得实现连接的线（SDK）。
+
+如果Android SDK的代码没有执行，该怎么办？Xamarin中都是C#的代码并不能用于调试java啊！问题自然归结到怎么用两个工具（Xamarin和Eclipse）来同时调试一个Xamarin Android应用的问题？！
+
+先讲讲我遇到的坑，由于是开发者发给我的应用，不知道结构是怎么样的。我直接用Xamarin打开，是没有带可执行属性的，在Run-With菜单中是能看到我的实体机器的，但是就是不能把程序发布上去！提示【执行失败。未将对象引用设置到对象的实例。】然后就没了。最终在stackoverflow中找到了类型问题的解决方法，需要设置运行属性。
+
+![](http://file.bmob.cn/M00/0A/3C/wKhkA1QAAt6AVtg6AALZEEiP4tQ304.png)
+
+配置如下，在解决方案属性中【构建-配置-ConfigurationMappings】把项目添加为构建项。
+
+![](http://file.bmob.cn/M00/0A/3C/wKhkA1QAA4uAT9qmAAKI8-zKAn8494.png)
+
+可能还会遇到的问题是版本的问题，报错【java.lang.RuntimeException: Unable to get provider mono.MonoRuntimeProvider: java.lang.RuntimeException: Unable to find application Mono.Android.DebugRuntime or Mono.Android.Platform.ApiLevel_19!】需要在csproj的配置中修改AndroidUseLatestPlatformSdk属性为false。
+
+![](http://file.bmob.cn/M00/0A/3C/wKhkA1QAC4KAOV-HAAFU6knDvFQ527.png)
+
+下面的步骤才是本文的关键：
+
+首先，在MainActivity的onCreate方法开始出打个断点，便于初始化功能调试，点击左上角的开始运行按钮。这样就能把代码发布到机器，且运行后会停留在onCreate处。
+
+![](http://file.bmob.cn/M00/0A/3C/wKhkA1QACtCAHOqDAAELanVrybU938.png)
+
+Xamarin调试效果图
+
+![](http://file.bmob.cn/M00/0A/3C/wKhkA1QAC_yAYqbpAAHBQT48VSA253.png)
+
+再，打开ecilpse导入`obj\Debug\android`目录下的项目【Import-Android-Existing Android Code Into Workspace】，错误什么的无所谓。这个项目只是用了ADT能识别而已。然后再java包的代码里面打上断点。
+
+![](http://file.bmob.cn/M00/0A/3C/wKhkA1QADTuAd3cyAACtJUn8Pdk976.png)
+
+最后，起到定乾坤作用的就是DDMS的Devices试图的小爬虫，选择你要调试的程序，然后点击它就可以了。切换到Xamarin继续运行程序，接下来就会运行停留到eclipse中的java包中的断点程序出。
+
+![](http://file.bmob.cn/M00/0A/3C/wKhkA1QADnWAJQyIAABt1LtWjUA456.png)
+
+![](http://file.bmob.cn/M00/0A/3C/wKhkA1QADueALec-AAEQhd4vxMY835.png)
+
+OK，接下来就按照eclipse的调试技巧弄就好了。
+
+步骤很简单，查询的路子却是艰辛的。第一次尝试成本总是昂贵的，第二步自然会慢慢顺起来。fighting...
+

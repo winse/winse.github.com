@@ -4,6 +4,7 @@ title: "[读读书]Redis入门指南"
 date: 2014-07-27 01:20:44 +0800
 comments: true
 categories: [redis, books]
+recommend: true
 ---
 
 ## 第一章 简介

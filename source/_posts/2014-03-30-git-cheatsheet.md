@@ -3,6 +3,7 @@ layout: post
 title: GIT操作记录手册
 date: 2014-3-30 14:15:11
 categories: [tools, git]
+recommend: true
 ---
 
 Git的每次提交都有一个**唯一的ID**与之对应，所有的TAG/Branch/Master/HEAD等等，都是一个**软链接/别名**而已！这个是理解好Git的基础！
@@ -102,17 +103,19 @@ $ git config --global core.editor vi
 | git commit -a                                 | -a是把所有的修改的（tracked）文件都commit
 | git commit --amend -m "commit message."       | 未push到远程分支的提交，快捷的回退再提交。修补提交（修补最近一次的提交而不创建新的提交），可结合git add使用！
 | git commit -v                                 | -v 可以看到文件哪些内容被修改
+| git commit -m 'v1.2.0-final' --allow-empty    |
 | git reset                                     | 
 | git reset HEAD^                               | 
 | git reset --hard HEAD^                        | 
 | git checkout file                             | 
+| git checkout --orphan <branchname>; git rm --cached -r . |
 | git rebase                                    | 
 | git merge                                     | 
 |**日志**                                       | 
 | git log                                       | 
 | git log --oneline --decorate --graph          | 
 | git log --stat                                | 查看提交信息及更新的文件
-| git log --stat -p -1 --format=raw          | 
+| git log --stat -p -1 --format=raw             | 
 | git log -3 <file-name>                        | 文件的最近3次提交的历史版本记录
 | git log --stat -2                             | 查看最近两次的提交描述及修改文件信息
 | git log -p -2                                 | 展开显示每次提交的内容差异，类似git show功能
@@ -173,6 +176,8 @@ $ git config --global core.editor vi
 | git remote show <remote-name>                 | 远程版本信息查看
 | git remote add origin <git-url>               | 设置仓库
 | git remote rm [name]                          | 删除远程仓库
+|**文件列表**                                   |
+|git ls-tree --name-only  -rt <SHA-ID>
 |**打包**                                       | 
 | git archive --format tar --output <tar> master| 将 master以tar格式打包到指定文件
 
@@ -264,6 +269,17 @@ rebase冲突处理时，使用git add && git rebase --continue。如果你使用
 * 以本地为主。 git push -f
 * 归并merge。 git pull 或者 git fetch && git merge
 * 
+
+从stash恢复出现冲突，可以先提交，然后在pop，最后处理冲突。一般提交到本地index中的数据才是自己想要的，从stash中获取的数据只是临时的，可以直接用HEAD的数据内容覆盖，省去处理冲突的时间。
+
+```
+$ git add -u
+$ git commit -m 'update XXXX'
+$ git stash pop
+
+$ git status | grep 'both modified'  | grep ' ssh-config' | awk -F: '{print $2}' | while read line ; do git show HEAD:"$line" > "$line" ; done
+
+```
 
 ### 从Github远程服务上拿其他分支： 
 

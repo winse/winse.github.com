@@ -48,6 +48,44 @@ Applying: hello
 
 ```
 
+## 问题处理
+
+更新时，与本地未提交的内容冲突。
+
+```
+$ git pull
+Updating ae0a812..fe592a0
+error: Your local changes to the following files would be overwritten by merge:
+        eshore/DTA/ISMI_CU/DTA/trunk/README.md
+Please, commit your changes or stash them before you can merge.
+Aborting
+```
+
+处理方法一，把变更先保存到stash，更新后再还原：
+
+```
+git stash
+git pull
+git stash pop
+// 然后可以使用git diff -w +文件名 来确认代码自动合并的情况.
+```
+
+处理方法二，先提交，然后再更新处理冲突：
+
+```
+winse@Lenovo-PC ~/eshore/git
+$ git add  eshore/DTA/ISMI_CU/DTA/trunk/README.md
+
+winse@Lenovo-PC ~/eshore/git
+$ git commit -m 'start  v1.0.5.5'
+[master e95b61c] start  v1.0.5.5
+ 1 files changed, 10 insertions(+), 0 deletions(-)
+
+winse@Lenovo-PC ~/eshore/git
+$ git pull
+// 没有冲突直接更新ok了！
+```
+
 ## Eclipse中处理Github冲突
 
 该链接图文并茂的介绍了处理的方法 <http://jerry-chen.iteye.com/blog/1726022>	。
@@ -60,3 +98,6 @@ Applying: hello
 6. 冲突文件变为修改图标样式，再提交至本地，此时的提交便是merge合并     
 7. 现在可以直接push到远程了    
 
+## 参考
+
+* [Git:代码冲突常见解决方法](http://blog.csdn.net/iefreer/article/details/7679631)

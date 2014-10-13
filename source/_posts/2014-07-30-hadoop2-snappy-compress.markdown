@@ -198,3 +198,53 @@ hbase(main):012:0> flush 'st1'
 
 ![](http://file.bmob.cn/M00/05/5A/wKhkA1PYz9CAB-TdAAEWX8LGpUo149.png)
 
+6) 正式环境下解压snappy文件
+
+```
+
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.io.compress.CompressionInputStream;
+import org.apache.hadoop.io.compress.SnappyCodec;
+import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.zookeeper.common.IOUtils;
+
+public class DecompressTest {
+	public static void main(String[] args) throws IOException {
+
+		Configuration conf = new Configuration();
+		Path path = new Path(args[0]);
+		FileSystem fs = path.getFileSystem(conf);
+
+		Class<? extends CompressionCodec> clazz = SnappyCodec.class;
+		CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
+
+		InputStream fin = fs.open(path);
+		CompressionInputStream in = codec.createInputStream(fin);
+
+		IOUtils.copyBytes(in, System.out, 4096, true);
+
+		fin.close();
+
+		System.out.println("SUCCESS");
+
+	}
+}
+
+// build & run
+
+>DecompressTest.java 
+vi DecompressTest.java 
+javac -cp `hadoop classpath`  DecompressTest.java 
+export HADOOP_CLASSPATH=.
+# snappyfile on hdfs
+hadoop DecompressTest /user/hive/t_ods_access_log2/month=201408/day=20140828/hour=2014082808/t_ods_access_log2-2014082808.our.snappy.1409187524328
+
+```
+

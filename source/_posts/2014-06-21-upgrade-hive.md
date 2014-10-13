@@ -3,6 +3,7 @@ layout: post
 title: "upgrade hive: 0.12.0 to 0.13.1"
 date: 2014-6-20 18:34:59
 categories: [hive]
+comments: true
 ---
 
 由于hive-0.12.0的FileSystem使用不当导致内存溢出问题，最终考虑升级hive。升级的过程没想象中的那么可怕，步骤很简单：对源数据库执行升级脚本，拷贝原hive-0.12.0的配置和jar，然后把添加jar重启hiverserver2即可。
@@ -162,7 +163,7 @@ hive>
 
 [hadoop@ismp0 apache-hive-0.13.1-bin]$ nohup bin/hiveserver2 &
 
-# 测试hive-jdbc
+$# 测试hive-jdbc
 [hadoop@ismp0 apache-hive-0.13.1-bin]$ bin/beeline 
 Beeline version 0.13.1 by Apache Hive
 beeline> !connect jdbc:hive2://10.18.97.22:10000/
@@ -200,7 +201,13 @@ Transaction isolation: TRANSACTION_REPEATABLE_READ
 * 切换到tez的engine
 
 ```
-# 已上传到HDFS
+$# 已上传到HDFS
+$ hadoop fs -mkdir /apps
+$ hadoop fs -put tez-0.4.0-incubating /apps/
+$ hadoop fs -ls /apps
+Found 1 items
+drwxr-xr-x   - hadoop supergroup          0 2014-09-09 16:19 /apps/tez-0.4.0-incubating
+
 $ cat etc/hadoop/tez-site.xml 
 <?xml version="1.0"?>
 <?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
@@ -214,7 +221,7 @@ $ cat etc/hadoop/tez-site.xml
   </property>
 </configuration>
 
-$ export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
+$ export HADOOP_CLASSPATH=${TEZ_HOME}/*:${TEZ_HOME}/lib/*:$HADOOP_CLASSPATH
 $ apache-hive-0.13.1-bin/bin/hive
 hive> set hive.execution.engine=tez;
 hive> select count(*) from t_ods_idc_isp_log2 ;
@@ -223,8 +230,51 @@ Time taken: 24.926 seconds, Fetched: 1 row(s)
 hive> set hive.execution.engine=mr;                              
 hive> select count(*) from t_ods_idc_isp_log2 where day=20140720;
 Time taken: 40.585 seconds, Fetched: 1 row(s)
+
+$# @hive-env.sh
+ # export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:$TEZ_HOME/*:$TEZ_HOME/lib/*
+$ last_hour=2014090915
+$ hive --hiveconf hive.execution.engine=tez -e "select houseId, count(*) 
+from 
+(
+select houseId
+from t_house_monitor2
+where hour=$last_hour
+group by from_unixtime(cast(accesstime as bigint), 'yyyyMMdd'),houseId,IP,port,domain,serviceType,illegalType,currentState,usr,icpError,regerror,regDomain,use_type,real_useType
+) hs
+group by houseId"
 ```
 
 简单从时间上看，还是有效果的。
 
 ![](http://file.bmob.cn/M00/04/A2/wKhkA1PSPSeAb1wWAAER_4gjIug339.png)
+
+## 调试Hive
+
+也很简单，hive脚本已经默认集成了这个功能，设置下DEBUG环境变量即可。
+
+```
+[hadoop@master1 ~]$ less apache-hive-0.13.1-bin/bin/ext/debug.sh
+[hadoop@master1 bin]$ less hive
+
+$# 脚本最终会把调试的参数` -agentlib:jdwp=transport=dt_socket,server=y,address=8000,suspend=y`加入到HADOOP_CLIENT_OPTS中，最后合并到HADOOP_OPTS传递给java程序。
+
+[hadoop@master1 bin]$ DEBUG=true hive
+Listening for transport dt_socket at address: 8000
+```
+
+然后通过eclipse的远程调试即可一步步的查看整个过程。下面断点处为记录解析功能：
+
+![](http://file.bmob.cn/M00/0A/D4/wKhkA1QEASyAM9VEAAHQS7gZJlo672.png)
+
+## 编译源码导入eclipse
+
+```
+$ git clone https://github.com/apache/hive.git
+
+winse@Lenovo-PC /cygdrive/e/git/hive
+$ git checkout branch-0.13
+
+E:\git\hive>mvn clean package eclipse:eclipse -DskipTests -Dmaven.test.skip=true -Phadoop-2
+```
+

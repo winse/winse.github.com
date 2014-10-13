@@ -288,7 +288,7 @@ end
 
 # WINDOW直接在cygwin中安装jekyll
 
-1. 使用cygwin setup.exe安装ruby，以及libyaml，最好也把git安装一下。配置环境变量。
+1. 使用cygwin setup.exe安装ruby1.9（安装2.0的报编码的错），以及libyaml，最好也把git安装一下。配置环境变量。
 2. 使用`gem install jekyll`安装。
 3. 安装依赖`gem install rdiscount`。
 4. 启动`jekyll serve --trace -w`。
