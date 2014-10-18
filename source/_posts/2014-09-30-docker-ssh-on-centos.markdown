@@ -3,8 +3,7 @@ layout: post
 title: "配置ssh登录docker-centos"
 date: 2014-09-30 00:10:02 +0800
 comments: true
-categories: [docker]
-recommend: true
+categories: [docker, recommend]
 ---
 
 上一篇写的是docker的入门知识，并没有进行实战。这些记录下使用ssh登录centos容器。

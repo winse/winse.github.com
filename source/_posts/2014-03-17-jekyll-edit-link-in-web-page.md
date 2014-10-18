@@ -3,8 +3,7 @@ layout: post
 title: Jekyll页面添加编辑按钮
 date: 2014-3-17 21:56:53
 comments: true
-categories: [jekyll]
-recommend: true
+categories: [jekyll, recommend]
 ---
 
 近期把其他博客的日志导出成Markdown后导入到自己的blog。想在本地预览后，看到不好的地方就进行修改，想法是美好的，现实是残酷的！**找文件太麻烦**了，定位到了文件夹，还需要找文件。反正就是觉得很不爽！最终通过[自定义URL协议的方式完美的解决](https://gist.github.com/4548d6c182f8162497fa.git)。

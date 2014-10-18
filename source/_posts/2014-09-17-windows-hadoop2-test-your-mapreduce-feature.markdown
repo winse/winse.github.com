@@ -3,8 +3,10 @@ layout: post
 title: "在windows开发测试mapreduce几种方式"
 date: 2014-09-17 12:55:38 +0800
 comments: true
-categories: [hadoop]
+categories: [hadoop, recommend]
 ---
+
+> 备注： 文后面的maven打包、以及执行的shell脚本还是极好的...
 
 hadoop提供的两大组件HDFS、MapReduce。其中HDFS提供了丰富的API，最重要的有类似shell的脚本进行操作。而编写程序，要很方便的调试测试，其实是一件比较麻烦和繁琐的事情。
 

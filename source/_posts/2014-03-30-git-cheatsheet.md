@@ -2,8 +2,7 @@
 layout: post
 title: GIT操作记录手册
 date: 2014-3-30 14:15:11
-categories: [tools, git]
-recommend: true
+categories: [tools, git, recommend]
 ---
 
 Git的每次提交都有一个**唯一的ID**与之对应，所有的TAG/Branch/Master/HEAD等等，都是一个**软链接/别名**而已！这个是理解好Git的基础！

@@ -2,9 +2,8 @@
 layout: post
 title: "Windows下部署/配置/调试hadoop2"
 date: 2014-4-21 8:27:11
-categories: [hadoop]
+categories: [hadoop, recommend]
 comments: true
-recommend: true
 ---
 
 Windows作为开发屌丝必备，在windows上如何跑集群方便开发调试，以及怎么把eclipse写好的任务mapreduce提交到测试的集群(linux)上面去跑？这些都是需要直面并解决的问题。

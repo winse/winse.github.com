@@ -3,8 +3,7 @@ layout: post
 title: 让敲Shell命令高效起来
 date: 2013-09-19 08:44:57 +0800
 comments: true
-categories: [tools, shell]
-recommend: true
+categories: [tools, shell, recommend]
 ---
 
 在刚上班的时刻，做过程序的部署工作，后面尽管工作中直接接触的机会很少。

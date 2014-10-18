@@ -396,6 +396,25 @@ docker run --volumes-from dbdata2 -v $(pwd):/backup busybox tar xvf /backup/back
 
 ```
 
+## 回顾
+
+管理docker主要使用其提供的各种命令、以及参数来进行。
+
+* 本地的镜像管理: docker images / docker rmi [image identify]
+* 容器管理： docker ps -a|-l / docker start|stop|rm|restart [image identify] 
+* 运行容器：docker run [images] [command]
+	* -d 后台运行
+	* -ti tty交互式运行
+	* -P 把容器expose的端口映射到宿主机器端口。可以通过`docker port [container-name]`来查看端口映射关系。
+	* -p [host-machine-port:container-machine-port]手动指定端口映射关系
+	* -h [hostname] 实例操作系统的hostname
+	* --name [name] 容器实例标识
+	* -v [path] 建立目录
+	* -v [host-machine-path:container-machine-path] 把宿主的文件路径映射到容器操作系统的指定目录
+	* --link [container-name:name] 多容器之间互相访问。
+
+还有很多辅助命令如：`top`, `logs`, `port`, `inspect`。以及进行版本管理的`pull`, `push`, `commit`, `tag`等等。
+	
 ## 参考
 
 * [Docker学习笔记之一，搭建一个JAVA Tomcat运行环境](http://www.blogjava.net/yongboy/archive/2013/12/12/407498.html)
