@@ -28,7 +28,7 @@ total 135M
 
 上面我们已经编译好了spark程序，这里对其进行打包集成到一个压缩包。使用程序自带的make-distribution.sh即可。
 
-为了减少重新编译的巨长的等待时间，修改下脚本的maven编译参数，去掉clean的阶段操作。
+为了减少重新编译的巨长的等待时间，修改下脚本`make-distribution.sh`的maven编译参数，去掉maven的clean阶段操作，修改最终结果如下：
 
 ```
 export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
@@ -51,14 +51,18 @@ total 185M
 
 ## 本地运行local
 
-运行下helloworld：
+把本机ip主机名写入到hosts，方便以后windows本机查看日志
 
 ```
 [root@docker spark-1.1.0-bin-2.5.1]# echo 192.168.154.128 docker >> /etc/hosts
 [root@docker spark-1.1.0-bin-2.5.1]# cat /etc/hosts
 ...
 192.168.154.128 docker
+```
 
+### 运行helloworld：
+
+```
 [root@docker spark-1.1.0-bin-2.5.1]# bin/run-example SparkPi 10
 Spark assembly has been built with Hive, including Datanucleus jars on classpath
 ...
@@ -68,7 +72,7 @@ Pi is roughly 3.139344
 ...
 ```
 
-接下来执行以下交互式的命令行操作：
+### 交互式操作：
 
 ```
 [root@docker spark-1.1.0-bin-2.5.1]# bin/spark-shell --master local[2]
@@ -94,9 +98,11 @@ scala>
 
 说明下环境，我使用windows作为开发环境，使用虚拟机中的linux作为测试环境。同时通过ssh连接的隧道来实现windows无缝的访问虚拟机linux操作系统。
 
-启动交互式访问 后，就可以通过浏览器访问4040查看spark程序的状态。
+启动交互式访问后，就可以通过浏览器访问4040查看spark程序的状态。
 
 ![](http://file.bmob.cn/M00/1E/4B/wKhkA1Q_3NOALefuAAEimqVy6-s418.png)
+
+任务已经启动，接下来就可以进行操作：
 
 ```
 scala> val textFile=sc.textFile("README.md")
@@ -131,16 +137,16 @@ res5: Array[(String, Int)] = Array((means,1), (under,2), (this,4), (Because,1), 
 
 ```
 
-执行了上面而一些操作后，查通过网页查看状态变化：
+执行了上面一些操作后，通过网页查看状态变化：
 
 ![](http://file.bmob.cn/M00/1E/4C/wKhkA1Q_3w6AM6njAAF-MCCYh2s170.png)
 
-## 自带Spark集群
+## Spark-standalone集群
 
 部署集群需要用到多个服务器，这里我使用docker来进行部署。
 
-本来应该早早完成本文的实践，但是在搭建docker-hadoop集群时花费了很多的时间。搭建集群使用dnsmasq处理域名问题参见下一篇文章。
-具体操作步骤可以参考：[docker-hadoop](https://github.com/winse/docker-hadoop/tree/spark-yarn)
+本来应该早早完成本文的实践，但是在搭建docker-hadoop集群时花费了很多的时间。关于搭建集群dnsmasq处理域名问题参见下一篇文章。
+最终实现可以参考：[docker-hadoop](https://github.com/winse/docker-hadoop/tree/spark-yarn)
 
 ```
 [root@docker docker-hadoop]# docker run -d  --dns 172.17.42.1 --name slaver2 -h slaver1 spark-yarn

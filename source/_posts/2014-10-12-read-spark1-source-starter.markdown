@@ -42,7 +42,7 @@ $ ^java^scala
 
 ```
 
-全部源码的数量（去掉测试）大概在7W左右，仅计算core下面的代码量在4W。从量上面来说还是比较乐观的，学习scala然后读spark的源码。
+全部源码的数量（去掉测试）大概在7W左右，仅计算核心代码core下面的代码量在4W。从量上面来说还是比较乐观的，学习scala然后读spark的源码。
 
 spark1.0.0的核心代码量在3w左右。1.1多了大概1w行！！
 
@@ -54,7 +54,7 @@ spark1.0.0的核心代码量在3w左右。1.1多了大概1w行！！
 
 spark使用主要使用scala编写，首先需要下载[scala-ide](http://scala-ide.org/download/sdk.html)直接下载2.10的版本（基于eclipse，很多操作都类似）；然后下载[spark的源码](https://github.com/apache/spark.git)检出v1.1.0的；然后使用maven生成eclipse工程文件。
 
-使用[sbt生成工程文件](https://cwiki.apache.org/confluence/display/SPARK/Contributing+to+Spark#ContributingtoSpark-Eclipse)。这种方式会缺少一些依赖的jar，处理比较麻烦，还不清楚到底是少了啥！
+(不推荐)使用[sbt生成工程文件](https://cwiki.apache.org/confluence/display/SPARK/Contributing+to+Spark#ContributingtoSpark-Eclipse)。这种方式会缺少一些依赖的jar，处理比较麻烦，还不清楚到底是少了啥！
 
 ```
 $ cd sbt/
@@ -87,7 +87,7 @@ $ find . -name ".classpath" | xargs sed -i -e 's/including="\*\*\/\*.java"//' -e
 * 把含有python源码包的去掉（手动删除.classpath中classpathentry即可）
 * 确认下并加上`src/test/scala`的源码包。
 
-scala源文件比较多，编译的时间会比较长。把Project->Build Automatically去掉，然后一次性把问题处理掉后再手动build！
+注意，进行上面的步骤之前，由于scala源文件比较多，编译的时间会比较长，先把Project->Build Automatically去掉，然后一次性把问题处理掉后再手动build！
 
 * 手动使用`existing maven projects`导入yarn/stable，然后把**yarn/common以链接的形式引入**，并添加到源码包。
 
@@ -97,7 +97,11 @@ scala源文件比较多，编译的时间会比较长。把Project->Build Automa
 
 ![](http://file.bmob.cn/M00/1D/07/wKhkA1Q76GyAFNYPAAEYJfk_ZGw816.png)
 
+添加依赖的编译组件后，整个功能就能正常编译通过了。接下来就能调试看源码了。
+
 ## Maven编译spark
+
+如果使用的hadoop版本在官网没有集成assembly版本，可以使用maven手动构建。至于打包可以查看下一篇文章。
 
 ```
 $ export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"

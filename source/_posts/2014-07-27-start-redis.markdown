@@ -445,7 +445,7 @@ expire + maxmemory maxmemory-policy(LRU)
 
 ### 排序
 
-可以使用multi, zintestore, zrange, del, exec来实现，但太麻烦！
+可以使用multi, zintestore, zrange, del, exec来实现，但太麻烦！[实际操作日志](https://gist.github.com/winse/30f9db38a4c41aaf5f9d)。
 
 sort命令，可用于集合、列表类型和有序集合类型
 
