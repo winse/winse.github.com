@@ -9,9 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="第一章 简介 讲了redis的产生的缘由
-Salvtore Sanfilippo/Pieter Noordhuis被招到VMware专门负责redis
-redis的源码可以从github下载编译。 redis相比keyvalue，提供了更加丰富的值类型：字符串/散列/列表/集合/有序集合， &hellip;">
+  <meta name="description" content="hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白， &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +81,254 @@ redis的源码可以从github下载编译。 redis相比keyvalue，提供了更�
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 ShortCircuit Local Reading</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-07-29T20:11:58+08:00" pubdate data-updated="true">Tue 2014-07-29 20:11</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白，最终大致就是通过linux的<strong>文件描述符</strong>来实现功能同时保证文件的权限。</p>
+
+<p>由于仅在自己的机器上面配置来查询hbase的数据，性能方面提升感觉不是很明显。等以后整到正式环境再对比对比。</p>
+
+<p>配置如下。</p>
+
+<p>1 修改hdfs-site.xml</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的写权限，要么仅root可写。</p>
+
+<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png" alt="" /></p>
+
+<p>2 修改hbase的配置，并添加HADOOP_HOME（hbase查找hadoop-native）</p>
+
+<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXhRKAZDs6AAChrEauBoU738.png" alt="" /></p>
+
+<p>hbase的脚本找到hadoop命令后，会把hadoop的java.library.path的路径加入到hbase的启动脚本中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ tail -15 hbase-0.98.3-hadoop2/conf/hbase-site.xml 
+</span><span class='line'>    &lt;name&gt;hbase.tmp.dir&lt;/name&gt;
+</span><span class='line'>    &lt;value&gt;/home/hadoop/data/hbase&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;/configuration&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@master1 ~]$ cat hbase-0.98.3-hadoop2/conf/hbase-env.sh
+</span><span class='line'>...
+</span><span class='line'>export HADOOP_HOME=/home/hadoop/hadoop-2.2.0
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>3 同步到其他节点，然后重启hdfs,hbase</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://vdisk.weibo.com/s/z_44nz36hNM3Z">hive-tuning</a></li>
+<li><a href="http://blog.cloudera.com/blog/2013/08/how-improved-short-circuit-local-reads-bring-better-performance-and-security-to-hadoop/">How Improved Short-Circuit Local Reads Bring Better Performance and Security to Hadoop</a></li>
+<li><a href="http://hbase.apache.org/book/perf.hdfs.html">HDFS&ndash;Apache HBase Performance Tuning</a></li>
+<li><a href="http://archive.cloudera.com/cdh4/cdh/4/hadoop/hadoop-project-dist/hadoop-hdfs/ShortCircuitLocalReads.html">HDFS Short-Circuit Local Reads</a></li>
+</ul>
+
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/07/29/safely-remove-datanode/">Hadoop安全的关闭datanode节点</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-07-29T15:08:41+08:00" pubdate data-updated="true">Tue 2014-07-29 15:08</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>hadoop默认就有冗余（dfs.replication）的机制，所以一般情况下，一台机器挂了也没所谓。集群会自动的进行复制均衡处理。</p>
+
+<p>作为测试，如果dfs.replication设置为1的情况下，怎么安全的把datanode节点服务关闭呢？例如说，刚刚开始搭建环境是把namenode、datanode放在一台机器上，后面增加了机器如何把datanode分离出来呢？</p>
+
+<p>借助于<strong>dfs.hosts.exclude</strong>即可完成顺序的完成此项任务。</p>
+
+<p>修改hdfs-site.xml配置。我操作的时刻仅修改了master1上的hdfs-site.xml。把<strong>master1</strong>值写入到对应的文件中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ cat hdfs-site.xml 
+</span><span class='line'>...
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.hosts.exclude&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;/home/hadoop/hadoop-2.2.0/etc/hadoop/exclude&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;/configuration&gt;
+</span><span class='line'>[hadoop@master1 hadoop]$ cat /home/hadoop/hadoop-2.2.0/etc/hadoop/exclude
+</span><span class='line'>master1
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>修改完成后，刷新节点即可(完全没有必要重启集dfs)。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hadoop dfsadmin -refreshNodes</span></code></pre></td></tr></table></div></figure>
+
+
+<p>可以通过<code>dfsadmin -report</code>或者网页查看master1已经变成<em>Decommission In Progress</em>了。</p>
+
+<p><img src="http://file.bmob.cn/M00/05/4C/wKhkA1PXUMOAVvvWAAED6CN-3Rg187.png" alt="" /></p>
+
+<p>注：</p>
+
+<p>问题一： 在新建节点是slaver1的防火墙没关闭，由于master1已经被exclude，而slaver1不能提供服务，上传文件时报错：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ hadoop fs -put slaves  /
+</span><span class='line'>14/07/29 15:18:21 WARN hdfs.DFSClient: DataStreamer Exception
+</span><span class='line'>org.apache.hadoop.ipc.RemoteException(java.io.IOException): File /slaves._COPYING_ could only be replicated to 0 nodes instead of minReplication (=1).  There are 2 datanode(s) running and no node(s) are excluded in this operation.
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.chooseTarget(BlockManager.java:1384)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getAdditionalBlock(FSNamesystem.java:2477)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>关闭防火墙一样再次上传，还是报同样的错误。此时，也可以通过刷新节点<code>hadoop dfsadmin -refreshNodes</code>来解决。</p>
+
+<p>问题二： 设置备份数量</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ hadoop fs -setrep 3 /slaves 
+</span><span class='line'>Replication 3 set: /slaves</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>问题三： 新增节点</p>
+
+<p>拷贝程序到新增节点，然后启动</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ tar zc hadoop-2.2.0 --exclude=logs | ssh slaver2 'cat | tar zx'
+</span><span class='line'>
+</span><span class='line'>[hadoop@slaver2 ~]$ cd hadoop-2.2.0/
+</span><span class='line'>[hadoop@slaver2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start datanode</span></code></pre></td></tr></table></div></figure>
+
+
+<p>也可以修改master上的slavers文件再<code>sbin/start-dfs.sh</code>启动。</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2661,852 +2907,6 @@ ls
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/06/21/upgrade-hive/">Upgrade Hive: 0.12.0 to 0.13.1</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-06-21T02:34:59+08:00" pubdate data-updated="true">Sat 2014-06-21 02:34</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>由于hive-0.12.0的FileSystem使用不当导致内存溢出问题，最终考虑升级hive。升级的过程没想象中的那么可怕，步骤很简单：对源数据库执行升级脚本，拷贝原hive-0.12.0的配置和jar，然后把添加jar重启hiverserver2即可。</p>
-
-<h2>修改环境变量</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>HIVE_HOME=/home/hadoop/apache-hive-0.13.1-bin
-</span><span class='line'>PATH=$JAVA_HOME/bin:$HIVE_HOME/bin:$PATH</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>升级metadata</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-<span class='line-number'>146</span>
-<span class='line-number'>147</span>
-<span class='line-number'>148</span>
-<span class='line-number'>149</span>
-<span class='line-number'>150</span>
-<span class='line-number'>151</span>
-<span class='line-number'>152</span>
-<span class='line-number'>153</span>
-<span class='line-number'>154</span>
-<span class='line-number'>155</span>
-<span class='line-number'>156</span>
-<span class='line-number'>157</span>
-<span class='line-number'>158</span>
-<span class='line-number'>159</span>
-<span class='line-number'>160</span>
-<span class='line-number'>161</span>
-<span class='line-number'>162</span>
-<span class='line-number'>163</span>
-<span class='line-number'>164</span>
-<span class='line-number'>165</span>
-<span class='line-number'>166</span>
-<span class='line-number'>167</span>
-<span class='line-number'>168</span>
-<span class='line-number'>169</span>
-<span class='line-number'>170</span>
-<span class='line-number'>171</span>
-<span class='line-number'>172</span>
-<span class='line-number'>173</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@ismp0 ~]$ cd apache-hive-0.13.1-bin/scripts/metastore/upgrade/mysql/
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 mysql]$ mysql -uXXX -hXXX -pXXX
-</span><span class='line'>mysql&gt; use hive
-</span><span class='line'>Reading table information for completion of table and column names
-</span><span class='line'>You can turn off this feature to get a quicker startup with -A
-</span><span class='line'>
-</span><span class='line'>Database changed
-</span><span class='line'>mysql&gt; source upgrade-0.12.0-to-0.13.0.mysql.sql
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>|                                                  |
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>| Upgrading MetaStore schema from 0.12.0 to 0.13.0 |
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>|                                                                       |
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>| &lt; HIVE-5700 enforce single date format for partition column storage &gt; |
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.22 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>|                                            |
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>| &lt; HIVE-6386: Add owner filed to database &gt; |
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.33 sec)
-</span><span class='line'>Records: 1  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.16 sec)
-</span><span class='line'>Records: 1  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>|                                                                                             |
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>| &lt;HIVE-6458 Add schema upgrade scripts for metastore changes related to permanent functions&gt; |
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>|                                                                                  |
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>| &lt;HIVE-6757 Remove deprecated parquet classes from outside of org.apache package&gt; |
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.04 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.12 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.15 sec)
-</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.07 sec)
-</span><span class='line'>Rows matched: 1  Changed: 1  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>|                                                           |
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>| Finished upgrading MetaStore schema from 0.12.0 to 0.13.0 |
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>mysql&gt; 
-</span><span class='line'>mysql&gt; 
-</span><span class='line'>mysql&gt; exit
-</span><span class='line'>Bye
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 ~]$ vi .bash_profile
-</span><span class='line'>[hadoop@ismp0 ~]$ source .bash_profile
-</span><span class='line'>[hadoop@ismp0 ~]$ cd apache-hive-0.13.1-bin
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ cd conf/
-</span><span class='line'>[hadoop@ismp0 conf]$ cp ~/hive-0.12.0/conf/hive-site.xml ./
-</span><span class='line'>[hadoop@ismp0 conf]$ cd ..
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ cp ~/hive-0.12.0/lib/mysql-connector-java-5.1.21-bin.jar lib/
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ hive
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ hive
-</span><span class='line'>
-</span><span class='line'>hive&gt;  select count(*) from t_ods_idc_isp_log2 where day=20140624;
-</span><span class='line'>Total jobs = 1
-</span><span class='line'>Launching Job 1 out of 1
-</span><span class='line'>Number of reduce tasks determined at compile time: 1
-</span><span class='line'>In order to change the average load for a reducer (in bytes):
-</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
-</span><span class='line'>In order to limit the maximum number of reducers:
-</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
-</span><span class='line'>In order to set a constant number of reducers:
-</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
-</span><span class='line'>Starting Job = job_1403006477300_3403, Tracking URL = http://umcc97-79:8088/proxy/application_1403006477300_3403/
-</span><span class='line'>Kill Command = /home/hadoop/hadoop-2.2.0/bin/hadoop job  -kill job_1403006477300_3403
-</span><span class='line'>Hadoop job information for Stage-1: number of mappers: 2; number of reducers: 1
-</span><span class='line'>2014-06-24 17:19:07,618 Stage-1 map = 0%,  reduce = 0%
-</span><span class='line'>2014-06-24 17:19:15,283 Stage-1 map = 50%,  reduce = 0%, Cumulative CPU 2.37 sec
-</span><span class='line'>2014-06-24 17:19:16,360 Stage-1 map = 100%,  reduce = 0%, Cumulative CPU 5.49 sec
-</span><span class='line'>2014-06-24 17:19:22,749 Stage-1 map = 100%,  reduce = 100%, Cumulative CPU 7.99 sec
-</span><span class='line'>MapReduce Total cumulative CPU time: 7 seconds 990 msec
-</span><span class='line'>Ended Job = job_1403006477300_3403
-</span><span class='line'>MapReduce Jobs Launched: 
-</span><span class='line'>Job 0: Map: 2  Reduce: 1   Cumulative CPU: 7.99 sec   HDFS Read: 19785618 HDFS Write: 6 SUCCESS
-</span><span class='line'>Total MapReduce CPU Time Spent: 7 seconds 990 msec
-</span><span class='line'>OK
-</span><span class='line'>77625
-</span><span class='line'>Time taken: 36.387 seconds, Fetched: 1 row(s)
-</span><span class='line'>hive&gt; 
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ nohup bin/hiveserver2 &
-</span><span class='line'>
-</span><span class='line'>$# 测试hive-jdbc
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ bin/beeline 
-</span><span class='line'>Beeline version 0.13.1 by Apache Hive
-</span><span class='line'>beeline&gt; !connect jdbc:hive2://10.18.97.22:10000/
-</span><span class='line'>scan complete in 7ms
-</span><span class='line'>Connecting to jdbc:hive2://10.18.97.22:10000/
-</span><span class='line'>Enter username for jdbc:hive2://10.18.97.22:10000/: hadoop
-</span><span class='line'>Enter password for jdbc:hive2://10.18.97.22:10000/: 
-</span><span class='line'>Connected to: Apache Hive (version 0.13.1)
-</span><span class='line'>Driver: Hive JDBC (version 0.13.1)
-</span><span class='line'>Transaction isolation: TRANSACTION_REPEATABLE_READ
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt; show tables;
-</span><span class='line'>+-------------------------+
-</span><span class='line'>|        tab_name         |
-</span><span class='line'>+-------------------------+
-</span><span class='line'>...
-</span><span class='line'>| test_123                |
-</span><span class='line'>+-------------------------+
-</span><span class='line'>10 rows selected (2.547 seconds)
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt;  select count(*) from t_ods_idc_isp_log2 where day=20140624;
-</span><span class='line'>+--------+
-</span><span class='line'>|  _c0   |
-</span><span class='line'>+--------+
-</span><span class='line'>| 77625  |
-</span><span class='line'>+--------+
-</span><span class='line'>1 row selected (37.463 seconds)
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt; 
-</span><span class='line'>
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>上一篇tez的安装使用中由于hive的缘故进行了回退，现在升级到hive-0.13后，也在hive上试下tez的功能：</p>
-
-<ul>
-<li>本地添加tez依赖，设置环境变量</li>
-<li>MR添加tez依赖，添加tez-site.xml</li>
-<li>切换到tez的engine</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$# 已上传到HDFS
-</span><span class='line'>$ hadoop fs -mkdir /apps
-</span><span class='line'>$ hadoop fs -put tez-0.4.0-incubating /apps/
-</span><span class='line'>$ hadoop fs -ls /apps
-</span><span class='line'>Found 1 items
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2014-09-09 16:19 /apps/tez-0.4.0-incubating
-</span><span class='line'>
-</span><span class='line'>$ cat etc/hadoop/tez-site.xml 
-</span><span class='line'>&lt;?xml version="1.0"?&gt;
-</span><span class='line'>&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;!-- Put site-specific property overrides in this file. --&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;configuration&gt;
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>    &lt;name&gt;tez.lib.uris&lt;/name&gt;
-</span><span class='line'>    &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>
-</span><span class='line'>$ export HADOOP_CLASSPATH=${TEZ_HOME}/*:${TEZ_HOME}/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>$ apache-hive-0.13.1-bin/bin/hive
-</span><span class='line'>hive&gt; set hive.execution.engine=tez;
-</span><span class='line'>hive&gt; select count(*) from t_ods_idc_isp_log2 ;
-</span><span class='line'>Time taken: 24.926 seconds, Fetched: 1 row(s)
-</span><span class='line'>
-</span><span class='line'>hive&gt; set hive.execution.engine=mr;                              
-</span><span class='line'>hive&gt; select count(*) from t_ods_idc_isp_log2 where day=20140720;
-</span><span class='line'>Time taken: 40.585 seconds, Fetched: 1 row(s)
-</span><span class='line'>
-</span><span class='line'>$# @hive-env.sh
-</span><span class='line'> # export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:$TEZ_HOME/*:$TEZ_HOME/lib/*
-</span><span class='line'>$ last_hour=2014090915
-</span><span class='line'>$ hive --hiveconf hive.execution.engine=tez -e "select houseId, count(*) 
-</span><span class='line'>from 
-</span><span class='line'>(
-</span><span class='line'>select houseId
-</span><span class='line'>from t_house_monitor2
-</span><span class='line'>where hour=$last_hour
-</span><span class='line'>group by from_unixtime(cast(accesstime as bigint), 'yyyyMMdd'),houseId,IP,port,domain,serviceType,illegalType,currentState,usr,icpError,regerror,regDomain,use_type,real_useType
-</span><span class='line'>) hs
-</span><span class='line'>group by houseId"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>简单从时间上看，还是有效果的。</p>
-
-<p><img src="http://file.bmob.cn/M00/04/A2/wKhkA1PSPSeAb1wWAAER_4gjIug339.png" alt="" /></p>
-
-<h2>调试Hive</h2>
-
-<p>也很简单，hive脚本已经默认集成了这个功能，设置下DEBUG环境变量即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ less apache-hive-0.13.1-bin/bin/ext/debug.sh
-</span><span class='line'>[hadoop@master1 bin]$ less hive
-</span><span class='line'>
-</span><span class='line'>$# 脚本最终会把调试的参数` -agentlib:jdwp=transport=dt_socket,server=y,address=8000,suspend=y`加入到HADOOP_CLIENT_OPTS中，最后合并到HADOOP_OPTS传递给java程序。
-</span><span class='line'>
-</span><span class='line'>[hadoop@master1 bin]$ DEBUG=true hive
-</span><span class='line'>Listening for transport dt_socket at address: 8000</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后通过eclipse的远程调试即可一步步的查看整个过程。下面断点处为记录解析功能：</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/D4/wKhkA1QEASyAM9VEAAHQS7gZJlo672.png" alt="" /></p>
-
-<h2>编译源码导入eclipse</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ git clone https://github.com/apache/hive.git
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC /cygdrive/e/git/hive
-</span><span class='line'>$ git checkout branch-0.13
-</span><span class='line'>
-</span><span class='line'>E:\git\hive&gt;mvn clean package eclipse:eclipse -DskipTests -Dmaven.test.skip=true -Phadoop-2</span></code></pre></td></tr></table></div></figure>
-
-
-
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/06/18/hadoop-tez-firststep/">Tez编译及使用</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-06-18T04:22:58+08:00" pubdate data-updated="true">Wed 2014-06-18 04:22</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>初步了解</h2>
-
-<p>hadoop2自带的mapreduce任务中间只能传递一次，也即一个任务只能聚合一次。而tez项目是对原有yarn架构的一个拓展，使用DAG（无环有向图）实现MRR的任务框架。</p>
-
-<p><img src="http://farm6.staticflickr.com/5571/14256993179_4990fc86d5_o.png" alt="" /></p>
-
-<p>上图中，左边的MR任务完成一个步骤后，需要进行<strong>数据存储</strong>后再执行另一个任务来进行第二个“reduce”； 而tez则可以在reduce后继续执行reduce，减少了中间过程的IO以及mapreduce的启动时间。</p>
-
-<h2>环境整合</h2>
-
-<ul>
-<li><a href="http://tez.incubator.apache.org/install.html">Install/Deploy</a></li>
-<li>hadoop-2.2.0（umcc97-44：hdfs， umcc97-79：yarn）</li>
-<li>windows下使用Cygwin编译</li>
-</ul>
-
-
-<h3>下载编译tez</h3>
-
-<p>首先下载<a href="http://apache.fayea.com/apache-mirror/incubator/tez/tez-0.4.0-incubating/">tez-0.4.0-incubating.tar.gz</a>，同时还需要<a href="http://code.google.com/p/protobuf">protoc</a>的程序支持（编译<a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/SingleCluster.html">hadoop源码</a>也需要这个的）。
-解压后，使用mvn编译。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
-</span><span class='line'>$ tar zxvf tez-0.4.0-incubating.tar.gz
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
-</span><span class='line'>$ cd tez-0.4.0-incubating/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
-</span><span class='line'>$ mvn install -DskipTests -Dmaven.javadoc.skip
-</span><span class='line'>...
-</span><span class='line'>[INFO] Reactor Summary:
-</span><span class='line'>[INFO]
-</span><span class='line'>[INFO] tez ............................................... SUCCESS [1.518s]
-</span><span class='line'>[INFO] tez-api ........................................... SUCCESS [8.890s]
-</span><span class='line'>[INFO] tez-common ........................................ SUCCESS [0.725s]
-</span><span class='line'>[INFO] tez-runtime-internals ............................. SUCCESS [2.529s]
-</span><span class='line'>[INFO] tez-runtime-library ............................... SUCCESS [5.100s]
-</span><span class='line'>[INFO] tez-mapreduce ..................................... SUCCESS [3.666s]
-</span><span class='line'>[INFO] tez-mapreduce-examples ............................ SUCCESS [2.692s]
-</span><span class='line'>[INFO] tez-dag ........................................... SUCCESS [13.943s]
-</span><span class='line'>[INFO] tez-tests ......................................... SUCCESS [1.691s]
-</span><span class='line'>[INFO] tez-dist .......................................... SUCCESS [14.370s]
-</span><span class='line'>[INFO] Tez ............................................... SUCCESS [0.245s]
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] BUILD SUCCESS
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] Total time: 55.791s
-</span><span class='line'>[INFO] Finished at: Tue Jun 17 17:33:45 CST 2014
-</span><span class='line'>[INFO] Final Memory: 35M/151M
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>上传tez程序的jars到HDFS</h3>
-
-<p>为了简单我直接把tez放到开发环境的集群上面去测试了。放到本地环境应该也类似。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
-</span><span class='line'>$ cd tez-dist/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist
-</span><span class='line'>$ cd target/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
-</span><span class='line'>$ export HADOOP_USER_NAME=hadoop
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
-</span><span class='line'>$  hadoop dfs -put tez-0.4.0-incubating/tez-0.4.0-incubating/ hdfs://umcc97-44:9000/apps/
-</span><span class='line'>DEPRECATED: Use of this script to execute hdfs command is deprecated.
-</span><span class='line'>Instead use the hdfs command for it.
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>配置集群环境</h3>
-
-<p>首先看下原来集群的classpath路径，由于已经包括了etc/hadoop目录，所以这里我直接把<code>tez-site.xml</code>放到该目录下。把所有的tez-lib上传到share目录下，并添加到HADOOP_CLASSPATH。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  [hadoop@umcc97-79 hadoop]$ hadoop classpath
-</span><span class='line'>  /home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
-</span><span class='line'>  
-</span><span class='line'>  # 用于map/reduce
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ cat tez-site.xml 
-</span><span class='line'>  &lt;?xml version="1.0"?&gt;
-</span><span class='line'>  &lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-</span><span class='line'>  
-</span><span class='line'>  &lt;!-- Put site-specific property overrides in this file. --&gt;
-</span><span class='line'>  
-</span><span class='line'>  &lt;configuration&gt;
-</span><span class='line'>    &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;tez.lib.uris&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
-</span><span class='line'>    &lt;/property&gt;
-</span><span class='line'>  &lt;/configuration&gt;
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ 
-</span><span class='line'>  
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ cd ~/hadoop-2.2.0/share/hadoop/tez/
-</span><span class='line'>  [hadoop@umcc97-79 tez]$ ll
-</span><span class='line'>  total 9616
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  303139 Jun 17 17:33 avro-1.7.4.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop   41123 Jun 17 17:33 commons-cli-1.2.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  610259 Jun 17 17:33 commons-collections4-4.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop 1648200 Jun 17 17:33 guava-11.0.2.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  710492 Jun 17 17:33 guice-3.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  656365 Jun 17 17:33 hadoop-mapreduce-client-common-2.2.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop 1455001 Jun 17 17:33 hadoop-mapreduce-client-core-2.2.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop   21537 Jun 17 17:33 hadoop-mapreduce-client-shuffle-2.2.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop   81743 Jun 17 17:33 jettison-1.3.4.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  533455 Jun 17 17:33 protobuf-java-2.5.0.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  995968 Jun 17 17:33 snappy-java-1.0.4.1.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  749917 Jun 17 17:33 tez-api-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop   34049 Jun 17 17:33 tez-common-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  970987 Jun 17 17:33 tez-dag-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  246409 Jun 17 17:33 tez-mapreduce-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  199934 Jun 17 17:33 tez-mapreduce-examples-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  114692 Jun 17 17:33 tez-runtime-internals-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop  352177 Jun 17 17:33 tez-runtime-library-0.4.0-incubating.jar
-</span><span class='line'>  -rw-r--r-- 1 hadoop hadoop    6845 Jun 17 17:33 tez-tests-0.4.0-incubating.jar
-</span><span class='line'>  [hadoop@umcc97-79 tez]$ 
-</span><span class='line'>  
-</span><span class='line'>  # 用于client任务提交
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ grep HADOOP_CLASSPATH hadoop-env.sh
-</span><span class='line'>  export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>  
-</span><span class='line'>  [hadoop@umcc97-79 hadoop]$ sed -n 19,23p mapred-site.xml
-</span><span class='line'>  &lt;configuration&gt;
-</span><span class='line'>    &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.framework.name&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;yarn-tez&lt;/value&gt;
-</span><span class='line'>    &lt;/property&gt;
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>同步，重启yarn</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>for h in `cat hadoop-2.2.0/etc/hadoop/slaves ` ; do rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 $h:~/ ; done
-</span><span class='line'>
-</span><span class='line'>rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 umcc97-44:~/</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>测试效果</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  [hadoop@umcc97-79 ~]$ hadoop classpath
-</span><span class='line'>  /home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/lib/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
-</span><span class='line'>  [hadoop@umcc97-79 ~]$ cd hadoop-2.2.0/share/hadoop/mapreduce/
-</span><span class='line'>  [hadoop@umcc97-79 mapreduce]$ hadoop jar hadoop-mapreduce-client-jobclient-2.2.0-tests.jar sleep -mt 1 -rt 1 -m 1 -r 1
-</span><span class='line'>  
-</span><span class='line'>    hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount  /hello/in /hello/out
-</span><span class='line'>    hadoop fs -put hadoop-2.2.0/logs/yarn-hadoop-resourcemanager-umcc97-79.* /hello/in
-</span><span class='line'>    hadoop fs -rmr /hello/out
-</span><span class='line'>    hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount  /hello/in /hello/out
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>回滚，使用时临时修改环境变量即可</h3>
-
-<p>使用了tez后，使用hive-0.12.0不能运行了。由于其他同事需要用hive，得把配置全部修改回去【<a href="/blog/2014/06/21/upgrade-hive/">hive-0.13中使用tez</a>】。</p>
-
-<p>其实在<strong>提交任务</strong>时指定配置参数即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-79 ~]$ export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>[hadoop@umcc97-79 ~]$ hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount -Dmapreduce.framework.name=yarn-tez  /hello/in /hello/out</span></code></pre></td></tr></table></div></figure>
-
-
-<p>org.apache.tez.mapreduce.examples.OrderedWordCount不仅计算出了结果，同时按个数大小进行了排序。</p>
-
-<p>问题： tez的任务的history还不知道怎么弄的，启动historyserver没作用。</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/7">&larr; Older</a>
@@ -3563,6 +2963,14 @@ ls
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2014/12/07/hadoop-mr-rest-api/">Hadoop查看作业状态Rest接口</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2014/11/14/mysql-partition/">Mysql分区</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2014/11/13/nginx-serving-static-content/">Nginx配置静态站点服务</a>
       </li>
     
@@ -3584,14 +2992,6 @@ ls
     
       <li class="post">
         <a href="/blog/2014/10/07/thinking/">思考</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2014/09/30/docker-ssh-on-centos/">配置ssh登录docker-centos</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2014/09/27/docker-start-guide-on-centos/">Docker入门</a>
       </li>
     
   </ul>
@@ -3632,7 +3032,7 @@ ls
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (25) 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (26) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3676,7 +3076,7 @@ ls
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (12) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (13) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3685,7 +3085,7 @@ ls
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (69)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (71)</li>
 	</ul>
 	
 </section>
