@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Books | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/books/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2015-01-09T17:18:54+08:00</updated>
+  <updated>2015-01-14T18:29:32+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -1003,7 +1003,9 @@ Scala提供了类似的机制：Objects。Objects是单例模式的实现。在�
     <link href="http://winseliu.com/blog/2014/07/27/start-redis/"/>
     <updated>2014-07-27T01:20:44+08:00</updated>
     <id>http://winseliu.com/blog/2014/07/27/start-redis</id>
-    <content type="html"><![CDATA[<h2>第一章 简介</h2>
+    <content type="html"><![CDATA[<p>除了《Redis入门指南》的基本使用笔记外，文最后增加了jemalloc功能和redis3集群的安装。</p>
+
+<h2>第一章 简介</h2>
 
 <ul>
 <li>讲了redis的产生的缘由</li>
@@ -1739,6 +1741,106 @@ appendonly yes
 <p><img src="http://file.bmob.cn/M00/04/DF/wKhkA1PWCuSAAuXxAABB-LpH1nQ340.png" alt="" /></p>
 
 <p><img src="http://file.bmob.cn/M00/05/5F/wKhkA1PZBrSAPaMTAAAcSnjmhXE093.png" alt="" /></p>
+
+<h2>内存分配</h2>
+
+<p>默认make使用的libc，在内存方面会产生比较多的碎片。可以使用jemalloc要进行内存的分配管理。</p>
+
+<p>如果报<code>make cc Command not found</code>，需要先安装gcc。</p>
+
+<pre><code>tar zxvf redis-2.8.13.bin.tar.gz 
+cd redis-2.8.13
+cd deps/jemalloc/
+# 用于产生h头文件
+./configure 
+cd ..
+make MALLOC=jemalloc
+src/redis-server 
+</code></pre>
+
+<p>查看jemalloc的include的内容如下：</p>
+
+<pre><code>[hadoop@localhost jemalloc]$ cd include/jemalloc/
+internal/              jemalloc_defs.h.in     jemalloc_macros.h      jemalloc_mangle.h      jemalloc_mangle.sh     jemalloc_protos.h.in   jemalloc_rename.h      jemalloc.sh
+jemalloc_defs.h        jemalloc.h             jemalloc_macros.h.in   jemalloc_mangle_jet.h  jemalloc_protos.h      jemalloc_protos_jet.h  jemalloc_rename.sh  
+</code></pre>
+
+<p>查看内存使用：</p>
+
+<pre><code>[hadoop@localhost redis-2.8.13]$ src/redis-cli info
+...
+# Memory
+used_memory:503576
+used_memory_human:491.77K
+used_memory_rss:2158592
+used_memory_peak:503576
+used_memory_peak_human:491.77K
+used_memory_lua:33792
+mem_fragmentation_ratio:4.29
+mem_allocator:jemalloc-3.6.0
+...
+</code></pre>
+
+<p>redis在使用过程中，会产生碎片。重启以及libc和jemalloc的对比如下：</p>
+
+<pre><code># 运行中实例
+# Memory
+used_memory:4623527744
+used_memory_human:4.31G
+used_memory_rss:48304705536
+used_memory_peak:38217543280
+used_memory_peak_human:35.59G
+used_memory_lua:33792
+mem_fragmentation_ratio:10.45
+mem_allocator:libc
+
+51616 hadoop    20   0 45.1g  44g 1136 S  0.0 35.7   3410:42 /home/hadoop/redis-2.8.13/src/redis-server *:6371
+
+# 序列化为rdb的文件大小
+[hadoop@hadoop-master1 18111]$ ll
+总用量 1183116
+-rw-rw-r--. 1 hadoop hadoop 1210319541 1月  14 11:28 dump.rdb
+[hadoop@hadoop-master1 18111]$  ~/redis-2.8.13/src/redis-server --port 18111
+[77484] 14 Jan 14:33:17.910 * DB loaded from disk: 218.337 seconds
+
+# 重启后的实例
+# Memory
+used_memory:4763158704
+used_memory_human:4.44G
+used_memory_rss:6217580544
+used_memory_peak:4763158704
+used_memory_peak_human:4.44G
+used_memory_lua:33792
+mem_fragmentation_ratio:1.31
+mem_allocator:libc
+
+77484 hadoop    20   0 6052m 5.8g 1200 S  0.0  4.6   3:38.39 /home/hadoop/redis-2.8.13/src/redis-server *:18111
+
+# 使用jemalloc替换libc的实例
+[hadoop@hadoop-master1 18111]$ ~/redis-jemalloc/redis-2.8.13/src/redis-server --port 18888
+[14793] 14 Jan 14:50:11.250 * DB loaded from disk: 209.839 seconds
+
+# Memory
+used_memory:4527760088
+used_memory_human:4.22G
+used_memory_rss:4625887232
+used_memory_peak:4527760088
+used_memory_peak_human:4.22G
+used_memory_lua:33792
+mem_fragmentation_ratio:1.02
+mem_allocator:jemalloc-3.6.0
+
+14793 hadoop    20   0 4538m 4.3g 1360 S  0.0  3.4   3:28.10 /home/hadoop/redis-jemalloc/redis-2.8.13/src/redis-server *:18888                                                                                                                       
+</code></pre>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://www.cnblogs.com/kernel_hcy/archive/2011/05/15/2046963.html">redis源码分析（1）内存管理</a></li>
+<li><a href="http://blog.csdn.net/unix21/article/details/12119059">利用TCMalloc替换Nginx和Redis默认glibc库的malloc内存分配</a>)</li>
+<li><a href="http://blog.nosqlfan.com/html/3490.html">Redis采用不同内存分配器碎片率对比</a></li>
+</ul>
+
 ]]></content>
   </entry>
   
