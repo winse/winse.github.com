@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="hadoop默认就有冗余（dfs.replication）的机制，所以一般情况下，一台机器挂了也没所谓。集群会自动的进行复制均衡处理。 作为测试，如果dfs.replication设置为1的情况下，怎么安全的把datanode节点服务关闭呢？例如说，刚刚开始搭建环境是把namenode、 &hellip;">
+  <meta name="description" content="网上查了很多资料说的很复杂，要叉叉叉叉叉！其实hadoop2已经集成了hadoop-snappy，只要安装snappy即可。但是也没有一些文章说的只要编译snappy然后放到lib/native路径下即可，还需要重新编译libhadoop的library包。 查找hadoop- &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -81,6 +81,585 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-07-30T00:25:39+08:00" pubdate data-updated="true">Wed 2014-07-30 00:25</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>网上查了很多资料说的很复杂，要叉叉叉叉叉！其实hadoop2已经集成了hadoop-snappy，只要安装snappy即可。但是也没有一些文章说的只要编译snappy然后放到lib/native路径下即可，还需要重新编译libhadoop的library包。</p>
+
+<p>查找hadoop-snappy的源码的时刻，在C代码里面定义了<code>HADOOP_SNAPPY_LIBRARY</code>，然后理着这个思路去查找，发现在CMakeFile文件中也定义了对应的变量，然后再查找pom.xml的native profile中定义了snappy.prefix的属性。最后就有了下面的步骤。</p>
+
+<p>1) build snappy</p>
+
+<p>编译Snappy，并把lib拷贝/同步到hadoop的native目录下。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>tar zxf snappy-1.1.1.tar.gz 
+</span><span class='line'>cd snappy-1.1.1
+</span><span class='line'>./configure --prefix=/home/hadoop/snappy
+</span><span class='line'>make
+</span><span class='line'>make install
+</span><span class='line'>
+</span><span class='line'>cd snappy
+</span><span class='line'>cd lib/
+</span><span class='line'>rysnc -vaz * ~/hadoop-2.2.0/lib/native/</span></code></pre></td></tr></table></div></figure>
+
+
+<p>2) rebuild hadoop common project</p>
+
+<p>重新编译hadoop的lib，覆盖原来的文件。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-common]$ mvn package -Dmaven.javadoc.skip=true -DskipTests -Dsnappy.prefix=/home/hadoop/snappy -Drequire.snappy=true -Pnative 
+</span><span class='line'>
+</span><span class='line'>[hadoop@master1 hadoop-common]$ cd ~/hadoop-2.2.0-src/hadoop-common-project/hadoop-common/
+</span><span class='line'>[hadoop@master1 hadoop-common]$ cd target/native/target/usr/local/lib/
+</span><span class='line'>[hadoop@master1 lib]$ ll
+</span><span class='line'>total 1252
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 820824 Jul 30 00:18 libhadoop.a
+</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop     18 Jul 30 00:18 libhadoop.so -&gt; libhadoop.so.1.0.0
+</span><span class='line'>-rwxrwxr-x. 1 hadoop hadoop 455542 Jul 30 00:18 libhadoop.so.1.0.0
+</span><span class='line'>[hadoop@master1 lib]$ rsync -vaz * ~/hadoop-2.2.0/lib/native/
+</span><span class='line'>sending incremental file list
+</span><span class='line'>libhadoop.a
+</span><span class='line'>libhadoop.so.1.0.0
+</span><span class='line'>
+</span><span class='line'>sent 409348 bytes  received 53 bytes  818802.00 bytes/sec
+</span><span class='line'>total size is 1276384  speedup is 3.12
+</span><span class='line'>[hadoop@master1 lib]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<p>3) check</p>
+
+<p>检查程序snappy是否已经配置成功</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ hadoop checknative -a
+</span><span class='line'>14/07/30 00:22:14 WARN bzip2.Bzip2Factory: Failed to load/initialize native-bzip2 library system-native, will use pure-Java version
+</span><span class='line'>14/07/30 00:22:14 INFO zlib.ZlibFactory: Successfully loaded & initialized native-zlib library
+</span><span class='line'>Native library checking:
+</span><span class='line'>hadoop: true /home/hadoop/hadoop-2.2.0/lib/native/libhadoop.so.1.0.0
+</span><span class='line'>zlib:   true /lib64/libz.so.1
+</span><span class='line'>snappy: true /home/hadoop/hadoop-2.2.0/lib/native/libsnappy.so.1
+</span><span class='line'>lz4:    true revision:43
+</span><span class='line'>bzip2:  false 
+</span><span class='line'>14/07/30 00:22:14 INFO util.ExitUtil: Exiting with status 1
+</span><span class='line'>[hadoop@master1 ~]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<p>4) 跑一个压缩程序</p>
+
+<p>先参考网上的，直接用hbase的带的测试类运行（前提：需要在hbase-env.sh中配置HADOOP_HOME，这样hbase才能找到hadoop下的lib本地库）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ hbase-0.98.3-hadoop2/bin/hbase org.apache.hadoop.hbase.util.CompressionTest file:///tmp/abc.snappy snappy
+</span><span class='line'>2014-07-30 08:50:42,617 INFO  [main] Configuration.deprecation: hadoop.native.lib is deprecated. Instead, use io.native.lib.available
+</span><span class='line'>SLF4J: Class path contains multiple SLF4J bindings.
+</span><span class='line'>SLF4J: Found binding in [jar:file:/home/hadoop/hbase-0.98.3-hadoop2/lib/slf4j-log4j12-1.6.4.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+</span><span class='line'>SLF4J: Found binding in [jar:file:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/slf4j-log4j12-1.7.5.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+</span><span class='line'>SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+</span><span class='line'>2014-07-30 08:50:44,515 INFO  [main] util.ChecksumType: Checksum using org.apache.hadoop.util.PureJavaCrc32
+</span><span class='line'>2014-07-30 08:50:44,522 INFO  [main] util.ChecksumType: Checksum can use org.apache.hadoop.util.PureJavaCrc32C
+</span><span class='line'>2014-07-30 08:50:45,388 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
+</span><span class='line'>2014-07-30 08:50:45,408 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
+</span><span class='line'>2014-07-30 08:50:45,430 ERROR [main] hbase.KeyValue: Unexpected getShortMidpointKey result, fakeKey:testkey, firstKeyInBlock:testkey
+</span><span class='line'>2014-07-30 08:50:47,088 INFO  [main] compress.CodecPool: Got brand-new decompressor [.snappy]
+</span><span class='line'>SUCCESS
+</span><span class='line'>[hadoop@master1 ~]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<p>看到最后的<strong>SUCCESS</strong>就说明安装配置成功了！</p>
+
+<p>接下来自己写程序测试压缩/解压缩，首先编写java类：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>import java.io.FileInputStream;
+</span><span class='line'>import java.io.FileNotFoundException;
+</span><span class='line'>import java.io.FileOutputStream;
+</span><span class='line'>import java.io.IOException;
+</span><span class='line'>
+</span><span class='line'>import org.apache.commons.lang.StringUtils;
+</span><span class='line'>import org.apache.hadoop.conf.Configuration;
+</span><span class='line'>import org.apache.hadoop.io.compress.CompressionCodec;
+</span><span class='line'>import org.apache.hadoop.io.compress.CompressionInputStream;
+</span><span class='line'>import org.apache.hadoop.io.compress.CompressionOutputStream;
+</span><span class='line'>import org.apache.hadoop.io.compress.SnappyCodec;
+</span><span class='line'>import org.apache.hadoop.util.ReflectionUtils;
+</span><span class='line'>import org.apache.zookeeper.common.IOUtils;
+</span><span class='line'>
+</span><span class='line'>public class SnappyCompressTest {
+</span><span class='line'>
+</span><span class='line'>        public static void main(String[] args) throws FileNotFoundException, IOException {
+</span><span class='line'>                try {
+</span><span class='line'>                        execute(args);
+</span><span class='line'>                } catch (Exception e) {
+</span><span class='line'>                        System.out.println("Usage: $0 read|write file[.snappy]");
+</span><span class='line'>                }
+</span><span class='line'>        }
+</span><span class='line'>
+</span><span class='line'>        private static void execute(String[] args) throws FileNotFoundException, IOException {
+</span><span class='line'>                String op = args[0];
+</span><span class='line'>                String file = args[1];
+</span><span class='line'>                String snappyFile = file + ".snappy";
+</span><span class='line'>
+</span><span class='line'>                Class&lt;? extends CompressionCodec&gt; clazz = SnappyCodec.class;
+</span><span class='line'>                CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
+</span><span class='line'>
+</span><span class='line'>                if (StringUtils.equalsIgnoreCase(op, "read")) {
+</span><span class='line'>                        FileInputStream fin = new FileInputStream(snappyFile);
+</span><span class='line'>                        CompressionInputStream in = codec.createInputStream(fin);
+</span><span class='line'>                        FileOutputStream fout = new FileOutputStream(file);
+</span><span class='line'>                        IOUtils.copyBytes(in, fout, 4096, true);
+</span><span class='line'>                } else {
+</span><span class='line'>                        FileInputStream fin = new FileInputStream(file);
+</span><span class='line'>                        CompressionOutputStream out = codec.createOutputStream(new FileOutputStream(snappyFile));
+</span><span class='line'>                        IOUtils.copyBytes(fin, out, 4096, true);
+</span><span class='line'>                }
+</span><span class='line'>        }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>编译运行，测试读写功能。使用hadoop命令可以简化很多工作，把当前路径加入到<code>HADOOP_CLASSPATH</code>。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 test]$ javac -cp `hadoop classpath` SnappyCompressTest.java 
+</span><span class='line'>[hadoop@master1 test]$ export HADOOP_CLASSPATH=$PWD
+</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest 
+</span><span class='line'>Usage: $0 read|write file[.snappy]
+</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest write test.txt 
+</span><span class='line'>[hadoop@master1 test]$ ll
+</span><span class='line'>total 16
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:23 test.txt
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
+</span><span class='line'>[hadoop@master1 test]$ rm test.txt
+</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest read test.txt 
+</span><span class='line'>[hadoop@master1 test]$ ll
+</span><span class='line'>total 16
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:28 test.txt
+</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
+</span><span class='line'>[hadoop@master1 test]$ cat test.txt
+</span><span class='line'>abc
+</span><span class='line'>abc
+</span><span class='line'>abc</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5) hbase中添加压缩</p>
+
+<p>把所有library，以及hbase的配置同步其他所有从节点。对hbase的表使用Snappy压缩。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hbase(main):001:0&gt; create 'st1', 'f1'
+</span><span class='line'>hbase(main):005:0&gt; alter 'st1', {NAME=&gt;'f1', COMPRESSION=&gt;'snappy'}
+</span><span class='line'>Updating all regions with the new schema...
+</span><span class='line'>0/1 regions updated.
+</span><span class='line'>1/1 regions updated.
+</span><span class='line'>Done.
+</span><span class='line'>0 row(s) in 2.7880 seconds
+</span><span class='line'>
+</span><span class='line'>hbase(main):010:0&gt; create 'sst1','f1'
+</span><span class='line'>0 row(s) in 0.5730 seconds
+</span><span class='line'>
+</span><span class='line'>=&gt; Hbase::Table - sst1
+</span><span class='line'>hbase(main):011:0&gt; flush 'sst1'
+</span><span class='line'>0 row(s) in 2.5380 seconds
+</span><span class='line'>
+</span><span class='line'>hbase(main):012:0&gt; flush 'st1'
+</span><span class='line'>0 row(s) in 7.5470 seconds</span></code></pre></td></tr></table></div></figure>
+
+
+<p>对于hbase来说，使用压缩消耗还是挺大的。插入10w数据中间进行compaction时停顿比较久。最后flush写数据的时间也长了很多！
+下面是文件写入后的文件大小对比（由于是进行简单的测试，写入的数据重复比较多。具体比例没有参考价值）：</p>
+
+<p><img src="http://file.bmob.cn/M00/05/5A/wKhkA1PYz9CAB-TdAAEWX8LGpUo149.png" alt="" /></p>
+
+<p>6) 正式环境下解压snappy文件</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>
+</span><span class='line'>import java.io.FileOutputStream;
+</span><span class='line'>import java.io.IOException;
+</span><span class='line'>import java.io.InputStream;
+</span><span class='line'>
+</span><span class='line'>import org.apache.hadoop.conf.Configuration;
+</span><span class='line'>import org.apache.hadoop.fs.FileSystem;
+</span><span class='line'>import org.apache.hadoop.fs.Path;
+</span><span class='line'>import org.apache.hadoop.io.compress.CompressionCodec;
+</span><span class='line'>import org.apache.hadoop.io.compress.CompressionInputStream;
+</span><span class='line'>import org.apache.hadoop.io.compress.SnappyCodec;
+</span><span class='line'>import org.apache.hadoop.util.ReflectionUtils;
+</span><span class='line'>import org.apache.zookeeper.common.IOUtils;
+</span><span class='line'>
+</span><span class='line'>public class DecompressTest {
+</span><span class='line'>  public static void main(String[] args) throws IOException {
+</span><span class='line'>
+</span><span class='line'>      Configuration conf = new Configuration();
+</span><span class='line'>      Path path = new Path(args[0]);
+</span><span class='line'>      FileSystem fs = path.getFileSystem(conf);
+</span><span class='line'>
+</span><span class='line'>      Class&lt;? extends CompressionCodec&gt; clazz = SnappyCodec.class;
+</span><span class='line'>      CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
+</span><span class='line'>
+</span><span class='line'>      InputStream fin = fs.open(path);
+</span><span class='line'>      CompressionInputStream in = codec.createInputStream(fin);
+</span><span class='line'>
+</span><span class='line'>      IOUtils.copyBytes(in, System.out, 4096, true);
+</span><span class='line'>
+</span><span class='line'>      fin.close();
+</span><span class='line'>
+</span><span class='line'>      System.out.println("SUCCESS");
+</span><span class='line'>
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>// build & run
+</span><span class='line'>
+</span><span class='line'>&gt;DecompressTest.java 
+</span><span class='line'>vi DecompressTest.java 
+</span><span class='line'>javac -cp `hadoop classpath`  DecompressTest.java 
+</span><span class='line'>export HADOOP_CLASSPATH=.
+</span><span class='line'># snappyfile on hdfs
+</span><span class='line'>hadoop DecompressTest /user/hive/t_ods_access_log2/month=201408/day=20140828/hour=2014082808/t_ods_access_log2-2014082808.our.snappy.1409187524328
+</span></code></pre></td></tr></table></div></figure>
+
+
+
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 ShortCircuit Local Reading</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-07-29T20:11:58+08:00" pubdate data-updated="true">Tue 2014-07-29 20:11</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白，最终大致就是通过linux的<strong>文件描述符</strong>来实现功能同时保证文件的权限。</p>
+
+<p>由于仅在自己的机器上面配置来查询hbase的数据，性能方面提升感觉不是很明显。等以后整到正式环境再对比对比。</p>
+
+<p>配置如下。</p>
+
+<p>1 修改hdfs-site.xml</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的写权限，要么仅root可写。</p>
+
+<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png" alt="" /></p>
+
+<p>2 修改hbase的配置，并添加HADOOP_HOME（hbase查找hadoop-native）</p>
+
+<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXhRKAZDs6AAChrEauBoU738.png" alt="" /></p>
+
+<p>hbase的脚本找到hadoop命令后，会把hadoop的java.library.path的路径加入到hbase的启动脚本中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ tail -15 hbase-0.98.3-hadoop2/conf/hbase-site.xml 
+</span><span class='line'>    &lt;name&gt;hbase.tmp.dir&lt;/name&gt;
+</span><span class='line'>    &lt;value&gt;/home/hadoop/data/hbase&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;/configuration&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@master1 ~]$ cat hbase-0.98.3-hadoop2/conf/hbase-env.sh
+</span><span class='line'>...
+</span><span class='line'>export HADOOP_HOME=/home/hadoop/hadoop-2.2.0
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>3 同步到其他节点，然后重启hdfs,hbase</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://vdisk.weibo.com/s/z_44nz36hNM3Z">hive-tuning</a></li>
+<li><a href="http://blog.cloudera.com/blog/2013/08/how-improved-short-circuit-local-reads-bring-better-performance-and-security-to-hadoop/">How Improved Short-Circuit Local Reads Bring Better Performance and Security to Hadoop</a></li>
+<li><a href="http://hbase.apache.org/book/perf.hdfs.html">HDFS&ndash;Apache HBase Performance Tuning</a></li>
+<li><a href="http://archive.cloudera.com/cdh4/cdh/4/hadoop/hadoop-project-dist/hadoop-hdfs/ShortCircuitLocalReads.html">HDFS Short-Circuit Local Reads</a></li>
+</ul>
+
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1488,1836 +2067,6 @@ ls
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/07/18/install-ganglia-on-redhat/">Install Ganglia on Redhat5+</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-07-18T14:53:44+08:00" pubdate data-updated="true">Fri 2014-07-18 14:53</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>对使用C写的复杂的程序安装心里有阴影，还有本来可以上网的话，使用yum安装会省很多的事情。
-但是没办法，环境是这样，正式环境没有提供网络环境，搭建的本地yum环境也不知道行不行。</p>
-
-<p>上次在自己电脑的虚拟机上面成功安装过ganglia，但apache、rrdtool依赖使用yum安装的，安装过程比较揪心。把ganglia安装到正式环境就不了了之的。
-上个星期生产环境出现了用户查询数据久久不能返回的问题，由于查询程序写的比较差的缘故。但同时也给自己敲了警钟，都不知道集群机器运行情况，终究是大隐患；安装后监测集群同时为以后程序的调优工作带来便利。</p>
-
-<p>本次安装全部使用源码包安装，有部分lib有重复编译。</p>
-
-<p>总结下，原来安装ganglia就仅是按照网络的步骤一步步的弄，同时各个程序的版本又有可能不一致，每一步都胆战心惊！没有重点重心，以至于浪费了很多的事情。
-分步骤有条不紊的操作就可以踏实多了，安装ganglia主要涉及三个核心部分(安装程序包<a href="http://yunpan.cn/QCFUiuyAWSyZI">下载</a>（提取码：0ec4）)：</p>
-
-<ul>
-<li>rrdtool</li>
-<li>gmetad / gmond</li>
-<li>apache / web</li>
-<li>集群子节点部署</li>
-<li>配置hadoop metrics监控hadoop集群</li>
-</ul>
-
-
-<p>按照顺序一个个的安装就可以了。无需为一个个依赖的版本不一致问题而忧心，同时可以更好的参考网络上的实践。</p>
-
-<h2>安装rrdtool</h2>
-
-<p>推荐按照<a href="http://oss.oetiker.ch/rrdtool/doc/rrdbuild.en.html#IBUILDING_DEPENDENCIES">官网教程</a>步骤操作，很&amp;非常的详细。
-教程中环境变量必须得设置！这个很重点！</p>
-
-<p>下面是安装rrdtool过程中用到的软件，列出的顺序即为安装的次序：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-44 rrdbuild]$ ll -tr | grep -v 'tar'
-</span><span class='line'>总计 24132
-</span><span class='line'>drwxrwxrwx  6   1000          1000    4096 07-17 12:12 pkg-config-0.23
-</span><span class='line'>drwxr-xr-x 11 hadoop            80    4096 07-17 12:28 zlib-1.2.3
-</span><span class='line'>drwxr-xr-x  7   1004 avahi-autoipd    4096 07-17 12:29 libpng-1.2.18
-</span><span class='line'>drwxr-xr-x  8   1000 users            4096 07-17 12:31 freetype-2.3.5
-</span><span class='line'>drwxrwxrwx 15  50138 vcsa            12288 07-17 16:37 libxml2-2.6.32
-</span><span class='line'>drwxrwxrwx 15   1488 users            4096 07-17 16:53 fontconfig-2.4.2
-</span><span class='line'>drwxrwxrwx  4 sjyw   sjyw             4096 07-17 16:56 pixman-0.10.0
-</span><span class='line'>drwxrwsrwx  8   1000 ftp              4096 07-17 16:59 cairo-1.6.4
-</span><span class='line'>drwxrwxrwx 12 sjyw   sjyw             4096 07-17 17:01 glib-2.15.4
-</span><span class='line'>drwxrwxrwx  9 sjyw   sjyw             4096 07-17 17:16 pango-1.21.1
-</span><span class='line'>drwxr-xr-x 11   1003          1001    4096 07-17 17:36 rrdtool-1.4.8</span></code></pre></td></tr></table></div></figure>
-
-
-<p>具体操作的步骤（原来包括操作步骤，发现太累赘了重新调整了一下）：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 下面几个环境变量时基础！
-</span><span class='line'>BUILD_DIR=/home/ganglia/rrdbuild
-</span><span class='line'>INSTALL_DIR=/opt/rrdtool-1.4.8
-</span><span class='line'>
-</span><span class='line'>export PKG_CONFIG_PATH=${INSTALL_DIR}/lib/pkgconfig
-</span><span class='line'>export PATH=$INSTALL_DIR/bin:$PATH
-</span><span class='line'>
-</span><span class='line'>export LDFLAGS="-Wl,--rpath -Wl,${INSTALL_DIR}/lib" 
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 rrdbuild]# tar zxvf pkg-config-0.23.tar.gz 
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd pkg-config-0.23
-</span><span class='line'>[root@umcc97-44 pkg-config-0.23]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
-</span><span class='line'>[root@umcc97-44 pkg-config-0.23]# make && make install
-</span><span class='line'>
-</span><span class='line'># 这个环境变量也很重要
-</span><span class='line'>[root@umcc97-44 pkg-config-0.23]# export PKG_CONFIG=$INSTALL_DIR/bin/pkg-config
-</span><span class='line'>[root@umcc97-44 pkg-config-0.23]# cd ..
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 rrdbuild]# tar zxvf zlib-1.2.3.tar.gz 
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd zlib-1.2.3
-</span><span class='line'># 修改了下官网的命令; 64位问题 recompile with -fPIC
-</span><span class='line'>[root@umcc97-44 zlib-1.2.3]# CFLAGS="-O3 -fPIC" ./configure
-</span><span class='line'>[root@umcc97-44 zlib-1.2.3]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 rrdbuild]# tar zxvf libpng-1.2.18.tar.gz 
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd libpng-1.2.18
-</span><span class='line'>[root@umcc97-44 zlib-1.2.3]# cd ../libpng-1.2.18
-</span><span class='line'>[root@umcc97-44 libpng-1.2.18]# env CFLAGS="-O3 -fPIC" ./configure --prefix=$INSTALL_DIR
-</span><span class='line'>[root@umcc97-44 libpng-1.2.18]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 libpng-1.2.18]# cd ..
-</span><span class='line'>[root@umcc97-44 rrdbuild]# tar zxvf freetype-2.3.5.tar.gz 
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd freetype-2.3.5
-</span><span class='line'>[root@umcc97-44 freetype-2.3.5]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
-</span><span class='line'>[root@umcc97-44 freetype-2.3.5]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 rrdbuild]# tar zxvf libxml2-2.6.32.tar.gz 
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd libxml2-2.6.32
-</span><span class='line'>[root@umcc97-44 libxml2-2.6.32]#  ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
-</span><span class='line'>[root@umcc97-44 libxml2-2.6.32]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 libxml2-2.6.32]# cd ..
-</span><span class='line'>[root@umcc97-44 rrdbuild]# tar zxvf fontconfig-2.4.2.tar.gz 
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd fontconfig-2.4.2
-</span><span class='line'>[root@umcc97-44 fontconfig-2.4.2]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC" --with-freetype-config=$INSTALL_DIR/bin/freetype-config
-</span><span class='line'>[root@umcc97-44 fontconfig-2.4.2]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 fontconfig-2.4.2]# cd ..
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd pixman-0.10.0
-</span><span class='line'>[root@umcc97-44 pixman-0.10.0]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
-</span><span class='line'>[root@umcc97-44 pixman-0.10.0]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 pixman-0.10.0]# cd ../cairo-1.6.4
-</span><span class='line'>[root@umcc97-44 cairo-1.6.4]# ./configure --prefix=$INSTALL_DIR \
-</span><span class='line'>&gt;     --enable-xlib=no \
-</span><span class='line'>&gt;     --enable-xlib-render=no \
-</span><span class='line'>&gt;     --enable-win32=no \
-</span><span class='line'>&gt;     CFLAGS="-O3 -fPIC"
-</span><span class='line'>[root@umcc97-44 cairo-1.6.4]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 cairo-1.6.4]# cd ..
-</span><span class='line'>[root@umcc97-44 rrdbuild]# tar zxvf glib-2.15.4.tar.gz 
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd glib-2.15.4
-</span><span class='line'>[root@umcc97-44 glib-2.15.4]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC"
-</span><span class='line'>[root@umcc97-44 glib-2.15.4]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 rrdbuild]# bunzip2 -c pango-1.21.1.tar.bz2 | tar xf -
-</span><span class='line'>[root@umcc97-44 rrdbuild]# ll
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd pango-1.21.1
-</span><span class='line'>[root@umcc97-44 pango-1.21.1]# ./configure --prefix=$INSTALL_DIR CFLAGS="-O3 -fPIC" --without-x
-</span><span class='line'>[root@umcc97-44 pango-1.21.1]# export PATH=$INSTALL_DIR/bin:$PATH
-</span><span class='line'>[root@umcc97-44 pango-1.21.1]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 rrdbuild]# cd rrdtool-1.4.8/
-</span><span class='line'>[root@umcc97-44 rrdtool-1.4.8]#  ./configure --prefix=$INSTALL_DIR --disable-tcl --disable-python
-</span><span class='line'>[root@umcc97-44 rrdtool-1.4.8]# make clean
-</span><span class='line'>[root@umcc97-44 rrdtool-1.4.8]# make 
-</span><span class='line'>[root@umcc97-44 rrdtool-1.4.8]# make install
-</span><span class='line'>   
-</span><span class='line'>## 安装完后，搞个例子玩玩   
-</span><span class='line'>[root@umcc97-44 rrdtool-1.4.8]# cd /opt/rrdtool-1.4.8/share/rrdtool/examples/
-</span><span class='line'>[root@umcc97-44 examples]# ll
-</span><span class='line'>[root@umcc97-44 examples]# ./4charts.pl 
-</span><span class='line'>This script has created 4charts.png in the current directory
-</span><span class='line'>This demonstrates the use of the TIME and % RPN operators
-</span><span class='line'># 运行完后，会在当前目录生成不同尺寸的png的图片
-</span><span class='line'> 
-</span><span class='line'>[hadoop@umcc97-44 ~]$ /opt/rrdtool-1.4.8/bin/rrdtool -v
-</span><span class='line'>RRDtool 1.4.8  Copyright 1997-2013 by Tobias Oetiker &lt;tobi@oetiker.ch&gt;
-</span><span class='line'>               Compiled Jul 17 2014 17:37:58
-</span><span class='line'>
-</span><span class='line'>Usage: rrdtool [options] command command_options
-</span><span class='line'>Valid commands: create, update, updatev, graph, graphv,  dump, restore,
-</span><span class='line'>      last, lastupdate, first, info, fetch, tune,
-</span><span class='line'>      resize, xport, flushcached
-</span><span class='line'>
-</span><span class='line'>RRDtool is distributed under the Terms of the GNU General
-</span><span class='line'>Public License Version 2. (www.gnu.org/copyleft/gpl.html)
-</span><span class='line'>
-</span><span class='line'>For more information read the RRD manpages</span></code></pre></td></tr></table></div></figure>
-
-
-<p>到这里rrd安装好，遇到zlib的CFLAGS变量设置的问题，以及终端断了必须重新设置<strong>环境变量</strong>两个大点的问题！其他如果按照官网的顺序安装基本顺顺利利了。</p>
-
-<p>同时认识到了pkg，其实类似于java的jar嘛，依赖包不一定非要安装在系统的默认位置，自己管理也是一种简单易行的方式。接下来安装gmetad/gmond也使用这样方式，为后面部署gmond带来便利：所有依赖的包都放在一个目录下嘛！
-接下来ganglia程序。</p>
-
-<h2>gmetad安装</h2>
-
-<p>需要用到的软件包：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>./gangliabuild/ganglia-web-3.5.12
-</span><span class='line'>./gangliabuild/apr-1.5.1
-</span><span class='line'>./gangliabuild/apr-util-1.5.3
-</span><span class='line'>./gangliabuild/confuse-2.7
-</span><span class='line'>./gangliabuild/expat-2.0.1
-</span><span class='line'>./gangliabuild/ganglia-3.6.0</span></code></pre></td></tr></table></div></figure>
-
-
-<p>整个安装过程，除了make的时刻rrd的库找不到的问题（通过LD_LIBRARY_PATH解决），其他都安装的很顺。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 把下载来的tar全部解压
-</span><span class='line'>[root@umcc97-44 gangliabuild]# find . -name "*.tar.gz" -exec tar zxvf {} \;
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 gangliabuild]# cd expat-2.0.1
-</span><span class='line'>[root@umcc97-44 expat-2.0.1]# INSTALL_DIR=/opt/ganglia
-</span><span class='line'>[root@umcc97-44 expat-2.0.1]# ./configure --prefix=$INSTALL_DIR 
-</span><span class='line'>[root@umcc97-44 expat-2.0.1]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 expat-2.0.1]# cd ../apr-1.5.1
-</span><span class='line'>[root@umcc97-44 apr-1.5.1]# ./configure --prefix=$INSTALL_DIR 
-</span><span class='line'>[root@umcc97-44 apr-1.5.1]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 apr-1.5.1]# cd ../apr-util-1.5.3
-</span><span class='line'>[root@umcc97-44 apr-util-1.5.3]# ./configure --with-apr=/opt/ganglia --with-expat=/opt/ganglia --prefix=$INSTALL_DIR 
-</span><span class='line'>[root@umcc97-44 apr-util-1.5.3]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 apr-util-1.5.3]# cd ../confuse-2.7
-</span><span class='line'>[root@umcc97-44 confuse-2.7]# ./configure CFLAGS=-fPIC --disable-nls --prefix=$INSTALL_DIR 
-</span><span class='line'>[root@umcc97-44 confuse-2.7]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 confuse-2.7]# cd ../ganglia-3.6.0
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# export LDFLAGS="-Wl,--rpath -Wl,${INSTALL_DIR}/lib" 
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# export PKG_CONFIG_PATH=${INSTALL_DIR}/lib/pkgconfig
-</span><span class='line'># 注意sysconfdir，运行程序配置所在的目录
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR --with-librrd=/opt/rrdtool-1.4.8 --with-libexpat=/opt/ganglia --with-libconfuse=/opt/ganglia --with-libpcre=no  --with-gmetad --enable-gexec --enable-status -sysconfdir=/etc/ganglia
-</span><span class='line'>...
-</span><span class='line'>Welcome to..
-</span><span class='line'>     ______                  ___
-</span><span class='line'>    / ____/___ _____  ____ _/ (_)___ _
-</span><span class='line'>   / / __/ __ `/ __ \/ __ `/ / / __ `/
-</span><span class='line'>  / /_/ / /_/ / / / / /_/ / / / /_/ /
-</span><span class='line'>  \____/\__,_/_/ /_/\__, /_/_/\__,_/
-</span><span class='line'>                   /____/
-</span><span class='line'>
-</span><span class='line'>Copyright (c) 2005 University of California, Berkeley
-</span><span class='line'>
-</span><span class='line'>Version: 3.6.0
-</span><span class='line'>Library: Release 3.6.0 0:0:0
-</span><span class='line'>
-</span><span class='line'>Type "make" to compile.
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# 
-</span><span class='line'># 设置rrd的LIB路径
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# export LD_LIBRARY_PATH=/opt/rrdtool-1.4.8/lib
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# make
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# make install</span></code></pre></td></tr></table></div></figure>
-
-
-<p>接下来是配置gmetad</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@umcc97-44 ganglia-3.6.0]#  cd gmetad
-</span><span class='line'>[root@umcc97-44 gmetad]# cp gmetad.init /etc/init.d/gmetad
-</span><span class='line'>[root@umcc97-44 gmetad]# chkconfig gmetad on
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 gmetad]# chkconfig --list gmetad
-</span><span class='line'>gmetad            0:off   1:off   2:on    3:on    4:on    5:on    6:off
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 gmetad]# mkdir -p /var/lib/ganglia/rrds
-</span><span class='line'>[root@umcc97-44 gmetad]# chown nobody:nobody /var/lib/ganglia/rrds
-</span><span class='line'>[root@umcc97-44 gmetad]# 
-</span><span class='line'># 没有启动起来，程序的路径不对
-</span><span class='line'>[root@umcc97-44 gmetad]# service gmetad start
-</span><span class='line'>Starting GANGLIA gmetad: 
-</span><span class='line'>[root@umcc97-44 gmetad]# 
-</span><span class='line'>[root@umcc97-44 gmetad]# ln -s /opt/ganglia/sbin/gmetad /usr/sbin/gmetad
-</span><span class='line'>[root@umcc97-44 gmetad]# service gmetad start
-</span><span class='line'>Starting GANGLIA gmetad: [  OK  ]
-</span><span class='line'>
-</span><span class='line'># 配置
-</span><span class='line'>[root@umcc97-44 gmetad]# cp gmetad.conf /etc/ganglia/gmetad.conf
-</span><span class='line'>[root@umcc97-44 gmetad]# vi /etc/ganglia/gmetad.conf 
-</span><span class='line'> datasource "hadoop" localhost
-</span><span class='line'> rrd_rootdir "/var/lib/ganglia/rrds"
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 gmetad]# service gmetad restart
-</span><span class='line'>Shutting down GANGLIA gmetad: [  OK  ]
-</span><span class='line'>Starting GANGLIA gmetad: [  OK  ]
-</span><span class='line'>
-</span><span class='line'># 测试下
-</span><span class='line'>[root@umcc97-44 gmetad]# telnet localhost 8651</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>gmond安装</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@umcc97-44 gmetad]# pwd
-</span><span class='line'>/home/ganglia/gangliabuild/ganglia-3.6.0/gmetad
-</span><span class='line'>[root@umcc97-44 gmetad]# cd ..
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR  --with-libpcre=no
-</span><span class='line'>...
-</span><span class='line'>Welcome to..
-</span><span class='line'>     ______                  ___
-</span><span class='line'>    / ____/___ _____  ____ _/ (_)___ _
-</span><span class='line'>   / / __/ __ `/ __ \/ __ `/ / / __ `/
-</span><span class='line'>  / /_/ / /_/ / / / / /_/ / / / /_/ /
-</span><span class='line'>  \____/\__,_/_/ /_/\__, /_/_/\__,_/
-</span><span class='line'>                   /____/
-</span><span class='line'>
-</span><span class='line'>Copyright (c) 2005 University of California, Berkeley
-</span><span class='line'>
-</span><span class='line'>Version: 3.6.0
-</span><span class='line'>Library: Release 3.6.0 0:0:0
-</span><span class='line'>
-</span><span class='line'>Type "make" to compile.
-</span><span class='line'>
-</span><span class='line'># 尽管检查通过了，但是make会报错
-</span><span class='line'># 需要指定lib包位置
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# ./configure --prefix=$INSTALL_DIR  --with-libpcre=no  --with-libexpat=/opt/ganglia --with-libconfuse=/opt/ganglia -sysconfdir=/etc/ganglia
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# cd gmond/
-</span><span class='line'>[root@umcc97-44 gmond]# ./gmond -t &gt; /etc/ganglia/gmond.conf
-</span><span class='line'>
-</span><span class='line'># 和gmetad一样，需要把路径把程序做个软连接
-</span><span class='line'>[root@umcc97-44 gmond]# cat gmond.init
-</span><span class='line'>  #!/bin/sh
-</span><span class='line'>  #
-</span><span class='line'>  # chkconfig: 2345 70 40
-</span><span class='line'>  # description: gmond startup script
-</span><span class='line'>  #
-</span><span class='line'>  GMOND=/usr/sbin/gmond
-</span><span class='line'>
-</span><span class='line'>...
-</span><span class='line'>[root@umcc97-44 gmond]# ln -s /opt/ganglia/sbin/gmond /usr/sbin/gmond
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 gmond]# cp gmond.init /etc/init.d/gmond
-</span><span class='line'>[root@umcc97-44 gmond]# chkconfig --add gmond
-</span><span class='line'>[root@umcc97-44 gmond]# chkconfig --list gmond
-</span><span class='line'>gmond             0:off   1:off   2:on    3:on    4:on    5:on    6:off
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# vi /etc/ganglia/gmond.conf 
-</span><span class='line'> cluster-name
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# service gmond start
-</span><span class='line'>Starting GANGLIA gmond: [  OK  ]
-</span><span class='line'>
-</span><span class='line'># 测试下
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# telnet localhost 8649</span></code></pre></td></tr></table></div></figure>
-
-
-<p>查看运行情况：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@umcc97-44 ganglia-3.6.0]# ldconfig -v
-</span><span class='line'>[root@umcc97-44 ganglia-3.6.0]# /opt/ganglia/bin/gstat -a</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>apache和php环境安装</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@umcc97-44 webbuild]# tar zxvf httpd-2.4.9.tar.gz 
-</span><span class='line'>[root@umcc97-44 webbuild]# cd httpd-2.4.9
-</span><span class='line'>[root@umcc97-44 httpd-2.4.9]# ./configure -with-enable-so -sysconfdir=/etc/httpd
-</span><span class='line'>...
-</span><span class='line'>checking for APR... no
-</span><span class='line'>configure: error: APR not found.  Please read the documentation.
-</span><span class='line'>
-</span><span class='line'># 前面安装ganglia时也安装过APR但是安装的目录指定的，混用不是很好。查看官方安装2.4的安装文档，可以直接把apr放到srclib下，编译时会同时编译这些依赖
-</span><span class='line'>[root@umcc97-44 httpd-2.4.9]# cd srclib/
-</span><span class='line'>[root@umcc97-44 srclib]# cp -r /home/ganglia/gangliabuild/apr-1.5.1 ./
-</span><span class='line'>[root@umcc97-44 srclib]# cp -r /home/ganglia/gangliabuild/apr-util-1.5.3 ./
-</span><span class='line'>[root@umcc97-44 srclib]# mv apr-1.5.1 apr
-</span><span class='line'>[root@umcc97-44 srclib]# mv apr-util-1.5.3 apr-util
-</span><span class='line'>[root@umcc97-44 srclib]# ll
-</span><span class='line'>[root@umcc97-44 srclib]# cd ..
-</span><span class='line'>[root@umcc97-44 httpd-2.4.9]#  cd ../
-</span><span class='line'>[root@umcc97-44 webbuild]# tar zxvf pcre-8.35.tar.gz 
-</span><span class='line'># 正则表达式的包，这里安装默认位置
-</span><span class='line'>[root@umcc97-44 webbuild]# cd pcre-8.35
-</span><span class='line'>[root@umcc97-44 pcre-8.35]# ./configure 
-</span><span class='line'>[root@umcc97-44 pcre-8.35]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 pcre-8.35]# cd ../httpd-2.4.9
-</span><span class='line'>[root@umcc97-44 httpd-2.4.9]# ./configure --with-included-apr -with-enable-so -sysconfdir=/etc/httpd
-</span><span class='line'>[root@umcc97-44 httpd-2.4.9]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 httpd-2.4.9]# cd /usr/local/apache2/
-</span><span class='line'>[root@umcc97-44 apache2]# cd /etc/httpd
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 httpd]# cd /home/ganglia/webbuild/
-</span><span class='line'>[root@umcc97-44 webbuild]# tar zxvf php-5.5.14\ \(2\).tar.gz 
-</span><span class='line'>[root@umcc97-44 webbuild]# cd php-5.5.14
-</span><span class='line'># 用了安装rrd时的libxml
-</span><span class='line'>[root@umcc97-44 php-5.5.14]# ./configure -with-apxs2=/usr/local/apache2/bin/apxs --with-libxml-dir=/opt/rrdtool-1.4.8/ -sysconfdir=/etc -with-config-file-path=/etc -with-config-file-scan-dir=/usr/etc/php.d -with-zlib
-</span><span class='line'>[root@umcc97-44 php-5.5.14]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 php-5.5.14]#  
-</span><span class='line'>[root@umcc97-44 php-5.5.14]#  vi /etc/httpd/httpd.conf
-</span><span class='line'>
-</span><span class='line'>  LoadModule php5_module        modules/libphp5.so #这个安装php后自动加上了
-</span><span class='line'>
-</span><span class='line'>  DocumentRoot "/var/www/html"
-</span><span class='line'>  &lt;Directory "/var/www/html"&gt;
-</span><span class='line'>
-</span><span class='line'>  AddType application/x-httpd-php .php
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 php-5.5.14]# /usr/local/apache2/bin/apachectl start
-</span><span class='line'>AH00526: Syntax error on line 215 of /etc/httpd/httpd.conf:
-</span><span class='line'>DocumentRoot must be a directory
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 php-5.5.14]# mkdir -p /var/www/html
-</span><span class='line'>[root@umcc97-44 php-5.5.14]# /usr/local/apache2/bin/apachectl start
-</span><span class='line'>AH00558: httpd: Could not reliably determine the server's fully qualified domain name, using 10.18.97.44. Set the 'ServerName' directive globally to suppress this message
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 php-5.5.14]#  vi /etc/httpd/httpd.conf
-</span><span class='line'>  ServerName
-</span><span class='line'>[root@umcc97-44 php-5.5.14]#/usr/local/apache2/bin/apachectl start
-</span><span class='line'>httpd (pid 31416) already running
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 php-5.5.14]# cp /usr/local/apache2/bin/apachectl /etc/init.d/httpd
-</span><span class='line'>[root@umcc97-44 php-5.5.14]# chkconfig --add httpd
-</span><span class='line'>service httpd does not support chkconfig
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 ~]# vi /etc/init.d/httpd 
-</span><span class='line'> #chkconfig: 2345 10 90
-</span><span class='line'> #description: Activates/Deactivates Apache Web Server
-</span><span class='line'> 
-</span><span class='line'>[root@umcc97-44 ~]# service httpd start
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 ~]# cd /var/www/html/
-</span><span class='line'>[root@umcc97-44 ~]# vi index.php
-</span><span class='line'># http://umcc97-44 浏览器查看下结果
-</span><span class='line'>
-</span><span class='line'># /usr/local/apache2/bin/apachectl -k stop
-</span><span class='line'>[root@umcc97-44 ganglia-web]# service httpd -k stop   
-</span><span class='line'># 等apache结束
-</span><span class='line'>[root@umcc97-44 ganglia-web]# tail -f /usr/local/apache2/logs/error_log </span></code></pre></td></tr></table></div></figure>
-
-
-<p>部署ganglia-web：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@umcc97-44 ~]# cd /home/ganglia/gangliabuild/ganglia-web-3.5.12
-</span><span class='line'>[root@umcc97-44 ganglia-web-3.5.12]# ls
-</span><span class='line'>[root@umcc97-44 ganglia-web-3.5.12]# make install
-</span><span class='line'>rsync --exclude "rpmbuild" --exclude "*.gz" --exclude "Makefile" --exclude "*debian*" --exclude "ganglia-web-3.5.12" --exclude ".git*" --exclude "*.in" --exclude "*~" --exclude "#*#" --exclude "ganglia-web.spec" --exclude "apache.conf" -a . ganglia-web-3.5.12
-</span><span class='line'>mkdir -p //var/lib/ganglia-web/dwoo/compiled && \
-</span><span class='line'>  mkdir -p //var/lib/ganglia-web/dwoo/cache && \
-</span><span class='line'>  mkdir -p //var/lib/ganglia-web && \
-</span><span class='line'>  rsync -a ganglia-web-3.5.12/conf //var/lib/ganglia-web && \
-</span><span class='line'>  mkdir -p //usr/share/ganglia-webfrontend && \
-</span><span class='line'>  rsync --exclude "conf" -a ganglia-web-3.5.12/* //usr/share/ganglia-webfrontend && \
-</span><span class='line'>  chown -R root:root //var/lib/ganglia-web
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 ganglia-web-3.5.12]# mv /usr/share/ganglia-webfrontend /var/www/html/ganglia
-</span><span class='line'>[root@umcc97-44 ganglia-web-3.5.12]# cd /var/www/html/ganglia/    
-</span><span class='line'>
-</span><span class='line'># 修改配置，在安装完gmetad后有新建/var/lib/ganglia/rrds其实和conf中的配置是一致的
-</span><span class='line'>[root@umcc97-44 ganglia]# cp conf_default.php conf.php    
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 ganglia]# cd /var/lib/ganglia-web/
-</span><span class='line'>[root@umcc97-44 ganglia-web]# cd dwoo/
-</span><span class='line'>[root@umcc97-44 dwoo]# ll
-</span><span class='line'>total 8
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jul 17 21:34 cache
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jul 17 21:34 compiled
-</span><span class='line'>[root@umcc97-44 dwoo]# chmod 777 *    
-</span><span class='line'># http://umcc97-44/ganglia</span></code></pre></td></tr></table></div></figure>
-
-
-<p>部署gmond到其他集群节点</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>[root@umcc97-44 opt]# cat /etc/init.d/gmond 
-</span><span class='line'>  #!/bin/sh
-</span><span class='line'>  #
-</span><span class='line'>  # chkconfig: 2345 70 40
-</span><span class='line'>  # description: gmond startup script
-</span><span class='line'>  #
-</span><span class='line'>  GMOND=/usr/sbin/gmond   
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-44 opt]# vi /etc/ganglia/gmetad.conf     
-</span><span class='line'> data_source
-</span><span class='line'> # 重启gmetad
-</span><span class='line'>[root@umcc97-44 opt]# ssh-copy-id -i ~/.ssh/id_rsa.pub umcc97-144
-</span><span class='line'>[root@umcc97-44 opt]# scp /etc/init.d/gmond umcc97-144:/etc/init.d/
-</span><span class='line'>[root@umcc97-44 opt]# ssh umcc97-144 'mkdir /etc/ganglia' 
-</span><span class='line'>[root@umcc97-44 opt]# scp /etc/ganglia/gmond.conf  umcc97-144:/etc/ganglia/
-</span><span class='line'>[root@umcc97-44 opt]# rsync -vaz ganglia umcc97-144:/opt/
-</span><span class='line'>[root@umcc97-44 opt]# ssh umcc97-144
-</span><span class='line'>Last login: Tue Jun 10 12:08:47 2014
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-144 ~]# ln -s /opt/ganglia/sbin/gmond /usr/sbin/gmond
-</span><span class='line'>[root@umcc97-144 ~]# chkconfig --add gmond
-</span><span class='line'>[root@umcc97-144 ~]# service gmond start
-</span><span class='line'>Starting GANGLIA gmond: [  OK  ]
-</span><span class='line'>
-</span><span class='line'>[root@umcc97-144 ~]# </span></code></pre></td></tr></table></div></figure>
-
-
-<h2>Hadoop/Hbase Metrics配置</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-<span class='line-number'>146</span>
-<span class='line-number'>147</span>
-<span class='line-number'>148</span>
-<span class='line-number'>149</span>
-<span class='line-number'>150</span>
-<span class='line-number'>151</span>
-<span class='line-number'>152</span>
-<span class='line-number'>153</span>
-<span class='line-number'>154</span>
-<span class='line-number'>155</span>
-<span class='line-number'>156</span>
-<span class='line-number'>157</span>
-<span class='line-number'>158</span>
-<span class='line-number'>159</span>
-<span class='line-number'>160</span>
-<span class='line-number'>161</span>
-<span class='line-number'>162</span>
-<span class='line-number'>163</span>
-<span class='line-number'>164</span>
-<span class='line-number'>165</span>
-<span class='line-number'>166</span>
-<span class='line-number'>167</span>
-<span class='line-number'>168</span>
-<span class='line-number'>169</span>
-<span class='line-number'>170</span>
-<span class='line-number'>171</span>
-<span class='line-number'>172</span>
-<span class='line-number'>173</span>
-<span class='line-number'>174</span>
-<span class='line-number'>175</span>
-<span class='line-number'>176</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-44 ~]$ cat hadoop-2.2.0/etc/hadoop/hadoop-metrics*
-</span><span class='line'>#
-</span><span class='line'>#   Licensed to the Apache Software Foundation (ASF) under one or more
-</span><span class='line'>#   contributor license agreements.  See the NOTICE file distributed with
-</span><span class='line'>#   this work for additional information regarding copyright ownership.
-</span><span class='line'>#   The ASF licenses this file to You under the Apache License, Version 2.0
-</span><span class='line'>#   (the "License"); you may not use this file except in compliance with
-</span><span class='line'>#   the License.  You may obtain a copy of the License at
-</span><span class='line'>#
-</span><span class='line'>#       http://www.apache.org/licenses/LICENSE-2.0
-</span><span class='line'>#
-</span><span class='line'>#   Unless required by applicable law or agreed to in writing, software
-</span><span class='line'>#   distributed under the License is distributed on an "AS IS" BASIS,
-</span><span class='line'>#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-</span><span class='line'>#   See the License for the specific language governing permissions and
-</span><span class='line'>#   limitations under the License.
-</span><span class='line'>#
-</span><span class='line'>
-</span><span class='line'># syntax: [prefix].[source|sink].[instance].[options]
-</span><span class='line'># See javadoc of package-info.java for org.apache.hadoop.metrics2 for details
-</span><span class='line'>
-</span><span class='line'># @changed
-</span><span class='line'>#*.sink.file.class=org.apache.hadoop.metrics2.sink.FileSink
-</span><span class='line'># default sampling period, in seconds
-</span><span class='line'>#*.period=10
-</span><span class='line'>
-</span><span class='line'># The namenode-metrics.out will contain metrics from all context
-</span><span class='line'>#namenode.sink.file.filename=namenode-metrics.out
-</span><span class='line'># Specifying a special sampling period for namenode:
-</span><span class='line'>#namenode.sink.*.period=8
-</span><span class='line'>
-</span><span class='line'>#datanode.sink.file.filename=datanode-metrics.out
-</span><span class='line'>
-</span><span class='line'># the following example split metrics of different
-</span><span class='line'># context to different sinks (in this case files)
-</span><span class='line'>#jobtracker.sink.file_jvm.context=jvm
-</span><span class='line'>#jobtracker.sink.file_jvm.filename=jobtracker-jvm-metrics.out
-</span><span class='line'>#jobtracker.sink.file_mapred.context=mapred
-</span><span class='line'>#jobtracker.sink.file_mapred.filename=jobtracker-mapred-metrics.out
-</span><span class='line'>
-</span><span class='line'>#tasktracker.sink.file.filename=tasktracker-metrics.out
-</span><span class='line'>
-</span><span class='line'>#maptask.sink.file.filename=maptask-metrics.out
-</span><span class='line'>
-</span><span class='line'>#reducetask.sink.file.filename=reducetask-metrics.out
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>*.sink.ganglia.class=org.apache.hadoop.metrics2.sink.ganglia.GangliaSink31
-</span><span class='line'>*.sink.ganglia.period=10
-</span><span class='line'>
-</span><span class='line'>*.sink.ganglia.slope=jvm.metrics.gcCount=zero,jvm.metrics.memHeapUsedM=both
-</span><span class='line'>*.sink.ganglia.dmax=jvm.metrics.threadsBlocked=70,jvm.metrics.memHeapUsedM=40
-</span><span class='line'>
-</span><span class='line'>namenode.sink.ganglia.servers=umcc97-44:8649
-</span><span class='line'>resourcemanager.sink.ganglia.servers=umcc97-44:8649
-</span><span class='line'>
-</span><span class='line'>datanode.sink.ganglia.servers=umcc97-44:8649
-</span><span class='line'>nodemanager.sink.ganglia.servers=umcc97-44:8649
-</span><span class='line'>
-</span><span class='line'>maptask.sink.ganglia.servers=umcc97-44:8649
-</span><span class='line'>reducetask.sink.ganglia.servers=umcc97-44:8649
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># Configuration of the "dfs" context for null
-</span><span class='line'>dfs.class=org.apache.hadoop.metrics.spi.NullContext
-</span><span class='line'>
-</span><span class='line'># Configuration of the "dfs" context for file
-</span><span class='line'>#dfs.class=org.apache.hadoop.metrics.file.FileContext
-</span><span class='line'>#dfs.period=10
-</span><span class='line'>#dfs.fileName=/tmp/dfsmetrics.log
-</span><span class='line'>
-</span><span class='line'># Configuration of the "dfs" context for ganglia
-</span><span class='line'># Pick one: Ganglia 3.0 (former) or Ganglia 3.1 (latter)
-</span><span class='line'># dfs.class=org.apache.hadoop.metrics.ganglia.GangliaContext
-</span><span class='line'># dfs.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
-</span><span class='line'># dfs.period=10
-</span><span class='line'># dfs.servers=localhost:8649
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># Configuration of the "mapred" context for null
-</span><span class='line'>mapred.class=org.apache.hadoop.metrics.spi.NullContext
-</span><span class='line'>
-</span><span class='line'># Configuration of the "mapred" context for file
-</span><span class='line'>#mapred.class=org.apache.hadoop.metrics.file.FileContext
-</span><span class='line'>#mapred.period=10
-</span><span class='line'>#mapred.fileName=/tmp/mrmetrics.log
-</span><span class='line'>
-</span><span class='line'># Configuration of the "mapred" context for ganglia
-</span><span class='line'># Pick one: Ganglia 3.0 (former) or Ganglia 3.1 (latter)
-</span><span class='line'># mapred.class=org.apache.hadoop.metrics.ganglia.GangliaContext
-</span><span class='line'># mapred.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
-</span><span class='line'># mapred.period=10
-</span><span class='line'># mapred.servers=localhost:8649
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># Configuration of the "jvm" context for null
-</span><span class='line'>#jvm.class=org.apache.hadoop.metrics.spi.NullContext
-</span><span class='line'>
-</span><span class='line'># Configuration of the "jvm" context for file
-</span><span class='line'>#jvm.class=org.apache.hadoop.metrics.file.FileContext
-</span><span class='line'>#jvm.period=10
-</span><span class='line'>#jvm.fileName=/tmp/jvmmetrics.log
-</span><span class='line'>
-</span><span class='line'># Configuration of the "jvm" context for ganglia
-</span><span class='line'># jvm.class=org.apache.hadoop.metrics.ganglia.GangliaContext
-</span><span class='line'># jvm.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
-</span><span class='line'># jvm.period=10
-</span><span class='line'># jvm.servers=localhost:8649
-</span><span class='line'>
-</span><span class='line'># Configuration of the "rpc" context for null
-</span><span class='line'>rpc.class=org.apache.hadoop.metrics.spi.NullContext
-</span><span class='line'>
-</span><span class='line'># Configuration of the "rpc" context for file
-</span><span class='line'>#rpc.class=org.apache.hadoop.metrics.file.FileContext
-</span><span class='line'>#rpc.period=10
-</span><span class='line'>#rpc.fileName=/tmp/rpcmetrics.log
-</span><span class='line'>
-</span><span class='line'># Configuration of the "rpc" context for ganglia
-</span><span class='line'># rpc.class=org.apache.hadoop.metrics.ganglia.GangliaContext
-</span><span class='line'># rpc.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
-</span><span class='line'># rpc.period=10
-</span><span class='line'># rpc.servers=localhost:8649
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># Configuration of the "ugi" context for null
-</span><span class='line'>ugi.class=org.apache.hadoop.metrics.spi.NullContext
-</span><span class='line'>
-</span><span class='line'># Configuration of the "ugi" context for file
-</span><span class='line'>#ugi.class=org.apache.hadoop.metrics.file.FileContext
-</span><span class='line'>#ugi.period=10
-</span><span class='line'>#ugi.fileName=/tmp/ugimetrics.log
-</span><span class='line'>
-</span><span class='line'># Configuration of the "ugi" context for ganglia
-</span><span class='line'># ugi.class=org.apache.hadoop.metrics.ganglia.GangliaContext
-</span><span class='line'># ugi.class=org.apache.hadoop.metrics.ganglia.GangliaContext31
-</span><span class='line'># ugi.period=10
-</span><span class='line'># ugi.servers=localhost:8649
-</span><span class='line'>
-</span><span class='line'>[hadoop@umcc97-44 ~]$ cat hbase-0.98.3-hadoop2/conf/hadoop-metrics2-hbase.properties 
-</span><span class='line'># syntax: [prefix].[source|sink].[instance].[options]
-</span><span class='line'># See javadoc of package-info.java for org.apache.hadoop.metrics2 for details
-</span><span class='line'>
-</span><span class='line'>#*.sink.file*.class=org.apache.hadoop.metrics2.sink.FileSink
-</span><span class='line'># default sampling period
-</span><span class='line'>#*.period=10
-</span><span class='line'>
-</span><span class='line'># Below are some examples of sinks that could be used
-</span><span class='line'># to monitor different hbase daemons.
-</span><span class='line'>
-</span><span class='line'># hbase.sink.file-all.class=org.apache.hadoop.metrics2.sink.FileSink
-</span><span class='line'># hbase.sink.file-all.filename=all.metrics
-</span><span class='line'>
-</span><span class='line'># hbase.sink.file0.class=org.apache.hadoop.metrics2.sink.FileSink
-</span><span class='line'># hbase.sink.file0.context=hmaster
-</span><span class='line'># hbase.sink.file0.filename=master.metrics
-</span><span class='line'>
-</span><span class='line'># hbase.sink.file1.class=org.apache.hadoop.metrics2.sink.FileSink
-</span><span class='line'># hbase.sink.file1.context=thrift-one
-</span><span class='line'># hbase.sink.file1.filename=thrift-one.metrics
-</span><span class='line'>
-</span><span class='line'># hbase.sink.file2.class=org.apache.hadoop.metrics2.sink.FileSink
-</span><span class='line'># hbase.sink.file2.context=thrift-two
-</span><span class='line'># hbase.sink.file2.filename=thrift-one.metrics
-</span><span class='line'>
-</span><span class='line'># hbase.sink.file3.class=org.apache.hadoop.metrics2.sink.FileSink
-</span><span class='line'># hbase.sink.file3.context=rest
-</span><span class='line'># hbase.sink.file3.filename=rest.metrics
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>*.sink.ganglia.class=org.apache.hadoop.metrics2.sink.ganglia.GangliaSink31
-</span><span class='line'>*.sink.ganglia.period=10
-</span><span class='line'>
-</span><span class='line'>hbase.sink.ganglia.period=10
-</span><span class='line'>hbase.sink.ganglia.servers=umcc97-44:8649
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后properties配置同步到集群的从节点（datanode/regionserver），重启集群。等一会儿就能在ganglia-web界面看到多了很多很多的指标量。</p>
-
-<h2>参考</h2>
-
-<h3>ganglia</h3>
-
-<ul>
-<li><a href="http://oss.oetiker.ch/rrdtool/doc/rrdbuild.en.html#IBUILDING_DEPENDENCIES">RRDTool安装</a></li>
-<li><a href="http://www.cnblogs.com/qq78292959/archive/2012/05/30/2526761.html">CFLAGS=&ldquo;-O3 -fPIC&#8221;为64位编译参数</a></li>
-<li><a href="http://www.codesky.net/article/201107/174186.html">pkgconfig作用处理包依赖</a></li>
-<li><a href="http://blog.chinaunix.net/uid-23916356-id-3290237.html">gmetad和gmond安装以及配置</a></li>
-<li><a href="http://wenku.baidu.com/link?url=RH4EhSP3U_dp4I7goEVA_DFkb0DrgZ3uWw_mSt2hhaRb6mQJLtWxaa75RrwETwtY5e8BvOCI_p9RNrmXn_qbEexTE-PGlgtf6f5T3cGglKq">gmond节点拷贝安装</a></li>
-<li><a href="http://blog.chinaunix.net/uid-11121450-id-3147002.html">http://blog.chinaunix.net/uid-11121450-id-3147002.html</a></li>
-<li><a href="http://blog.chinaunix.net/uid-23916356-id-3290237.html">http://blog.chinaunix.net/uid-23916356-id-3290237.html</a></li>
-<li><a href="http://wenku.baidu.com/link?url=qY7vCTyodgSCsoIg6c2UiHXWv0nEGkS9nd0DbQERxFGEaTvgvi7FMQTKv5Sn1L9H8CX5_gDgAbJJ5jaQh3KhZED7PoB2Bgr2I6mS-vDc1LS">虚拟机操作从零开始弄, 搭了个本地源, 配置</a></li>
-<li><a href="http://www.linuxidc.com/Linux/2014-01/95804p2.htm">Hadoop/Hbase metrics2配置</a></li>
-<li><a href="https://github.com/cbuchner1/CudaMiner/issues/23">https://github.com/cbuchner1/CudaMiner/issues/23</a></li>
-<li><a href="http://bbs.csdn.net/topics/390546319">http://bbs.csdn.net/topics/390546319</a> LIBRARY_PATH是编译时使用的，LD_LIBRARY_PATH是运行时使用的。</li>
-</ul>
-
-
-<h3>apache web</h3>
-
-<ul>
-<li><a href="http://blog.sina.com.cn/s/blog_70121e200100lq0h.html">apache程序安装</a></li>
-<li><a href="http://blog.sina.com.cn/s/blog_5d15305b0101ceft.html">apache服务安装配置</a></li>
-<li><a href="http://www.cnblogs.com/yuboyue/archive/2011/07/18/2109875.html">apache关闭服务</a></li>
-<li><a href="http://www.soadmin.com/zonghe/operating-system/1008085.htm">目录权限处理</a></li>
-<li><a href="http://blog.163.com/figo_2007@126/blog/static/2318076520111149413935/">http://blog.163.com/figo_2007@126/blog/static/2318076520111149413935/</a></li>
-<li><a href="http://blog.sina.com.cn/s/blog_70121e200100lq0h.html">http://blog.sina.com.cn/s/blog_70121e200100lq0h.html</a></li>
-<li><a href="http://blog.sina.com.cn/s/blog_815611fb0101cxnl.html">http://blog.sina.com.cn/s/blog_815611fb0101cxnl.html</a></li>
-</ul>
-
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/06/21/upgrade-hive/">Upgrade Hive: 0.12.0 to 0.13.1</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-06-21T02:34:59+08:00" pubdate data-updated="true">Sat 2014-06-21 02:34</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>由于hive-0.12.0的FileSystem使用不当导致内存溢出问题，最终考虑升级hive。升级的过程没想象中的那么可怕，步骤很简单：对源数据库执行升级脚本，拷贝原hive-0.12.0的配置和jar，然后把添加jar重启hiverserver2即可。</p>
-
-<h2>修改环境变量</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>HIVE_HOME=/home/hadoop/apache-hive-0.13.1-bin
-</span><span class='line'>PATH=$JAVA_HOME/bin:$HIVE_HOME/bin:$PATH</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>升级metadata</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-<span class='line-number'>146</span>
-<span class='line-number'>147</span>
-<span class='line-number'>148</span>
-<span class='line-number'>149</span>
-<span class='line-number'>150</span>
-<span class='line-number'>151</span>
-<span class='line-number'>152</span>
-<span class='line-number'>153</span>
-<span class='line-number'>154</span>
-<span class='line-number'>155</span>
-<span class='line-number'>156</span>
-<span class='line-number'>157</span>
-<span class='line-number'>158</span>
-<span class='line-number'>159</span>
-<span class='line-number'>160</span>
-<span class='line-number'>161</span>
-<span class='line-number'>162</span>
-<span class='line-number'>163</span>
-<span class='line-number'>164</span>
-<span class='line-number'>165</span>
-<span class='line-number'>166</span>
-<span class='line-number'>167</span>
-<span class='line-number'>168</span>
-<span class='line-number'>169</span>
-<span class='line-number'>170</span>
-<span class='line-number'>171</span>
-<span class='line-number'>172</span>
-<span class='line-number'>173</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@ismp0 ~]$ cd apache-hive-0.13.1-bin/scripts/metastore/upgrade/mysql/
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 mysql]$ mysql -uXXX -hXXX -pXXX
-</span><span class='line'>mysql&gt; use hive
-</span><span class='line'>Reading table information for completion of table and column names
-</span><span class='line'>You can turn off this feature to get a quicker startup with -A
-</span><span class='line'>
-</span><span class='line'>Database changed
-</span><span class='line'>mysql&gt; source upgrade-0.12.0-to-0.13.0.mysql.sql
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>|                                                  |
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>| Upgrading MetaStore schema from 0.12.0 to 0.13.0 |
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>|                                                                       |
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>| &lt; HIVE-5700 enforce single date format for partition column storage &gt; |
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.22 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>|                                            |
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>| &lt; HIVE-6386: Add owner filed to database &gt; |
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.33 sec)
-</span><span class='line'>Records: 1  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.16 sec)
-</span><span class='line'>Records: 1  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>|                                                                                             |
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>| &lt;HIVE-6458 Add schema upgrade scripts for metastore changes related to permanent functions&gt; |
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>|                                                                                  |
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>| &lt;HIVE-6757 Remove deprecated parquet classes from outside of org.apache package&gt; |
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.04 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.12 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.15 sec)
-</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.07 sec)
-</span><span class='line'>Rows matched: 1  Changed: 1  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>|                                                           |
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>| Finished upgrading MetaStore schema from 0.12.0 to 0.13.0 |
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>mysql&gt; 
-</span><span class='line'>mysql&gt; 
-</span><span class='line'>mysql&gt; exit
-</span><span class='line'>Bye
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 ~]$ vi .bash_profile
-</span><span class='line'>[hadoop@ismp0 ~]$ source .bash_profile
-</span><span class='line'>[hadoop@ismp0 ~]$ cd apache-hive-0.13.1-bin
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ cd conf/
-</span><span class='line'>[hadoop@ismp0 conf]$ cp ~/hive-0.12.0/conf/hive-site.xml ./
-</span><span class='line'>[hadoop@ismp0 conf]$ cd ..
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ cp ~/hive-0.12.0/lib/mysql-connector-java-5.1.21-bin.jar lib/
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ hive
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ hive
-</span><span class='line'>
-</span><span class='line'>hive&gt;  select count(*) from t_ods_idc_isp_log2 where day=20140624;
-</span><span class='line'>Total jobs = 1
-</span><span class='line'>Launching Job 1 out of 1
-</span><span class='line'>Number of reduce tasks determined at compile time: 1
-</span><span class='line'>In order to change the average load for a reducer (in bytes):
-</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
-</span><span class='line'>In order to limit the maximum number of reducers:
-</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
-</span><span class='line'>In order to set a constant number of reducers:
-</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
-</span><span class='line'>Starting Job = job_1403006477300_3403, Tracking URL = http://umcc97-79:8088/proxy/application_1403006477300_3403/
-</span><span class='line'>Kill Command = /home/hadoop/hadoop-2.2.0/bin/hadoop job  -kill job_1403006477300_3403
-</span><span class='line'>Hadoop job information for Stage-1: number of mappers: 2; number of reducers: 1
-</span><span class='line'>2014-06-24 17:19:07,618 Stage-1 map = 0%,  reduce = 0%
-</span><span class='line'>2014-06-24 17:19:15,283 Stage-1 map = 50%,  reduce = 0%, Cumulative CPU 2.37 sec
-</span><span class='line'>2014-06-24 17:19:16,360 Stage-1 map = 100%,  reduce = 0%, Cumulative CPU 5.49 sec
-</span><span class='line'>2014-06-24 17:19:22,749 Stage-1 map = 100%,  reduce = 100%, Cumulative CPU 7.99 sec
-</span><span class='line'>MapReduce Total cumulative CPU time: 7 seconds 990 msec
-</span><span class='line'>Ended Job = job_1403006477300_3403
-</span><span class='line'>MapReduce Jobs Launched: 
-</span><span class='line'>Job 0: Map: 2  Reduce: 1   Cumulative CPU: 7.99 sec   HDFS Read: 19785618 HDFS Write: 6 SUCCESS
-</span><span class='line'>Total MapReduce CPU Time Spent: 7 seconds 990 msec
-</span><span class='line'>OK
-</span><span class='line'>77625
-</span><span class='line'>Time taken: 36.387 seconds, Fetched: 1 row(s)
-</span><span class='line'>hive&gt; 
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ nohup bin/hiveserver2 &
-</span><span class='line'>
-</span><span class='line'>$# 测试hive-jdbc
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ bin/beeline 
-</span><span class='line'>Beeline version 0.13.1 by Apache Hive
-</span><span class='line'>beeline&gt; !connect jdbc:hive2://10.18.97.22:10000/
-</span><span class='line'>scan complete in 7ms
-</span><span class='line'>Connecting to jdbc:hive2://10.18.97.22:10000/
-</span><span class='line'>Enter username for jdbc:hive2://10.18.97.22:10000/: hadoop
-</span><span class='line'>Enter password for jdbc:hive2://10.18.97.22:10000/: 
-</span><span class='line'>Connected to: Apache Hive (version 0.13.1)
-</span><span class='line'>Driver: Hive JDBC (version 0.13.1)
-</span><span class='line'>Transaction isolation: TRANSACTION_REPEATABLE_READ
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt; show tables;
-</span><span class='line'>+-------------------------+
-</span><span class='line'>|        tab_name         |
-</span><span class='line'>+-------------------------+
-</span><span class='line'>...
-</span><span class='line'>| test_123                |
-</span><span class='line'>+-------------------------+
-</span><span class='line'>10 rows selected (2.547 seconds)
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt;  select count(*) from t_ods_idc_isp_log2 where day=20140624;
-</span><span class='line'>+--------+
-</span><span class='line'>|  _c0   |
-</span><span class='line'>+--------+
-</span><span class='line'>| 77625  |
-</span><span class='line'>+--------+
-</span><span class='line'>1 row selected (37.463 seconds)
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt; 
-</span><span class='line'>
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>上一篇tez的安装使用中由于hive的缘故进行了回退，现在升级到hive-0.13后，也在hive上试下tez的功能：</p>
-
-<ul>
-<li>本地添加tez依赖，设置环境变量</li>
-<li>MR添加tez依赖，添加tez-site.xml</li>
-<li>切换到tez的engine</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$# 已上传到HDFS
-</span><span class='line'>$ hadoop fs -mkdir /apps
-</span><span class='line'>$ hadoop fs -put tez-0.4.0-incubating /apps/
-</span><span class='line'>$ hadoop fs -ls /apps
-</span><span class='line'>Found 1 items
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2014-09-09 16:19 /apps/tez-0.4.0-incubating
-</span><span class='line'>
-</span><span class='line'>$ cat etc/hadoop/tez-site.xml 
-</span><span class='line'>&lt;?xml version="1.0"?&gt;
-</span><span class='line'>&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;!-- Put site-specific property overrides in this file. --&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;configuration&gt;
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>    &lt;name&gt;tez.lib.uris&lt;/name&gt;
-</span><span class='line'>    &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>
-</span><span class='line'>$ export HADOOP_CLASSPATH=${TEZ_HOME}/*:${TEZ_HOME}/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>$ apache-hive-0.13.1-bin/bin/hive
-</span><span class='line'>hive&gt; set hive.execution.engine=tez;
-</span><span class='line'>hive&gt; select count(*) from t_ods_idc_isp_log2 ;
-</span><span class='line'>Time taken: 24.926 seconds, Fetched: 1 row(s)
-</span><span class='line'>
-</span><span class='line'>hive&gt; set hive.execution.engine=mr;                              
-</span><span class='line'>hive&gt; select count(*) from t_ods_idc_isp_log2 where day=20140720;
-</span><span class='line'>Time taken: 40.585 seconds, Fetched: 1 row(s)
-</span><span class='line'>
-</span><span class='line'>$# @hive-env.sh
-</span><span class='line'> # export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:$TEZ_HOME/*:$TEZ_HOME/lib/*
-</span><span class='line'>$ last_hour=2014090915
-</span><span class='line'>$ hive --hiveconf hive.execution.engine=tez -e "select houseId, count(*) 
-</span><span class='line'>from 
-</span><span class='line'>(
-</span><span class='line'>select houseId
-</span><span class='line'>from t_house_monitor2
-</span><span class='line'>where hour=$last_hour
-</span><span class='line'>group by from_unixtime(cast(accesstime as bigint), 'yyyyMMdd'),houseId,IP,port,domain,serviceType,illegalType,currentState,usr,icpError,regerror,regDomain,use_type,real_useType
-</span><span class='line'>) hs
-</span><span class='line'>group by houseId"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>简单从时间上看，还是有效果的。</p>
-
-<p><img src="http://file.bmob.cn/M00/04/A2/wKhkA1PSPSeAb1wWAAER_4gjIug339.png" alt="" /></p>
-
-<h2>调试Hive</h2>
-
-<p>也很简单，hive脚本已经默认集成了这个功能，设置下DEBUG环境变量即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ less apache-hive-0.13.1-bin/bin/ext/debug.sh
-</span><span class='line'>[hadoop@master1 bin]$ less hive
-</span><span class='line'>
-</span><span class='line'>$# 脚本最终会把调试的参数` -agentlib:jdwp=transport=dt_socket,server=y,address=8000,suspend=y`加入到HADOOP_CLIENT_OPTS中，最后合并到HADOOP_OPTS传递给java程序。
-</span><span class='line'>
-</span><span class='line'>[hadoop@master1 bin]$ DEBUG=true hive
-</span><span class='line'>Listening for transport dt_socket at address: 8000</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后通过eclipse的远程调试即可一步步的查看整个过程。下面断点处为记录解析功能：</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/D4/wKhkA1QEASyAM9VEAAHQS7gZJlo672.png" alt="" /></p>
-
-<h2>编译源码导入eclipse</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ git clone https://github.com/apache/hive.git
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC /cygdrive/e/git/hive
-</span><span class='line'>$ git checkout branch-0.13
-</span><span class='line'>
-</span><span class='line'>E:\git\hive&gt;mvn clean package eclipse:eclipse -DskipTests -Dmaven.test.skip=true -Phadoop-2</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>注意点</h2>
-
-<ul>
-<li>除了分区，hive表数据路径下不能包括其他文件夹</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>hive&gt; create database test location '/user/hive/warehouse_temp/' ;
-</span><span class='line'>
-</span><span class='line'>hive&gt; create table t_ods_ddos as select * from default.t_ods_ddos limit 0;
-</span><span class='line'>
-</span><span class='line'>hive&gt; select * from t_ods_ddos;
-</span><span class='line'>OK
-</span><span class='line'>Time taken: 0.176 seconds
-</span><span class='line'>
-</span><span class='line'>[hadoop@umcc97-44 ~]$ hadoop fs -mkdir /user/hive/warehouse_temp/t_ods_ddos/abc
-</span><span class='line'>
-</span><span class='line'>hive&gt; select * from t_ods_ddos;
-</span><span class='line'>OK
-</span><span class='line'>Failed with exception java.io.IOException:java.io.IOException: Not a file: hdfs://umcc97-44:9000/user/hive/warehouse_temp/t_ods_ddos/abc
-</span><span class='line'>Time taken: 0.167 seconds</span></code></pre></td></tr></table></div></figure>
-
-
-
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/8">&larr; Older</a>
@@ -3374,6 +2123,14 @@ ls
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2015/02/19/starting-2015-spring-festival/">开年2015</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2015/02/06/start-btrace/">学习btrace</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2015/02/04/windows-gif/">Windows Gif</a>
       </li>
     
@@ -3397,14 +2154,6 @@ ls
         <a href="/blog/2014/11/14/mysql-partition/">Mysql分区</a>
       </li>
     
-      <li class="post">
-        <a href="/blog/2014/11/13/nginx-serving-static-content/">Nginx配置静态站点服务</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2014/10/24/github-custom-domain/">为github Pages页面设置自定义域名</a>
-      </li>
-    
   </ul>
 </section>
 <section>
@@ -3419,7 +2168,7 @@ ls
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/blabla/'>blabla</a> (2) 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3491,7 +2240,7 @@ ls
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (14) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (15) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3500,7 +2249,7 @@ ls
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (75)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (77)</li>
 	</ul>
 	
 </section>
