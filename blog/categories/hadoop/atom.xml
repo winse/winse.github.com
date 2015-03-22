@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2015-03-09T14:10:12+08:00</updated>
+  <updated>2015-03-23T00:23:45+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,314 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Hadoop Distcp]]></title>
+    <link href="http://winseliu.com/blog/2015/03/13/hadoop-distcp/"/>
+    <updated>2015-03-13T20:38:23+08:00</updated>
+    <id>http://winseliu.com/blog/2015/03/13/hadoop-distcp</id>
+    <content type="html"><![CDATA[<p>HDFS提供的CP是单线程的，对于大数据量的拷贝操作希望能并行的复制。Hadoop Tools提供了DistCp工具，通过调用MapRed来实现并行的拷贝。</p>
+
+<h2>先来了解下hdfs cp的功能：</h2>
+
+<pre><code>Usage: hdfs dfs -cp [-f] [-p | -p[topax]] URI [URI ...] &lt;dest&gt;
+
+[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-not-exists
+[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -mkdir /cp-exists
+[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-exists
+[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-not-exists2/
+cp: `/cp-not-exists2/': No such file or directory
+[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -ls -R /
+drwxr-xr-x   - hadoop supergroup          0 2015-03-14 19:55 /cp
+-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 19:55 /cp/README.1.txt
+-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 19:54 /cp/README.txt
+drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-exists
+drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-exists/cp
+-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-exists/cp/README.1.txt
+-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-exists/cp/README.txt
+drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-not-exists
+-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-not-exists/README.1.txt
+-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-not-exists/README.txt
+</code></pre>
+
+<h2>DistCp(distributed copy)分布式拷贝简单使用方式：</h2>
+
+<pre><code>[hadoop@hadoop-master2 hadoop-2.6.0]$ bin/hadoop distcp /cp /cp-distcp
+</code></pre>
+
+<p>用到分布式一般就说明规模不少，且数据量大，操作时间长。DistCp提供了一些参数来控制程序：</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;"> DistCpOptionSwitch选项    </th>
+<th style="text-align:center;"> 命令行参数                      </th>
+<th style="text-align:left;"> 描述                                        </th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;"> LOG_PATH                  </td>
+<td style="text-align:center;"> <code>-log &lt;logdir&gt;               </code> </td>
+<td style="text-align:left;"> map结果输出的目录。默认为<code>JobStagingDir/_logs</code>，在DistCp#configureOutputFormat把该路径设置给CopyOutputFormat#setOutputPath。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> SOURCE_FILE_LISTING       </td>
+<td style="text-align:center;"> <code>-f &lt;urilist_uri&gt;            </code> </td>
+<td style="text-align:left;"> 需要拷贝的source-path&hellip;从改文件获取。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> MAX_MAPS                  </td>
+<td style="text-align:center;"> <code>-m &lt;num_maps&gt;               </code> </td>
+<td style="text-align:left;"> 默认20个，创建job时通过<code>JobContext.NUM_MAPS</code>添加到配置。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> ATOMIC_COMMIT             </td>
+<td style="text-align:center;"> <code>-atomic                     </code> </td>
+<td style="text-align:left;"> 原子操作。要么全部拷贝成功，那么失败。与<code>SYNC_FOLDERS</code> &amp; <code>DELETE_MISSING</code>选项不兼容。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> WORK_PATH                 </td>
+<td style="text-align:center;"> <code>-tmp &lt;tmp_dir&gt;              </code> </td>
+<td style="text-align:left;"> 与atomic一起使用，中间过程存储数据目录。成功后在CopyCommitter一次性移动到target-path下。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> SYNC_FOLDERS              </td>
+<td style="text-align:center;"> <code>-update                     </code> </td>
+<td style="text-align:left;"> 新建或更新文件。当文件大小和blockSize（以及crc）一样忽略。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> DELETE_MISSING            </td>
+<td style="text-align:center;"> <code>-delete                     </code> </td>
+<td style="text-align:left;"> 针对target-path目录，清理source-paths目录下没有的文件。常和<code>SYNC_FOLDERS</code>选项一起使用。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> BLOCKING                  </td>
+<td style="text-align:center;"> <code>-async                      </code> </td>
+<td style="text-align:left;"> 异步运行。其实就是job提交后，不打印日志了没有调用<code>job.waitForCompletion(true)</code>罢了。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> BANDWIDTH                 </td>
+<td style="text-align:center;"> <code>-bandwidth num(M)           </code> </td>
+<td style="text-align:left;"> 获取数据的最大速度。结合ThrottledInputStream来进行控制，在RetriableFileCopyCommand中初始化。</td>
+</tr>
+<tr>
+<td style="text-align:left;"> COPY_STRATEGY             </td>
+<td style="text-align:center;"> <code>-strategy dynamic/uniformsize</code> </td>
+<td style="text-align:left;"> 复制的时刻分组策略，即每个Map到底处理写什么数据。后面会讲到，分为静态和动态。</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>还有新增的两个属性skipcrccheck（SKIP_CRC），append（APPEND）。保留Preserve 属性和ssl选项由于暂时没用到，这里不表，以后用到再补充。</p>
+
+<h2>DistCp的源码</h2>
+
+<p>放在<code>hadoop-2.6.0-src\hadoop-tools\hadoop-distcp</code>目录下。</p>
+
+<pre><code>mvn eclipse:eclipse 
+</code></pre>
+
+<p>网络没问题的话，一般都能成功生成.classpath和.project两个Eclipse需要的项目文件。然后把项目导入eclipse即可。包括4个目录。</p>
+
+<p>还是先说说整个distcp的实现流程，看看distcp怎么跑的。</p>
+
+<pre><code>[hadoop@hadoop-master2 ~]$ export HADOOP_CLIENT_OPTS="-Dhadoop.root.logger=debug,console -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8071"
+[hadoop@hadoop-master2 ~]$ hadoop distcp /cp /cp-distcp
+Listening for transport dt_socket at address: 8071
+</code></pre>
+
+<p>运行eclipse远程调试，连接服务器的8071端口，在DistCp的run方法打个断点，就可以调试了解其运行方式。修改log4j为debug，可以查看更详细的日志，了解执行的流程。</p>
+
+<p>服务器的jdk版本和本地eclipse的jdk版本最好一致，这样调试的时刻比较顺畅。</p>
+
+<h3>Driver</h3>
+
+<p>首先进到DistCp(Driver)的main方法，DistCp继承Configured实现了Tool接口，</p>
+
+<p>第一步解析参数</p>
+
+<ol>
+<li>使用<code>ToolRunner.run</code>运行会调用GenericOptionsParser解析<code>-D</code>的属性到Configuration实例；</li>
+<li>进到run方法后，通过<code>OptionsParser.parse</code>来解析配置为DistCpOptions实例；功能比较单一，主要涉及到DistCpOptionSwitch和DistCpOptions两个类。</li>
+</ol>
+
+
+<p>第二步准备MapRed的Job实例</p>
+
+<ol>
+<li>创建metaFolderPath（后面的 待拷贝文件seq文件存取的位置：StagingDir/_distcp[RAND]），对应<code>CONF_LABEL_META_FOLDER</code>属性；</li>
+<li>创建Job，设置名称、InputFormat(UniformSizeInputFormat|DynamicInputFormat)、Map类CopyMapper、Map个数（默认20个）、Reduce个数（0个）、OutputKey|ValueClass、MAP_SPECULATIVE（使用RetriableCommand代替）、CopyOutputFormat</li>
+<li>把命令行的配置写入Configuration。</li>
+</ol>
+
+
+<pre><code>metaFolderPath /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp-1344594636
+</code></pre>
+
+<p>此处有话题，设置InputFormat时通过<code>DistCpUtils#getStrategy</code>获取，代码中并没有<code>strategy.impl</code>的键加入到configuration。why？此处也是我们可以学习的，这个设置项在distcp-default.xml配置文件中，这种方式可以实现代码的解耦。</p>
+
+<pre><code>  public static Class&lt;? extends InputFormat&gt; getStrategy(Configuration conf,
+                                                                 DistCpOptions options) {
+    String confLabel = "distcp." +
+        options.getCopyStrategy().toLowerCase(Locale.getDefault()) + ".strategy.impl";
+    return conf.getClass(confLabel, UniformSizeInputFormat.class, InputFormat.class);
+  }
+
+// 配置
+    &lt;property&gt;
+        &lt;name&gt;distcp.dynamic.strategy.impl&lt;/name&gt;
+        &lt;value&gt;org.apache.hadoop.tools.mapred.lib.DynamicInputFormat&lt;/value&gt;
+        &lt;description&gt;Implementation of dynamic input format&lt;/description&gt;
+    &lt;/property&gt;
+
+    &lt;property&gt;
+        &lt;name&gt;distcp.static.strategy.impl&lt;/name&gt;
+        &lt;value&gt;org.apache.hadoop.tools.mapred.UniformSizeInputFormat&lt;/value&gt;
+        &lt;description&gt;Implementation of static input format&lt;/description&gt;
+    &lt;/property&gt;
+</code></pre>
+
+<p>配置CopyOutputFormat时，设置了三个路径：</p>
+
+<ul>
+<li>WorkingDirectory（中间临时存储目录，atomic选项时为tmp路径，否则为target-path路径）；</li>
+<li>CommitDirectory（文件拷贝最终目录，即target-path）；</li>
+<li>OutputPath（map write记录输出路径）。</li>
+</ul>
+
+
+<p>关于命令行选项有一个疑问，用eclipse查看<code>Call Hierachy</code>调用关系的时刻，并没有发现调用<code>DistCpOptions#getXXX</code>的方法，那么是通过什么方式把这些配置项设置到Configuration的呢？ 在DistCpOptionSwitch的枚举类中定义了每个选项的confLabel，在<code>DistCpOptions#appendToConf</code>方法中一起把这些属性填充到Configuration中。 [统一配置] ！！</p>
+
+<pre><code>  public void appendToConf(Configuration conf) {
+    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.ATOMIC_COMMIT,
+        String.valueOf(atomicCommit));
+    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.IGNORE_FAILURES,
+        String.valueOf(ignoreFailures));
+...
+</code></pre>
+
+<p>第三步整理需要拷贝的文件列表</p>
+
+<p>这个真tmd的独到，提前把要做的事情规划好。需要拷贝的列表数据最终写入<code>[metaFolder]/fileList.seq</code>（key：与source-path的相对路径，value：该文件的CopyListingFileStatus），对应<code>CONF_LABEL_LISTING_FILE_PATH</code>，也就是map的输入（在自定义的InputFormat中处理）。</p>
+
+<p>涉及CopyList的三个实现FileBasedCopyListing（-f）、GlobbedCopyListing、SimpleCopyListing。最终都调用SimpleCopyListing把文件和空目录列表写入到fileList.seq；最后校验否有重复的文件名，如果存在会抛出DuplicateFileException。</p>
+
+<pre><code>/tmp/hadoop-yarn/staging/hadoop/.staging/_distcp179796572/fileList.seq
+</code></pre>
+
+<p>同时计算需要拷贝的个数和大小（Byte），对应<code>CONF_LABEL_TOTAL_BYTES_TO_BE_COPIED</code>和<code>CONF_LABEL_TOTAL_NUMBER_OF_RECORDS</code>。</p>
+
+<p>第四步提交任务，等待等待无尽的等待。</p>
+
+<p>也可以设置async选项，提交成功后直接完成Driver。</p>
+
+<h3>Mapper</h3>
+
+<p>首先，setup从Configuration中获取配置属性：sync(update)/忽略错误(i)/校验码/overWrite/workPath/finalPath</p>
+
+<p>然后，从CONF_LABEL_LISTING_FILE_PATH路径获取准备好的sourcepath->CopyListingFileStatus键值对作为map的输入。</p>
+
+<p>其实CopyListingFileStatus这个对象真正用到的就是原始Path的路径，真心不知道搞这么多属性干嘛！获取原始路径后又重新实例CopyListingFileStatus为sourceCurrStatus。</p>
+
+<ul>
+<li>如果源路径为文件夹，调用createTargetDirsWithRetry（RetriableDirectoryCreateCommand）创建路径，COPY计数加1，return。</li>
+<li>如果源路径为文件，但是checkUpdate（文件大小和块大小一致）为skip，SKIP计数加1，BYTESSKIPPED计数加上sourceCurrStatus的长度，把改条记录写入map输出，return。</li>
+<li>如果源路径为文件，且检查后不是skip则调用copyFileWithRetry（RetriableFileCopyCommand）拷贝文件，BYTESEXPECTED计数加上sourceCurrStatus的长度，BYTESCOPIED计数加上拷贝文件的大小，COPY计数加1，再return。</li>
+<li>如果配置有保留文件/文件夹属性，对目标进行属性修改。</li>
+</ul>
+
+
+<p>从CopyListing获取数据，调用FileSystem-IO接口进行数据的拷贝（在原有IO的基础上封装了ThrottledInputStream来进行限流处理）。于此同时会涉及到source路径是文件夹但是target不是文件夹等的检查；更新还是覆盖；文件属性的保留和Map计数值的更新操作。</p>
+
+<h3>InputFormat</h3>
+
+<p>自定义了InputFormat来UniformSizeInputFormat进行拆分构造FileSplit，对CONF_LABEL_LISTING_FILE_PATH文件的每个键值的文件大小平均分成Map num
+个数小块，根据键值的位置构造Map num个FileSplit对象。执行map时，RecordReader根据FileSplit来获取键值对，然后传递给map。</p>
+
+<p>新版本的增加了DynamicInputFormat，实现能者多难的功能。先通过实际的日志，看看运行效果：</p>
+
+<pre><code>[hadoop@hadoop-master2 ~]$ export HADOOP_CLIENT_OPTS="-Dhadoop.root.logger=debug,console -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8071"
+[hadoop@hadoop-master2 ~]$ hadoop distcp "-Dmapreduce.map.java.opts=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090" -strategy dynamic -m 2 /cp /cp-distcp-dynamic
+
+# 创建的chunk
+[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
+-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
+-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
+[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
+drwx------   - hadoop supergroup          0 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir
+-rw-r--r--   1 hadoop supergroup        198 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00000
+-rw-r--r--   1 hadoop supergroup        224 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00001
+-rw-r--r--   1 hadoop supergroup        220 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00002
+-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
+-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
+
+# 分配后的chunk
+[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
+drwx------   - hadoop supergroup          0 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir
+-rw-r--r--   1 hadoop supergroup        220 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00002
+-rw-r--r--   1 hadoop supergroup        198 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/task_1426773672048_0006_m_000000
+-rw-r--r--   1 hadoop supergroup        224 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/task_1426773672048_0006_m_000001
+-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
+-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
+
+# map获取后
+[hadoop@hadoop-master2 ~]$  ssh -g -L 8090:hadoop-slaver1:8090 hadoop-slaver1
+# 每拷贝完一个chunk/最后map结束，会把上一个跑完的chunk文件删除
+# job跑完后，临时目录的数据就被清楚了
+[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
+ls: `/tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446': No such file or directory
+</code></pre>
+
+<p>由于设置的map num为2，还有一个chunk没有分配出去，等到真正执行的时刻再进行分配。体现了策略的动态性。这个<strong>chunkm_000000分配给map0(其他类似)</strong>，其他没有分配出去的chunk让给map去<strong>抢</strong>。</p>
+
+<p>首先InputFormat创建FileSplit，在此过程中把原来的<code>CONF_LABEL_LISTING_FILE_PATH</code>中的需要处理的文件根据个数等份成chunk。（具体实现看源码，其中numEntriesPerChunk计算一个chunk几个文件比较复杂点）</p>
+
+<p>chunk中的也是sourcepath->CopyListingFileStatus键值对，以seq格式的存储文件中。<code>DynamicInputChunk#acquire(TaskAttemptContext)</code>读取数据的时刻比较有意思，在Driver阶段分配的chunk处理完后，就会动态的取处理余下的chunk，能者多劳。</p>
+
+<pre><code>  public static DynamicInputChunk acquire(TaskAttemptContext taskAttemptContext) throws IOException, InterruptedException {
+    if (!areInvariantsInitialized())
+        initializeChunkInvariants(taskAttemptContext.getConfiguration());
+
+    String taskId = taskAttemptContext.getTaskAttemptID().getTaskID().toString();
+    Path acquiredFilePath = new Path(chunkRootPath, taskId);
+
+    if (fs.exists(acquiredFilePath)) {
+      LOG.info("Acquiring pre-assigned chunk: " + acquiredFilePath);
+      return new DynamicInputChunk(acquiredFilePath, taskAttemptContext);
+    }
+
+    for (FileStatus chunkFile : getListOfChunkFiles()) {
+      if (fs.rename(chunkFile.getPath(), acquiredFilePath)) {
+        LOG.info(taskId + " acquired " + chunkFile.getPath());
+        return new DynamicInputChunk(acquiredFilePath, taskAttemptContext);
+      }
+      else
+        LOG.warn(taskId + " could not acquire " + chunkFile.getPath());
+    }
+
+    return null;
+  }
+</code></pre>
+
+<h3>OutputFormat &amp; Committer</h3>
+
+<p>自定义的CopyOutputFormat包括了working/commit/output路径的get/set方法，同时指定了自定义的OutputCommitter：CopyCommitter。</p>
+
+<p>正常情况为app-master调用CopyCommitter#commitJob处理善后的事情：保留文件属性的情况下更新文件的属性，atomic情况下把working转到commit路径，delete情况下删除target目录多余的文件。最后清理临时目录。</p>
+
+<p>看完DistCp然后再去看DistCpV1，尽管说功能上类似，但是要和新版本对上仍然要去看distcp的代码。好的代码就是这样吧，让人很自然轻松的理解，而不必反复来回的折腾，甚至于为了免得来回折腾而记住该代码块。（类太大，方法太长，变量定义和使用的位置相隔很远！一个变量作用域太长赋值变更次数太多）</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://hadoop.apache.org/docs/r2.6.0/hadoop-project-dist/hadoop-common/FileSystemShell.html#cp">FileSystemShell cp</a></li>
+<li><a href="http://hadoop.apache.org/docs/r2.6.0/hadoop-mapreduce-client/hadoop-mapreduce-client-core/DistCp.html">DistCp官方文档</a></li>
+</ul>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Windows Build hadoop-2.6]]></title>
@@ -65,6 +373,8 @@ patch -p0 &lt; hadoop-2.6.0-common-native-win32-diff.patch
 set PATH=%PATH%;E:\local\home\Administrator\bin;c:\cygwin\bin
 
 mvn package -Pdist,native-win -DskipTests -Dtar -Dmaven.javadoc.skip=true
+
+mvn eclipse:eclipse
 </code></pre>
 
 <ul>
@@ -173,6 +483,13 @@ mvn dependency:resolve -Dclassifier=javadoc
 /* 操作HDFS */
 set HADOOP_ROOT_LOGGER=DEBUG,console
 </code></pre>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://wiki.apache.org/hadoop/Hadoop2OnWindows">Build and Install Hadoop 2.x or newer on Windows</a></li>
+</ul>
+
 ]]></content>
   </entry>
   
@@ -197,7 +514,7 @@ CentOS release 6.5 (Final)
 </code></pre>
 
 <ul>
-<li>使用VMware的<strong>Shared Folders</strong>建立了maven和hadoop-2.6.0-src到宿主机器的映射：</li>
+<li>使用VMware的<strong>Shared Folders</strong>建立了maven和hadoop-2.6.0-src到宿主机器的映射：(不要直接在源码映射的目录下编译，先拷贝到linux的硬盘下！！)</li>
 </ul>
 
 
@@ -227,28 +544,28 @@ make &amp;&amp; make install
 # 从映射文件中拷贝hadoop-common到linux文件系统，然后在编译hadoop-common
 cd hadoop-2.6.0-src/hadoop-common-project/hadoop-common/
 cd ..
-scp -r  hadoop-common ~/
+cp -r  hadoop-common ~/
 cd ~/hadoop-common
 mvn install
 mvn -X package -Pdist,native -Dmaven.test.skip=true -Dmaven.javadoc.skip=true
 
-## 编译全部，中午吃饭的时刻编译比较好~~~
-scp -r /mnt/hgfs/hadoop-2.6.0-src ~/
+## 编译全部，耗时比较久，可以先去吃个饭^v^
+cp -r /mnt/hgfs/hadoop-2.6.0-src ~/
 mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true
 </code></pre>
 
 <h2>遇到的问题</h2>
 
 <ul>
-<li><p>第一个文件肯定是没有<strong>c</strong>的编译环境，安装gcc即可</p></li>
-<li><p><code>configure: error: C++ preprocessor "/lib/cpp" fails sanity check</code>，安装c++</p></li>
+<li><p>第一个问题肯定是没有<strong>c</strong>的编译环境，安装gcc即可。</p></li>
+<li><p><code>configure: error: C++ preprocessor "/lib/cpp" fails sanity check</code>，安装c++。</p></li>
 </ul>
 
 
 <p>-> <a href="http://www.cnblogs.com/niocai/archive/2011/11/04/2236458.html">configure: error: C++ preprocessor &ldquo;/lib/cpp&rdquo; fails sanity check</a></p>
 
 <ul>
-<li><code>Unknown lifecycle phase "c"</code>， 安装操作提示最后的链接操<code>mvn install</code></li>
+<li><code>Unknown lifecycle phase "c"</code>，点击错误提示最后的链接查看解决方法，即执行<code>mvn install</code>。</li>
 </ul>
 
 
@@ -256,14 +573,14 @@ mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true
 -> <a href="https://cwiki.apache.org/confluence/display/MAVEN/LifecyclePhaseNotFoundException">LifecyclePhaseNotFoundException</a></p>
 
 <ul>
-<li><code>CMake Error at /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:108 (message): Could NOT find ZLIB (missing: ZLIB_INCLUDE_DIR)</code>， 缺少zlib-devel</li>
+<li><code>CMake Error at /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:108 (message): Could NOT find ZLIB (missing: ZLIB_INCLUDE_DIR)</code>， 缺少zlib-devel。</li>
 </ul>
 
 
 <p>-> <a href="http://ask.csdn.net/questions/62307">Cmake时报错：Could NOT find ImageMagick</a></p>
 
 <ul>
-<li><code>cmake_symlink_library: System Error: Operation not supported</code>， 共享的windows目录下不能创建linux的软链接</li>
+<li><code>cmake_symlink_library: System Error: Operation not supported</code>， 共享的windows目录下不能创建linux的软链接。</li>
 </ul>
 
 
@@ -274,7 +591,7 @@ mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true
 <p>比如，你如果是在一个WINDOWS机器上的共享目录中编译，就没法创建链接，就会失败。把源码复制到本地的目录中再编译就不会有这问题。</p></blockquote>
 
 <ul>
-<li>全部编译时使用skipTests</li>
+<li>全部编译时使用skipTests。</li>
 </ul>
 
 
@@ -294,7 +611,7 @@ mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true
 </code></pre>
 
 <ul>
-<li><code>Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the</code>，安装openssl-devel</li>
+<li><code>Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the</code>，安装openssl-devel。</li>
 </ul>
 
 
@@ -787,326 +1104,6 @@ fi
 
 nohup ${JAVA_HOME}/bin/java $ANAYSER_OPTS -cp $ANAYSER_CLASSPATH com.analyser.AnalyserStarter &gt;$ANAYSER_LOG_DIR/stdout 2&gt;$ANAYSER_LOG_DIR/stderr &amp;
 </code></pre>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Scala Wordcount on Hadoop2]]></title>
-    <link href="http://winseliu.com/blog/2014/09/12/scala-wordcount-on-hadoop/"/>
-    <updated>2014-09-12T07:52:01+08:00</updated>
-    <id>http://winseliu.com/blog/2014/09/12/scala-wordcount-on-hadoop</id>
-    <content type="html"><![CDATA[<p>从了解scala，到spark再次遇见scala，准备好好学学这门语言。函数式编程大势所趋，简洁的语法，更抽象好用的集合操作。土生土长的JVM的语言，以及凭借其与java的互操作性，发展前景一片光明。在云计算以及手机（android）开发都有其大展拳脚的地方。</p>
-
-<p>工作中大部分时间写mapreduce，项目空白期实践了一下把scala搬上hadoop。整体来说用scala写个helloworld是比较简单的，就一些细节的东西比较繁琐。尽管用了几年的eclipse了，但是<a href="http://scala-ide.org/">scala-ide</a>还是需要再适应适应！scala-idea也没有大家说的那么好，和webstorm比差远了。</p>
-
-<p><div><script src='https://gist.github.com/5df39f77e8bd59348a7a.js'></script>
-<noscript><pre><code>package com.github.winse.hadoop
-
-import org.apache.hadoop.mapreduce.Job
-import org.apache.hadoop.mapreduce.Reducer
-import org.apache.hadoop.io.Text
-import org.apache.hadoop.io.IntWritable
-import org.apache.hadoop.io.LongWritable
-import org.apache.hadoop.mapreduce.Mapper
-import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.mapreduce.lib.input.FileInputFormat
-import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
-import org.apache.hadoop.fs.Path
-import scala.Array.canBuildFrom
-import org.apache.hadoop.conf.Configured
-import org.apache.hadoop.util.Tool
-import org.apache.hadoop.util.ToolRunner
-
-class ScalaMapper extends Mapper[LongWritable, Text, Text, IntWritable] {
-
-  val one = new IntWritable(1);
-
-  override def map(key: LongWritable, value: Text, context: Mapper[LongWritable, Text, Text, IntWritable]#Context) {
-    value.toString().split(&quot;\\s+&quot;).map(word =&gt; context.write(new Text(word), one))
-  }
-
-}
-
-class ScalaReducer extends Reducer[Text, IntWritable, Text, IntWritable] {
-
-  override def reduce(key: Text, values: java.lang.Iterable[IntWritable], context: Reducer[Text, IntWritable, Text, IntWritable]#Context) {
-    var sum: Int = 0
-
-    val itr = values.iterator()
-    while (itr.hasNext()) {
-      sum += itr.next().get()
-    }
-    context.write(key, new IntWritable(sum))
-  }
-
-}
-
-object HelloScalaMapRed extends Configured with Tool {
-
-  override def run(args: Array[String]): Int = {
-
-    val job = Job.getInstance(getConf(), &quot;WordCount Scala.&quot;)
-    job.setJarByClass(getClass())
-
-    job.setOutputKeyClass(classOf[Text])
-    job.setOutputValueClass(classOf[IntWritable])
-
-    job.setMapperClass(classOf[ScalaMapper])
-    job.setCombinerClass(classOf[ScalaReducer])
-    job.setReducerClass(classOf[ScalaReducer])
-
-    FileInputFormat.addInputPath(job, new Path(&quot;/scala/in/&quot;));
-    FileOutputFormat.setOutputPath(job, new Path(&quot;/scala/out/&quot;));
-
-    job.waitForCompletion(true) match {
-      case true =&gt; 0
-      case false =&gt; 1
-    }
-
-  }
-
-  def main(args: Array[String]) {
-    val res: Int = ToolRunner.run(new Configuration(), this, args)
-    System.exit(res);
-  }
-
-}</code></pre></noscript></div>
-</p>
-
-<p>使用scala主要原因：</p>
-
-<ul>
-<li>写JavaBean更简单方便</li>
-<li>多返回值无需定义Result实体类</li>
-<li>集合更抽象的方法真的很好用</li>
-<li>trait可以更便捷的进行操作层面的聚合，也就是可以把操作分离出来，进行组合就可以实现新的功能。这不就是decorate模式嘛！java的decorate多麻烦的！加点东西太麻烦了！！！</li>
-</ul>
-
-
-<p>上面的scala代码和java的比较类似，主要在集合操作上不同而已，变量定义简单化。</p>
-
-<p>编写好代码后就是运行调试。</p>
-
-<p>前面其他的文章已经说过了，默认<code>mapreduce.framework.name</code>的配置是本地<code>local</code>，所以直接运行就像运行一个普通的本地java程序。这就不多将了。
-这里主要讲讲怎么把代码打包放到真实的集群环境运行，相比java的版本要添加那些步骤。</p>
-
-<p>从项目的maven pom中可以发现，其实就是多了scala-lang的新依赖而已，其他都是hadoop自带的公共包。</p>
-
-<p><img src="http://file.bmob.cn/M00/0E/A2/wKhkA1QUHV6AAJoCAABANktCWmk664.png" alt="" /></p>
-
-<p>所以运行程序只需要指定把scala-lang.jar添加到运行环境的classpath中即可。使用maven打包后的项目结构如下：</p>
-
-<pre><code>[hadoop@master1 scalamapred-1.0.5]$ cd lib/
-[hadoop@master1 lib]$ ls -l
-total 8
-drwxrwxr-x. 2 hadoop hadoop 4096 Sep 11 23:10 common
-drwxrwxr-x. 2 hadoop hadoop 4096 Sep 11 23:56 core
-[hadoop@master1 lib]$ ll core/
-total 12
--rw-r--r--. 1 hadoop hadoop 11903 Sep 11 23:55 scalamapred-1.0.5.jar
-[hadoop@master1 lib]$ ls common/
-activation-1.1.jar                commons-lang-2.6.jar            hadoop-hdfs-2.2.0.jar                     jaxb-api-2.2.2.jar                      log4j-1.2.17.jar
-aopalliance-1.0.jar               commons-logging-1.1.1.jar       hadoop-mapreduce-client-common-2.2.0.jar  jaxb-impl-2.2.3-1.jar                   management-api-3.0.0-b012.jar
-asm-3.1.jar                       commons-math-2.1.jar            hadoop-mapreduce-client-core-2.2.0.jar    jersey-client-1.9.jar                   netty-3.6.2.Final.jar
-avro-1.7.4.jar                    commons-net-3.1.jar             hadoop-yarn-api-2.2.0.jar                 jersey-core-1.9.jar                     paranamer-2.3.jar
-commons-beanutils-1.7.0.jar       gmbal-api-only-3.0.0-b023.jar   hadoop-yarn-client-2.2.0.jar              jersey-grizzly2-1.9.jar                 protobuf-java-2.5.0.jar
-commons-beanutils-core-1.8.0.jar  grizzly-framework-2.1.2.jar     hadoop-yarn-common-2.2.0.jar              jersey-guice-1.9.jar                    scala-library-2.10.4.jar
-commons-cli-1.2.jar               grizzly-http-2.1.2.jar          hadoop-yarn-server-common-2.2.0.jar       jersey-json-1.9.jar                     servlet-api-2.5.jar
-commons-codec-1.4.jar             grizzly-http-server-2.1.2.jar   jackson-core-asl-1.8.8.jar                jersey-server-1.9.jar                   slf4j-api-1.7.1.jar
-commons-collections-3.2.1.jar     grizzly-http-servlet-2.1.2.jar  jackson-jaxrs-1.8.3.jar                   jersey-test-framework-core-1.9.jar      slf4j-log4j12-1.7.1.jar
-commons-compress-1.4.1.jar        grizzly-rcm-2.1.2.jar           jackson-mapper-asl-1.8.8.jar              jersey-test-framework-grizzly2-1.9.jar  snappy-java-1.0.4.1.jar
-commons-configuration-1.6.jar     guava-17.0.jar                  jackson-xc-1.8.3.jar                      jets3t-0.6.1.jar                        stax-api-1.0.1.jar
-commons-daemon-1.0.13.jar         guice-3.0.jar                   jasper-compiler-5.5.23.jar                jettison-1.1.jar                        xmlenc-0.52.jar
-commons-digester-1.8.jar          guice-servlet-3.0.jar           jasper-runtime-5.5.23.jar                 jetty-6.1.26.jar                        xz-1.0.jar
-commons-el-1.0.jar                hadoop-annotations-2.2.0.jar    javax.inject-1.jar                        jetty-util-6.1.26.jar                   zookeeper-3.4.5.jar
-commons-httpclient-3.1.jar        hadoop-auth-2.2.0.jar           javax.servlet-3.1.jar                     jsch-0.1.42.jar
-commons-io-2.1.jar                hadoop-common-2.2.0.jar         javax.servlet-api-3.0.1.jar               jsp-api-2.1.jar
-[hadoop@master1 lib]$ 
-</code></pre>
-
-<p>在lib文件夹下面包括common和core两放置jar的文件夹，common是项目的依赖包，core下面的是项目的源码jar。</p>
-
-<p>接下来运行程序，通过libjar把<strong>scala-library的包加入到mapreduce的运行时classpath</strong>。当然也可以把scala-library加入到<code>mapreduce.application.classpath</code>（默认值为<code>$HADOOP_MAPRED_HOME/share/hadoop/mapreduce/*:$HADOOP_MAPRED_HOME/share/hadoop/mapreduce/lib/*</code>）。</p>
-
-<pre><code>[hadoop@master1 scalamapred-1.0.5]$ for j in `find . -name "*.jar"` ; do export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:$j ; done
-[hadoop@master1 scalamapred-1.0.5]$ 
-[hadoop@master1 scalamapred-1.0.5]$ export HADOOP_CLASSPATH=
-[hadoop@master1 scalamapred-1.0.5]$ export HADOOP_CLASSPATH=/home/hadoop/scalamapred-1.0.5/lib/core/*:/home/hadoop/scalamapred-1.0.5/lib/common/*
-[hadoop@master1 scalamapred-1.0.5]$ hadoop com.github.winse.hadoop.HelloScalaMapRed -libjars lib/common/scala-library-2.10.4.jar 
-</code></pre>
-
-<h2>问题攻略</h2>
-
-<p>上面如果不加libjar的话，会在nodemanager的代码中抛出异常。本来认为不加依赖包也就不能执行mapreduce里面的代码而已。问题的根源在哪里呢？</p>
-
-<p>给代码添加远程调试的配置，然后运行一步步的查找问题（一次找不到就多运行调试几次）。</p>
-
-<pre><code>[hadoop@master1 scalamapred-1.0.5]$ hadoop com.github.winse.hadoop.HelloScalaMapRed  -Dyarn.app.mapreduce.am.command-opts="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090"
-
-// 我这里slaver就一台，取到机器上查看运行的程序
-
-[hadoop@slaver1 nmPrivate]$ ps axu|grep java
-hadoop    1427  0.6 10.5 1562760 106344 ?      Sl   Sep11   0:45 /opt/jdk1.7.0_60//bin/java -Dproc_datanode -Xmx1000m -Djava.net.preferIPv4Stack=true -Dhadoop.log.dir=/home/hadoop/hadoop-2.2.0/logs -Dhadoop.log.file=hadoop.log -Dhadoop.home.dir=/home/hadoop/hadoop-2.2.0 -Dhadoop.id.str=hadoop -Dhadoop.root.logger=INFO,console -Djava.library.path=/home/hadoop/hadoop-2.2.0/lib/native -Dhadoop.policy.file=hadoop-policy.xml -Djava.net.preferIPv4Stack=true -Djava.net.preferIPv4Stack=true -Djava.net.preferIPv4Stack=true -Dhadoop.log.dir=/home/hadoop/hadoop-2.2.0/logs -Dhadoop.log.file=hadoop-hadoop-datanode-slaver1.log -Dhadoop.home.dir=/home/hadoop/hadoop-2.2.0 -Dhadoop.id.str=hadoop -Dhadoop.root.logger=INFO,RFA -Djava.library.path=/home/hadoop/hadoop-2.2.0/lib/native -Dhadoop.policy.file=hadoop-policy.xml -Djava.net.preferIPv4Stack=true -server -Dhadoop.security.logger=ERROR,RFAS -Dhadoop.security.logger=ERROR,RFAS -Dhadoop.security.logger=ERROR,RFAS -Dhadoop.security.logger=INFO,RFAS org.apache.hadoop.hdfs.server.datanode.DataNode
-hadoop    2874  2.5 11.7 1599312 118980 ?      Sl   00:08   0:57 /opt/jdk1.7.0_60//bin/java -Dproc_nodemanager -Xmx1000m -Dhadoop.log.dir=/home/hadoop/hadoop-2.2.0/logs -Dyarn.log.dir=/home/hadoop/hadoop-2.2.0/logs -Dhadoop.log.file=yarn-hadoop-nodemanager-slaver1.log -Dyarn.log.file=yarn-hadoop-nodemanager-slaver1.log -Dyarn.home.dir= -Dyarn.id.str=hadoop -Dhadoop.root.logger=INFO,RFA -Dyarn.root.logger=INFO,RFA -Djava.library.path=/home/hadoop/hadoop-2.2.0/lib/native -Dyarn.policy.file=hadoop-policy.xml -server -Dhadoop.log.dir=/home/hadoop/hadoop-2.2.0/logs -Dyarn.log.dir=/home/hadoop/hadoop-2.2.0/logs -Dhadoop.log.file=yarn-hadoop-nodemanager-slaver1.log -Dyarn.log.file=yarn-hadoop-nodemanager-slaver1.log -Dyarn.home.dir=/home/hadoop/hadoop-2.2.0 -Dhadoop.home.dir=/home/hadoop/hadoop-2.2.0 -Dhadoop.root.logger=INFO,RFA -Dyarn.root.logger=INFO,RFA -Djava.library.path=/home/hadoop/hadoop-2.2.0/lib/native -classpath /home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/contrib/capacity-scheduler/*.jar:/contrib/capacity-scheduler/*.jar:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/etc/hadoop/nm-config/log4j.properties org.apache.hadoop.yarn.server.nodemanager.NodeManager
-hadoop    3750  0.0  0.1 106104  1200 ?        Ss   00:43   0:00 /bin/bash -c /opt/jdk1.7.0_60//bin/java -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410453720744_0007/container_1410453720744_0007_01_000001 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA  -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 org.apache.hadoop.mapreduce.v2.app.MRAppMaster 1&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410453720744_0007/container_1410453720744_0007_01_000001/stdout 2&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410453720744_0007/container_1410453720744_0007_01_000001/stderr 
-hadoop    3759  0.1  1.8 737648 18232 ?        Sl   00:43   0:00 /opt/jdk1.7.0_60//bin/java -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410453720744_0007/container_1410453720744_0007_01_000001 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 org.apache.hadoop.mapreduce.v2.app.MRAppMaster
-hadoop    3778  0.0  0.0 103256   832 pts/0    S+   00:45   0:00 grep java
-
-// 取到对应的目录下查看launcher.sh的脚本
-// appmaster launcher
-
-[hadoop@slaver1 nm-local-dir]$ cd nmPrivate/application_1410453720744_0007/
-[hadoop@slaver1 application_1410453720744_0007]$ ll
-total 4
-drwxrwxr-x. 2 hadoop hadoop 4096 Sep 12 00:43 container_1410453720744_0007_01_000001
-[hadoop@slaver1 application_1410453720744_0007]$ less container_1410453720744_0007_01_000001/
-container_1410453720744_0007_01_000001.tokens       launch_container.sh                                 
-.container_1410453720744_0007_01_000001.tokens.crc  .launch_container.sh.crc                            
-[hadoop@slaver1 application_1410453720744_0007]$ less container_1410453720744_0007_01_000001/launch_container.sh 
-#!/bin/bash
-
-export NM_HTTP_PORT="8042"
-export LOCAL_DIRS="/home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007"
-export HADOOP_COMMON_HOME="/home/hadoop/hadoop-2.2.0"
-export JAVA_HOME="/opt/jdk1.7.0_60/"
-export NM_AUX_SERVICE_mapreduce_shuffle="AAA0+gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-"
-export HADOOP_YARN_HOME="/home/hadoop/hadoop-2.2.0"
-export CLASSPATH="$PWD:$HADOOP_CONF_DIR:$HADOOP_COMMON_HOME/share/hadoop/common/*:$HADOOP_COMMON_HOME/share/hadoop/common/lib/*:$HADOOP_HDFS_HOME/share/hadoop/hdfs/*:$HADOOP_HDFS_HOME/share/hadoop/hdfs/lib/*:$HADOOP_YARN_HOME/share/hadoop/yarn/*:$HADOOP_YARN_HOME/share/hadoop/yarn/lib/*:$HADOOP_MAPRED_HOME/share/hadoop/mapreduce/*:$HADOOP_MAPRED_HOME/share/hadoop/mapreduce/lib/*:job.jar/job.jar:job.jar/classes/:job.jar/lib/*:$PWD/*"
-export HADOOP_TOKEN_FILE_LOCATION="/home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/container_1410453720744_0007_01_000001/container_tokens"
-export NM_HOST="slaver1"
-export APPLICATION_WEB_PROXY_BASE="/proxy/application_1410453720744_0007"
-export JVM_PID="$$"
-export USER="hadoop"
-export HADOOP_HDFS_HOME="/home/hadoop/hadoop-2.2.0"
-export PWD="/home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/container_1410453720744_0007_01_000001"
-export CONTAINER_ID="container_1410453720744_0007_01_000001"
-export HOME="/home/"
-export NM_PORT="40888"
-export LOGNAME="hadoop"
-export APP_SUBMIT_TIME_ENV="1410455811401"
-export MAX_APP_ATTEMPTS="2"
-export HADOOP_CONF_DIR="/home/hadoop/hadoop-2.2.0/etc/hadoop"
-export MALLOC_ARENA_MAX="4"
-export LOG_DIRS="/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410453720744_0007/container_1410453720744_0007_01_000001"
-ln -sf "/home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/filecache/10/job.jar" "job.jar"
-ln -sf "/home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/filecache/13/job.xml" "job.xml"
-mkdir -p jobSubmitDir
-ln -sf "/home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/filecache/11/job.splitmetainfo" "jobSubmitDir/job.splitmetainfo"
-mkdir -p jobSubmitDir
-ln -sf "/home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/filecache/12/job.split" "jobSubmitDir/job.split"
-exec /bin/bash -c "$JAVA_HOME/bin/java -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410453720744_0007/container_1410453720744_0007_01_000001 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA  -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 org.apache.hadoop.mapreduce.v2.app.MRAppMaster 1&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410453720744_0007/container_1410453720744_0007_01_000001/stdout 2&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410453720744_0007/container_1410453720744_0007_01_000001/stderr "
-
-// 去到TMP对应的目录下，查看整个运行的根目录
-
-[hadoop@slaver1 ~]$ cd /home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/container_1410453720744_0007_01_000001
-[hadoop@slaver1 container_1410453720744_0007_01_000001]$ ll
-total 28
--rw-r--r--. 1 hadoop hadoop   95 Sep 12 00:43 container_tokens
--rwx------. 1 hadoop hadoop  468 Sep 12 00:43 default_container_executor.sh
-lrwxrwxrwx. 1 hadoop hadoop  108 Sep 12 00:43 job.jar -&gt; /home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/filecache/10/job.jar
-drwxrwxr-x. 2 hadoop hadoop 4096 Sep 12 00:43 jobSubmitDir
-lrwxrwxrwx. 1 hadoop hadoop  108 Sep 12 00:43 job.xml -&gt; /home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0007/filecache/13/job.xml
--rwx------. 1 hadoop hadoop 3005 Sep 12 00:43 launch_container.sh
-drwx--x---. 2 hadoop hadoop 4096 Sep 12 00:43 tmp
-[hadoop@slaver1 container_1410453720744_0007_01_000001]$ 
-</code></pre>
-
-<p>为了对应，我这里列出来在添加了libjar的TMP目录的列表：</p>
-
-<pre><code>[hadoop@master1 scalamapred-1.0.5]$ hadoop com.github.winse.hadoop.HelloScalaMapRed  -Dyarn.app.mapreduce.am.command-opts="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090" -libjars lib/common/scala-library-2.10.4.jar 
-
-[hadoop@slaver1 container_1410453720744_0007_01_000001]$ cd /home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0008/container_1410453720744_0008_01_000001
-[hadoop@slaver1 container_1410453720744_0008_01_000001]$ ll
-total 32
--rw-r--r--. 1 hadoop hadoop   95 Sep 12 00:49 container_tokens
--rwx------. 1 hadoop hadoop  468 Sep 12 00:49 default_container_executor.sh
-lrwxrwxrwx. 1 hadoop hadoop  108 Sep 12 00:49 job.jar -&gt; /home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0008/filecache/10/job.jar
-drwxrwxr-x. 2 hadoop hadoop 4096 Sep 12 00:49 jobSubmitDir
-lrwxrwxrwx. 1 hadoop hadoop  108 Sep 12 00:49 job.xml -&gt; /home/hadoop/data/nm-local-dir/usercache/hadoop/appcache/application_1410453720744_0008/filecache/13/job.xml
--rwx------. 1 hadoop hadoop 3127 Sep 12 00:49 launch_container.sh
-lrwxrwxrwx. 1 hadoop hadoop   85 Sep 12 00:49 scala-library-2.10.4.jar -&gt; /home/hadoop/data/nm-local-dir/usercache/hadoop/filecache/10/scala-library-2.10.4.jar
-drwx--x---. 2 hadoop hadoop 4096 Sep 12 00:49 tmp
-[hadoop@slaver1 container_1410453720744_0008_01_000001]$ 
-</code></pre>
-
-<p>windows本地使用eclipse和进行跟踪调试代码。</p>
-
-<p><img src="http://file.bmob.cn/M00/0E/A1/wKhkA1QUG0aARyPVAAMnUXGDgbY378.png" alt="" /></p>
-
-<p>此时可以通过8088的网页查看状态，当前有一个mrappmaster在执行，如果第一个失败，会尝试执行第二次。</p>
-
-<p><img src="http://file.bmob.cn/M00/0E/A2/wKhkA1QUHDGAe0anAAEfiNTmB1k734.png" alt="" /></p>
-
-<p>运行调试多次后，<strong>最终确定问题</strong>所在。在master中会检查是否为链式mr，而加载该class的时刻，同时要加载父类的class，即scala的类，所以在这里会抛出异常。</p>
-
-<p><img src="http://file.bmob.cn/M00/0E/A2/wKhkA1QUHFOAWJulAAPOawkAbgo349.png" alt="" /></p>
-
-<p>去到查看程序运行的日志，可以看到程序抛出的异常<strong>NoClassDefFoundError</strong>。</p>
-
-<pre><code>[hadoop@slaver1 ~]$ less /home/hadoop/hadoop-2.2.0/logs/userlogs/application_1410448728371_0003/*/syslog
-2014-09-11 22:55:12,616 INFO [main] org.apache.hadoop.mapreduce.v2.app.MRAppMaster: Created MRAppMaster for application appattempt_1410448728371_0003_000001
-...
-2014-09-11 22:55:18,677 INFO [main] org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl: Adding job token for job_1410448728371_0003 to jobTokenSecretManager
-2014-09-11 22:55:19,119 FATAL [main] org.apache.hadoop.mapreduce.v2.app.MRAppMaster: Error starting MRAppMaster
-java.lang.NoClassDefFoundError: scala/Function1
-        at java.lang.Class.forName0(Native Method)
-        at java.lang.Class.forName(Class.java:190)
-        at org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl.isChainJob(JobImpl.java:1277)
-        at org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl.makeUberDecision(JobImpl.java:1217)
-        at org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl.access$3700(JobImpl.java:135)
-        at org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl$InitTransition.transition(JobImpl.java:1420)
-        at org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl$InitTransition.transition(JobImpl.java:1358)
-        at org.apache.hadoop.yarn.state.StateMachineFactory$MultipleInternalArc.doTransition(StateMachineFactory.java:385)
-        at org.apache.hadoop.yarn.state.StateMachineFactory.doTransition(StateMachineFactory.java:302)
-        at org.apache.hadoop.yarn.state.StateMachineFactory.access$300(StateMachineFactory.java:46)
-        at org.apache.hadoop.yarn.state.StateMachineFactory$InternalStateMachine.doTransition(StateMachineFactory.java:448)
-        at org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl.handle(JobImpl.java:972)
-        at org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl.handle(JobImpl.java:134)
-        at org.apache.hadoop.mapreduce.v2.app.MRAppMaster$JobEventDispatcher.handle(MRAppMaster.java:1227)
-        at org.apache.hadoop.mapreduce.v2.app.MRAppMaster.serviceStart(MRAppMaster.java:1035)
-        at org.apache.hadoop.service.AbstractService.start(AbstractService.java:193)
-        at org.apache.hadoop.mapreduce.v2.app.MRAppMaster$1.run(MRAppMaster.java:1445)
-        at java.security.AccessController.doPrivileged(Native Method)
-        at javax.security.auth.Subject.doAs(Subject.java:415)
-        at org.apache.hadoop.security.UserGroupInformation.doAs(UserGroupInformation.java:1491)
-        at org.apache.hadoop.mapreduce.v2.app.MRAppMaster.initAndStartAppMaster(MRAppMaster.java:1441)
-        at org.apache.hadoop.mapreduce.v2.app.MRAppMaster.main(MRAppMaster.java:1374)
-Caused by: java.lang.ClassNotFoundException: scala.Function1
-        at java.net.URLClassLoader$1.run(URLClassLoader.java:366)
-        at java.net.URLClassLoader$1.run(URLClassLoader.java:355)
-        at java.security.AccessController.doPrivileged(Native Method)
-        at java.net.URLClassLoader.findClass(URLClassLoader.java:354)
-        at java.lang.ClassLoader.loadClass(ClassLoader.java:425)
-        at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:308)
-        at java.lang.ClassLoader.loadClass(ClassLoader.java:358)
-        ... 22 more
-2014-09-11 22:55:19,130 INFO [Thread-1] org.apache.hadoop.mapreduce.v2.app.MRAppMaster: MRAppMaster received a signal. Signaling RMCommunicator and JobHistoryEventHandler.
-</code></pre>
-
-<h2>意外收获</h2>
-
-<ul>
-<li>推测执行初始化代码</li>
-</ul>
-
-
-<p><img src="http://file.bmob.cn/M00/0E/A2/wKhkA1QUHHCATFHtAAMeDcCHWzU166.png" alt="" /></p>
-
-<ul>
-<li>OutputFormat的获取Committer代码</li>
-</ul>
-
-
-<p><img src="http://file.bmob.cn/M00/0E/A2/wKhkA1QUHImAJAq1AALGEfA-F9k811.png" alt="" /></p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://digifesto.com/2013/04/15/hadoop-with-scala-hacking-notes/">Hadoop with Scala: hacking notes</a></li>
-<li><a href="https://github.com/derrickcheng/ScalaOnHadoop/blob/master/src/main/scala/WordCount.scala">ScalaOnHadoop WordCount.scala</a></li>
-</ul>
-
 ]]></content>
   </entry>
   

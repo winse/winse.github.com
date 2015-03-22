@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Tools | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/tools/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2015-03-09T14:10:12+08:00</updated>
+  <updated>2015-03-23T00:23:45+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -358,11 +358,13 @@ mysql&gt; SHOW  GLOBAL VARIABLES LIKE '%log%';
   </entry>
   
   <entry>
-    <title type="html"><![CDATA[Nginx配置静态站点服务]]></title>
+    <title type="html"><![CDATA[Nginx服务配置]]></title>
     <link href="http://winseliu.com/blog/2014/11/13/nginx-serving-static-content/"/>
     <updated>2014-11-13T10:16:17+08:00</updated>
     <id>http://winseliu.com/blog/2014/11/13/nginx-serving-static-content</id>
     <content type="html"><![CDATA[<p>配置nginx作为网页快照的服务，需要理解好配置<code>root</code>的涵义！</p>
+
+<h2>安装、启动</h2>
 
 <p>首先安装，然后修改配置：</p>
 
@@ -379,6 +381,7 @@ service nginx restart
 <pre><code>下载nginx，pcre-8.36.zip，zlib-1.2.3.tar.gz解压到src下。
 cd nginx-1.7.7
 ./configure --prefix=/home/omc/tools/nginx --with-pcre=src/pcre --with-zlib=src/zlib
+make &amp;&amp; make install
 
 cd /home/omc/tools/nginx
 vi conf/nginx.conf # 修改listen的端口，80要root才能起
@@ -392,6 +395,8 @@ sbin/nginx -s reload
 sbin/nginx -p $PWD
 sbin/nginx -s reload -p $PWD
 </code></pre>
+
+<h2>静态页面服务配置</h2>
 
 <p>下面具体说说配置的涵义：</p>
 
@@ -477,6 +482,86 @@ location @backend {
             try_files $uri $uri.html $uri.htm =404;
         }
 </code></pre>
+
+<h2>主备配置</h2>
+
+<pre><code>upstream backend {
+    server backend1.example.com 
+    server backup1.example.com  backup;
+}
+
+server {
+    location / {
+        proxy_pass http://backend;
+    }
+}
+</code></pre>
+
+<ul>
+<li><a href="http://nginx.org/en/docs/http/ngx_http_upstream_module.html#upstream">nginx upstream</a></li>
+</ul>
+
+
+<h2>防火墙跳转情况下nginx配置</h2>
+
+<p>如在防火墙做了11111端口映射到9000端口，如果按照的配置，应用的redirect会被nginx转换为9000端口发给用户，而不是原始的用户访问的11111端口。导致不一致甚至不能访问。</p>
+
+<pre><code>  location ~ \.do$ {
+    proxy_pass              http://localhost:8080;
+    proxy_set_header        X-Real-IP $remote_addr;
+    proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header        Host $http_host;
+  }                                                                                                       
+  location ~ \.jsp$ {
+    proxy_pass              http://localhost:8080;
+    proxy_set_header        X-Real-IP $remote_addr;
+    proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header        Host $http_host;
+  }
+</code></pre>
+
+<ul>
+<li><a href="http://wiki.nginx.org/JavaServers">JavaServers</a></li>
+<li><a href="http://wiki.nginx.org/LikeApache">Apache ProxyPassReverse</a></li>
+<li><a href="http://wiki.nginx.org/NginxHttpProxyModule#proxy_pass">NginxHttpProxyModule</a></li>
+</ul>
+
+
+<h2>rewrite</h2>
+
+<p>flag有两个last和break参数。last和break最大的不同在于</p>
+
+<ul>
+<li>break是终止当前location的rewrite检测,而且不再进行location匹配
+– last是终止当前location的rewrite检测,但会继续重试location匹配并处理区块中的rewrite规则</li>
+</ul>
+
+
+<p>结果rewrite的结果重新命中了location /download/ 虽然这次并没有命中rewrite规则的正则表达式,但因为缺少终止rewrite的标志,其仍会不停重试download中rewrite规则直到达到10次上限返回HTTP 500。</p>
+
+<p>配置：</p>
+
+<pre><code>        location / {
+           root   html;
+
+rewrite ^/snapshot/[^\/]*/(.*)$  /snapshot/$1 last;
+           index  index.html index.htm;
+        }
+</code></pre>
+
+<p>日志：</p>
+
+<pre><code>2015/03/13 11:53:42 [error] 32395#0: *17 rewrite or internal redirection cycle while processing "/snapshot/45/c7/2f/45c72f9a926d2b72b0c705a125d2764a.txt", client: 132.122.237.189, server: localhost, request: "GET //snapshot/1/2/3/4/5/6/7/8/9/10/11/45/c7/2f/45c72f9a926d2b72b0c705a125d2764a.txt HTTP/1.1", host: "umcc97-44:8888"
+
+2015/03/13 11:54:14 [error] 32395#0: *20 open() "/home/hadoop/nginx/html/snapshot/45c72f9a926d2b72b0c705a125d2764a.txt" failed (2: No such file or directory), client: 132.122.237.189, server: localhost, request: "GET //snapshot/1/2/3/4/5/45c72f9a926d2b72b0c705a125d2764a.txt HTTP/1.1", host: "umcc97-44:8888"
+</code></pre>
+
+<p>10次以上就报错，少于10次是ok的。</p>
+
+<ul>
+<li><a href="http://www.cnblogs.com/dami520/archive/2012/08/16/2642967.html">Nginx Rewrite详解</a></li>
+</ul>
+
 
 <h2>参考</h2>
 
