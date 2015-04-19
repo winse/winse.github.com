@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winseliu.com/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2015-04-13T11:36:52+08:00</updated>
+  <updated>2015-04-19T16:49:32+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,477 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Tachyon剖析]]></title>
+    <link href="http://winseliu.com/blog/2015/04/18/tachyon-deep-source/"/>
+    <updated>2015-04-18T23:13:01+08:00</updated>
+    <id>http://winseliu.com/blog/2015/04/18/tachyon-deep-source</id>
+    <content type="html"><![CDATA[<p>要了解一个框架，一般都是从框架提供/开放的接口入手。先从最直接的方式下手，可以通过<code>tachyon tfs</code>和浏览器19999端口获取集群以及文件的相关信息。</p>
+
+<ul>
+<li>要了解tachyon首先就是其文件系统，可以从两个功能开始：命令行tachyon.command.TFsShell和web-servlet。</li>
+<li>然后会深入tachyon.client包，了解<strong>TachyonFS</strong>和TachyonFile处理io的方式。以及tachyon.hadoop的包。</li>
+<li>io处理：
+
+<ul>
+<li>写：BlockOutStream（#getLocalBlockTemporaryPath； MappedByteBuffer）、FileOutStream</li>
+<li>读：RemoteBlockInStream、LocalBlockInStream</li>
+</ul>
+</li>
+<li>了解thrift：MasterClient、MasterServiceHandler、WorkerClient、WorkerServiceHandler、ClientBlockInfo、ClientFileInfo。</li>
+<li>看tachyon.example，巩固</li>
+</ul>
+
+
+<p>注：MappedByteBuffer在windows存在资源占用的bug！参见<a href="http://www.th7.cn/Program/java/2012/01/31/57401.shtml">http://www.th7.cn/Program/java/2012/01/31/57401.shtml</a>，</p>
+
+<p>把整个io流理清之后，然后需要了解tachyon是怎么维护这些信息的：</p>
+
+<ul>
+<li>配置：WorkerConf、MasterConf、UserConf</li>
+<li>了解thrift：MasterClient、MasterServiceHandler、ClientWorkerInfo、MasterInfo</li>
+<li>TachyonMaster和TachyonWorker的启动</li>
+<li>Checkpoint、Image、Journal</li>
+<li>内存淘汰策略</li>
+<li>DataServer在哪里用到（nio/netty）：TachyonFile#readRemoteByteBuffer、RemoteBlockInStream#read(byte[], int, int)</li>
+<li>HA</li>
+<li>Dependency（不知道怎么用）</li>
+</ul>
+
+
+<p>远程调试Worker以及tfs：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ cat conf/tachyon-env.sh 
+</span><span class='line'>export TACHYON_WORKER_JAVA_OPTS="$TACHYON_JAVA_OPTS -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8070"
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ export TACHYON_JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8070"
+</span><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ bin/tachyon tfs lsr /</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>IO</h2>
+
+<ul>
+<li>TachyonFS是client与Master/Worker的纽带，请求<strong>文件系统和文件</strong>的元数据CRUD操作。其中的WorkerClient仅用于写（保存）文件。</li>
+<li>TachyonFile是文件的抽象处理集合，可以获取文件的基本属性（元数据），同时提供了IO的接口用于文件内容的读写。</li>
+<li>InStream读、获取文件内容
+
+<ul>
+<li>EmptyBlockInStream(文件包括的块为0）</li>
+<li>BlockInStream(文件包括的块为1）
+
+<ul>
+<li>LocalBlockInStream 仅当是localworker且该块在本机时，通过MappedByteBuffer获取数据（数据在ramdisk也就是内存盘上哦）。</li>
+<li>RemoteBlockInStream （通过nio从远程的worker#DataServer机器获取数据#retrieveByteBufferFromRemoteMachine，如果readtype设置为cache同时把数据缓冲到本地worker）</li>
+</ul>
+</li>
+<li>FileInStream(文件包括的块为1+，可以理解为BlocksInStream。通过mCurrentPosition / mBlockCapacity来获取当前的blockindex最终还是调用BlockInStream）</li>
+</ul>
+</li>
+<li>FileOutStream写，写数据入口就是只有FileOutStream
+
+<ul>
+<li>BlockOutStream（WriteType设置了需要缓冲，会写到本地localworker。<strong>由于需要进行分块，会复杂些#appendCurrentBuffer</strong>）</li>
+<li>UnderFileSystem（如果WriteType设置了Through，则把数据写一份到underfs文件系统）</li>
+</ul>
+</li>
+</ul>
+
+
+<h2>Master</h2>
+
+<h2>Worker</h2>
+
+<hr />
+
+<h2>问题</h2>
+
+<ul>
+<li>程序没有返回内容，没有响应</li>
+</ul>
+
+
+<p>tfs 默认是CACHE_THROUGH，会缓冲同时写ufs。如果改成must则只写cache，然后清理内存，再获取数据，一直没有内容返回，不知道为什么？</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ export TACHYON_JAVA_OPTS="-Dtachyon.user.file.writetype.default=MUST_CACHE "
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs copyFromLocal LICENSE /LICENSE2
+</span><span class='line'>Copied LICENSE to /LICENSE2
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs free /LICENSE2
+</span><span class='line'>/LICENSE2 was successfully freed from memory.
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs cat /LICENSE2</span></code></pre></td></tr></table></div></figure>
+
+
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Tachyon入门指南]]></title>
+    <link href="http://winseliu.com/blog/2015/04/15/tachyon-quickstart/"/>
+    <updated>2015-04-15T22:56:09+08:00</updated>
+    <id>http://winseliu.com/blog/2015/04/15/tachyon-quickstart</id>
+    <content type="html"><![CDATA[<p>tachyon程序是在HDFS与程序之间缓冲，相当于CPU与磁盘设备之间内存的功能。tachyon提供了TachyonFS、TachyonFile等API使操作起来更像一个文件系统；同时实现了HDFS的FileSystem接口，方便原有程序的迁移，只要把url的模式（schema）hdfs改成tachyon。</p>
+
+<p>tachyon和HDFS一样也是master-slaver（worker）结构：master保存元数据，worker节点使用内存盘缓冲数据。</p>
+
+<h2>部署集群</h2>
+
+<p>下载tachyon的编译文件后，按下面的步骤部署：</p>
+
+<ul>
+<li>解压</li>
+<li>修改conf/tachyon-env.sh（JAVA_HOME，TACHYON_UNDERFS_ADDRESS，TACHYON_MASTER_ADDRESS）</li>
+<li>修改conf/worker</li>
+<li>同步代码到workers子节点</li>
+<li>格式化tachyon（建立master和worker所需的各种目录）</li>
+<li>挂载内存盘</li>
+<li>启动集群</li>
+<li>通过19999端口访问</li>
+</ul>
+
+
+<p>如果hadoop集群的版本不是最新的2.6.0，需要手工编译源码：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ mvn clean package assembly:single -Dhadoop.version=2.2.0 -DskipTests -Dmaven.javadoc.skip=true</span></code></pre></td></tr></table></div></figure>
+
+
+<p>同步程序的脚本如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 ~]$ for h in `cat slaves ` ; do  rsync -vaz tachyon-0.6.1 $h:~/ --exclude=logs --exclude=underfs --exclude=journal ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<p>用tachyon用户格式化：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>bin/tachyon format</span></code></pre></td></tr></table></div></figure>
+
+
+<p>使用root挂载内存盘：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>bin/tachyon-mount.sh Mount workers
+</span><span class='line'>for h in `cat slaves ` ; do  ssh $h "chmod 777 /mnt/ramdisk; chmod 777 /mnt/tachyon_default_home"  ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<p>确认下worker节点是否有underfs/tmp/tachyon/data，如果没有手动创建下。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 ~]$ for h in `cat slaves ` ; do ssh $h mkdir -p ~/tachyon-0.6.1/underfs/tmp/tachyon/data ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<p>启动集群：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 tachyon-0.6.1]$ bin/tachyon-start.sh all NoMount</span></code></pre></td></tr></table></div></figure>
+
+
+<p>上传文件到tachyon：（注意，这里是在worker节点！）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs copyFromLocal README.md /
+</span><span class='line'>Copied README.md to /</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>集成到Spark</h2>
+
+<p>注意，这里是在worker节点，使用local本地集群的方式（spark集群资源全部被spark-sql占用了，导致提交的任务分配不到资源！）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdata1 spark-1.3.0-bin-2.2.0]$ export SPARK_CLASSPATH=/home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar 
+</span><span class='line'>[eshore@bigdata1 spark-1.3.0-bin-2.2.0]$ bin/spark-shell --master local[1] -Dspark.ui.port=4041
+</span><span class='line'>scala&gt; val s = sc.textFile("tachyon://bigdatamgr1:19998/README.md")
+</span><span class='line'>s: org.apache.spark.rdd.RDD[String] = tachyon://bigdatamgr1:19998/README.md MapPartitionsRDD[1] at textFile at &lt;console&gt;:21
+</span><span class='line'>
+</span><span class='line'>scala&gt; s.count()
+</span><span class='line'>15/04/03 11:13:09 WARN : tachyon.home is not set. Using /mnt/tachyon_default_home as the default value.
+</span><span class='line'>res0: Long = 45
+</span><span class='line'>
+</span><span class='line'>scala&gt; val wordCounts = s.flatMap(_.split(" ")).map((_,1)).reduceByKey(_+_)
+</span><span class='line'>wordCounts: org.apache.spark.rdd.RDD[(String, Int)] = ShuffledRDD[4] at reduceByKey at &lt;console&gt;:23
+</span><span class='line'>
+</span><span class='line'>scala&gt; wordCounts.saveAsTextFile("tachyon://bigdatamgr1:19998/wordcount-README")
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 tachyon-0.6.1]$ bin/tachyon tfs ls /wordcount-README/
+</span><span class='line'>1407.00 B 04-03-2015 11:16:05:483  In Memory      /wordcount-README/part-00000
+</span><span class='line'>0.00 B    04-03-2015 11:16:05:787  In Memory      /wordcount-README/_SUCCESS</span></code></pre></td></tr></table></div></figure>
+
+
+<p>为啥要在worker节点运行呢？不能在master节点运行？运行肯定是可以的：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ export SPARK_CLASSPATH=/home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar
+</span><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ bin/spark-shell --master local[1] --jars /home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar
+</span><span class='line'>
+</span><span class='line'>scala&gt; val s = sc.textFile("tachyon://bigdatamgr1:19998/NOTICE")
+</span><span class='line'>s: org.apache.spark.rdd.RDD[String] = tachyon://bigdatamgr1:19998/NOTICE MapPartitionsRDD[1] at textFile at &lt;console&gt;:15
+</span><span class='line'>
+</span><span class='line'>scala&gt; s.count()
+</span><span class='line'>15/04/13 16:05:45 WARN BlockReaderLocal: The short-circuit local reads feature cannot be used because libhadoop cannot be loaded.
+</span><span class='line'>15/04/13 16:05:45 WARN : tachyon.home is not set. Using /mnt/tachyon_default_home as the default value.
+</span><span class='line'>java.io.IOException: The machine does not have any local worker.
+</span><span class='line'>        at tachyon.client.BlockOutStream.&lt;init&gt;(BlockOutStream.java:94)
+</span><span class='line'>        at tachyon.client.BlockOutStream.&lt;init&gt;(BlockOutStream.java:65)
+</span><span class='line'>        at tachyon.client.RemoteBlockInStream.read(RemoteBlockInStream.java:204)
+</span><span class='line'>        at tachyon.hadoop.HdfsFileInputStream.read(HdfsFileInputStream.java:142)
+</span><span class='line'>        at java.io.DataInputStream.read(DataInputStream.java:100)
+</span><span class='line'>        at org.apache.hadoop.util.LineReader.readDefaultLine(LineReader.java:211)
+</span><span class='line'>        at org.apache.hadoop.util.LineReader.readLine(LineReader.java:174)
+</span><span class='line'>        at org.apache.hadoop.mapred.LineRecordReader.next(LineRecordReader.java:206)
+</span><span class='line'>        at org.apache.hadoop.mapred.LineRecordReader.next(LineRecordReader.java:45)
+</span><span class='line'>        at org.apache.spark.rdd.HadoopRDD$$anon$1.getNext(HadoopRDD.scala:245)
+</span><span class='line'>        at org.apache.spark.rdd.HadoopRDD$$anon$1.getNext(HadoopRDD.scala:212)
+</span><span class='line'>        at org.apache.spark.util.NextIterator.hasNext(NextIterator.scala:71)
+</span><span class='line'>        at org.apache.spark.InterruptibleIterator.hasNext(InterruptibleIterator.scala:39)
+</span><span class='line'>        at scala.collection.Iterator$$anon$11.hasNext(Iterator.scala:327)
+</span><span class='line'>        at org.apache.spark.util.Utils$.getIteratorSize(Utils.scala:1466)
+</span><span class='line'>        at org.apache.spark.rdd.RDD$$anonfun$count$1.apply(RDD.scala:1006)
+</span><span class='line'>        at org.apache.spark.rdd.RDD$$anonfun$count$1.apply(RDD.scala:1006)
+</span><span class='line'>        at org.apache.spark.SparkContext$$anonfun$runJob$5.apply(SparkContext.scala:1497)
+</span><span class='line'>        at org.apache.spark.SparkContext$$anonfun$runJob$5.apply(SparkContext.scala:1497)
+</span><span class='line'>        at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:61)
+</span><span class='line'>        at org.apache.spark.scheduler.Task.run(Task.scala:64)
+</span><span class='line'>        at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:203)
+</span><span class='line'>        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+</span><span class='line'>        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+</span><span class='line'>        at java.lang.Thread.run(Thread.java:745)
+</span><span class='line'>res0: Long = 2</span></code></pre></td></tr></table></div></figure>
+
+
+<p>两个点：</p>
+
+<ul>
+<li>这里是运行的spark local集群；</li>
+<li>运行当然没有问题，但是会打印不和谐的<strong>The machine does not have any local worker</strong>警告日志。这与FileSystem的获取输入流<code>ReadType.CACHE</code>实现有关（见源码HdfsFileInputStream）。</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>mTachyonFileInputStream = mTachyonFile.getInStream(ReadType.CACHE);</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果master为spark集群，spark-driver不管运行在哪台集群都没有问题。因为，此时运行任务的spark-worker就是tachyon-worker节点啊，当然就有local worker了。</p>
+
+<p>为了更深入的了解，还可以试验一下<code>ReadType.CACHE</code>的作用：原本不在内存的数据，计算后就会被载入到缓冲（内存）！！</p>
+
+<p>可以再试一次，先从内存中删掉（此处underfs配置存储在HDFS）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ~/tachyon-0.6.1/bin/tachyon tfs free /NOTICE
+</span><span class='line'>/NOTICE was successfully freed from memory.
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ~/tachyon-0.6.1/bin/tachyon tfs fileinfo /NOTICE
+</span><span class='line'>/NOTICE with file id 2 has the following blocks: 
+</span><span class='line'>ClientBlockInfo(blockId:2147483648, offset:0, length:62, locations:[NetAddress(mHost:bigdata8, mPort:-1, mSecondaryPort:-1), NetAddress(bigdata6, mPort:-1, mSecondaryPort:-1), NetAddress(mHost:bigdata5, mPort:-1, mSecondaryPort:-1)])</span></code></pre></td></tr></table></div></figure>
+
+
+<p>再次运行count：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>scala&gt; s.count()
+</span><span class='line'>res1: Long = 2</span></code></pre></td></tr></table></div></figure>
+
+
+<p>再次查看文件状态：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ~/tachyon-0.6.1/bin/tachyon tfs fileinfo /NOTICE
+</span><span class='line'>/NOTICE with file id 2 has the following blocks: 
+</span><span class='line'>ClientBlockInfo(blockId:2147483648, offset:0, length:62, locations:[NetAddress(mHost:bigdata1, mPort:29998, mSecondaryPort:29999)])</span></code></pre></td></tr></table></div></figure>
+
+
+<p>此时文件对应的block所在机器变成了bigdata1，也就是spark-worker运行的节点（这里用local，worker和driver都在bigdata1上）。</p>
+
+<p>参考</p>
+
+<ul>
+<li><a href="http://tachyon-project.org/Running-Tachyon-on-a-Cluster.html">http://tachyon-project.org/Running-Tachyon-on-a-Cluster.html</a></li>
+<li><a href="http://spark.apache.org/docs/latest/configuration.html">http://spark.apache.org/docs/latest/configuration.html</a></li>
+<li><a href="http://tachyon-project.org/Running-Spark-on-Tachyon.html">http://tachyon-project.org/Running-Spark-on-Tachyon.html</a></li>
+</ul>
+
+
+<h2>集成到Hadoop集群</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 ~]$ export HADOOP_CLASSPATH=/home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 hadoop-2.2.0]$ bin/hadoop jar share/hadoop/mapreduce/hadoop-mapreduce-examples-2.2.0.jar wordcount -libjars /home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar tachyon://bigdatamgr1:19998/NOTICE tachyon://bigdatamgr1:19998/NOTICE-wordcount
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 hadoop-2.2.0]$ ~/tachyon-0.6.1/bin/tachyon tfs cat /NOTICE-wordcount/part-r-00000
+</span><span class='line'>2012-2014       1
+</span><span class='line'>Berkeley        1
+</span><span class='line'>California,     1
+</span><span class='line'>Copyright       1
+</span><span class='line'>Tachyon 1
+</span><span class='line'>University      1
+</span><span class='line'>of      1</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>后记</h2>
+
+<p>当前apache开源大部分集群的部署都是同一种模式，源码也基本都是用maven来进行构建。部署其实没有什么难度，如果是应用到spark、hadoop这样的平台，其实只要部署，然后用FileSystem的接口就一切ok了。但是要了解其原理，官网的文档也不是很全，那得需要深入源码。</p>
+
+<p>入门写到这里，差不多了，下一篇从TachyonFS角度解析tachyon。</p>
+
+<h2>附录</h2>
+
+<ul>
+<li>spark-env.sh</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>JAVA_HOME=/home/eshore/jdk1.7.0_60
+</span><span class='line'>
+</span><span class='line'># log4j
+</span><span class='line'>
+</span><span class='line'>__add_to_classpath() {
+</span><span class='line'>
+</span><span class='line'>  root=$1
+</span><span class='line'>
+</span><span class='line'>  if [ -d "$root" ] ; then
+</span><span class='line'>    for f in `ls $root/*.jar | grep -v -E '/hive.*.jar'`  ; do
+</span><span class='line'>      if [ -n "$SPARK_DIST_CLASSPATH" ] ; then
+</span><span class='line'>        export SPARK_DIST_CLASSPATH=$SPARK_DIST_CLASSPATH:$f
+</span><span class='line'>      else
+</span><span class='line'>        export SPARK_DIST_CLASSPATH=$f
+</span><span class='line'>      fi
+</span><span class='line'>    done
+</span><span class='line'>  fi
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>__add_to_classpath "/home/eshore/tez-0.4.0-incubating"
+</span><span class='line'>__add_to_classpath "/home/eshore/tez-0.4.0-incubating/lib"
+</span><span class='line'>__add_to_classpath "/home/eshore/apache-hive-0.13.1/lib"
+</span><span class='line'>
+</span><span class='line'>export HADOOP_CONF_DIR=/data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop
+</span><span class='line'>export SPARK_CLASSPATH=$SPARK_CLASSPATH:/home/eshore/spark-1.3.0-bin-2.2.0/conf:$HADOOP_CONF_DIR
+</span><span class='line'>
+</span><span class='line'># HA
+</span><span class='line'>SPARK_DAEMON_JAVA_OPTS="-Dspark.deploy.recoveryMode=ZOOKEEPER -Dspark.deploy.zookeeper.url=bi-00-01.bi.domain.com:2181 -Dspark.deploy.zookeeper.dir=/spark"
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 ~]$ for h in `cat slaves ` ; do rsync -vaz spark-1.3.0-bin-2.2.0 $h:~/ --exclude=logs --exclude=metastore_db --exclude=work --delete ; done</span></code></pre></td></tr></table></div></figure>
+
+
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[使用RamDisk来优化系统]]></title>
@@ -4364,206 +4835,6 @@ InnoDB数据库文件（即InnoDB文件集，ib-file set）：
 <li><a href="http://spark.apache.org/docs/latest/spark-standalone.html#high-availability">http://spark.apache.org/docs/latest/spark-standalone.html#high-availability</a></li>
 </ul>
 
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[[读码] Spark1.1.0前篇--代码统计导入Eclipse]]></title>
-    <link href="http://winseliu.com/blog/2014/10/12/read-spark1-source-starter/"/>
-    <updated>2014-10-12T13:12:57+08:00</updated>
-    <id>http://winseliu.com/blog/2014/10/12/read-spark1-source-starter</id>
-    <content type="html"><![CDATA[<p>看过亚太研究院的spark在线教学视频，说spark1.0的源码仅有3w+的代码，蠢蠢欲动。先具体看下源码的量，估算估算；然后搭建eclipse读码环境。</p>
-
-<h2>计算源码行数</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@Lenovo-PC ~/git/spark
-</span><span class='line'>$ git branch -v
-</span><span class='line'>* (detached from v1.1.0) 2f9b2bd [maven-release-plugin] prepare release v1.1.0-rc4
-</span><span class='line'>  master                 4d8ae70 [behind 1246] Cleanup on Connection and ConnectionManager
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC ~/git/spark
-</span><span class='line'>$ find . -name "*.scala" | grep 'src/main' | xargs sed  -e 's:\/\*.*\*\/::' -e  '/\/\*/, /\*\//{
-</span><span class='line'>/\/\*/{
-</span><span class='line'> s:\/\*.*::p
-</span><span class='line'>}
-</span><span class='line'>/\*\//{
-</span><span class='line'> s:.*\*\/::p
-</span><span class='line'>}
-</span><span class='line'>d
-</span><span class='line'>}' | sed -e '/^\s*$/d' -e '/^\s*\/\//d' | grep -v '^import' | grep -v '^package' | wc -l
-</span><span class='line'>72967
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC ~/git/spark
-</span><span class='line'>$ ^scala^java
-</span><span class='line'>1749
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC ~/git/spark
-</span><span class='line'>$ ^src/main^core/src/main
-</span><span class='line'>877
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC ~/git/spark
-</span><span class='line'>$ ^java^scala
-</span><span class='line'>38526
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>全部源码的数量（去掉测试）大概在7W左右，仅计算核心代码core下面的代码量在4W。从量上面来说还是比较乐观的，学习scala然后读spark的源码。</p>
-
-<p>spark1.0.0的核心代码量在3w左右。1.1多了大概1w行！！</p>
-
-<h2>Docker</h2>
-
-<p>查看目录结构的时刻，看到spark1下面竟然有docker，不过看Dockerfile的内容只是简单的安装了scala、把本机的spark映射到docker容器、然后运行spark主从集群。</p>
-
-<h2>导入eclipse</h2>
-
-<p>spark使用主要使用scala编写，首先需要下载<a href="http://scala-ide.org/download/sdk.html">scala-ide</a>直接下载2.10的版本（基于eclipse，很多操作都类似）；然后下载<a href="https://github.com/apache/spark.git">spark的源码</a>检出v1.1.0的；然后使用maven生成eclipse工程文件。</p>
-
-<p>(不推荐)使用<a href="https://cwiki.apache.org/confluence/display/SPARK/Contributing+to+Spark#ContributingtoSpark-Eclipse">sbt生成工程文件</a>。这种方式会缺少一些依赖的jar，处理比较麻烦，还不清楚到底是少了啥！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ cd sbt/
-</span><span class='line'>$ sed -i 's/^M//g' *
-</span><span class='line'>$ cd ..
-</span><span class='line'>$ sbt/sbt eclipse -mem 512</span></code></pre></td></tr></table></div></figure>
-
-
-<p>(推荐)使用MVN编译生成，<a href="http://spark.apache.org/docs/latest/building-with-maven.html">使用Maven生成官网文章</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@Lenovo-PC ~/git/spark
-</span><span class='line'>$ git clean -x -fd #清理非仓库代码
-</span><span class='line'>
-</span><span class='line'>$ echo $SCALA_HOME #指定scala-home
-</span><span class='line'>/cygdrive/d/scala
-</span><span class='line'>
-</span><span class='line'># 这里我直接修改默认值，理论上加 -Phadoop-2.2 选项应该也是可以的
-</span><span class='line'>$ vi pom.xml # hadoop.version 2.2.0
-</span><span class='line'>$ mvn eclipse:eclipse
-</span><span class='line'>
-</span><span class='line'>$ find . -name ".classpath" | xargs sed -i -e 's/including="\*\*\/\*.java"//' -e 's/excluding="\*\*\/\*.java"//'
-</span><span class='line'>
-</span><span class='line'>#也可以把添加特性的操作/添加scala源码包操作批量处理掉</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后导入到eclipse，然后再针对性的处理报错：</p>
-
-<ul>
-<li>先把每个工程都<strong>添加scala特性</strong></li>
-<li>把含有python源码包的去掉（手动删除.classpath中classpathentry即可）</li>
-<li>确认下并加上<code>src/test/scala</code>的源码包。</li>
-</ul>
-
-
-<p>注意，进行上面的步骤之前，由于scala源文件比较多，编译的时间会比较长，先把Project->Build Automatically去掉，然后一次性把问题处理掉后再手动build！</p>
-
-<ul>
-<li>手动使用<code>existing maven projects</code>导入yarn/stable，然后把<strong>yarn/common以链接的形式引入</strong>，并添加到源码包。</li>
-</ul>
-
-
-<p><img src="http://file.bmob.cn/M00/1C/E7/wKhkA1Q7jQ2AMhweAAOC-l-jcz4872.png" alt="" /></p>
-
-<p>还有一个<strong> value q is not a member of StringContext </strong><a href="http://docs.scala-lang.org/overviews/quasiquotes/intro.html">quasiquotes</a>的错误，有些类需要在2.10添加编译组件才能正常编译，修改scala编译首选项。</p>
-
-<p><img src="http://file.bmob.cn/M00/1D/07/wKhkA1Q76GyAFNYPAAEYJfk_ZGw816.png" alt="" /></p>
-
-<p>添加依赖的编译组件后，整个功能就能正常编译通过了。接下来就能调试看源码了。</p>
-
-<p><strong>备注：</strong>clean后发现target目录下并没有重新编译生成class，去掉<code>-Xshow-phases</code>才行。</p>
-
-<blockquote><p> -Xshow-phases                  Print a synopsis of compiler phases.</p></blockquote>
-
-<h2>Maven编译spark</h2>
-
-<p>如果使用的hadoop版本在官网没有集成assembly版本，可以使用maven手动构建。至于打包可以查看下一篇文章。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
-</span><span class='line'>$ mvn -Pyarn -Phadoop-2.2 -Dhadoop.version=2.2.0 -DskipTests clean package</span></code></pre></td></tr></table></div></figure>
-
-
-<p><code>yarn</code>的profile能够编译成可执行的jar文件（包括所有依赖的spark），具体内容下一篇讲。</p>
-
-<h2>小结</h2>
-
-<p>断断续续的写了两天，字数统计弄了大半天，主要在于多行注释的处理。时间最主要都消耗在sbt、maven构建eclipse项目文件（生成、fixed）上。编译scala量上去后确实非常非常的慢，不管是maven还是eclipse都慢！</p>
-
-<p>下一篇将使用docker搭建spark环境，并使用远程调试连接到helloworld程序。</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://stackoverflow.com/questions/24800129/scala-maven-builder-doesnt-understand-quasiquotes">Scala maven builder doesn&rsquo;t understand quasiquotes</a></li>
-<li><a href="http://docs.scala-lang.org/overviews/macros/paradise.html">Macro Paradise</a></li>
-</ul>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[思考]]></title>
-    <link href="http://winseliu.com/blog/2014/10/07/thinking/"/>
-    <updated>2014-10-07T19:07:26+08:00</updated>
-    <id>http://winseliu.com/blog/2014/10/07/thinking</id>
-    <content type="html"><![CDATA[<p>随着年龄的增大，很多原来不曾想的问题慢慢的都开始环绕在自己四周。开始让自己不得不反思，不得不去改变。</p>
-
-<p>本人是一个性格比较极端，又很内向，所以对自己不关心、无自己原来没有直接联系的东西，很少体现积极主动的一面。时时刻刻展现着保守派的作风。自己又在学习能力方面自我感觉良好，对现状总是很不满，对一样事物的持续坚持的耐久力不足（倒不是不能吃苦、吃不了苦的问题）！</p>
-
-<p>从出生到毕业，一直以来都有亲人朋友让我依靠，有很明确值得挑战和超越的目标（总体水平一般，在我前面的人乌压压一片）。出来工作后一直都很迷失，不知道自己能干啥，可以干啥，师范类专业连教师资格证都没有拿到（不是后悔，自己觉得不应该）！！现在想来其实自己太执拗，像极了不撞南墙死不改的蛮牛！！</p>
-
-<p>年龄增加体力不及，开始思考着应该去锻炼锻炼了，但是一直各种借口无疾而终！觉得身体还行，以后再说。。。
-工作资历增加直接辅导指导的大哥不再，开始各种瞎折腾，东一锤西一棒，终究是拣了芝麻丢了西瓜！觉得学习能力强以后都敢都来得及，以后再学呗。。。   <br/>
-但是在运动场上，一直坚持运动的同学，打个3、4个小时的羽毛球气不喘一下，这时开始懊悔。
-当原来一起协作的同事，开始在领域有所斩获，各种嫉妒羡慕的心里开始作祟。</p>
-
-<p>星期一个个的开始了结束，自己却没有得到该有的锤炼和进度，在大势所趋下，自己却总是那么的慢慢吞吞！阅读一个类的千行源码，竟然断断续续花费了仅2个月！本来年前看tomcat原来的计划最终石沉大海！</p>
-
-<p>总是对自己不够狠；狠下来一次后，总是各种理由，最终不能坚持！</p>
 ]]></content>
   </entry>
   
