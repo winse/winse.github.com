@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2015-04-19T16:49:32+08:00</updated>
+  <updated>2015-08-21T16:48:26+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,121 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Hadoop不同版本yarn和hdfs混搭，spark-yarn环境配置]]></title>
+    <link href="http://winseliu.com/blog/2015/06/10/hadoop-deploy-spark-diff-version-yarn-and-hdfs/"/>
+    <updated>2015-06-10T18:48:19+08:00</updated>
+    <id>http://winseliu.com/blog/2015/06/10/hadoop-deploy-spark-diff-version-yarn-and-hdfs</id>
+    <content type="html"><![CDATA[<p>hadoop分为存储和计算两个主要的功能，hdfs步入hadoop2后不论稳定性还是HA等等功能都比hadoop1要更吸引人。hadoop-2.2.0的hdfs已经比较稳定，但是yarn高版本有更加丰富的功能。本文主要关注spark-yarn下日志的查看，以及spark-yarn-dynamic的配置。</p>
+
+<p>hadoop-2.2.0的hdfs原本已经在使用的环境，在这基础上搭建运行yarn-2.6.0，以及spark-1.3.0-bin-2.2.0。</p>
+
+<ul>
+<li>编译</li>
+</ul>
+
+
+<p>我是在虚拟机里面编译，共享了host主机的maven库。参考【VMware共享目录】，【VMware-Centos6 Build hadoop-2.6】注意<strong>cmake_symlink_library的异常，由于共享的windows目录下不能创建linux的软链接</strong></p>
+
+<pre><code>tar zxvf ~/hadoop-2.6.0-src.tar.gz 
+cd hadoop-2.6.0-src/
+mvn package -Pdist,native -DskipTests -Dtar -Dmaven.javadoc.skip=true
+
+# 由于hadoop-hdfs还是2.2的，这里编译spark需要用2.2版本！
+# 如果用2.6会遇到[UnsatisfiedLinkError:org.apache.hadoop.util.NativeCrc32.nativeComputeChunkedSumsByteArray ](http://blog.csdn.net/zeng_84_long/article/details/44340441)
+cd spark-1.3.0
+export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=1g -XX:ReservedCodeCacheSize=512m"
+mvn clean package -Phadoop-2.2 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+
+vi make-distribution.sh #注释掉BUILD_COMMAND那一行，不重复执行package！
+./make-distribution.sh  --mvn `which mvn` --tgz  --skip-java-test -Phadoop-2.6 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+</code></pre>
+
+<ul>
+<li><p>配置注意点</p></li>
+<li><p>core-site不要全部拷贝原来的，只要一些主要的配置即可。</p></li>
+<li>yarn-site的<code>yarn.resourcemanager.webapp.address</code>需要填写具体的地址，不能写<code>0.0.0.0</code>。</li>
+<li>yarn-site的<code>yarn.nodemanager.aux-services</code>添加spark_shuffle服务。<a href="https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation">https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation</a></li>
+<li>把hive-site的文件拷贝/链接到spark的conf目录下。</li>
+<li>spark-yarn-dynamic配置: <a href="https://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">https://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
+</ul>
+
+
+<pre><code>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ cat conf/spark-defaults.conf 
+# spark.master                     spark://bigdatamgr1:7077,bigdata8:7077
+# spark.eventLog.enabled           true
+# spark.eventLog.dir               hdfs://namenode:8021/directory
+# spark.executor.extraJavaOptions  -XX:+PrintGCDetails -Dkey=value -Dnumbers="one two three"
+# spark.executor.extraJavaOptions       -Xmx16g -Xms16g -Xmn256m -XX:+UseParNewGC -XX:+UseConcMarkSweepGC -XX:CMSInitiatingOccupancyFraction=70 -XX:ParallelGCThreads=10
+spark.driver.memory              48g
+spark.executor.memory            48g
+spark.sql.shuffle.partitions     200
+
+#spark.scheduler.mode FAIR
+spark.serializer  org.apache.spark.serializer.KryoSerializer
+spark.driver.maxResultSize 8g
+#spark.kryoserializer.buffer.max.mb 2048
+
+spark.dynamicAllocation.enabled true
+spark.dynamicAllocation.minExecutors 4
+spark.shuffle.service.enabled true
+
+[eshore@bigdatamgr1 conf]$ cat spark-env.sh 
+#!/usr/bin/env bash
+
+JAVA_HOME=/home/eshore/jdk1.7.0_60
+
+# log4j
+
+__add_to_classpath() {
+
+  root=$1
+
+  if [ -d "$root" ] ; then
+    for f in `ls $root/*.jar | grep -v -E '/hive.*.jar'`  ; do
+      if [ -n "$SPARK_DIST_CLASSPATH" ] ; then
+        export SPARK_DIST_CLASSPATH=$SPARK_DIST_CLASSPATH:$f
+      else
+        export SPARK_DIST_CLASSPATH=$f
+      fi
+    done
+  fi
+
+}
+# this add tail of SPARK_CLASSPATH
+__add_to_classpath "/home/eshore/apache-hive-0.13.1/lib"
+
+#export HADOOP_CONF_DIR=/data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop
+export HADOOP_CONF_DIR=/home/eshore/hadoop-2.6.0/etc/hadoop
+export SPARK_CLASSPATH=$SPARK_CLASSPATH:/home/eshore/spark-1.3.0-bin-2.2.0/conf:$HADOOP_CONF_DIR
+
+# HA
+SPARK_DAEMON_JAVA_OPTS="-Dspark.deploy.recoveryMode=ZOOKEEPER -Dspark.deploy.zookeeper.url=bi-00-01.bi.domain.com:2181 -Dspark.deploy.zookeeper.dir=/spark" 
+
+SPARK_PID_DIR=${SPARK_HOME}/pids
+</code></pre>
+
+<ul>
+<li>同步</li>
+</ul>
+
+
+<pre><code>for h in `cat slaves ` ; do rsync -vaz hadoop-2.6.0 $h:~/ --delete --exclude=work --exclude=logs --exclude=metastore_db --exclude=data --exclude=pids ; done
+</code></pre>
+
+<ul>
+<li>启动spark-hive-thrift</li>
+</ul>
+
+
+<p>./sbin/start-thriftserver.sh &ndash;executor-memory 29g &ndash;master yarn-client</p>
+
+<p>对于多任务的集群来说，配置自动动态分配（类似资源池）更有利于资源的使用。可以通过【All Applications】-【ApplicationMaster】-【Executors】来观察执行进程的变化。</p>
+
+<p></p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[已有HDFS上部署yarn]]></title>
@@ -722,17 +837,18 @@ cd protobuf-2.5.0
 ./configure 
 make &amp;&amp; make install
 
+## 编译hadoop-common
 # 从映射文件中拷贝hadoop-common到linux文件系统，然后在编译hadoop-common
 cd hadoop-2.6.0-src/hadoop-common-project/hadoop-common/
 cd ..
-cp -r  hadoop-common ~/
+cp -r  hadoop-common ~/  #Q:为啥要拷贝一份，【遇到的问题】中有进行解析
 cd ~/hadoop-common
 mvn install
 mvn -X package -Pdist,native -Dmaven.test.skip=true -Dmaven.javadoc.skip=true
 
 ## 编译全部，耗时比较久，可以先去吃个饭^v^
 cp -r /mnt/hgfs/hadoop-2.6.0-src ~/
-mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true
+mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true #Q:这里为啥不能用maven.test.skip?
 </code></pre>
 
 <h2>遇到的问题</h2>
@@ -772,7 +888,7 @@ mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true
 <p>比如，你如果是在一个WINDOWS机器上的共享目录中编译，就没法创建链接，就会失败。把源码复制到本地的目录中再编译就不会有这问题。</p></blockquote>
 
 <ul>
-<li>全部编译时使用skipTests。</li>
+<li>全部编译时需使用skipTests。</li>
 </ul>
 
 
@@ -918,7 +1034,7 @@ lrwxrwxrwx. 1 hadoop hadoop      16 Mar  3 21:08 libhdfs.so -&gt; libhdfs.so.0.0
 -rwxr-xr-x. 1 hadoop hadoop  228451 Mar  8 03:11 libhdfs.so.0.0.0
 </code></pre>
 
-<p>前后对比：</p>
+<p>添加编译的native包前后对比：</p>
 
 <pre><code>[hadoop@hadoop-master1 hadoop-2.6.0]$ hadoop fs -ls /
 15/03/08 03:09:12 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
@@ -932,88 +1048,6 @@ Found 3 items
 drwx------   - hadoop supergroup          0 2015-03-06 16:54 /tmp
 drwxr-xr-x   - hadoop supergroup          0 2015-03-06 16:54 /user
 </code></pre>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop查看作业状态Rest接口]]></title>
-    <link href="http://winseliu.com/blog/2014/12/07/hadoop-mr-rest-api/"/>
-    <updated>2014-12-07T10:09:49+08:00</updated>
-    <id>http://winseliu.com/blog/2014/12/07/hadoop-mr-rest-api</id>
-    <content type="html"><![CDATA[<p>hadoop yarn提供了web端查看任务状态，同时可以通过rest的方式获取任务的相关信息。rest接口和网页端的每个界面一一对应。</p>
-
-<p><img src="http://file.bmob.cn/M00/D7/C0/oYYBAFSDxeaARA6AAAenwsLMShM027.png" alt="" /></p>
-
-<p>上面的5个图的链接为：</p>
-
-<pre><code>http://hadoop-master1:8088/cluster/apps/RUNNING
-http://hadoop-master1:8088/cluster/app/application_1417676507722_1846
-http://hadoop-master1:8088/proxy/application_1417676507722_1846/
-http://hadoop-master1:8088/proxy/application_1417676507722_1846/mapreduce/job/job_1417676507722_1846
-http://hadoop-master1:19888/jobhistory/job/job_1417676507722_1846/mapreduce/job/job_1417676507722_1846
-</code></pre>
-
-<h2>查看正在运行的任务</h2>
-
-<pre><code>curl http://hadoop-master1:8088/ws/v1/cluster/apps?states=RUNNING
-...
-
-curl http://hadoop-master1:8088/proxy/application_1417676507722_1867/ws/v1/mapreduce/info
-...
-curl http://hadoop-master1:8088/proxy/application_1417676507722_1867/ws/v1/mapreduce/jobs
-...
-
-curl http://hadoop-master1:8088/proxy/application_1417676507722_1867/ws/v1/mapreduce/jobs/job_1417676507722_1867
-...
-curl http://hadoop-master1:8088/proxy/application_1417676507722_1867/ws/v1/mapreduce/jobs/job_1417676507722_1867/counters
-...
-curl http://hadoop-master1:8088/proxy/application_1417676507722_1867/ws/v1/mapreduce/jobs/job_1417676507722_1867/conf
-</code></pre>
-
-<p>如果上面的任务是已经完成的，获取对应的信息时返回的值是空的。</p>
-
-<pre><code>curl http://hadoop-master1:8088/proxy/application_1417676507722_1867/ws/v1/mapreduce/jobs/job_1417676507722_1867/counters
-</code></pre>
-
-<h2>查看执行完成的任务</h2>
-
-<pre><code>curl http://hadoop-master1:19888/ws/v1/history
-curl http://hadoop-master1:19888/ws/v1/history/info
-...
-curl http://hadoop-master1:19888/ws/v1/history/mapreduce/jobs?startedTimeBegin=$(date +%s -d '-1 hour')000
-...
-curl http://hadoop-master1:19888/ws/v1/history/mapreduce/jobs/job_1417676507722_1867
-curl http://hadoop-master1:19888/ws/v1/history/mapreduce/jobs/job_1417676507722_1867/counters
-curl http://hadoop-master1:19888/ws/v1/history/mapreduce/jobs/job_1417676507722_1867/conf
-
-curl -H "Accept: application/xml" "http://hadoop-master1:8088/ws/v1/cluster/apps?states=FINISHED&amp;limit=1" | xmllint --format - 
-</code></pre>
-
-<p>后面的参数和运行任务一致，只是提供服务不同。</p>
-
-<h2>xml转csv</h2>
-
-<p><img src="http://file.bmob.cn/M00/D7/D5/oYYBAFSEHuKAaAgHAACb9_KkMEU331.png" alt="" /></p>
-
-<pre><code>$ curl -H "Accept: application/xml" "http://hadoop-master1:8088/ws/v1/cluster/apps?startedTimeBegin=$(date +%s -d '-1 hour')000" 2&gt;/dev/null | xsltproc yarn.xslt -  | sort -r
-
-application_1417676507722_1973,AccessLogOnlyHiveJob,RUNNING,UNDEFINED,1417942144941,0,19416
-application_1417676507722_1972,InfoSecurityLogJob,FINISHED,SUCCEEDED,1417942084278,1417942098184,13906
-application_1417676507722_1971,InfoSecurityLogJob,FINISHED,SUCCEEDED,1417941603456,1417941617773,14317
-application_1417676507722_1970,AccessLogOnlyHiveJob,FINISHED,SUCCEEDED,1417941581080,1417942142287,561207
-application_1417676507722_1969,InfoSecurityLogJob,FINISHED,SUCCEEDED,1417941422664,1417941436456,13792
-</code></pre>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/WebServicesIntro.html">Hadoop YARN - Introduction to the web services REST API&rsquo;s.</a></li>
-<li><a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/ResourceManagerRest.html">ResourceManager REST API&rsquo;s.</a></li>
-<li><a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/MapredAppMasterRest.html">MapReduce Application Master REST API&rsquo;s.</a></li>
-<li><a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/HistoryServerRest.html">History Server REST API&rsquo;s.</a></li>
-<li><a href="http://blog.csdn.net/wypblog/article/details/21159795">Hadoop YARN中web服务的REST API介绍</a></li>
-</ul>
-
 ]]></content>
   </entry>
   
