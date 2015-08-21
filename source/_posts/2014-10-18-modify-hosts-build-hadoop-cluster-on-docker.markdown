@@ -101,7 +101,7 @@ PING slaver2 (172.17.0.10) 56(84) bytes of data.
 ## 遇到的问题
 
 * 一开始我把配置文件放在/root目录下，dnsmasq总是不起作用。最后放到/etc目录就可以，不知道啥子问题。
-* 配置dns启动docker容器后，如果不起作用看下`/etc/resolv.conf `确保仅有nameserver一行数据。
+* 配置dns启动docker容器后，如果不起作用看下`/etc/resolv.conf `。如果互ping不同，去掉resolv的`search localhost`再试下。
 
 DNS可以正常工作的配置：
 
@@ -112,15 +112,13 @@ PING slaver (172.17.0.7) 56(84) bytes of data.
 
 -bash-4.1# cat /etc/resolv.conf 
 nameserver 172.17.42.1
-```
+search localdomain
 
-DNS配置存在问题的情况：
-
-```
 -bash-4.1# cat /etc/resolv.conf 
 nameserver 172.17.42.1
-search localdomain
 ```
+
+如果还是不行的话，关掉防火墙然后重启下docker服务: `service iptables stop; service docker restart`
 
 ## 参考
 

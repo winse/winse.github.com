@@ -111,6 +111,20 @@ SecureCRT不但能满足shell命令，能保存基本上全部的操作过程（
 
 看到网上说的**Xshell**功能和SecureCRT类似，还支持颜色，并且是开源的没有版权问题！。[Xshell讨论](http://www.zhihu.com/question/20308776)
 
+## 使用具体案例
+
+1. 批量改名加后缀：
+
+```
+ls -1 | xargs -i mv {}{,.old}
+```
+
+还原：
+
+```
+$ ls -1 | while read line ; do mv "$line" "${line%.*}" ; done
+```
+
 
 ## 收藏
 

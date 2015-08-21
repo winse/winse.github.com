@@ -1,19 +1,23 @@
 ---
 layout: post
-title: "编译配置Spark"
+title: "编译/搭建Spark环境"
 date: 2014-10-16 16:55:39 +0800
 comments: true
 categories: [spark]
 ---
+
+2015-04更新：【后记 Spark-1.3.0】
 
 官网提供的hadoop版本没有2.5的。这里我自己下载源码再进行编译。先下载spark-1.1.0.tgz，解压然后执行命令编译：
 
 ```
 export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
 mvn -Pyarn -Phadoop-2.4 -Dhadoop.version=2.5.1 -Phive -X -DskipTests clean package
+
+# mvn package eclipse:eclipse -Phadoop-2.2 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
 ```
 
-建议加上maven参数，不然很可能出现OOM。编译的时间也挺长的，可以先去吃个饭。或者取消一些功能的编译（如hive）。
+用64位的JDK！！加上maven参数，不然很可能出现OOM（甚至各种稀奇古怪的问题）。编译的时间也挺长的，可以先去吃个饭。或者取消一些功能的编译（如hive）。
 
 编译完后，在assembly功能下会生成包括所有spark及其依赖的jar文件。
 
@@ -28,13 +32,11 @@ total 135M
 
 上面我们已经编译好了spark程序，这里对其进行打包集成到一个压缩包。使用程序自带的make-distribution.sh即可。
 
-为了减少重新编译的巨长的等待时间，修改下脚本`make-distribution.sh`的maven编译参数，去掉maven的clean阶段操作，修改最终结果如下：
+为了减少重新编译的巨长的等待时间，修改下脚本`make-distribution.sh`的maven编译参数，去掉maven的clean阶段操作（最好直接注释掉mvn那行），修改最终结果如下：
 
 ```
-export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
-
 #BUILD_COMMAND="mvn clean package -DskipTests $@"
-BUILD_COMMAND="mvn package -DskipTests $@"
+#BUILD_COMMAND="mvn package -DskipTests $@"
 ```
 
 然后执行命令：
@@ -49,7 +51,7 @@ total 185M
 
 最终会在目录行打包生成tgz的文件。
 
-## 本地运行local
+## 本地运行
 
 把本机ip主机名写入到hosts，方便以后windows本机查看日志
 
@@ -251,6 +253,39 @@ HADOOP_CONF_DIR=/opt/hadoop-2.5.1/etc/hadoop
 Pi is roughly 3.140248
 ```
 
+thrift连接yarn运行时时受容器内存最大值限制，需要修改yarn-site.xml。
+
+```
+cat yarn-site.xml 
+<property>
+  <name>yarn.nodemanager.resource.memory-mb</name>
+  <value>32000</value>
+</property>
+
+<property>
+  <name>yarn.nodemanager.resource.memory-mb</name>
+  <value>32768</value>
+</property>
+
+<property>
+  <name>yarn.scheduler.minimum-allocation-mb</name>
+  <value>2048</value>
+</property>
+
+<property>
+  <name>yarn.scheduler.maximum-allocation-mb</name>
+  <value>32768</value>
+</property>
+
+./sbin/start-thriftserver.sh --executor-memory 29g --master yarn-client
+```
+
+不能直接把executor的内存设置为最大值，否则会报错：
+
+```
+Exception in thread "main" java.lang.IllegalArgumentException: Required executor memory (30720+2150 MB) is above the max threshold (32768 MB) of this cluster!
+```
+
 ## 总结
 
 本文主要是搭建spark的环境搭建，本地运行、以及在docker中搭建spark集群、yarn集群三种方式。本地运行最简单方便，但是没有模拟到集群环境；spark提供了yarn框架上的实现，直接提交任务到yarn即可；spark集群相对比较简单和方便，接下来的远程调试主要通过spark伪分布式集群方式来进行。
@@ -262,3 +297,247 @@ Pi is roughly 3.140248
 * [Spark Standalone Mode](http://spark.apache.org/docs/latest/spark-standalone.html)
 * [Spark Configuration](http://spark.apache.org/docs/latest/configuration.html)
 * [DNS](http://www.07net01.com/linux/zuixindnsmasqanzhuangbushuxiangjie_centos6__653221_1381214991.html)
+* [spark上安装mysql与hive](http://blog.csdn.net/hwssg/article/details/38424529]
+
+## 后记 Spark-1.3.0
+
+### 编译1.3.0(cygwin)
+
+```
+export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
+mvn package eclipse:eclipse -Phadoop-2.2 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+
+# mvn package eclipse:eclipse -Phadoop-2.2 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+# find . -name ".classpath" | xargs -I{} sed -i 's/ including="\*\*\/\*\.java"//' {}
+
+dos2unix make-distribution.sh
+./make-distribution.sh --mvn `which mvn` --tgz  --skip-java-test -Phadoop-2.2 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+
+# linux环境部署
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ find bin/* -perm /u+x | xargs -I{} sed -i 's/^M//g' {} 
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ find sbin/* -perm /u+x | xargs -I{} sed -i 's/^M//g' {} 
+
+```
+
+这个版本，windows-cygwin编译的shell文件也是**windows的换行符**！！需要注意下！
+
+### spark-1.3.0运行spark-sql
+
+```
+$ export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
+$ mvn package eclipse:eclipse -Phadoop-2.2 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+
+$ ./make-distribution.sh --mvn `which mvn` --tgz  --skip-java-test -Phadoop-2.2 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+```
+
+1 连接到hive-engine
+
+hive的`hive.execution.engine`的tez，添加tez的jar和hive-site到CLASSPATH。
+
+包的导入以及配置：（如果使用meta-service的就不用这么麻烦）
+
+```
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ vi conf/spark-env.sh 
+...
+JAVA_HOME=/home/eshore/jdk1.7.0_60
+
+# log4j
+
+__add_to_classpath() {
+
+  root=$1
+
+  if [ -d "$root" ] ; then
+    for f in `ls $root/*.jar | grep -v -E '/hive.*.jar'`  ; do
+      if [ -n "$SPARK_DIST_CLASSPATH" ] ; then
+        export SPARK_DIST_CLASSPATH=$SPARK_DIST_CLASSPATH:$f
+      else
+        export SPARK_DIST_CLASSPATH=$f
+      fi
+    done
+  fi
+
+}
+
+__add_to_classpath "/home/eshore/tez-0.4.0-incubating"
+__add_to_classpath "/home/eshore/tez-0.4.0-incubating/lib"
+__add_to_classpath "/home/eshore/apache-hive-0.13.1/lib"
+
+export HADOOP_CONF_DIR=/data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop
+export SPARK_CLASSPATH=/home/eshore/spark-1.3.0-bin-2.2.0/conf:$HADOOP_CONF_DIR
+
+不能直接把hive的包全部加进去，hive-0.13.1a和hive-0.13.1的部分包不一致！！
+
+	java.lang.NoSuchMethodException: org.apache.hadoop.hive.ql.exec.Utilities.deserializeObjectByKryo(com.esotericsoftware.kryo.Kryo, java.io.InputStream, java.lang.Class)
+
+	private static java.lang.Object org.apache.hadoop.hive.ql.exec.Utilities.deserializeObjectByKryo(org.apache.hive.com.esotericsoftware.kryo.Kryo,java.io.InputStream,java.lang.Class)
+
+&& 如果不依赖tez，可以直接把datanucleus的三个包拷贝到lib目录下。
+
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ll lib
+total 262364
+-rw-rw-r-- 1 hadoop hadoop    339666 Mar 25 19:35 datanucleus-api-jdo-3.2.6.jar
+-rw-rw-r-- 1 hadoop hadoop   1890075 Mar 25 19:35 datanucleus-core-3.2.10.jar
+-rw-rw-r-- 1 hadoop hadoop   1809447 Mar 25 19:35 datanucleus-rdbms-3.2.9.jar
+-rwxr-xr-x 1 hadoop hadoop   4136686 Mar 31 13:05 spark-1.3.0-yarn-shuffle.jar
+-rwxr-xr-x 1 hadoop hadoop 154198768 Mar 31 13:05 spark-assembly-1.3.0-hadoop2.2.0.jar
+-rwxr-xr-x 1 hadoop hadoop 106275583 Mar 31 13:05 spark-examples-1.3.0-hadoop2.2.0.jar
+	
+[eshore@bigdatamgr1 conf]$ ll
+...
+lrwxrwxrwx 1 eshore biadmin   50 Mar 31 13:26 hive-site.xml -> /home/eshore/apache-hive-0.13.1/conf/hive-site.xml
+-rw-r--r-- 1 eshore biadmin  632 Mar 31 15:12 log4j.properties
+lrwxrwxrwx 1 eshore biadmin   44 Mar 31 10:20 slaves -> /data/opt/ibm/biginsights/hadoop-conf/slaves
+-rwxr-xr-x 1 eshore biadmin 3380 Mar 31 16:17 spark-env.sh
+lrwxrwxrwx 1 eshore biadmin   62 Mar 31 16:17 tez-site.xml -> /data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop/tez-site.xml
+```
+
+也可以起hive-metaserver，然后spark通过连接meta即可：
+
+```
+# 起meta服务
+nohup bin/hive --service metastore > metastore.log 2>&1 &
+
+# hive客户端配置
+vi hive-site.xml
+<property>
+  <name>hive.metastore.uris</name>
+  <value>thrift://DataNode2:9083</value>
+  <description>Thrift uri for the remote metastore. Used by metastore client to connect to remote metastore.</description>
+</property>
+```
+
+2 运行：
+
+```
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$  bin/spark-sql 2>sql.log
+SET spark.sql.hive.version=0.13.1
+spark-sql> show databases;
+default
+neva2dta
+spark-sql> show tables;
+pokes   false
+t_neva2_dps_xdr false
+t_neva2_ipdr_xdr        false
+spark-sql> select count(*) from pokes;
+500
+spark-sql> 
+
+[eshore@bigdatamgr1 conf]$ vi spark-env.sh 
+#!/usr/bin/env bash
+
+JAVA_HOME=/home/eshore/jdk1.7.0_60
+SPARK_CLASSPATH='/home/eshore/apache-hive-0.13.1/lib/*:/home/eshore/tez-0.4.0-incubating/*:/home/eshore/tez-0.4.0-incubating/lib/*'
+
+# 同步
+[eshore@bigdatamgr1 ~]$ for h in `cat ~/spark-1.3.0-bin-2.2.0/conf/slaves` ; do rsync -vaz /data/opt/ibm/biginsights/hadoop-2.2.0 $h:/data/opt/ibm/biginsights/  ; done
+
+```
+
+运行hivesever服务
+
+```
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ cat start_thrift.sh 
+#!/bin/bash
+# hive-classpath已经在spark-env.sh中添加
+
+./sbin/start-thriftserver.sh --master spark://bigdatamgr1:7077 --executor-memory 16g
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ./start_thrift.sh 
+
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ bin/beeline -u jdbc:hive2://bigdatamgr1:10001 -n eshore -p '' 
+
+```
+
+上面这么写有个问题，尽管thrift启动正常，但是shell总是打印错误：
+
+```
+failed to launch org.apache.spark.sql.hive.thriftserver.HiveThriftServer2:
+  ========================================
+  
+full log in /home/eshore/spark-1.3.0-bin-2.2.0/sbin/../logs/spark-eshore-org.apache.spark.sql.hive.thriftserver.HiveThriftServer2-1-bigdatamgr1.out
+```
+
+比较隐晦，问题在`sbin/spark-daemon.sh`，启动完后通过`if [[ ! $(ps -p "$newpid" -o args=) =~ $command ]]; then`（其中`=~`表示正则匹配，最终`spark-class.sh`调用java会由于加上classpath），而上面的classpath会很长，导致上面的匹配失败！！
+
+```
+[hadoop@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ vi bin/spark-class
+...
+  exec "$RUNNER" -cp "$CLASSPATH" $JAVA_OPTS "$@"
+fi
+
+# 匹配失败时的值
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ps -p 1925344 -o args=
+/home/eshore/jdk1.7.0_60/bin/java -cp :/home/eshore/spark-1.3.0-bin-2.2.0/sbin/../conf:/home/eshore/spark-1.3.0-bin-2.2.0/lib/spark-assembly-1.3.0-hadoop2.2.0.jar:/home/eshore/spark
+
+```
+
+#### 解决办法
+
+先看实验：
+
+```
+[dpi@dacs tmp]$ java -cp ~/kettle/data-integration/lib/mysql-connector-java-5.1.31-bin.jar:. JDBCConnTest
+
+[dpi@dacs tmp]$ echo $CLASSPATH
+.
+[dpi@dacs tmp]$ export CLASSPATH=~/kettle/data-integration/lib/mysql-connector-java-5.1.31-bin.jar
+[dpi@dacs tmp]$ java JDBCConnTest
+错误: 找不到或无法加载主类 JDBCConnTest
+[dpi@dacs tmp]$ java -cp . JDBCConnTest
+java.lang.ClassNotFoundException: com.mysql.jdbc.Driver
+
+[dpi@dacs tmp]$ echo $CLASSPATH
+/home/dpi/kettle/data-integration/lib/mysql-connector-java-5.1.31-bin.jar
+[dpi@dacs tmp]$ export CLASSPATH=~/kettle/data-integration/lib/mysql-connector-java-5.1.31-bin.jar:.
+[dpi@dacs tmp]$ java JDBCConnTest
+```
+
+设置cp后会覆盖CLASSPATH。所以问题的解决方法：直接把cp的路径删掉（不添加），前面已经export了classpath。java程序会去主动获取改环境变量。
+
+```
+  export CLASSPATH
+  exec "$RUNNER" $JAVA_OPTS "$@"
+``` 
+
+效果如下：
+
+```
+++ ps -p 1932338 -o args=
++ [[ ! /home/eshore/jdk1.7.0_60/bin/java -XX:MaxPermSize=128m -Xms512m -Xmx512m org.apache.spark.deploy.SparkSubmit --class org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 --executor-memory 48g spark-internal =~ org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 ]]
+```
+
+* [=~的作用]<http://bbs.chinaunix.net/thread-1623121-1-1.html>
+* <http://docs.oracle.com/javase/tutorial/essential/environment/paths.html>
+* <https://docs.oracle.com/javase/8/docs/technotes/tools/windows/classpath.html>
+
+### Spark-HA
+
+仅需要配置，重启spark集群即可。
+
+```
+[eshore@bigdata8 spark-1.3.0-bin-2.2.0]$ cat conf/spark-env.sh
+...
+SPARK_DAEMON_JAVA_OPTS="-Dspark.deploy.recoveryMode=ZOOKEEPER -Dspark.deploy.zookeeper.url=bi-00-01.bi.domain.com:2181 -Dspark.deploy.zookeeper.dir=/spark"
+
+[eshore@bigdatamgr1 conf]$ vi spark-defaults.conf 
+spark.master                     spark://bigdatamgr1:7077,bigdata8:7077
+...
+```
+
+各个master要单独的启动:
+
+```
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ sbin/start-all.sh 
+[eshore@bigdata8 spark-1.3.0-bin-2.2.0]$ sbin/start-master.sh 
+```
+
+通过查看<http://bigdata8:8080/>当前的状态为**STANDBY**。Workers列表为空。
+
+```
+[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ sbin/stop-master.sh 
+```
+
+停了bigdatamgr1后，刷新`bigdata8:8080`页面等1分钟左右就变成ALIVE，然后其他所有的节点也连接到bigdata8了。
+
+* <http://www.cnblogs.com/byrhuangqiang/p/3937654.html>
+* <http://spark.apache.org/docs/latest/spark-standalone.html#high-availability>

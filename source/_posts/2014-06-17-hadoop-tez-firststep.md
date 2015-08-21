@@ -176,3 +176,28 @@ org.apache.tez.mapreduce.examples.OrderedWordCount不仅计算出了结果，同
 
 问题： tez的任务的history还不知道怎么弄的，启动historyserver没作用。
 
+0.6版本已经有ui了。
+
+### 持续更新
+
+本来想编译好tez-0.6就往hive-0.13上面放，没想到遇到钉子了！！hive-0.13不支持！！
+
+在编译tez并想集成到hive，先下载hive的源码，看看pom.xml中使用的是到底是什么版本的tez，再编译tez不迟！！！
+
+```
+apache-hive-1.1.0-src.tar.gz/pom.xml
+    <tez.version>0.5.2</tez.version>
+```
+
+tez-0.6在hadoop-2.2基础上编译：
+
+```
+E:\local\opt\bigdata\apache-tez-0.6.0-src>mvn  package -Dhadoop.version=2.2.0 -DskipTests -Dmaven.javadoc.skip=true -DskipATS
+
+tez-dist/pom.xml
+<profile>
+      <id>hadoop26</id>
+      <activation>
+        <activeByDefault>false</activeByDefault>
+      </activation>
+```

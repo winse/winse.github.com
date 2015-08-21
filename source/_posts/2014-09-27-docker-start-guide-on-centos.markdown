@@ -14,7 +14,7 @@ docker中提供了[windows的安装文档](https://docs.docker.com/installation/
 
 ## 安装
 
-如果你同时安装了vmware，又已经安装了linux，那下面简单列出安装配置docker中使用的命令。docker需要64位的linux操作系统，我这里使用的是centos6，具体的安装步骤看[官网的安装教程](https://docs.docker.com/installation/centos/)。
+如果你同时安装了vmware，又已经安装了linux，那下面简单列出安装配置docker中使用的命令。docker需要64位的linux操作系统，我这里使用的是centos6，具体的安装步骤看[官网的安装教程](https://docs.docker.com/installation/centos/)。 
 
 ```
 [root@docker ~]# yum install epel-release
@@ -42,6 +42,8 @@ docker执行run命令时，如果指定的image本地不存在，会从[hub服�
 ```
 docker pull centos
 ```
+
+【注】：如果启动失败，1：重装一下docker； 2：还是不行，启动报`docker: relocation error: docker: symbol dm_task_get_info_with_deferred_remove, version Base not defined in file libdevmapper.so.1.02 with link time reference`，更新`yum upgrade device-mapper-libs`，然后启动`service docker start`（具体描述见文章末）
 
 ## 简单入门
 
@@ -414,7 +416,160 @@ docker run --volumes-from dbdata2 -v $(pwd):/backup busybox tar xvf /backup/back
 	* --link [container-name:name] 多容器之间互相访问。
 
 还有很多辅助命令如：`top`, `logs`, `port`, `inspect`。以及进行版本管理的`pull`, `push`, `commit`, `tag`等等。
-	
+
+## 更新
+
+* 2015年3月3日00:29:44
+
+docker官网连不上，巨坑！从原来的docker导出
+
+```
+[root@docker ~]# docker ps -a
+CONTAINER ID        IMAGE                   COMMAND                CREATED             STATUS                      PORTS               NAMES
+4a1ba5605868        learn/tutorial:latest   /bin/bash              15 seconds ago      Exited (0) 11 seconds ago                       loving_wilson        
+6e8a77ff8c26        centos:centos6          /bin/bash              10 minutes ago      Exited (0) 10 minutes ago                       determined_almeida  
+[root@docker ~]# docker export loving_wilson > learn_tutorial.tar
+
+#===
+
+[root@localhost ~]# cat centos6.tar | docker import - centos:centos6
+876f82e7032a2ed567421298c6dd12a74ac7b37fc28ef4fd062ebb4678bd6821
+[root@localhost ~]# cat learn_tutorial.tar | docker import - learn/tutorial
+dc574b587de3479ecc3622c7b4f12227d894aa1461737612130122092a72bdb4
+[root@localhost ~]# docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED              VIRTUAL SIZE
+learn/tutorial      latest              dc574b587de3        23 seconds ago       128.2 MB
+centos              centos6             876f82e7032a        About a minute ago   212.7 MB
+```
+
+* 2015年8月5日11:04:14
+
+1 看看国内网站是否有对应的镜像： <http://dockerpool.com/downloads>
+
+2 连不上可以<https://registry.hub.docker.com/_/centos/> , 直接到github上面下载对应的[dockerfile](https://github.com/CentOS/sig-cloud-instance-images/tree/CentOS-6/docker)
+
+```
+[root@localhost ~]# git clone -b CentOS-6  https://github.com/CentOS/sig-cloud-instance-images.git
+[root@localhost docker]# docker build . 
+
+[root@localhost docker]# docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
+<none>              <none>              437c8a32e0c6        27 seconds ago      203.1 MB
+
+# 启动登陆容器，安装sshd
+[root@localhost docker]# docker run -ti 437c8a32e0c6 /bin/bash
+[root@077cd71ff08f /]# yum install which openssh-server openssh-clients
+[root@077cd71ff08f /]# chkconfig --list
+iptables        0:off   1:off   2:on    3:on    4:on    5:on    6:off
+netconsole      0:off   1:off   2:off   3:off   4:off   5:off   6:off
+netfs           0:off   1:off   2:off   3:on    4:on    5:on    6:off
+network         0:off   1:off   2:on    3:on    4:on    5:on    6:off
+rdisc           0:off   1:off   2:off   3:off   4:off   5:off   6:off
+restorecond     0:off   1:off   2:off   3:off   4:off   5:off   6:off
+sshd            0:off   1:off   2:on    3:on    4:on    5:on    6:off
+udev-post       0:off   1:on    2:on    3:on    4:on    5:on    6:off
+[root@077cd71ff08f /]# service sshd status
+openssh-daemon is stopped
+[root@077cd71ff08f /]# service sshd start
+Generating SSH2 RSA host key:                              [  OK  ]
+Generating SSH1 RSA host key:                              [  OK  ]
+Generating SSH2 DSA host key:                              [  OK  ]
+Starting sshd:                                             [  OK  ]
+[root@077cd71ff08f /]# vi /etc/ssh/sshd_config 
+#UsePAM no
+#或者 sed -i '/pam_loginuid.so/c session    optional     pam_loginuid.so'  /etc/pam.d/sshd
+[root@077cd71ff08f /]# which sshd
+/usr/sbin/sshd
+[root@077cd71ff08f /]# passwd 记得添加密码
+
+# 提交更新镜像
+[root@localhost ~]# docker ps -a
+CONTAINER ID        IMAGE                 COMMAND             CREATED             STATUS                      PORTS               NAMES
+077cd71ff08f        bigdata:latest        "/bin/bash"         4 minutes ago       Exited (0) 11 seconds ago                       desperate_bell       
+7195847a0166        437c8a32e0c6:latest   "/bin/bash"         3 hours ago         Up 5 minutes                                    determined_feynman   
+[root@localhost ~]# docker commit 077cd71ff08f bigdata
+[root@localhost ~]# docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
+bigdata             latest              c2a336f22ff8        4 minutes ago       261.3 MB
+
+# 启动新容器，使用ssh远程登陆
+[root@localhost ~]# docker run -d --dns 172.17.42.1 --name master -h master bigdata /usr/sbin/sshd -D
+[root@localhost ~]# docker run -d  --dns 172.17.42.1 --name slaver1 -h slaver1 bigdata /usr/sbin/sshd -D
+[root@localhost ~]# docker inspect master
+[root@localhost ~]# vi /etc/hosts
+[root@localhost ~]# service dnsmasq restart
+```
+
+3 [自己制作](http://www.cnblogs.com/2018/p/4633940.html)
+
+```
+[root@localhost docker]# wget --no-check-certificate  https://raw.githubusercontent.com/docker/docker/master/contrib/mkimage-yum.sh
+[root@localhost docker]# chmod +x mkimage-yum.sh
+[root@localhost docker]# ./mkimage-yum.sh centos6
+
+```
+
+* 2015年3月2日16:13:12
+
+再在centos6.5上安装最新的，启动后报错：
+
+```
+[root@localhost ~]# docker -d
+INFO[0000] +job serveapi(unix:///var/run/docker.sock)   
+INFO[0000] WARNING: You are running linux kernel version 2.6.32-431.el6.x86_64, which might be unstable running docker. Please upgrade your kernel to 3.8.0. 
+INFO[0000] Listening for HTTP on unix (/var/run/docker.sock) 
+docker: relocation error: docker: symbol dm_task_get_info_with_deferred_remove, version Base not defined in file libdevmapper.so.1.02 with link time reference
+```
+
+需要再安装新的依赖（囧，md，用yum安装还要自己安装其他依赖！！）
+
+```
+[root@localhost ~]#  yum install device-mapper-event-libs
+```
+
+* 报错2：`cgroup.procs: invalid argument`[2015年8月6日11:11:49]
+
+```
+[root@localhost ~]# docker start 5ed45ce5ad3d
+Error response from daemon: Cannot start container 5ed45ce5ad3d: [8] System error: write /cgroup/freezer/docker/5ed45ce5ad3d085fe3c004f90eef7c774a722e84cf0c9d18c197cc5900bbc8ae/cgroup.procs: invalid argument
+FATA[0000] Error: failed to start one or more containers 
+```
+
+修改配置：<http://blog.csdn.net/jollypigclub/article/details/40428095>
+
+```
+[root@localhost ~]# vi /etc/sysconfig/docker
+...
+other_args="--exec-driver=lxc"
+#other_args=""
+...
+```
+
+* docker本地存储的路径[@ 2015年8月5日11:19:17]
+
+```
+[root@localhost docker]# cd /var/lib/docker/
+[root@localhost docker]# ls
+containers  devicemapper  graph  init  linkgraph.db  repositories-devicemapper  tmp  trust  volumes
+[root@localhost docker]# cd graph/
+[root@localhost graph]# ll
+总用量 16
+drwx------ 2 root root 4096 8月   5 10:39 d5d33a6a321ae20a3ae4805b5643560ce9c16a49d2f1d32541b39e04ad083983
+drwx------ 2 root root 4096 8月   5 10:39 d8ed1be0a39bcc741aa1e95e59b844140d9294afc75082697184cdfbf2bc6a2d
+drwx------ 2 root root 4096 8月   5 09:48 f1b10cd842498c23d206ee0cbeaa9de8d2ae09ff3c7af2723a9e337a6965d639
+drwx------ 2 root root 4096 8月   5 10:39 _tmp
+
+[root@localhost docker]# cd devicemapper/devicemapper/
+[root@localhost devicemapper]# ll
+总用量 976024
+-rw------- 1 root root 107374182400 8月   5 09:38 data
+-rw------- 1 root root   2147483648 8月   5 09:38 metadata
+```
+
 ## 参考
 
 * [Docker学习笔记之一，搭建一个JAVA Tomcat运行环境](http://www.blogjava.net/yongboy/archive/2013/12/12/407498.html)
+* [You are running linux kernel version 2.6.32-431.el6.x86_64(centos 6.5)](http://www.inspires.cn/note/36)
+* [Where are Docker images stored?(老版本，也值得一看)](http://blog.thoward37.me/articles/where-are-docker-images-stored/)
+* [Docker启动报错 relocation error libdevmapper](http://blog.csdn.net/xu470438000/article/details/43704469)
+* [docker镜像与容器存储结构分析](http://www.programfish.com/blog/?p=9)

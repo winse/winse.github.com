@@ -186,3 +186,7 @@ layout模板tag.html页面代码如下：
 {% endraw %}
 
 --END
+
+# 参考
+
+* [liquid页面渲染语言](https://github.com/shopify/liquid/wiki/liquid-for-designers)

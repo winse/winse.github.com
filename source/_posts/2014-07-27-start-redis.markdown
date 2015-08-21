@@ -6,6 +6,8 @@ comments: true
 categories: [redis, books, recommend]
 ---
 
+《Redis入门指南》的基本使用笔记，[jemalloc/tcmalloc功能和redis3集群的安装参考](/blog/categories/redis/)。
+
 ## 第一章 简介
 
 * 讲了redis的产生的缘由
@@ -737,34 +739,3 @@ SLAVEOF NO ONE
 SLOWLOG GET # slowlog-log-slower-than slowlog-max-len
 MONITOR
 ```
-
-## redis3集群安装cluster
-
-编译安装和2.8一样，configuration/make/makeinstall即可。
-
-```
-[hadoop@umcc97-44 cluster-test]$ cat cluster.conf 
-port .
-cluster-enabled yes
-cluster-config-file nodes.conf
-cluster-node-timeout 5000
-appendonly yes
-```
-
-比较苦逼的是需要安装ruby，服务器不能上网！其实ruby在能访问的机器上面安装就可以了！初始化集群的脚本其实就是客户端连接服务端，初始化集群而已。
-还有就是在调用命令的时刻要加上`-c`，这样才是使用集群模式，不然仅仅连单机，读写其他集群服务会报错！
-
-![](http://file.bmob.cn/M00/04/DB/wKhkA1PVx5-Ab4jaAAA9_Lg7l-I862.png)
-
-![](http://file.bmob.cn/M00/04/DB/wKhkA1PVyXSAC5iEAABfrrHCfuI114.png)
-
-![](http://file.bmob.cn/M00/04/DB/wKhkA1PVzBSAc3KOAADvQfFIPrs908.png)
-
-![](http://file.bmob.cn/M00/04/DF/wKhkA1PWCc-AXZ3EAAHoKZnb1nQ426.png)
-
-![](http://file.bmob.cn/M00/04/DF/wKhkA1PWCkWAZYuLAAAWM5VoXJI861.png)
-
-![](http://file.bmob.cn/M00/04/DF/wKhkA1PWCuSAAuXxAABB-LpH1nQ340.png)
-
-![](http://file.bmob.cn/M00/05/5F/wKhkA1PZBrSAPaMTAAAcSnjmhXE093.png)
-

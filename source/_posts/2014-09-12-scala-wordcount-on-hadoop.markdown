@@ -23,10 +23,10 @@ categories: [hadoop, scala]
 
 编写好代码后就是运行调试。
 
-前面其他的文章已经说过了，默认`mapreduce.framework.name`的配置是本地`local`，所以直接运行就像运行一个普通的本地java程序。这就不多将了。
+前面其他的文章已经说过了，默认`mapreduce.framework.name`的配置是本地`local`，所以直接运行就像运行一个普通的本地java程序。这就不多讲了。
 这里主要讲讲怎么把代码打包放到真实的集群环境运行，相比java的版本要添加那些步骤。
 
-从项目的maven pom中可以发现，其实就是多了scala-lang的新依赖而已，其他都是hadoop自带的公共包。
+从项目的maven pom中可以发现，其实就是多了`scala-lang`的新**依赖**而已，其他都是hadoop自带的公共包。
 
 ![](http://file.bmob.cn/M00/0E/A2/wKhkA1QUHV6AAJoCAABANktCWmk664.png)
 
@@ -59,6 +59,154 @@ commons-el-1.0.jar                hadoop-annotations-2.2.0.jar    javax.inject-1
 commons-httpclient-3.1.jar        hadoop-auth-2.2.0.jar           javax.servlet-3.1.jar                     jsch-0.1.42.jar
 commons-io-2.1.jar                hadoop-common-2.2.0.jar         javax.servlet-api-3.0.1.jar               jsp-api-2.1.jar
 [hadoop@master1 lib]$ 
+```
+
+完整的pom.xml的内容为：
+
+```
+	<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+		<modelVersion>4.0.0</modelVersion>
+
+		<groupId>com.winse</groupId>
+		<version>1.0</version>
+
+		<artifactId>scalamapred</artifactId>
+
+		<build>
+			<plugins>
+				<plugin>
+					<groupId>org.scala-tools</groupId>
+					<artifactId>maven-scala-plugin</artifactId>
+					<version>2.15.2</version>
+					<executions>
+						<execution>
+							<id>scala-compile-first</id>
+							<phase>process-resources</phase>
+							<goals>
+								<goal>add-source</goal>
+								<goal>compile</goal>
+							</goals>
+						</execution>
+						<execution>
+							<id>scala-test-compile</id>
+							<phase>process-test-resources</phase>
+							<goals>
+								<goal>testCompile</goal>
+							</goals>
+						</execution>
+					</executions>
+					<configuration>
+						<scalaVersion>${scala.version}</scalaVersion>
+					</configuration>
+				</plugin>
+
+				<plugin>
+					<groupId>org.codehaus.mojo</groupId>
+					<artifactId>build-helper-maven-plugin</artifactId>
+					<version>1.8</version>
+					<executions>
+						<execution>
+							<id>add-scala-sources</id>
+							<phase>generate-sources</phase>
+							<goals>
+								<goal>add-source</goal>
+							</goals>
+							<configuration>
+								<sources>
+									<source>${basedir}/src/main/scala</source>
+								</sources>
+							</configuration>
+						</execution>
+						<execution>
+							<id>add-scala-test-sources</id>
+							<phase>generate-test-sources</phase>
+							<goals>
+								<goal>add-test-source</goal>
+							</goals>
+							<configuration>
+								<sources>
+									<source>${basedir}/src/test/scala</source>
+								</sources>
+							</configuration>
+						</execution>
+					</executions>
+				</plugin>
+			</plugins>
+		</build>
+
+		<dependencies>
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-mapreduce-client-common</artifactId>
+				<version>${hadoop.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-hdfs</artifactId>
+				<version>${hadoop.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-mapreduce-client-core</artifactId>
+				<version>${hadoop.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.apache.hadoop</groupId>
+				<artifactId>hadoop-common</artifactId>
+				<version>${hadoop.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>org.scala-lang</groupId>
+				<artifactId>scala-library</artifactId>
+				<version>${scala.version}</version>
+			</dependency>
+		</dependencies>
+		<properties>
+			<scala.version>2.10.4</scala.version>
+			<hadoop.version>2.2.0</hadoop.version>
+		</properties>
+
+		<profiles>
+			<profile>
+				<id>tar</id>
+				<build>
+					<plugins>
+						<plugin>
+							<groupId>org.apache.maven.plugins</groupId>
+							<artifactId>maven-assembly-plugin</artifactId>
+							<executions>
+								<execution>
+									<id>make-assembly</id>
+									<phase>package</phase>
+									<goals>
+										<goal>single</goal>
+									</goals>
+								</execution>
+							</executions>
+						</plugin>
+
+					</plugins>
+				</build>
+			</profile>
+		</profiles>
+
+		<repositories>
+			<repository>
+				<id>scala-tools.org</id>
+				<name>Scala-tools Maven2 Repository</name>
+				<url>http://scala-tools.org/repo-releases</url>
+			</repository>
+		</repositories>
+		<pluginRepositories>
+			<pluginRepository>
+				<id>scala-tools.org</id>
+				<name>Scala-tools Maven2 Repository</name>
+				<url>http://scala-tools.org/repo-releases</url>
+			</pluginRepository>
+		</pluginRepositories>
+
+	</project>
 ```
 
 在lib文件夹下面包括common和core两放置jar的文件夹，common是项目的依赖包，core下面的是项目的源码jar。

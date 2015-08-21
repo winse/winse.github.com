@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "[读码] Spark1.1.0前篇"
+title: "[读码] Spark1.1.0前篇--代码统计导入Eclipse"
 date: 2014-10-12 13:12:57 +0800
 comments: true
 categories: [spark]
@@ -99,6 +99,10 @@ $ find . -name ".classpath" | xargs sed -i -e 's/including="\*\*\/\*.java"//' -e
 
 添加依赖的编译组件后，整个功能就能正常编译通过了。接下来就能调试看源码了。
 
+**备注：**clean后发现target目录下并没有重新编译生成class，去掉`-Xshow-phases`才行。
+
+>  -Xshow-phases                  Print a synopsis of compiler phases.
+
 ## Maven编译spark
 
 如果使用的hadoop版本在官网没有集成assembly版本，可以使用maven手动构建。至于打包可以查看下一篇文章。
@@ -108,7 +112,7 @@ $ export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
 $ mvn -Pyarn -Phadoop-2.2 -Dhadoop.version=2.2.0 -DskipTests clean package
 ```
 
-`yarn`的profile能够可执行的jar文件（包括所有依赖的spark）。
+`yarn`的profile能够编译成可执行的jar文件（包括所有依赖的spark），具体内容下一篇讲。
 
 ## 小结
 

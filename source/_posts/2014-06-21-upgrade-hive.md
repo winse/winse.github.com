@@ -6,6 +6,8 @@ categories: [hive]
 comments: true
 ---
 
+【升级到0.13，添加tez，调试hive】
+
 由于hive-0.12.0的FileSystem使用不当导致内存溢出问题，最终考虑升级hive。升级的过程没想象中的那么可怕，步骤很简单：对源数据库执行升级脚本，拷贝原hive-0.12.0的配置和jar，然后把添加jar重启hiverserver2即可。
 
 ## 修改环境变量
@@ -13,6 +15,21 @@ comments: true
 ```
 HIVE_HOME=/home/hadoop/apache-hive-0.13.1-bin
 PATH=$JAVA_HOME/bin:$HIVE_HOME/bin:$PATH
+```
+
+如果要使用hwi，需要自己下载原来编译生成war。（默认的bin.tar.gz里面不包括）
+
+```
+winse@Lenovo-PC ~/git/hive/hwi
+$ mvn package war:war
+```
+
+配置的时刻注意下`hive.hwi.war.file`是相对于**HIVE_HOME**的位置`lib/hive-hwi-0.13.1.war`。同时需要把`$JDK/lib/tools.jar`加入到classpath。
+
+```
+export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:/home/eshore/jdk1.7.0_60/lib/tools.jar
+
+$CD/bin/hive --service hwi
 ```
 
 ## 升级metadata
@@ -277,4 +294,26 @@ $ git checkout branch-0.13
 
 E:\git\hive>mvn clean package eclipse:eclipse -DskipTests -Dmaven.test.skip=true -Phadoop-2
 ```
+
+## 注意点
+
+* 除了分区，hive表数据路径下不能包括其他文件夹
+
+```
+hive> create database test location '/user/hive/warehouse_temp/' ;
+
+hive> create table t_ods_ddos as select * from default.t_ods_ddos limit 0;
+
+hive> select * from t_ods_ddos;
+OK
+Time taken: 0.176 seconds
+
+[hadoop@umcc97-44 ~]$ hadoop fs -mkdir /user/hive/warehouse_temp/t_ods_ddos/abc
+
+hive> select * from t_ods_ddos;
+OK
+Failed with exception java.io.IOException:java.io.IOException: Not a file: hdfs://umcc97-44:9000/user/hive/warehouse_temp/t_ods_ddos/abc
+Time taken: 0.167 seconds
+```
+
 

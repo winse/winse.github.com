@@ -10,6 +10,8 @@ categories: [docker, recommend]
 
 前文中参考的博客介绍了使用ssh登录tutorial容器（ubuntu），然后进行tomcat的安装，以及通过端口映射在客户机进行访问的例子。
 
+# 尝试
+
 ```
 docker pull learn/tutorial
 docker run -i -t learn/tutorial /bin/bash
@@ -55,6 +57,8 @@ ssh root@127.0.0.1 -p 49154
 	
 	passwd # 添加密码
 ```
+
+* 提交保存成果
 
 ```
 [root@docker ~]# docker ps -l

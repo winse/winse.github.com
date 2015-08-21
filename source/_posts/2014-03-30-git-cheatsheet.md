@@ -180,6 +180,10 @@ $ git config --global core.editor vi
 |**打包**                                       | 
 | git archive --format tar --output <tar> master| 将 master以tar格式打包到指定文件
 
+```
+$ git config core.filemode false
+```
+
 ## 按功能点完整的操作步骤
 
 ### 查看指定版本文件内容
@@ -191,6 +195,15 @@ $ git ls-tree master
 
 Administrator@WINSELIU /e/git/hello (master)
 $ git cat-file -p 139b30f9054cf77bd2eeabcebaf6ca3f32cd1d50
+```
+
+### 回归指定的版本文件
+
+```
+# 通过上面的命令得到该文件的版本
+winse@Lenovo-PC ~/eshore/git
+$ git checkout 4179d96 eshore/DTA/ISMI_CU/docs/测试/省汇聚平台/dta/kettle/file/hive2mysql.ktr
+
 ```
 
 ### 查看提交版本的指定文件内容
@@ -326,6 +339,32 @@ Warning: Permanently added 'github.com,192.30.252.128' (RSA) to the list of know
   HEAD branch: (unknown)
 ```
 
+### reset后撤回
+
+可能存在已经更新的数据，先提交到临时缓存区
+
+```
+git stash
+```
+
+然后通过reflog得到需要撤回到的版本号
+
+```
+$ git reflog
+ef9ccf7 HEAD@{0}: reset: moving to HEAD^^
+4f317fe HEAD@{1}: commit (amend): 2015-03-04 d
+```
+
+仍然使用reset回退
+
+```
+git reset --hard 4f317fe
+git stash pop
+# 处理冲突
+# git add 冲突文件
+git reset
+```
+
 ### git查看本地领先远程的提交
 
 ```
@@ -432,6 +471,23 @@ $ git svn clone http://chrome-hosts-manager.googlecode.com/svn/trunk/
 可以用 git-svn 来对 Subversion 代码库的任何目录进行克隆，克隆出来的是一个git版本库
 可以在部分克隆的版本库中用 Git 进行本地提交。
 部分克隆版本库中的本地提交可以提交到上游 Subversion 版本库的相应目录中 
+
+如果需要密码的，使用方面的方式会报错**git-svn died signal 11**。可以先init，然后在fetch。
+
+```
+Kevin@Kevin-PC /cygdrive/d/dta-git
+$ git svn init URL --username=NAME
+Initialized empty Git repository in /cygdrive/d/dta-git/.git/
+
+$ git svn fetch
+Authentication realm: <https://IP:PORT> Subversion Repositories
+Password for 'NAME':
+# 输入密码后，ctrl+c退出后再重新下载
+
+$ git svn fetch > fetch.log 2>&1
+```
+
+* [如何将SVN仓库转换为Git仓库 ](http://rongjih.blog.163.com/blog/static/3357446120107111449543/)
 
 ### Github添加项目主页github page(gh-pages)
 

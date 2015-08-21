@@ -1,0 +1,228 @@
+---
+layout: post
+title: "已有HDFS上部署yarn"
+date: 2015-03-25 21:22:59 +0800
+comments: true
+categories: [hadoop]
+---
+
+## 原有环境
+
+```
+[biadmin@bigdatamgr1 IHC]$ pwd
+/data/opt/ibm/biginsights/IHC
+
+[biadmin@bigdatamgr1 biginsights]$ ll conf/ hadoop-conf
+conf/:
+total 64
+-rwxr-xr-x 1 biadmin biadmin  2886 Jan 30 15:09 biginsights-env.sh
+...
+
+hadoop-conf:
+total 108
+-rw-rw-r-- 1 biadmin biadmin  7698 Mar 12 17:57 capacity-scheduler.xml
+-rw-rw-r-- 1 biadmin biadmin   535 Mar 12 17:57 configuration.xsl
+-rw-rw-r-- 1 biadmin biadmin   872 Mar 12 17:57 console-site.xml
+-rw-rw-r-- 1 biadmin biadmin  3744 Mar 24 16:51 core-site.xml
+-rw-rw-r-- 1 biadmin biadmin   569 Mar 12 17:57 fair-scheduler.xml
+-rw-rw-r-- 1 biadmin biadmin   410 Mar 12 17:57 flex-scheduler.xml
+-rwxrwxr-x 1 biadmin biadmin  5027 Mar 12 17:57 hadoop-env.sh
+-rw-rw-r-- 1 biadmin biadmin  1859 Mar 12 17:57 hadoop-metrics2.properties
+-rw-rw-r-- 1 biadmin biadmin  4886 Mar 12 17:57 hadoop-policy.xml
+-rw-rw-r-- 1 biadmin biadmin  3836 Mar 12 17:57 hdfs-site.xml
+-rw-rw-r-- 1 biadmin biadmin  2678 Mar 12 17:57 ibm-hadoop.properties
+-rw-rw-r-- 1 biadmin biadmin   207 Mar 12 17:57 includes
+-rw-rw-r-- 1 biadmin biadmin 10902 Mar 12 17:57 log4j.properties
+-rw-rw-r-- 1 biadmin biadmin   610 Mar 12 17:57 mapred-queue-acls.xml
+-rw-rw-r-- 1 biadmin biadmin  6951 Mar 23 17:24 mapred-site.xml
+-rw-rw-r-- 1 biadmin biadmin    44 Mar 12 17:57 masters
+-rw-rw-r-- 1 biadmin biadmin   207 Mar 12 17:57 slaves
+-rw-rw-r-- 1 biadmin biadmin  1243 Mar 12 17:57 ssl-client.xml.example
+-rw-rw-r-- 1 biadmin biadmin  1195 Mar 12 17:57 ssl-server.xml.example
+-rw-rw-r-- 1 biadmin biadmin   301 Mar 12 17:57 taskcontroller.cfg
+-rw-rw-r-- 1 biadmin biadmin   172 Mar 12 17:57 zk-jaas.conf
+
+[root@bigdatamgr1 ~]# cat /etc/profile
+...
+for i in /etc/profile.d/*.sh ; do
+    if [ -r "$i" ]; then
+        if [ "${-#*i}" != "$-" ]; then
+            . "$i"
+        else
+            . "$i" >/dev/null 2>&1
+        fi
+    fi
+done
+
+
+[root@bigdatamgr1 ~]# ll /etc/profile.d/
+total 60
+lrwxrwxrwx  1 root root   49 Jan 30 15:10 biginsights-env.sh -> /data/opt/ibm/biginsights/conf/biginsights-env.sh
+...
+
+[biadmin@bigdatamgr1 biginsights]$ cat hadoop-conf/hadoop-env.sh
+...
+# include biginsights-env.sh
+if [ -r "/data/opt/ibm/biginsights/hdm/../conf/biginsights-env.sh" ]; then
+        source "/data/opt/ibm/biginsights/hdm/../conf/biginsights-env.sh"
+fi
+...
+export HADOOP_LOG_DIR=/data/var/ibm/biginsights/hadoop/logs
+...
+export HADOOP_PID_DIR=/data/var/ibm/biginsights/hadoop/pids
+...
+
+```
+
+hdfs用的是2.x的，但是mr是1.x。真心坑爹！！
+
+## 单独部署新的yarn
+
+由于biginsights整了一套的环境变量，在加载profile的时刻就会进行初始化。所以需要搞一个**新的用户**在加载用户的环境变量的时刻把这些值清理掉。同时也为了与原来的有所区分。
+
+```
+[eshore@bigdatamgr1 ~]$ cat .bash_profile 
+...
+for i in ~/conf/*.sh ; do
+  if [ -r "$i" ] ; then
+    . "$i"
+  fi
+done
+
+[eshore@bigdatamgr1 ~]$ ll conf/
+total 4
+-rwxr-xr-x 1 eshore biadmin 292 Mar 24 20:48 reset-biginsights-env.sh
+```
+
+使用biadmin停掉原来的jobtracker-tasktracker。
+
+```
+[biadmin@bigdatamgr1 IHC]$ ssh `hdfs getconf -confKey mapreduce.jobtracker.address | sed 's/:.*//' ` "sudo -u mapred /data/opt/ibm/biginsights/IHC/sbin/hadoop-daemon.sh  stop jobtracker"
+
+[biadmin@bigdatamgr1 biginsights]$ for h in `cat hadoop-conf/slaves ` ; do ssh $h "sudo -u mapred /data/opt/ibm/biginsights/IHC/sbin/hadoop-daemon.sh  stop tasktracker" ; done
+
+```
+
+这里使用while不行，不知道为啥!?
+
+部署新的hadoop-2.2.0。使用超级管理员新建目录给eshore用户：
+
+```
+usermod -g biadmin eshore
+mkdir /data/opt/ibm/biginsights/hadoop-2.2.0
+chown eshore:biadmin hadoop-2.2.0
+```
+
+使用超级管理员同步到各个slaver节点：
+
+```
+[root@bigdatamgr1 biginsights]# for line in `cat hadoop-conf/slaves` ; do ssh $line "usermod -g biadmin eshore" ; done
+
+[root@bigdatamgr1 biginsights]# cat hadoop-conf/slaves | while read line ; do rsync -vazXog hadoop-2.2.0 $line:/data/opt/ibm/biginsights/ ; done
+
+[eshore@bigdatamgr1 hadoop-2.2.0]$ cd etc/hadoop/
+[eshore@bigdatamgr1 hadoop]$ ll
+total 116
+-rw-r--r-- 1 eshore biadmin 3560 Feb 15  2014 capacity-scheduler.xml
+-rw-r--r-- 1 eshore biadmin 1335 Feb 15  2014 configuration.xsl
+-rw-r--r-- 1 eshore biadmin  318 Feb 15  2014 container-executor.cfg
+-rw-r--r-- 1 eshore biadmin  713 Mar 24 23:31 core-site.xml
+-rwxr-xr-x 1 eshore biadmin 3614 Mar 24 22:45 hadoop-env.sh
+-rw-r--r-- 1 eshore biadmin 1774 Feb 15  2014 hadoop-metrics2.properties
+-rw-r--r-- 1 eshore biadmin 2490 Feb 15  2014 hadoop-metrics.properties
+-rw-r--r-- 1 eshore biadmin 9257 Feb 15  2014 hadoop-policy.xml
+lrwxrwxrwx 1 eshore biadmin   51 Mar 24 21:33 hdfs-site.xml -> /data/opt/ibm/biginsights/hadoop-conf/hdfs-site.xml
+-rwxr-xr-x 1 eshore biadmin 1180 Feb 15  2014 httpfs-env.sh
+-rw-r--r-- 1 eshore biadmin 1657 Feb 15  2014 httpfs-log4j.properties
+-rw-r--r-- 1 eshore biadmin   21 Feb 15  2014 httpfs-signature.secret
+-rw-r--r-- 1 eshore biadmin  620 Feb 15  2014 httpfs-site.xml
+-rw-rw-r-- 1 eshore biadmin   75 Feb 15  2014 journalnodes
+-rw-r--r-- 1 eshore biadmin 9116 Feb 15  2014 log4j.properties
+-rwxr-xr-x 1 eshore biadmin 1383 Feb 15  2014 mapred-env.sh
+-rw-r--r-- 1 eshore biadmin 4113 Feb 15  2014 mapred-queues.xml.template
+-rw-rw-r-- 1 eshore biadmin 1508 Mar 24 21:42 mapred-site.xml
+-rw-r--r-- 1 eshore biadmin  758 Feb 15  2014 mapred-site.xml.template
+lrwxrwxrwx 1 eshore biadmin   44 Mar 24 21:34 slaves -> /data/opt/ibm/biginsights/hadoop-conf/slaves
+-rw-r--r-- 1 eshore biadmin 2316 Feb 15  2014 ssl-client.xml.example
+-rw-r--r-- 1 eshore biadmin 2251 Feb 15  2014 ssl-server.xml.example
+lrwxrwxrwx 1 eshore biadmin   16 Mar 25 16:10 tez-site.xml -> tez-site.xml-0.4
+-rw-r--r-- 1 eshore biadmin  282 Mar 25 15:37 tez-site.xml-0.4
+-rw-r--r-- 1 eshore biadmin  347 Mar 25 15:49 tez-site.xml-0.6
+-rwxr-xr-x 1 eshore biadmin 4039 Mar 24 22:26 yarn-env.sh
+-rw-r--r-- 1 eshore biadmin 1826 Mar 24 21:42 yarn-site.xml
+```
+
+把属性配置好（hdfs，slaves**可以用原来**的就建立一个软链即可），然后用sbin/start-yarn.sh启动即可。
+
+## 其他命令
+
+```
+[eshore@bigdatamgr1 hadoop-2.2.0]$ for line in `cat etc/hadoop/slaves` ; do echo "================$line" ; ssh $line "top -u eshore -n 1 -b | grep java | xargs -I{}  kill {} "   ; done
+```
+
+## 部署值得鉴戒学习的IBM bigsql套件：
+
+* 一个管理用户部署，各个引用使用各自的用户
+
+```
+[root@bigdatamgr1 ~]# cat /etc/sudoers
+biadmin ALL=(ALL)   NOPASSWD: ALL
+
+[root@bigdatamgr1 ~]# cat /etc/passwd
+biadmin:x:200:501::/home/biadmin:/bin/bash
+avahi-autoipd:x:170:170:Avahi IPv4LL Stack:/var/lib/avahi-autoipd:/sbin/nologin
+hive:x:205:501::/home/hive:/bin/bash
+oozie:x:206:501::/home/oozie:/bin/bash
+monitoring:x:220:501::/home/monitoring:/bin/bash
+alert:x:225:501::/home/alert:/bin/bash
+catalog:x:224:501::/home/catalog:/bin/bash
+hdfs:x:201:501::/home/hdfs:/bin/bash
+httpfs:x:221:501::/home/httpfs:/bin/bash
+bigsql:x:222:501::/home/bigsql:/bin/bash
+console:x:223:501::/home/console:/bin/bash
+mapred:x:202:501::/home/mapred:/bin/bash
+orchestrator:x:226:501::/home/orchestrator:/bin/bash
+hbase:x:204:501::/home/hbase:/bin/bash
+zookeeper:x:203:501::/home/zookeeper:/bin/bash
+```
+
+启用时管理员用户使用`sudo -u XXX COMMAND`操作。
+
+* 所有应用部署/启动管理
+
+```
+[biadmin@bigdatamgr1 biginsights]$ bin/start.sh -h
+Usage: start.sh <component>...
+    Start one or more BigInsights components. Start all components if 'all' is
+    specified. If a component is already started, this command does nothing to it.
+    
+    For example:
+        start.sh all
+          - Starts all components.
+        start.sh hadoop zookeeper
+          - Starts hadoop and zookeeper daemons.
+
+OPTIONS:
+    -ex=<component>
+        Exclude a component, often used together with 'all'. I.e. 
+        `stop.sh all -ex=console` stops all components but the mgmt console.
+
+    -h, --help
+        Get help information.
+```
+
+* 反复依赖的包，通过软链来管理
+
+```
+[biadmin@bigdatamgr1 lib]$ ll
+total 50336
+-rw-r--r-- 1 biadmin biadmin   303042 Jan 30 15:22 avro-1.7.4.jar
+lrwxrwxrwx 1 biadmin biadmin       60 Jan 30 15:22 biginsights-gpfs-2.2.0.jar -> /data/opt/ibm/biginsights/IHC/lib/biginsights-gpfs-2.2.0.jar
+-rw-r--r-- 1 biadmin biadmin    15322 Jan 30 15:22 findbugs-annotations-1.3.9-1.jar
+lrwxrwxrwx 1 biadmin biadmin       48 Jan 30 15:22 guardium-proxy.jar -> /data/opt/ibm/biginsights/lib/guardium-proxy.jar
+-rw-r--r-- 1 biadmin biadmin  1795932 Jan 30 15:22 guava-12.0.1.jar
+-rw-r--r-- 1 biadmin biadmin   710492 Jan 30 15:22 guice-3.0.jar
+-rw-r--r-- 1 biadmin biadmin    65012 Jan 30 15:22 guice-servlet-3.0.jar
+lrwxrwxrwx 1 biadmin biadmin       45 Jan 30 15:22 hadoop-core.jar -> /data/opt/ibm/biginsights/IHC/hadoop-core.jar
+lrwxrwxrwx 1 biadmin biadmin       76 Jan 30 15:22 hadoop-distcp-2.2.0.jar -> /data/opt/ibm/biginsights/IHC/share/hadoop/tools/lib/hadoop-distcp-2.2.0.jar
+```

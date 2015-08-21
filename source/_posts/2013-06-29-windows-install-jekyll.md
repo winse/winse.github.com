@@ -295,3 +295,27 @@ end
 
 由于cygwin下默认是utf8编码，并且已经有了linux的各种命令，安装起来很简单。
 
+- - - -
+
+win10预览版-cygwin32部署octopress(更新于2015-04-18)
+
+```
+winse@Lenovo-PC ~
+$ ruby -v
+ruby 2.0.0p598 (2014-11-13) [i386-cygwin]
+
+LC_CTYPE=C.BINARY gem sources -a https://ruby.taobao.org/
+LC_CTYPE=C.BINARY gem install bundler
+LC_CTYPE=C.BINARY gem install rdiscount
+
+cd winsegit/octopress/
+bundle install
+rake preview
+
+#去掉watch功能，ruby不懂，实时更新也不是很需要
+vi Rakefile
+#  jekyllPid = Process.spawn({"OCTOPRESS_ENV"=>"preview"}, "jekyll build --watch")
+#  compassPid = Process.spawn("compass watch")
+  jekyllPid = Process.spawn({"OCTOPRESS_ENV"=>"preview"}, "jekyll build ")
+
+```

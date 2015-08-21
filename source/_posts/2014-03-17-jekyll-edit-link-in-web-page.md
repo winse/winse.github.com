@@ -157,6 +157,6 @@ URL-protocol的用户选择设置会被chrome缓冲，可以通过`C:\Users\Admi
 * [浏览器打开本地程序，全面支持ie,firefox,opera,chrome,自定义url protocol][baidu-urlprotocol]
 * [自定义URL Protocol调用Winfrom程序（exe）并实现传值——类似网页链接调用QQ、旺旺](http://blog.csdn.net/lockelk/article/details/7541374)
 * [自定义URL Protocol Handler](http://www.cnblogs.com/zjneter/archive/2008/01/08/1030066.html)
-
+* [liquid页面渲染语言](https://github.com/shopify/liquid/wiki/liquid-for-designers)
 
 [baidu-urlprotocol]: http://hi.baidu.com/pluto632/item/5007737da31344326f29f666
