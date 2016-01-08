@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2015-12-31T12:03:33+08:00</updated>
+  <updated>2016-01-08T18:41:48+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,792 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Hadoop安装与升级-(4)HA升级]]></title>
+    <link href="http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-4-ha-upgrade/"/>
+    <updated>2016-01-07T23:04:27+08:00</updated>
+    <id>http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-4-ha-upgrade</id>
+    <content type="html"><![CDATA[<p>官网的文档[HDFSHighAvailabilityWithQJM.html]和[HdfsRollingUpgrade.html]（Note that rolling upgrade is supported only from Hadoop-2.4.0 onwards.）很详细，但是没有一个整体的案例。这里整理下操作记录下来。</p>
+
+<ol>
+<li>关闭所有的namenode，部署新版本的hadoop</li>
+<li>启动所有的journalnode，是所有！！升级namenode的同时，也会升级所有journalnode！！</li>
+<li>使用-upgrade选项启动一台namenode。启动的这台namenode会直接进入active状态，升级本地的源数据，同时会升级shared edit log（也就是journalnode的数据）</li>
+<li>使用-bootstrapStandby启动其他namenode，同步更新。不能使用-upgrade选项！（我也没试，不知道试了是啥效果）</li>
+</ol>
+
+
+<h2>关闭集群，部署新版本的hadoop</h2>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+16/01/08 09:10:25 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Stopping namenodes on [hadoop-master1 hadoop-master2]
+hadoop-master2: stopping namenode
+hadoop-master1: stopping namenode
+hadoop-slaver1: stopping datanode
+hadoop-slaver2: stopping datanode
+hadoop-slaver3: stopping datanode
+Stopping journal nodes [hadoop-master1]
+hadoop-master1: stopping journalnode
+16/01/08 09:10:43 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Stopping ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+hadoop-master1: stopping zkfc
+hadoop-master2: stopping zkfc
+[hadoop@hadoop-master1 hadoop-2.2.0]$ 
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ cd ~/hadoop-2.6.3
+[hadoop@hadoop-master1 hadoop-2.6.3]$ ll
+total 52
+drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 bin
+lrwxrwxrwx 1 hadoop hadoop    32 Jan  8 06:05 etc -&gt; /home/hadoop/hadoop-2.2.0/ha-etc
+drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 include
+drwxr-xr-x 3 hadoop hadoop  4096 Dec 18 01:52 lib
+drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 libexec
+-rw-r--r-- 1 hadoop hadoop 15429 Dec 18 01:52 LICENSE.txt
+drwxrwxr-x 2 hadoop hadoop  4096 Jan  8 03:37 logs
+-rw-r--r-- 1 hadoop hadoop   101 Dec 18 01:52 NOTICE.txt
+-rw-r--r-- 1 hadoop hadoop  1366 Dec 18 01:52 README.txt
+drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 sbin
+drwxr-xr-x 3 hadoop hadoop  4096 Jan  7 08:00 share
+
+#// 同步
+[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs ~/hadoop-2.6.3 $h:~/ ; done
+</code></pre>
+
+<h2>启动所有Journalnode</h2>
+
+<p>2.6和2.2用的是一份配置！etc通过软链接到2.2的ha-etc配置。</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/hadoop-daemons.sh --hostnames "hadoop-master1" --script /home/hadoop/hadoop-2.2.0/bin/hdfs start journalnode
+hadoop-master1: starting journalnode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-journalnode-hadoop-master1.out
+[hadoop@hadoop-master1 hadoop-2.6.3]$ jps
+31047 JournalNode
+244 QuorumPeerMain
+31097 Jps
+</code></pre>
+
+<h2>升级一台namenode</h2>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ bin/hdfs namenode -upgrade
+...
+16/01/08 09:13:54 INFO namenode.NameNode: createNameNode [-upgrade]
+...
+16/01/08 09:13:57 INFO namenode.FSImage: Starting upgrade of local storage directories.
+   old LV = -47; old CTime = 0.
+   new LV = -60; new CTime = 1452244437060
+16/01/08 09:13:57 INFO namenode.NNUpgradeUtil: Starting upgrade of storage directory /data/tmp/dfs/name
+16/01/08 09:13:57 INFO namenode.FSImageTransactionalStorageInspector: No version file in /data/tmp/dfs/name
+16/01/08 09:13:57 INFO namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/tmp/dfs/name
+16/01/08 09:13:57 INFO namenode.FSNamesystem: Need to save fs image? false (staleImage=false, haEnabled=true, isRollingUpgrade=false)
+...
+</code></pre>
+
+<p>官网文档上说，除了升级了namenode的本地元数据外，sharededitlog也被升级了的。</p>
+
+<p>查看journalnode的日志，确实journalnode也升级了：</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ less logs/hadoop-hadoop-journalnode-hadoop-master1.log 
+...
+2016-01-08 09:13:57,070 INFO org.apache.hadoop.hdfs.server.namenode.FileJournalManager: Starting upgrade of edits directory /data/journal/zfcluster
+2016-01-08 09:13:57,072 INFO org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil: Starting upgrade of storage directory /data/journal/zfcluster
+2016-01-08 09:13:57,185 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Starting upgrade of edits directory: .
+   old LV = -47; old CTime = 0.
+   new LV = -60; new CTime = 1452244437060
+2016-01-08 09:13:57,185 INFO org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/journal/zfcluster
+2016-01-08 09:13:57,222 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Updating lastWriterEpoch from 2 to 3 for client /172.17.0.1
+2016-01-08 09:16:57,731 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Updating lastPromisedEpoch from 3 to 4 for client /172.17.0.1
+2016-01-08 09:16:57,735 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Scanning storage FileJournalManager(root=/data/journal/zfcluster)
+...
+</code></pre>
+
+<p>升级的namenode是前台运行的，不要关闭这个进程。接下来把另一台namenode同步一下。</p>
+
+<h2>同步另一台namenode</h2>
+
+<pre><code>[hadoop@hadoop-master2 hadoop-2.6.3]$ bin/hdfs namenode -bootstrapStandby
+...
+=====================================================
+About to bootstrap Standby ID nn2 from:
+           Nameservice ID: zfcluster
+        Other Namenode ID: nn1
+  Other NN's HTTP address: http://hadoop-master1:50070
+  Other NN's IPC  address: hadoop-master1/172.17.0.1:8020
+             Namespace ID: 639021326
+            Block pool ID: BP-1695500896-172.17.0.1-1452152050513
+               Cluster ID: CID-7d5c31d8-5cd4-46c8-8e04-49151578e5bb
+           Layout version: -60
+       isUpgradeFinalized: false
+=====================================================
+16/01/08 09:15:19 INFO ha.BootstrapStandby: The active NameNode is in Upgrade. Prepare the upgrade for the standby NameNode as well.
+16/01/08 09:15:19 INFO common.Storage: Lock on /data/tmp/dfs/name/in_use.lock acquired by nodename 5008@hadoop-master2
+16/01/08 09:15:21 INFO namenode.TransferFsImage: Opening connection to http://hadoop-master1:50070/imagetransfer?getimage=1&amp;txid=1126&amp;storageInfo=-60:639021326:1452244437060:CID-7d5c31d8-5cd4-46c8-8e04-49151578e5bb
+16/01/08 09:15:21 INFO namenode.TransferFsImage: Image Transfer timeout configured to 60000 milliseconds
+16/01/08 09:15:21 INFO namenode.TransferFsImage: Transfer took 0.00s at 0.00 KB/s
+16/01/08 09:15:21 INFO namenode.TransferFsImage: Downloaded file fsimage.ckpt_0000000000000001126 size 977 bytes.
+16/01/08 09:15:21 INFO namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/tmp/dfs/name
+...
+</code></pre>
+
+<h2>重新启动集群</h2>
+
+<p>ctrl+c关闭hadoop-master1 upgrade的namenode。启动整个集群。</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh
+16/01/08 09:16:44 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Starting namenodes on [hadoop-master1 hadoop-master2]
+hadoop-master1: starting namenode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-namenode-hadoop-master1.out
+hadoop-master2: starting namenode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-namenode-hadoop-master2.out
+hadoop-slaver3: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver3.out
+hadoop-slaver2: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver2.out
+hadoop-slaver1: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver1.out
+Starting journal nodes [hadoop-master1]
+hadoop-master1: journalnode running as process 31047. Stop it first.
+16/01/08 09:16:55 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Starting ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+hadoop-master2: starting zkfc, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-zkfc-hadoop-master2.out
+hadoop-master1: starting zkfc, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-zkfc-hadoop-master1.out
+[hadoop@hadoop-master1 hadoop-2.6.3]$ jps
+31047 JournalNode
+244 QuorumPeerMain
+31596 DFSZKFailoverController
+31655 Jps
+31294 NameNode
+</code></pre>
+
+<h2>后记：Journalnode重置</h2>
+
+<p>在HA和non-HA环境来回的切换，最后启动HA时master起不来，执行bootstrapStandby也不行。</p>
+
+<pre><code>2016-01-08 06:15:36,746 WARN org.apache.hadoop.hdfs.server.namenode.FSEditLog: Unable to determine input streams from QJM to [172.17.0.1:8485]. Skipping.
+org.apache.hadoop.hdfs.qjournal.client.QuorumException: Got too many exceptions to achieve quorum size 1/1. 1 exceptions thrown:
+172.17.0.1:8485: Asked for firstTxId 1022 which is in the middle of file /data/journal/zfcluster/current/edits_0000000000000001021-0000000000000001022
+        at org.apache.hadoop.hdfs.server.namenode.FileJournalManager.getRemoteEditLogs(FileJournalManager.java:198)
+        at org.apache.hadoop.hdfs.qjournal.server.Journal.getEditLogManifest(Journal.java:640)
+        at org.apache.hadoop.hdfs.qjournal.server.JournalNodeRpcServer.getEditLogManifest(JournalNodeRpcServer.java:181)
+        at org.apache.hadoop.hdfs.qjournal.protocolPB.QJournalProtocolServerSideTranslatorPB.getEditLogManifest(QJournalProtocolServerSideTranslatorPB.java:203)
+        at org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos$QJournalProtocolService$2.callBlockingMethod(QJournalProtocolProtos.java:17453)
+        at org.apache.hadoop.ipc.ProtobufRpcEngine$Server$ProtoBufRpcInvoker.call(ProtobufRpcEngine.java:585)
+</code></pre>
+
+<p>关闭集群，启动journalnode，跳转到没有问题的namenode机器，执行initializeSharedEdits命令。然后在有问题的namenode上重新初始化！</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start journalnode
+
+[hadoop@hadoop-master2 hadoop-2.2.0]$ bin/hdfs namenode -initializeSharedEdits
+
+[hadoop@hadoop-master2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start namenode
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs namenode -bootstrapStandby
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh
+</code></pre>
+
+<p>后话（谨慎，没有试验过，猜想而已）： 其实上面HA升级的步骤，如果upgrade时没用启动journalnode，导致了问题的话，把journalnode重置应该也是可以的。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html#HDFS_UpgradeFinalizationRollback_with_HA_Enabled">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html#HDFS_UpgradeFinalizationRollback_with_HA_Enabled</a></li>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html#Upgrade_and_Rollback">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html#Upgrade_and_Rollback</a></li>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsRollingUpgrade.html">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsRollingUpgrade.html</a></li>
+</ul>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Hadoop安装与升级-(3)HA配置]]></title>
+    <link href="http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-3-ha/"/>
+    <updated>2016-01-07T23:04:27+08:00</updated>
+    <id>http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-3-ha</id>
+    <content type="html"><![CDATA[<p>官网的文档[HDFSHighAvailabilityWithQJM.html]很详细，但是没有一个整体的案例。这里整理下操作记录下来。</p>
+
+<h2>配置</h2>
+
+<p>hadoop-master1和hadoop-master2之间无密钥登录（failover要用到）：</p>
+
+<pre><code>[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-keygen
+[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-copy-id hadoop-master2
+[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-copy-id hadoop-master1
+</code></pre>
+
+<p>配置文件修改：</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ vi etc/hadoop/core-site.xml 
+
+&lt;property&gt;
+&lt;name&gt;fs.defaultFS&lt;/name&gt;
+&lt;value&gt;hdfs://zfcluster&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;ha.zookeeper.quorum&lt;/name&gt;
+&lt;value&gt;hadoop-master1&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;hadoop.tmp.dir&lt;/name&gt;
+&lt;value&gt;/data/tmp&lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ vi etc/hadoop/hdfs-site.xml 
+
+&lt;property&gt;
+&lt;name&gt;dfs.replication&lt;/name&gt;
+&lt;value&gt;1&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.namenode.secondary.http-address&lt;/name&gt;
+&lt;value&gt; &lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.nameservices&lt;/name&gt;
+&lt;value&gt;zfcluster&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.ha.namenodes.zfcluster&lt;/name&gt;
+&lt;value&gt;nn1,nn2&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.namenode.rpc-address.zfcluster.nn1&lt;/name&gt;
+&lt;value&gt;hadoop-master1:8020&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.namenode.rpc-address.zfcluster.nn2&lt;/name&gt;
+&lt;value&gt;hadoop-master2:8020&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.namenode.http-address.zfcluster.nn1&lt;/name&gt;
+&lt;value&gt;hadoop-master1:50070&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.namenode.http-address.zfcluster.nn2&lt;/name&gt;
+&lt;value&gt;hadoop-master2:50070&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.namenode.shared.edits.dir&lt;/name&gt;
+&lt;value&gt;qjournal://hadoop-master1:8485/zfcluster&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.client.failover.proxy.provider.zfcluster&lt;/name&gt;
+&lt;value&gt;org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.journalnode.edits.dir&lt;/name&gt;
+&lt;value&gt;/data/journal&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.ha.fencing.methods&lt;/name&gt;
+&lt;value&gt;sshfence&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.ha.fencing.ssh.private-key-files&lt;/name&gt;
+&lt;value&gt;/home/hadoop/.ssh/id_rsa&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.ha.automatic-failover.enabled&lt;/name&gt;
+&lt;value&gt;true&lt;/value&gt;
+&lt;/property&gt;
+</code></pre>
+
+<h2>启动</h2>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ cd ..
+[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs hadoop-2.2.0 $h:~/ ; done
+
+[hadoop@hadoop-master1 ~]$ cd hadoop-2.2.0/
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start journalnode
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start namenode
+[hadoop@hadoop-master2 hadoop-2.2.0]$ bin/hdfs namenode -bootstrapStandby
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs namenode -initializeSharedEdits
+
+#// 此时可以启动datanode，通过50070端口看namenode的状态
+
+#// Automatic failover，zkfc和namenode没有启动顺序的问题！
+[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs zkfc -formatZK
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start zkfc
+[hadoop@hadoop-master2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start zkfc
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs haadmin -failover nn1 nn2
+
+#// 测试failover，把一个active的namenode直接kill掉，看看另一个是否变成active！
+
+# 重启
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+16/01/07 10:57:50 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Stopping namenodes on [hadoop-master1 hadoop-master2]
+hadoop-master1: stopping namenode
+hadoop-master2: stopping namenode
+hadoop-slaver1: stopping datanode
+hadoop-slaver2: stopping datanode
+hadoop-slaver3: stopping datanode
+Stopping journal nodes [hadoop-master1]
+hadoop-master1: stopping journalnode
+16/01/07 10:58:08 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Stopping ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+hadoop-master2: no zkfc to stop
+hadoop-master1: no zkfc to stop
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh
+16/01/07 10:59:14 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Starting namenodes on [hadoop-master1 hadoop-master2]
+hadoop-master2: starting namenode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-namenode-hadoop-master2.out
+hadoop-master1: starting namenode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-namenode-hadoop-master1.out
+hadoop-slaver1: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver1.out
+hadoop-slaver3: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver3.out
+hadoop-slaver2: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver2.out
+Starting journal nodes [hadoop-master1]
+hadoop-master1: starting journalnode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-journalnode-hadoop-master1.out
+16/01/07 10:59:30 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+Starting ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+hadoop-master2: starting zkfc, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-zkfc-hadoop-master2.out
+hadoop-master1: starting zkfc, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-zkfc-hadoop-master1.out
+
+[hadoop@hadoop-master1 ~]$ jps
+15241 DFSZKFailoverController
+14882 NameNode
+244 QuorumPeerMain
+18715 Jps
+15076 JournalNode
+</code></pre>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html</a></li>
+<li><a href="http://www.xlgps.com/article/40993.html">http://www.xlgps.com/article/40993.html</a></li>
+<li><a href="http://hbase.apache.org/book.html#basic.prerequisites">http://hbase.apache.org/book.html#basic.prerequisites</a></li>
+</ul>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Hadoop安装与升级-(2)2.2升级到2.6]]></title>
+    <link href="http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-2-hadoop-upgrade/"/>
+    <updated>2016-01-07T22:04:27+08:00</updated>
+    <id>http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-2-hadoop-upgrade</id>
+    <content type="html"><![CDATA[<p>升级的命令很简单，但是不要瞎整！升级就一个命令就搞定了！</p>
+
+<h2>部署2.6.3</h2>
+
+<pre><code>[hadoop@hadoop-master1 ~]$ tar zxvf hadoop-2.6.3.tar.gz 
+
+[hadoop@hadoop-master1 ~]$ cd hadoop-2.6.3/share/
+[hadoop@hadoop-master1 share]$ rm -rf doc/
+
+[hadoop@hadoop-master1 hadoop-2.6.3]$ rm -rf lib/native/*
+
+#// 拷贝四个配置文件到hadoop-2.6.3
+[hadoop@hadoop-master1 hadoop-2.6.3]$ cd etc/hadoop/
+[hadoop@hadoop-master1 hadoop]$ cp -f ~/hadoop-2.2.0/etc/hadoop/*-site.xml ./
+[hadoop@hadoop-master1 hadoop]$ cp -f ~/hadoop-2.2.0/etc/hadoop/slaves ./
+
+[hadoop@hadoop-master1 hadoop]$ cd 
+[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs hadoop-2.6.3 $h:~/ ; done
+</code></pre>
+
+<h2>升级（最佳方式）</h2>
+
+<p>直接使用upgrade选项启动dfs即可。（secondarynamenode不要单独操作来升级，反正就是执行upgrade启动dfs就好了）。</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh -upgrade
+
+// 2.2和2.6都没有这个命令
+// hadoop dfsadmin -upgradeProgress status
+hadoop dfsadmin -finalizeUpgrade
+</code></pre>
+
+<p>参考[Hadoop: The Definitive Guide/Chapter 10. Administering Hadoop/Maintenance/Upgrades]</p>
+
+<h2>瞎整1</h2>
+
+<pre><code># 先停集群
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+
+[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh
+</code></pre>
+
+<p>直接在原来的2.2基础上启动，datanode启动没问题，但是namenode报错：</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-hadoop-master1.log 
+...
+2016-01-07 08:05:23,582 FATAL org.apache.hadoop.hdfs.server.namenode.NameNode: Failed to start namenode.
+java.io.IOException: 
+File system image contains an old layout version -47.
+An upgrade to version -60 is required.
+Please restart NameNode with the "-rollingUpgrade started" option if a rolling upgrade is already started; or restart NameNode with the "-upgrade" option to start a new upgrade.
+        at org.apache.hadoop.hdfs.server.namenode.FSImage.recoverTransitionRead(FSImage.java:232)
+        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.loadFSImage(FSNamesystem.java:1022)
+        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.loadFromDisk(FSNamesystem.java:741)
+        at org.apache.hadoop.hdfs.server.namenode.NameNode.loadNamesystem(NameNode.java:538)
+        at org.apache.hadoop.hdfs.server.namenode.NameNode.initialize(NameNode.java:597)
+        at org.apache.hadoop.hdfs.server.namenode.NameNode.&lt;init&gt;(NameNode.java:764)
+        at org.apache.hadoop.hdfs.server.namenode.NameNode.&lt;init&gt;(NameNode.java:748)
+        at org.apache.hadoop.hdfs.server.namenode.NameNode.createNameNode(NameNode.java:1441)
+        at org.apache.hadoop.hdfs.server.namenode.NameNode.main(NameNode.java:1507)
+2016-01-07 08:05:23,583 INFO org.apache.hadoop.util.ExitUtil: Exiting with status 1
+2016-01-07 08:05:23,585 INFO org.apache.hadoop.hdfs.server.namenode.NameNode: SHUTDOWN_MSG: 
+/************************************************************
+SHUTDOWN_MSG: Shutting down NameNode at hadoop-master1/172.17.0.1
+************************************************************/
+</code></pre>
+
+<p>重新启动，使用upgrade选项启动：</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-dfs.sh
+[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh -upgrade
+</code></pre>
+
+<p>或者还原到2.2：</p>
+
+<pre><code># **所有**slaver节点的VERSION改回47
+[hadoop@hadoop-slaver3 ~]$ vi /data/tmp/dfs/data/current/VERSION 
+...
+layoutVersion=-47
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh -rollback
+</code></pre>
+
+<h2>原理</h2>
+
+<p>升级的时刻，首先备份原来的数据到previous目录下，升级后的放置到current目录下。namenode这样没啥大问题，但是datanode也是这样结构current和previous，那相当有问题，那数据量不是翻倍了？</p>
+
+<p>查看数据后，发现一个名字的文件current和previous里面使用的是一个inode。也就是说用的是硬链接，数据只有一份！</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hadoop fs -put *.txt /
+
+[hadoop@hadoop-slaver3 ~]$ cd /data/tmp/dfs/data/
+
+[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ test current/finalized/subdir0/subdir0/blk_1073741825 -ef previous/finalized/blk_1073741825
+[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ echo $?
+0
+[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ ls -i current/finalized/subdir0/subdir0/blk_1073741825 
+142510 current/finalized/subdir0/subdir0/blk_1073741825
+[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ ls -i previous/finalized/blk_1073741825
+142510 previous/finalized/blk_1073741825
+</code></pre>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Hadoop安装与升级-Docker中安装(1)]]></title>
+    <link href="http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-1-install-in-docker/"/>
+    <updated>2016-01-07T21:04:27+08:00</updated>
+    <id>http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-1-install-in-docker</id>
+    <content type="html"><![CDATA[<h2>集群机器准备</h2>
+
+<pre><code>[root@cu2 ~]# docker -v
+Docker version 1.6.2, build 7c8fca2/1.6.2
+
+[root@cu2 ~]# docker images
+REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
+centos              centos6             62068de82c82        4 months ago        250.7 MB
+
+[root@cu2 ~]# docker run -d --name hadoop-master1 -h hadoop-master1 centos:centos6 /usr/sbin/sshd -D
+c975b0e41429a3c214e86552f2a9f599ba8ee7487e8fbdc25fd59d29adacca4f
+[root@cu2 ~]# docker run -d --name hadoop-master2 -h hadoop-master2 centos:centos6 /usr/sbin/sshd -D
+fac1d2ee4a05ab8457f4bd6756622ac8236f64423544150d355f9e3091764d8f
+[root@cu2 ~]# docker run -d --name hadoop-slaver1 -h hadoop-slaver1 centos:centos6 /usr/sbin/sshd -D
+cc8734f2a0963a030b994f69be697308a13e511557eaefc7d4aca7e300950ded
+[root@cu2 ~]# docker run -d --name hadoop-slaver2 -h hadoop-slaver2 centos:centos6 /usr/sbin/sshd -D
+7e4b5410a7cb8585436775f15609708b309a5b83930da74d6571533251c26355
+[root@cu2 ~]# docker run -d --name hadoop-slaver3 -h hadoop-slaver3 centos:centos6 /usr/sbin/sshd -D
+26018b256403d956b4272b6bda09a58d1fc6938591d18f9892ba72782c41880b
+
+[root@cu2 ~]# docker ps -a
+CONTAINER ID        IMAGE               COMMAND               CREATED              STATUS              PORTS               NAMES
+26018b256403        centos:centos6      "/usr/sbin/sshd -D"   About a minute ago   Up About a minute                       hadoop-slaver3      
+7e4b5410a7cb        centos:centos6      "/usr/sbin/sshd -D"   About a minute ago   Up About a minute                       hadoop-slaver2      
+cc8734f2a096        centos:centos6      "/usr/sbin/sshd -D"   About a minute ago   Up About a minute                       hadoop-slaver1      
+fac1d2ee4a05        centos:centos6      "/usr/sbin/sshd -D"   About a minute ago   Up About a minute                       hadoop-master2      
+c975b0e41429        centos:centos6      "/usr/sbin/sshd -D"   8 minutes ago        Up 8 minutes                            hadoop-master1      
+
+[root@cu2 ~]# docker ps | grep hadoop | awk '{print $1}' | xargs -I{} docker inspect -f ' ' {}
+172.17.0.6 hadoop-slaver3
+172.17.0.5 hadoop-slaver2
+172.17.0.4 hadoop-slaver1
+172.17.0.3 hadoop-master2
+172.17.0.2 hadoop-master1
+</code></pre>
+
+<p>重启docker后，可以直接通过名称启动即可：</p>
+
+<pre><code>[root@cu2 ~]# service docker start
+Starting docker:                                           [  OK  ]
+[root@cu2 ~]# docker start hadoop-master1 hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3
+hadoop-master1
+hadoop-master2
+hadoop-slaver1
+hadoop-slaver2
+hadoop-slaver3
+</code></pre>
+
+<p>重启后，hosts文件会被重置！最好就是测试好之前不要重启docker！</p>
+
+<h2>机器配置</h2>
+
+<pre><code>[root@cu2 ~]# ssh root@172.17.0.2
+root@172.17.0.2's password: 
+Last login: Thu Jan  7 06:17:11 2016 from 172.17.42.1
+[root@hadoop-master1 ~]# 
+[root@hadoop-master1 ~]# vi /etc/hosts
+127.0.0.1       localhost
+::1     localhost ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+
+172.17.0.6 hadoop-slaver3
+172.17.0.5 hadoop-slaver2
+172.17.0.4 hadoop-slaver1
+172.17.0.3 hadoop-master2
+172.17.0.2 hadoop-master1
+
+[root@hadoop-master1 ~]# ssh-keygen
+[root@hadoop-master1 ~]# 
+[root@hadoop-master1 ~]# ssh-copy-id hadoop-master1
+[root@hadoop-master1 ~]# ssh-copy-id hadoop-master2
+[root@hadoop-master1 ~]# ssh-copy-id hadoop-slaver1
+[root@hadoop-master1 ~]# ssh-copy-id hadoop-slaver2
+[root@hadoop-master1 ~]# ssh-copy-id hadoop-slaver3
+
+# 拷贝hosts
+[root@hadoop-master1 ~]# for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do scp /etc/hosts $h:/etc/ ; done
+
+# 安装需要的软件
+[root@hadoop-master1 ~]# for h in hadoop-master1 hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do ssh $h "yum install man rsync curl wget tar" ; done
+
+# 创建用户
+[root@hadoop-master1 ~]# for h in hadoop-master1 hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do ssh $h useradd hadoop ; done
+
+#// 把要设置的密码拷贝一下，接下来直接右键（CRT）粘贴弄5次就可以了。如果是几十几百台机器可以使用expect来实现
+[root@hadoop-master1 ~]# for h in hadoop-master1 hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do ssh $h passwd hadoop ; done
+New password: hadoop
+BAD PASSWORD: it is based on a dictionary word
+BAD PASSWORD: is too simple
+Retype new password: hadoop
+Changing password for user hadoop.
+passwd: all authentication tokens updated successfully.
+...
+
+# 建立数据目录，赋权给hadoop用户
+[root@hadoop-master1 ~]# for h in hadoop-master1 hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do ssh $h "mkdir /data; chown hadoop:hadoop /data" ; done
+
+[root@hadoop-master1 ~]# su - hadoop
+[hadoop@hadoop-master1 ~]$ ssh-keygen 
+[hadoop@hadoop-master1 ~]$ ssh-copy-id hadoop-master1
+[hadoop@hadoop-master1 ~]$ ssh-copy-id hadoop-master2
+[hadoop@hadoop-master1 ~]$ ssh-copy-id hadoop-slaver1
+[hadoop@hadoop-master1 ~]$ ssh-copy-id hadoop-slaver2
+[hadoop@hadoop-master1 ~]$ ssh-copy-id hadoop-slaver3
+
+[hadoop@hadoop-master1 ~]$ ll
+total 139036
+drwxr-xr-x 9 hadoop hadoop      4096 Oct  7  2013 hadoop-2.2.0
+-rw-r--r-- 1 hadoop hadoop 142362384 Jan  7 07:14 jdk-7u60-linux-x64.gz
+drwxr-xr-x 8 hadoop hadoop      4096 Jan  7 07:11 zookeeper-3.4.6
+[hadoop@hadoop-master1 ~]$ tar zxvf jdk-7u60-linux-x64.gz 
+[hadoop@hadoop-master1 ~]$ tar zxvf hadoop-2.2.0.tar.gz 
+[hadoop@hadoop-master1 ~]$ tar zxvf zookeeper-3.4.6.tar.gz 
+
+# 清理生产上无用的数据
+[hadoop@hadoop-master1 ~]$ rm hadoop-2.2.0.tar.gz zookeeper-3.4.6.tar.gz jdk-7u60-linux-x64.gz 
+
+[hadoop@hadoop-master1 ~]$ cd zookeeper-3.4.6/
+[hadoop@hadoop-master1 zookeeper-3.4.6]$ rm -rf docs/ src/
+
+[hadoop@hadoop-master1 zookeeper-3.4.6]$ cd ../hadoop-2.2.0/
+[hadoop@hadoop-master1 hadoop-2.2.0]$ cd share/
+[hadoop@hadoop-master1 share]$ rm -rf doc/
+</code></pre>
+
+<h2>程序配置与启动</h2>
+
+<ul>
+<li>java</li>
+</ul>
+
+
+<pre><code>[hadoop@hadoop-master1 ~]$ cd
+[hadoop@hadoop-master1 ~]$ vi .bashrc 
+...
+JAVA_HOME=~/jdk1.7.0_60
+PATH=$JAVA_HOME/bin:$PATH
+
+export JAVA_HOME PATH
+</code></pre>
+
+<p>退出shell再登录，或者source .bashrc！</p>
+
+<ul>
+<li>zookeeper</li>
+</ul>
+
+
+<pre><code>[hadoop@hadoop-master1 ~]$ cd zookeeper-3.4.6/conf
+[hadoop@hadoop-master1 conf]$ cp zoo_sample.cfg zoo.cfg
+[hadoop@hadoop-master1 conf]$ vi zoo.cfg 
+...
+dataDir=/data/zookeeper
+
+[hadoop@hadoop-master1 ~]$ mkdir /data/zookeeper
+
+[hadoop@hadoop-master1 ~]$ cd ~/zookeeper-3.4.6/
+[hadoop@hadoop-master1 zookeeper-3.4.6]$ bin/zkServer.sh start
+JMX enabled by default
+Using config: /home/hadoop/zookeeper-3.4.6/bin/../conf/zoo.cfg
+Starting zookeeper ... STARTED
+[hadoop@hadoop-master1 zookeeper-3.4.6]$ 
+[hadoop@hadoop-master1 zookeeper-3.4.6]$ jps
+244 QuorumPeerMain
+265 Jps
+
+[hadoop@hadoop-master1 zookeeper-3.4.6]$ less zookeeper.out 
+</code></pre>
+
+<ul>
+<li>hadoop</li>
+</ul>
+
+
+<pre><code>[hadoop@hadoop-master1 ~]$ cd ~/hadoop-2.2.0/etc/hadoop/
+[hadoop@hadoop-master1 hadoop]$ rm *.cmd
+[hadoop@hadoop-master1 hadoop]$ vi hadoop-env.sh 
+# 修改java_home和pid
+
+[hadoop@hadoop-master1 hadoop]$ vi core-site.xml 
+
+&lt;property&gt;
+&lt;name&gt;fs.defaultFS&lt;/name&gt;
+&lt;value&gt;hdfs://hadoop-master1:9000&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;hadoop.tmp.dir&lt;/name&gt;
+&lt;value&gt;/data/tmp&lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@hadoop-master1 hadoop]$ vi hdfs-site.xml 
+
+&lt;property&gt;
+&lt;name&gt;dfs.replication&lt;/name&gt;
+&lt;value&gt;1&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;dfs.namenode.secondary.http-address&lt;/name&gt;
+&lt;value&gt; &lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@hadoop-master1 hadoop]$ vi mapred-site.xml
+
+&lt;property&gt;
+&lt;name&gt;mapreduce.framework.name&lt;/name&gt;
+&lt;value&gt;yarn&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;mapreduce.jobhistory.address&lt;/name&gt;
+&lt;value&gt;hadoop-master1:10020&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;mapreduce.jobhistory.webapp.address&lt;/name&gt;
+&lt;value&gt;hadoop-master1:19888&lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@hadoop-master1 hadoop]$ vi yarn-site.xml 
+
+&lt;property&gt;
+&lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
+&lt;value&gt;mapreduce_shuffle&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;yarn.nodemanager.aux-services.mapreduce.shuffle.class&lt;/name&gt;
+&lt;value&gt;org.apache.hadoop.mapred.ShuffleHandler&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;yarn.resourcemanager.address&lt;/name&gt;
+&lt;value&gt;hadoop-master1:8032&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;yarn.resourcemanager.scheduler.address&lt;/name&gt;
+&lt;value&gt;hadoop-master1:8030&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;yarn.resourcemanager.resource-tracker.address&lt;/name&gt;
+&lt;value&gt;hadoop-master1:8031&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;yarn.resourcemanager.admin.address&lt;/name&gt;
+&lt;value&gt;hadoop-master1:8033&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;yarn.resourcemanager.webapp.address&lt;/name&gt;
+&lt;value&gt;hadoop-master1:8080&lt;/value&gt;
+&lt;/property&gt;
+</code></pre>
+
+<p>启动Hadoop</p>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hadoop version
+Hadoop 2.2.0
+Subversion https://svn.apache.org/repos/asf/hadoop/common -r 1529768
+Compiled by hortonmu on 2013-10-07T06:28Z
+Compiled with protoc 2.5.0
+From source with checksum 79e53ce7994d1628b240f09af91e1af4
+This command was run using /home/hadoop/hadoop-2.2.0/share/hadoop/common/hadoop-common-2.2.0.jar
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hadoop namenode -format
+
+# 默认自带的libhadoop有点问题，start-dfs.sh通过hdfs getconf -namenodes输出信息导致执行错误
+[hadoop@hadoop-master1 hadoop-2.2.0]$ rm lib/native/libh*
+
+[hadoop@hadoop-master1 ~]$ cd 
+[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do scp -r jdk1.7.0_60 $h:~/ ; done
+[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do scp -r hadoop-2.2.0 $h:~/ ; done
+[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do scp -r .bashrc $h:~/ ; done
+
+[hadoop@hadoop-master1 ~]$ cd hadoop-2.2.0/
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh
+
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh
+[hadoop@hadoop-master1 hadoop-2.2.0]$ jps
+244 QuorumPeerMain
+3995 NameNode
+4187 Jps
+</code></pre>
+
+<p>通过CRT的Port Forwarding的dynamic socket5，浏览器配置socket5代理就可以通过50070端口查看hadoop hdfs集群的状态了。</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Oozie Start Guide]]></title>
@@ -224,782 +1010,6 @@ job: 0000000-150908082015741-oozie-hado-W
 <li><p><a href="http://blog.csdn.net/wngn123/article/details/41380013">http://blog.csdn.net/wngn123/article/details/41380013</a></p></li>
 </ul>
 
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop不同版本yarn和hdfs混搭，spark-yarn环境配置]]></title>
-    <link href="http://winseliu.com/blog/2015/06/10/hadoop-deploy-spark-diff-version-yarn-and-hdfs/"/>
-    <updated>2015-06-10T18:48:19+08:00</updated>
-    <id>http://winseliu.com/blog/2015/06/10/hadoop-deploy-spark-diff-version-yarn-and-hdfs</id>
-    <content type="html"><![CDATA[<p>hadoop分为存储和计算两个主要的功能，hdfs步入hadoop2后不论稳定性还是HA等等功能都比hadoop1要更吸引人。hadoop-2.2.0的hdfs已经比较稳定，但是yarn高版本有更加丰富的功能。本文主要关注spark-yarn下日志的查看，以及spark-yarn-dynamic的配置。</p>
-
-<p>hadoop-2.2.0的hdfs原本已经在使用的环境，在这基础上搭建运行yarn-2.6.0，以及spark-1.3.0-bin-2.2.0。</p>
-
-<ul>
-<li>编译</li>
-</ul>
-
-
-<p>我是在虚拟机里面编译，共享了host主机的maven库。参考【VMware共享目录】，【VMware-Centos6 Build hadoop-2.6】注意<strong>cmake_symlink_library的异常，由于共享的windows目录下不能创建linux的软链接</strong></p>
-
-<pre><code>tar zxvf ~/hadoop-2.6.0-src.tar.gz 
-cd hadoop-2.6.0-src/
-mvn package -Pdist,native -DskipTests -Dtar -Dmaven.javadoc.skip=true
-
-# 由于hadoop-hdfs还是2.2的，这里编译spark需要用2.2版本！
-# 如果用2.6会遇到[UnsatisfiedLinkError:org.apache.hadoop.util.NativeCrc32.nativeComputeChunkedSumsByteArray ](http://blog.csdn.net/zeng_84_long/article/details/44340441)
-cd spark-1.3.0
-export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=1g -XX:ReservedCodeCacheSize=512m"
-mvn clean package -Phadoop-2.2 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
-
-vi make-distribution.sh #注释掉BUILD_COMMAND那一行，不重复执行package！
-./make-distribution.sh  --mvn `which mvn` --tgz  --skip-java-test -Phadoop-2.6 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
-</code></pre>
-
-<ul>
-<li><p>配置注意点</p></li>
-<li><p>core-site不要全部拷贝原来的，只要一些主要的配置即可。</p></li>
-<li>yarn-site的<code>yarn.resourcemanager.webapp.address</code>需要填写具体的地址，不能写<code>0.0.0.0</code>。</li>
-<li>yarn-site的<code>yarn.nodemanager.aux-services</code>添加spark_shuffle服务。<a href="https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation">https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation</a></li>
-<li>把hive-site的文件拷贝/链接到spark的conf目录下。</li>
-<li>spark-yarn-dynamic配置: <a href="https://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">https://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
-</ul>
-
-
-<pre><code>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ cat conf/spark-defaults.conf 
-# spark.master                     spark://bigdatamgr1:7077,bigdata8:7077
-# spark.eventLog.enabled           true
-# spark.eventLog.dir               hdfs://namenode:8021/directory
-# spark.executor.extraJavaOptions  -XX:+PrintGCDetails -Dkey=value -Dnumbers="one two three"
-# spark.executor.extraJavaOptions       -Xmx16g -Xms16g -Xmn256m -XX:+UseParNewGC -XX:+UseConcMarkSweepGC -XX:CMSInitiatingOccupancyFraction=70 -XX:ParallelGCThreads=10
-spark.driver.memory              48g
-spark.executor.memory            48g
-spark.sql.shuffle.partitions     200
-
-#spark.scheduler.mode FAIR
-spark.serializer  org.apache.spark.serializer.KryoSerializer
-spark.driver.maxResultSize 8g
-#spark.kryoserializer.buffer.max.mb 2048
-
-spark.dynamicAllocation.enabled true
-spark.dynamicAllocation.minExecutors 4
-spark.shuffle.service.enabled true
-
-[eshore@bigdatamgr1 conf]$ cat spark-env.sh 
-#!/usr/bin/env bash
-
-JAVA_HOME=/home/eshore/jdk1.7.0_60
-
-# log4j
-
-__add_to_classpath() {
-
-  root=$1
-
-  if [ -d "$root" ] ; then
-    for f in `ls $root/*.jar | grep -v -E '/hive.*.jar'`  ; do
-      if [ -n "$SPARK_DIST_CLASSPATH" ] ; then
-        export SPARK_DIST_CLASSPATH=$SPARK_DIST_CLASSPATH:$f
-      else
-        export SPARK_DIST_CLASSPATH=$f
-      fi
-    done
-  fi
-
-}
-# this add tail of SPARK_CLASSPATH
-__add_to_classpath "/home/eshore/apache-hive-0.13.1/lib"
-
-#export HADOOP_CONF_DIR=/data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop
-export HADOOP_CONF_DIR=/home/eshore/hadoop-2.6.0/etc/hadoop
-export SPARK_CLASSPATH=$SPARK_CLASSPATH:/home/eshore/spark-1.3.0-bin-2.2.0/conf:$HADOOP_CONF_DIR
-
-# HA
-SPARK_DAEMON_JAVA_OPTS="-Dspark.deploy.recoveryMode=ZOOKEEPER -Dspark.deploy.zookeeper.url=bi-00-01.bi.domain.com:2181 -Dspark.deploy.zookeeper.dir=/spark" 
-
-SPARK_PID_DIR=${SPARK_HOME}/pids
-</code></pre>
-
-<ul>
-<li>同步</li>
-</ul>
-
-
-<pre><code>for h in `cat slaves ` ; do rsync -vaz hadoop-2.6.0 $h:~/ --delete --exclude=work --exclude=logs --exclude=metastore_db --exclude=data --exclude=pids ; done
-</code></pre>
-
-<ul>
-<li>启动spark-hive-thrift</li>
-</ul>
-
-
-<p>./sbin/start-thriftserver.sh &ndash;executor-memory 29g &ndash;master yarn-client</p>
-
-<p>对于多任务的集群来说，配置自动动态分配（类似资源池）更有利于资源的使用。可以通过【All Applications】-【ApplicationMaster】-【Executors】来观察执行进程的变化。</p>
-
-<p></p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[已有HDFS上部署yarn]]></title>
-    <link href="http://winseliu.com/blog/2015/03/25/deploy-separated-yarn-on-exists-hdfs-cluster/"/>
-    <updated>2015-03-25T21:22:59+08:00</updated>
-    <id>http://winseliu.com/blog/2015/03/25/deploy-separated-yarn-on-exists-hdfs-cluster</id>
-    <content type="html"><![CDATA[<h2>原有环境</h2>
-
-<pre><code>[biadmin@bigdatamgr1 IHC]$ pwd
-/data/opt/ibm/biginsights/IHC
-
-[biadmin@bigdatamgr1 biginsights]$ ll conf/ hadoop-conf
-conf/:
-total 64
--rwxr-xr-x 1 biadmin biadmin  2886 Jan 30 15:09 biginsights-env.sh
-...
-
-hadoop-conf:
-total 108
--rw-rw-r-- 1 biadmin biadmin  7698 Mar 12 17:57 capacity-scheduler.xml
--rw-rw-r-- 1 biadmin biadmin   535 Mar 12 17:57 configuration.xsl
--rw-rw-r-- 1 biadmin biadmin   872 Mar 12 17:57 console-site.xml
--rw-rw-r-- 1 biadmin biadmin  3744 Mar 24 16:51 core-site.xml
--rw-rw-r-- 1 biadmin biadmin   569 Mar 12 17:57 fair-scheduler.xml
--rw-rw-r-- 1 biadmin biadmin   410 Mar 12 17:57 flex-scheduler.xml
--rwxrwxr-x 1 biadmin biadmin  5027 Mar 12 17:57 hadoop-env.sh
--rw-rw-r-- 1 biadmin biadmin  1859 Mar 12 17:57 hadoop-metrics2.properties
--rw-rw-r-- 1 biadmin biadmin  4886 Mar 12 17:57 hadoop-policy.xml
--rw-rw-r-- 1 biadmin biadmin  3836 Mar 12 17:57 hdfs-site.xml
--rw-rw-r-- 1 biadmin biadmin  2678 Mar 12 17:57 ibm-hadoop.properties
--rw-rw-r-- 1 biadmin biadmin   207 Mar 12 17:57 includes
--rw-rw-r-- 1 biadmin biadmin 10902 Mar 12 17:57 log4j.properties
--rw-rw-r-- 1 biadmin biadmin   610 Mar 12 17:57 mapred-queue-acls.xml
--rw-rw-r-- 1 biadmin biadmin  6951 Mar 23 17:24 mapred-site.xml
--rw-rw-r-- 1 biadmin biadmin    44 Mar 12 17:57 masters
--rw-rw-r-- 1 biadmin biadmin   207 Mar 12 17:57 slaves
--rw-rw-r-- 1 biadmin biadmin  1243 Mar 12 17:57 ssl-client.xml.example
--rw-rw-r-- 1 biadmin biadmin  1195 Mar 12 17:57 ssl-server.xml.example
--rw-rw-r-- 1 biadmin biadmin   301 Mar 12 17:57 taskcontroller.cfg
--rw-rw-r-- 1 biadmin biadmin   172 Mar 12 17:57 zk-jaas.conf
-
-[root@bigdatamgr1 ~]# cat /etc/profile
-...
-for i in /etc/profile.d/*.sh ; do
-    if [ -r "$i" ]; then
-        if [ "${-#*i}" != "$-" ]; then
-            . "$i"
-        else
-            . "$i" &gt;/dev/null 2&gt;&amp;1
-        fi
-    fi
-done
-
-
-[root@bigdatamgr1 ~]# ll /etc/profile.d/
-total 60
-lrwxrwxrwx  1 root root   49 Jan 30 15:10 biginsights-env.sh -&gt; /data/opt/ibm/biginsights/conf/biginsights-env.sh
-...
-
-[biadmin@bigdatamgr1 biginsights]$ cat hadoop-conf/hadoop-env.sh
-...
-# include biginsights-env.sh
-if [ -r "/data/opt/ibm/biginsights/hdm/../conf/biginsights-env.sh" ]; then
-        source "/data/opt/ibm/biginsights/hdm/../conf/biginsights-env.sh"
-fi
-...
-export HADOOP_LOG_DIR=/data/var/ibm/biginsights/hadoop/logs
-...
-export HADOOP_PID_DIR=/data/var/ibm/biginsights/hadoop/pids
-...
-</code></pre>
-
-<p>hdfs用的是2.x的，但是mr是1.x。真心坑爹！！</p>
-
-<h2>单独部署新的yarn</h2>
-
-<p>由于biginsights整了一套的环境变量，在加载profile的时刻就会进行初始化。所以需要搞一个<strong>新的用户</strong>在加载用户的环境变量的时刻把这些值清理掉。同时也为了与原来的有所区分。</p>
-
-<pre><code>[eshore@bigdatamgr1 ~]$ cat .bash_profile 
-...
-for i in ~/conf/*.sh ; do
-  if [ -r "$i" ] ; then
-    . "$i"
-  fi
-done
-
-[eshore@bigdatamgr1 ~]$ ll conf/
-total 4
--rwxr-xr-x 1 eshore biadmin 292 Mar 24 20:48 reset-biginsights-env.sh
-</code></pre>
-
-<p>使用biadmin停掉原来的jobtracker-tasktracker。</p>
-
-<pre><code>[biadmin@bigdatamgr1 IHC]$ ssh `hdfs getconf -confKey mapreduce.jobtracker.address | sed 's/:.*//' ` "sudo -u mapred /data/opt/ibm/biginsights/IHC/sbin/hadoop-daemon.sh  stop jobtracker"
-
-[biadmin@bigdatamgr1 biginsights]$ for h in `cat hadoop-conf/slaves ` ; do ssh $h "sudo -u mapred /data/opt/ibm/biginsights/IHC/sbin/hadoop-daemon.sh  stop tasktracker" ; done
-</code></pre>
-
-<p>这里使用while不行，不知道为啥!?</p>
-
-<p>部署新的hadoop-2.2.0。使用超级管理员新建目录给eshore用户：</p>
-
-<pre><code>usermod -g biadmin eshore
-mkdir /data/opt/ibm/biginsights/hadoop-2.2.0
-chown eshore:biadmin hadoop-2.2.0
-</code></pre>
-
-<p>使用超级管理员同步到各个slaver节点：</p>
-
-<pre><code>[root@bigdatamgr1 biginsights]# for line in `cat hadoop-conf/slaves` ; do ssh $line "usermod -g biadmin eshore" ; done
-
-[root@bigdatamgr1 biginsights]# cat hadoop-conf/slaves | while read line ; do rsync -vazXog hadoop-2.2.0 $line:/data/opt/ibm/biginsights/ ; done
-
-[eshore@bigdatamgr1 hadoop-2.2.0]$ cd etc/hadoop/
-[eshore@bigdatamgr1 hadoop]$ ll
-total 116
--rw-r--r-- 1 eshore biadmin 3560 Feb 15  2014 capacity-scheduler.xml
--rw-r--r-- 1 eshore biadmin 1335 Feb 15  2014 configuration.xsl
--rw-r--r-- 1 eshore biadmin  318 Feb 15  2014 container-executor.cfg
--rw-r--r-- 1 eshore biadmin  713 Mar 24 23:31 core-site.xml
--rwxr-xr-x 1 eshore biadmin 3614 Mar 24 22:45 hadoop-env.sh
--rw-r--r-- 1 eshore biadmin 1774 Feb 15  2014 hadoop-metrics2.properties
--rw-r--r-- 1 eshore biadmin 2490 Feb 15  2014 hadoop-metrics.properties
--rw-r--r-- 1 eshore biadmin 9257 Feb 15  2014 hadoop-policy.xml
-lrwxrwxrwx 1 eshore biadmin   51 Mar 24 21:33 hdfs-site.xml -&gt; /data/opt/ibm/biginsights/hadoop-conf/hdfs-site.xml
--rwxr-xr-x 1 eshore biadmin 1180 Feb 15  2014 httpfs-env.sh
--rw-r--r-- 1 eshore biadmin 1657 Feb 15  2014 httpfs-log4j.properties
--rw-r--r-- 1 eshore biadmin   21 Feb 15  2014 httpfs-signature.secret
--rw-r--r-- 1 eshore biadmin  620 Feb 15  2014 httpfs-site.xml
--rw-rw-r-- 1 eshore biadmin   75 Feb 15  2014 journalnodes
--rw-r--r-- 1 eshore biadmin 9116 Feb 15  2014 log4j.properties
--rwxr-xr-x 1 eshore biadmin 1383 Feb 15  2014 mapred-env.sh
--rw-r--r-- 1 eshore biadmin 4113 Feb 15  2014 mapred-queues.xml.template
--rw-rw-r-- 1 eshore biadmin 1508 Mar 24 21:42 mapred-site.xml
--rw-r--r-- 1 eshore biadmin  758 Feb 15  2014 mapred-site.xml.template
-lrwxrwxrwx 1 eshore biadmin   44 Mar 24 21:34 slaves -&gt; /data/opt/ibm/biginsights/hadoop-conf/slaves
--rw-r--r-- 1 eshore biadmin 2316 Feb 15  2014 ssl-client.xml.example
--rw-r--r-- 1 eshore biadmin 2251 Feb 15  2014 ssl-server.xml.example
-lrwxrwxrwx 1 eshore biadmin   16 Mar 25 16:10 tez-site.xml -&gt; tez-site.xml-0.4
--rw-r--r-- 1 eshore biadmin  282 Mar 25 15:37 tez-site.xml-0.4
--rw-r--r-- 1 eshore biadmin  347 Mar 25 15:49 tez-site.xml-0.6
--rwxr-xr-x 1 eshore biadmin 4039 Mar 24 22:26 yarn-env.sh
--rw-r--r-- 1 eshore biadmin 1826 Mar 24 21:42 yarn-site.xml
-</code></pre>
-
-<p>把属性配置好（hdfs，slaves<strong>可以用原来</strong>的就建立一个软链即可），然后用sbin/start-yarn.sh启动即可。</p>
-
-<h2>其他命令</h2>
-
-<pre><code>[eshore@bigdatamgr1 hadoop-2.2.0]$ for line in `cat etc/hadoop/slaves` ; do echo "================$line" ; ssh $line "top -u eshore -n 1 -b | grep java | xargs -I{}  kill {} "   ; done
-</code></pre>
-
-<h2>部署值得鉴戒学习的IBM bigsql套件：</h2>
-
-<ul>
-<li>一个管理用户部署，各个引用使用各自的用户</li>
-</ul>
-
-
-<pre><code>[root@bigdatamgr1 ~]# cat /etc/sudoers
-biadmin ALL=(ALL)   NOPASSWD: ALL
-
-[root@bigdatamgr1 ~]# cat /etc/passwd
-biadmin:x:200:501::/home/biadmin:/bin/bash
-avahi-autoipd:x:170:170:Avahi IPv4LL Stack:/var/lib/avahi-autoipd:/sbin/nologin
-hive:x:205:501::/home/hive:/bin/bash
-oozie:x:206:501::/home/oozie:/bin/bash
-monitoring:x:220:501::/home/monitoring:/bin/bash
-alert:x:225:501::/home/alert:/bin/bash
-catalog:x:224:501::/home/catalog:/bin/bash
-hdfs:x:201:501::/home/hdfs:/bin/bash
-httpfs:x:221:501::/home/httpfs:/bin/bash
-bigsql:x:222:501::/home/bigsql:/bin/bash
-console:x:223:501::/home/console:/bin/bash
-mapred:x:202:501::/home/mapred:/bin/bash
-orchestrator:x:226:501::/home/orchestrator:/bin/bash
-hbase:x:204:501::/home/hbase:/bin/bash
-zookeeper:x:203:501::/home/zookeeper:/bin/bash
-</code></pre>
-
-<p>启用时管理员用户使用<code>sudo -u XXX COMMAND</code>操作。</p>
-
-<ul>
-<li>所有应用部署/启动管理</li>
-</ul>
-
-
-<pre><code>[biadmin@bigdatamgr1 biginsights]$ bin/start.sh -h
-Usage: start.sh &lt;component&gt;...
-    Start one or more BigInsights components. Start all components if 'all' is
-    specified. If a component is already started, this command does nothing to it.
-
-    For example:
-        start.sh all
-          - Starts all components.
-        start.sh hadoop zookeeper
-          - Starts hadoop and zookeeper daemons.
-
-OPTIONS:
-    -ex=&lt;component&gt;
-        Exclude a component, often used together with 'all'. I.e. 
-        `stop.sh all -ex=console` stops all components but the mgmt console.
-
-    -h, --help
-        Get help information.
-</code></pre>
-
-<ul>
-<li>反复依赖的包，通过软链来管理</li>
-</ul>
-
-
-<pre><code>[biadmin@bigdatamgr1 lib]$ ll
-total 50336
--rw-r--r-- 1 biadmin biadmin   303042 Jan 30 15:22 avro-1.7.4.jar
-lrwxrwxrwx 1 biadmin biadmin       60 Jan 30 15:22 biginsights-gpfs-2.2.0.jar -&gt; /data/opt/ibm/biginsights/IHC/lib/biginsights-gpfs-2.2.0.jar
--rw-r--r-- 1 biadmin biadmin    15322 Jan 30 15:22 findbugs-annotations-1.3.9-1.jar
-lrwxrwxrwx 1 biadmin biadmin       48 Jan 30 15:22 guardium-proxy.jar -&gt; /data/opt/ibm/biginsights/lib/guardium-proxy.jar
--rw-r--r-- 1 biadmin biadmin  1795932 Jan 30 15:22 guava-12.0.1.jar
--rw-r--r-- 1 biadmin biadmin   710492 Jan 30 15:22 guice-3.0.jar
--rw-r--r-- 1 biadmin biadmin    65012 Jan 30 15:22 guice-servlet-3.0.jar
-lrwxrwxrwx 1 biadmin biadmin       45 Jan 30 15:22 hadoop-core.jar -&gt; /data/opt/ibm/biginsights/IHC/hadoop-core.jar
-lrwxrwxrwx 1 biadmin biadmin       76 Jan 30 15:22 hadoop-distcp-2.2.0.jar -&gt; /data/opt/ibm/biginsights/IHC/share/hadoop/tools/lib/hadoop-distcp-2.2.0.jar
-</code></pre>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop Distcp]]></title>
-    <link href="http://winseliu.com/blog/2015/03/13/hadoop-distcp/"/>
-    <updated>2015-03-13T20:38:23+08:00</updated>
-    <id>http://winseliu.com/blog/2015/03/13/hadoop-distcp</id>
-    <content type="html"><![CDATA[<p>HDFS提供的CP是单线程的，对于大数据量的拷贝操作希望能并行的复制。Hadoop Tools提供了DistCp工具，通过调用MapRed来实现并行的拷贝。</p>
-
-<h2>先来了解下hdfs cp的功能：</h2>
-
-<pre><code>Usage: hdfs dfs -cp [-f] [-p | -p[topax]] URI [URI ...] &lt;dest&gt;
-
-[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-not-exists
-[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -mkdir /cp-exists
-[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-exists
-[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-not-exists2/
-cp: `/cp-not-exists2/': No such file or directory
-[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -ls -R /
-drwxr-xr-x   - hadoop supergroup          0 2015-03-14 19:55 /cp
--rw-r--r--   1 hadoop supergroup       1366 2015-03-14 19:55 /cp/README.1.txt
--rw-r--r--   1 hadoop supergroup       1366 2015-03-14 19:54 /cp/README.txt
-drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-exists
-drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-exists/cp
--rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-exists/cp/README.1.txt
--rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-exists/cp/README.txt
-drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-not-exists
--rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-not-exists/README.1.txt
--rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-not-exists/README.txt
-</code></pre>
-
-<h2>DistCp(distributed copy)分布式拷贝简单使用方式：</h2>
-
-<pre><code>[hadoop@hadoop-master2 hadoop-2.6.0]$ bin/hadoop distcp /cp /cp-distcp
-</code></pre>
-
-<p>用到分布式一般就说明规模不少，且数据量大，操作时间长。DistCp提供了一些参数来控制程序：</p>
-
-<table>
-<thead>
-<tr>
-<th style="text-align:left;"> DistCpOptionSwitch选项    </th>
-<th style="text-align:center;"> 命令行参数                      </th>
-<th style="text-align:left;"> 描述                                        </th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align:left;"> LOG_PATH                  </td>
-<td style="text-align:center;"> <code>-log &lt;logdir&gt;               </code> </td>
-<td style="text-align:left;"> map结果输出的目录。默认为<code>JobStagingDir/_logs</code>，在DistCp#configureOutputFormat把该路径设置给CopyOutputFormat#setOutputPath。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> SOURCE_FILE_LISTING       </td>
-<td style="text-align:center;"> <code>-f &lt;urilist_uri&gt;            </code> </td>
-<td style="text-align:left;"> 需要拷贝的source-path&hellip;从改文件获取。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> MAX_MAPS                  </td>
-<td style="text-align:center;"> <code>-m &lt;num_maps&gt;               </code> </td>
-<td style="text-align:left;"> 默认20个，创建job时通过<code>JobContext.NUM_MAPS</code>添加到配置。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> ATOMIC_COMMIT             </td>
-<td style="text-align:center;"> <code>-atomic                     </code> </td>
-<td style="text-align:left;"> 原子操作。要么全部拷贝成功，那么失败。与<code>SYNC_FOLDERS</code> &amp; <code>DELETE_MISSING</code>选项不兼容。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> WORK_PATH                 </td>
-<td style="text-align:center;"> <code>-tmp &lt;tmp_dir&gt;              </code> </td>
-<td style="text-align:left;"> 与atomic一起使用，中间过程存储数据目录。成功后在CopyCommitter一次性移动到target-path下。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> SYNC_FOLDERS              </td>
-<td style="text-align:center;"> <code>-update                     </code> </td>
-<td style="text-align:left;"> 新建或更新文件。当文件大小和blockSize（以及crc）一样忽略。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> DELETE_MISSING            </td>
-<td style="text-align:center;"> <code>-delete                     </code> </td>
-<td style="text-align:left;"> 针对target-path目录，清理source-paths目录下没有的文件。常和<code>SYNC_FOLDERS</code>选项一起使用。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> BLOCKING                  </td>
-<td style="text-align:center;"> <code>-async                      </code> </td>
-<td style="text-align:left;"> 异步运行。其实就是job提交后，不打印日志了没有调用<code>job.waitForCompletion(true)</code>罢了。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> BANDWIDTH                 </td>
-<td style="text-align:center;"> <code>-bandwidth num(M)           </code> </td>
-<td style="text-align:left;"> 获取数据的最大速度。结合ThrottledInputStream来进行控制，在RetriableFileCopyCommand中初始化。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> COPY_STRATEGY             </td>
-<td style="text-align:center;"> <code>-strategy dynamic/uniformsize</code> </td>
-<td style="text-align:left;"> 复制的时刻分组策略，即每个Map到底处理写什么数据。后面会讲到，分为静态和动态。</td>
-</tr>
-</tbody>
-</table>
-
-
-<p>还有新增的两个属性skipcrccheck（SKIP_CRC），append（APPEND）。保留Preserve 属性和ssl选项由于暂时没用到，这里不表，以后用到再补充。</p>
-
-<h2>DistCp的源码</h2>
-
-<p>放在<code>hadoop-2.6.0-src\hadoop-tools\hadoop-distcp</code>目录下。</p>
-
-<pre><code>mvn eclipse:eclipse 
-</code></pre>
-
-<p>网络没问题的话，一般都能成功生成.classpath和.project两个Eclipse需要的项目文件。然后把项目导入eclipse即可。包括4个目录。</p>
-
-<p>还是先说说整个distcp的实现流程，看看distcp怎么跑的。</p>
-
-<pre><code>[hadoop@hadoop-master2 ~]$ export HADOOP_CLIENT_OPTS="-Dhadoop.root.logger=debug,console -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8071"
-[hadoop@hadoop-master2 ~]$ hadoop distcp /cp /cp-distcp
-Listening for transport dt_socket at address: 8071
-</code></pre>
-
-<p>运行eclipse远程调试，连接服务器的8071端口，在DistCp的run方法打个断点，就可以调试了解其运行方式。修改log4j为debug，可以查看更详细的日志，了解执行的流程。</p>
-
-<p>服务器的jdk版本和本地eclipse的jdk版本最好一致，这样调试的时刻比较顺畅。</p>
-
-<h3>Driver</h3>
-
-<p>首先进到DistCp(Driver)的main方法，DistCp继承Configured实现了Tool接口，</p>
-
-<p>第一步解析参数</p>
-
-<ol>
-<li>使用<code>ToolRunner.run</code>运行会调用GenericOptionsParser解析<code>-D</code>的属性到Configuration实例；</li>
-<li>进到run方法后，通过<code>OptionsParser.parse</code>来解析配置为DistCpOptions实例；功能比较单一，主要涉及到DistCpOptionSwitch和DistCpOptions两个类。</li>
-</ol>
-
-
-<p>第二步准备MapRed的Job实例</p>
-
-<ol>
-<li>创建metaFolderPath（后面的 待拷贝文件seq文件存取的位置：StagingDir/_distcp[RAND]），对应<code>CONF_LABEL_META_FOLDER</code>属性；</li>
-<li>创建Job，设置名称、InputFormat(UniformSizeInputFormat|DynamicInputFormat)、Map类CopyMapper、Map个数（默认20个）、Reduce个数（0个）、OutputKey|ValueClass、MAP_SPECULATIVE（使用RetriableCommand代替）、CopyOutputFormat</li>
-<li>把命令行的配置写入Configuration。</li>
-</ol>
-
-
-<pre><code>metaFolderPath /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp-1344594636
-</code></pre>
-
-<p>此处有话题，设置InputFormat时通过<code>DistCpUtils#getStrategy</code>获取，代码中并没有<code>strategy.impl</code>的键加入到configuration。why？此处也是我们可以学习的，这个设置项在distcp-default.xml配置文件中，这种方式可以实现代码的解耦。</p>
-
-<pre><code>  public static Class&lt;? extends InputFormat&gt; getStrategy(Configuration conf,
-                                                                 DistCpOptions options) {
-    String confLabel = "distcp." +
-        options.getCopyStrategy().toLowerCase(Locale.getDefault()) + ".strategy.impl";
-    return conf.getClass(confLabel, UniformSizeInputFormat.class, InputFormat.class);
-  }
-
-// 配置
-    &lt;property&gt;
-        &lt;name&gt;distcp.dynamic.strategy.impl&lt;/name&gt;
-        &lt;value&gt;org.apache.hadoop.tools.mapred.lib.DynamicInputFormat&lt;/value&gt;
-        &lt;description&gt;Implementation of dynamic input format&lt;/description&gt;
-    &lt;/property&gt;
-
-    &lt;property&gt;
-        &lt;name&gt;distcp.static.strategy.impl&lt;/name&gt;
-        &lt;value&gt;org.apache.hadoop.tools.mapred.UniformSizeInputFormat&lt;/value&gt;
-        &lt;description&gt;Implementation of static input format&lt;/description&gt;
-    &lt;/property&gt;
-</code></pre>
-
-<p>配置CopyOutputFormat时，设置了三个路径：</p>
-
-<ul>
-<li>WorkingDirectory（中间临时存储目录，atomic选项时为tmp路径，否则为target-path路径）；</li>
-<li>CommitDirectory（文件拷贝最终目录，即target-path）；</li>
-<li>OutputPath（map write记录输出路径）。</li>
-</ul>
-
-
-<p>关于命令行选项有一个疑问，用eclipse查看<code>Call Hierachy</code>调用关系的时刻，并没有发现调用<code>DistCpOptions#getXXX</code>的方法，那么是通过什么方式把这些配置项设置到Configuration的呢？ 在DistCpOptionSwitch的枚举类中定义了每个选项的confLabel，在<code>DistCpOptions#appendToConf</code>方法中一起把这些属性填充到Configuration中。 [统一配置] ！！</p>
-
-<pre><code>  public void appendToConf(Configuration conf) {
-    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.ATOMIC_COMMIT,
-        String.valueOf(atomicCommit));
-    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.IGNORE_FAILURES,
-        String.valueOf(ignoreFailures));
-...
-</code></pre>
-
-<p>第三步整理需要拷贝的文件列表</p>
-
-<p>这个真tmd的独到，提前把要做的事情规划好。需要拷贝的列表数据最终写入<code>[metaFolder]/fileList.seq</code>（key：与source-path的相对路径，value：该文件的CopyListingFileStatus），对应<code>CONF_LABEL_LISTING_FILE_PATH</code>，也就是map的输入（在自定义的InputFormat中处理）。</p>
-
-<p>涉及CopyList的三个实现FileBasedCopyListing（-f）、GlobbedCopyListing、SimpleCopyListing。最终都调用SimpleCopyListing把文件和空目录列表写入到fileList.seq；最后校验否有重复的文件名，如果存在会抛出DuplicateFileException。</p>
-
-<pre><code>/tmp/hadoop-yarn/staging/hadoop/.staging/_distcp179796572/fileList.seq
-</code></pre>
-
-<p>同时计算需要拷贝的个数和大小（Byte），对应<code>CONF_LABEL_TOTAL_BYTES_TO_BE_COPIED</code>和<code>CONF_LABEL_TOTAL_NUMBER_OF_RECORDS</code>。</p>
-
-<p>第四步提交任务，等待等待无尽的等待。</p>
-
-<p>也可以设置async选项，提交成功后直接完成Driver。</p>
-
-<h3>Mapper</h3>
-
-<p>首先，setup从Configuration中获取配置属性：sync(update)/忽略错误(i)/校验码/overWrite/workPath/finalPath</p>
-
-<p>然后，从CONF_LABEL_LISTING_FILE_PATH路径获取准备好的sourcepath->CopyListingFileStatus键值对作为map的输入。</p>
-
-<p>其实CopyListingFileStatus这个对象真正用到的就是原始Path的路径，真心不知道搞这么多属性干嘛！获取原始路径后又重新实例CopyListingFileStatus为sourceCurrStatus。</p>
-
-<ul>
-<li>如果源路径为文件夹，调用createTargetDirsWithRetry（RetriableDirectoryCreateCommand）创建路径，COPY计数加1，return。</li>
-<li>如果源路径为文件，但是checkUpdate（文件大小和块大小一致）为skip，SKIP计数加1，BYTESSKIPPED计数加上sourceCurrStatus的长度，把改条记录写入map输出，return。</li>
-<li>如果源路径为文件，且检查后不是skip则调用copyFileWithRetry（RetriableFileCopyCommand）拷贝文件，BYTESEXPECTED计数加上sourceCurrStatus的长度，BYTESCOPIED计数加上拷贝文件的大小，COPY计数加1，再return。</li>
-<li>如果配置有保留文件/文件夹属性，对目标进行属性修改。</li>
-</ul>
-
-
-<p>从CopyListing获取数据，调用FileSystem-IO接口进行数据的拷贝（在原有IO的基础上封装了ThrottledInputStream来进行限流处理）。于此同时会涉及到source路径是文件夹但是target不是文件夹等的检查；更新还是覆盖；文件属性的保留和Map计数值的更新操作。</p>
-
-<h3>InputFormat</h3>
-
-<p>自定义了InputFormat来UniformSizeInputFormat进行拆分构造FileSplit，对CONF_LABEL_LISTING_FILE_PATH文件的每个键值的文件大小平均分成Map num
-个数小块，根据键值的位置构造Map num个FileSplit对象。执行map时，RecordReader根据FileSplit来获取键值对，然后传递给map。</p>
-
-<p>新版本的增加了DynamicInputFormat，实现能者多难的功能。先通过实际的日志，看看运行效果：</p>
-
-<pre><code>[hadoop@hadoop-master2 ~]$ export HADOOP_CLIENT_OPTS="-Dhadoop.root.logger=debug,console -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8071"
-[hadoop@hadoop-master2 ~]$ hadoop distcp "-Dmapreduce.map.java.opts=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090" -strategy dynamic -m 2 /cp /cp-distcp-dynamic
-
-# 创建的chunk
-[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
--rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
--rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-drwx------   - hadoop supergroup          0 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir
--rw-r--r--   1 hadoop supergroup        198 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00000
--rw-r--r--   1 hadoop supergroup        224 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00001
--rw-r--r--   1 hadoop supergroup        220 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00002
--rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
--rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-
-# 分配后的chunk
-[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-drwx------   - hadoop supergroup          0 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir
--rw-r--r--   1 hadoop supergroup        220 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00002
--rw-r--r--   1 hadoop supergroup        198 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/task_1426773672048_0006_m_000000
--rw-r--r--   1 hadoop supergroup        224 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/task_1426773672048_0006_m_000001
--rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
--rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-
-# map获取后
-[hadoop@hadoop-master2 ~]$  ssh -g -L 8090:hadoop-slaver1:8090 hadoop-slaver1
-# 每拷贝完一个chunk/最后map结束，会把上一个跑完的chunk文件删除
-# job跑完后，临时目录的数据就被清楚了
-[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-ls: `/tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446': No such file or directory
-</code></pre>
-
-<p>由于设置的map num为2，还有一个chunk没有分配出去，等到真正执行的时刻再进行分配。体现了策略的动态性。这个<strong>chunkm_000000分配给map0(其他类似)</strong>，其他没有分配出去的chunk让给map去<strong>抢</strong>。</p>
-
-<p>首先InputFormat创建FileSplit，在此过程中把原来的<code>CONF_LABEL_LISTING_FILE_PATH</code>中的需要处理的文件根据个数等份成chunk。（具体实现看源码，其中numEntriesPerChunk计算一个chunk几个文件比较复杂点）</p>
-
-<p>chunk中的也是sourcepath->CopyListingFileStatus键值对，以seq格式的存储文件中。<code>DynamicInputChunk#acquire(TaskAttemptContext)</code>读取数据的时刻比较有意思，在Driver阶段分配的chunk处理完后，就会动态的取处理余下的chunk，能者多劳。</p>
-
-<pre><code>  public static DynamicInputChunk acquire(TaskAttemptContext taskAttemptContext) throws IOException, InterruptedException {
-    if (!areInvariantsInitialized())
-        initializeChunkInvariants(taskAttemptContext.getConfiguration());
-
-    String taskId = taskAttemptContext.getTaskAttemptID().getTaskID().toString();
-    Path acquiredFilePath = new Path(chunkRootPath, taskId);
-
-    if (fs.exists(acquiredFilePath)) {
-      LOG.info("Acquiring pre-assigned chunk: " + acquiredFilePath);
-      return new DynamicInputChunk(acquiredFilePath, taskAttemptContext);
-    }
-
-    for (FileStatus chunkFile : getListOfChunkFiles()) {
-      if (fs.rename(chunkFile.getPath(), acquiredFilePath)) {
-        LOG.info(taskId + " acquired " + chunkFile.getPath());
-        return new DynamicInputChunk(acquiredFilePath, taskAttemptContext);
-      }
-      else
-        LOG.warn(taskId + " could not acquire " + chunkFile.getPath());
-    }
-
-    return null;
-  }
-</code></pre>
-
-<h3>OutputFormat &amp; Committer</h3>
-
-<p>自定义的CopyOutputFormat包括了working/commit/output路径的get/set方法，同时指定了自定义的OutputCommitter：CopyCommitter。</p>
-
-<p>正常情况为app-master调用CopyCommitter#commitJob处理善后的事情：保留文件属性的情况下更新文件的属性，atomic情况下把working转到commit路径，delete情况下删除target目录多余的文件。最后清理临时目录。</p>
-
-<p>看完DistCp然后再去看DistCpV1，尽管说功能上类似，但是要和新版本对上仍然要去看distcp的代码。好的代码就是这样吧，让人很自然轻松的理解，而不必反复来回的折腾，甚至于为了免得来回折腾而记住该代码块。（类太大，方法太长，变量定义和使用的位置相隔很远！一个变量作用域太长赋值变更次数太多）</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://hadoop.apache.org/docs/r2.6.0/hadoop-project-dist/hadoop-common/FileSystemShell.html#cp">FileSystemShell cp</a></li>
-<li><a href="http://hadoop.apache.org/docs/r2.6.0/hadoop-mapreduce-client/hadoop-mapreduce-client-core/DistCp.html">DistCp官方文档</a></li>
-</ul>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Windows Build hadoop-2.6]]></title>
-    <link href="http://winseliu.com/blog/2015/03/09/windows-build-hadoop-2-dot-6/"/>
-    <updated>2015-03-09T12:01:55+08:00</updated>
-    <id>http://winseliu.com/blog/2015/03/09/windows-build-hadoop-2-dot-6</id>
-    <content type="html"><![CDATA[<h2>环境</h2>
-
-<pre><code>C:\Users\winse&gt;java -version
-java version "1.7.0_02"
-Java(TM) SE Runtime Environment (build 1.7.0_02-b13)
-Java HotSpot(TM) Client VM (build 22.0-b10, mixed mode, sharing)
-
-C:\Users\winse&gt;protoc --version
-libprotoc 2.5.0
-
-winse@Lenovo-PC ~
-$ cygcheck -c cygwin
-Cygwin Package Information
-Package              Version        Status
-cygwin               1.7.33-1       OK
-</code></pre>
-
-<h2>具体步骤</h2>
-
-<p>在windows下，hadoop-2.6还不能直接编译java-x86的dll。需要自己处理/打patch<a href="https://issues.apache.org/jira/browse/HADOOP-9922">HADOOP-9922</a>，但是官网jira-patch给出来的和2.6.0-src对不上。自己动手丰衣足食，把x64的全部改成Win32即可，附编译成功的patch<a href="http://yunpan.cn/cJaZzSu6DIibg">下载hadoop-2.6.0-common-native-win32-diff.patch（提取码：08fd）</a>。</p>
-
-<ul>
-<li>用visual studio2010的x86命令行进入：</li>
-</ul>
-
-
-<pre><code>Visual Studio 命令提示(2010)
-
-Setting environment for using Microsoft Visual Studio 2010 x86 tools.
-</code></pre>
-
-<ul>
-<li>切换到hadoop源码目录，打补丁和编译。同时protobuf目录和cygwin\bin目录加入PATH：</li>
-</ul>
-
-
-<pre><code>cd hadoop-2.6.0-src
-cd hadoop-common-project\hadoop-common
-patch -p0 &lt; hadoop-2.6.0-common-native-win32-diff.patch
-
-set PATH=%PATH%;E:\local\home\Administrator\bin;c:\cygwin\bin
-
-mvn package -Pdist,native-win -DskipTests -Dtar -Dmaven.javadoc.skip=true
-</code></pre>
-
-<ul>
-<li>编译完成后，直接把<code>hadoop-common\target\bin</code>目录下的内容拷贝到程序的bin目录下。</li>
-</ul>
-
-
-<p>在windows下，执行java程序java.library.path默认到PATH路径找。这也是需要定义<strong>环境变量HADOOP_HOME</strong>，以及把<code>%HADOOP_HOME%\bin</code>加入到PATH的原因！</p>
-
-<pre><code>HADOOP_HOME=E:\local\libs\big\hadoop-2.2.0 
-PATH=%HADOOP_HOME%\bin;%PATH%
-</code></pre>
-
-<ul>
-<li>配置坑：</li>
-</ul>
-
-
-<pre><code>winse@Lenovo-PC /cygdrive/e/local/opt/bigdata/hadoop-2.6.0
-$ find . -name "*-default.xml" | xargs -I{} grep "hadoop.tmp.dir" {}
-  &lt;value&gt;${hadoop.tmp.dir}/mapred/local&lt;/value&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/mapred/system&lt;/value&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/mapred/staging&lt;/value&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/mapred/temp&lt;/value&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/mapred/history/recoverystore&lt;/value&gt;
-  &lt;name&gt;hadoop.tmp.dir&lt;/name&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/io/local&lt;/value&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/s3&lt;/value&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/s3a&lt;/value&gt;
-  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/name&lt;/value&gt;
-  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/data&lt;/value&gt;
-  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/namesecondary&lt;/value&gt;
-    &lt;value&gt;${hadoop.tmp.dir}/yarn/system/rmstore&lt;/value&gt;
-    &lt;value&gt;${hadoop.tmp.dir}/nm-local-dir&lt;/value&gt;
-    &lt;value&gt;${hadoop.tmp.dir}/yarn-nm-recovery&lt;/value&gt;
-    &lt;value&gt;${hadoop.tmp.dir}/yarn/timeline&lt;/value&gt;
-</code></pre>
-
-<p>就dfs的在前面加了<code>file://</code>前缀！</p>
-
-<p>所以，在windows下如果你只配置hadoop.tmp.dir（<code>file:///e:/tmp/hadoop</code>）的话还得同时配置：</p>
-
-<pre><code>&lt;property&gt;
-  &lt;name&gt;dfs.namenode.name.dir&lt;/name&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/dfs/name&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-  &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/dfs/data&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-  &lt;name&gt;dfs.namenode.checkpoint.dir&lt;/name&gt;
-  &lt;value&gt;${hadoop.tmp.dir}/dfs/namesecondary&lt;/value&gt;
-&lt;/property&gt;
-</code></pre>
-
-<p>接下来格式化，启动都和同时一样。</p>
-
-<h2>其他</h2>
-
-<p>调试，下载maven源码等</p>
-
-<pre><code>set HADOOP_NAMENODE_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090"
-
-mvn dependency:resolve -Dclassifier=sources
-
-mvn eclipse:eclipse -DdownloadSources -DdownloadJavadocs 
-
-mvn dependency:sources 
-mvn dependency:resolve -Dclassifier=javadoc
-
-/* 操作HDFS */
-set HADOOP_ROOT_LOGGER=DEBUG,console
-</code></pre>
 ]]></content>
   </entry>
   
