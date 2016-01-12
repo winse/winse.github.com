@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-01-10T17:38:24+08:00</updated>
+  <updated>2016-01-12T21:01:02+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,219 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[配置TEZ-UI]]></title>
+    <link href="http://winseliu.com/blog/2016/01/12/tez-ui-config-and-run/"/>
+    <updated>2016-01-12T20:28:35+08:00</updated>
+    <id>http://winseliu.com/blog/2016/01/12/tez-ui-config-and-run</id>
+    <content type="html"><![CDATA[<p>tez-ui很早就出来了，荒废了很多时间。今天才把它配置出来，效果挺不错的，和spark-web差不多。</p>
+
+<p>记录了在hive-1.2.1上配置tez-0.7.0过程，配置运行hadoop2.6.3-timeline以及为tez添加tez-ui特性的步骤。</p>
+
+<h2>编译tez-0.7.0</h2>
+
+<pre><code>[hadoop@cu2 apache-tez-0.7.0-src]$ mvn package -Dhadoop.version=2.6.3 -DskipTests
+
+[INFO] Reactor Summary:
+[INFO] 
+[INFO] tez ................................................ SUCCESS [  0.831 s]
+[INFO] tez-api ............................................ SUCCESS [  6.580 s]
+[INFO] tez-common ......................................... SUCCESS [  0.124 s]
+[INFO] tez-runtime-internals .............................. SUCCESS [  0.676 s]
+[INFO] tez-runtime-library ................................ SUCCESS [  1.378 s]
+[INFO] tez-mapreduce ...................................... SUCCESS [  0.989 s]
+[INFO] tez-examples ....................................... SUCCESS [  0.105 s]
+[INFO] tez-dag ............................................ SUCCESS [  2.391 s]
+[INFO] tez-tests .......................................... SUCCESS [  0.187 s]
+[INFO] tez-ui ............................................. SUCCESS [02:23 min]
+[INFO] tez-plugins ........................................ SUCCESS [  0.017 s]
+[INFO] tez-yarn-timeline-history .......................... SUCCESS [  0.595 s]
+[INFO] tez-yarn-timeline-history-with-acls ................ SUCCESS [  0.316 s]
+[INFO] tez-mbeans-resource-calculator ..................... SUCCESS [  0.189 s]
+[INFO] tez-tools .......................................... SUCCESS [  0.017 s]
+[INFO] tez-dist ........................................... SUCCESS [ 16.554 s]
+[INFO] Tez ................................................ SUCCESS [  0.015 s]
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time: 02:55 min
+[INFO] Finished at: 2016-01-12T19:08:50+08:00
+[INFO] Final Memory: 63M/756M
+[INFO] ------------------------------------------------------------------------
+</code></pre>
+
+<h2>tez嵌入到hive</h2>
+
+<pre><code>// 上传tez程序到hdfs
+[hadoop@cu2 ~]$ cd sources/apache-tez-0.7.0-src/tez-dist/target/
+[hadoop@cu2 target]$ hadoop fs -mkdir -p /apps/tez-0.7.0
+[hadoop@cu2 target]$ hadoop fs -put tez-0.7.0.tar.gz /apps/tez-0.7.0/
+
+// TEZ_CONF_DIR = HADOOP_CONF_DIR
+[hadoop@cu2 ~]$ cd hadoop-2.6.3/etc/hadoop/
+[hadoop@cu2 hadoop]$ vi tez-site.xml
+&lt;?xml version="1.0"?&gt;
+&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
+
+&lt;configuration&gt;
+
+&lt;property&gt;
+&lt;name&gt;tez.lib.uris&lt;/name&gt;
+&lt;value&gt;${fs.defaultFS}/apps/tez-0.7.0/tez-0.7.0.tar.gz&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;/configuration&gt;
+
+// 本地tez jars加入HADOOP_CLASSPATH
+[hadoop@cu2 apache-tez-0.7.0-src]$ cd tez-dist/target/
+archive-tmp/              maven-archiver/           tez-0.7.0/                tez-0.7.0-minimal.tar.gz  tez-0.7.0.tar.gz          tez-dist-0.7.0-tests.jar  
+[hadoop@cu2 apache-tez-0.7.0-src]$ cd tez-dist/target/
+[hadoop@cu2 target]$ mv tez-0.7.0 ~/
+
+[hadoop@cu2 ~]$ vi apache-hive-1.2.1-bin/conf/hive-env.sh
+
+// 多个jline版本 http://stackoverflow.com/questions/28997441/hive-startup-error-terminal-initialization-failed-falling-back-to-unsupporte
+export HADOOP_USER_CLASSPATH_FIRST=true
+export TEZ_HOME=/home/hadoop/tez-0.7.0
+export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:$TEZ_HOME/*:$TEZ_HOME/lib/*
+
+// http://stackoverflow.com/questions/26988388/hive-0-14-0-not-starting [/tmp/hive on HDFS should be writable. Current permissions are: rwxrwxr-x]
+// hive.metastore.warehouse.dir  hive.exec.scratchdir
+[hadoop@cu2 hive]$ rm -rf /tmp/hive
+[hadoop@cu2 hive]$ hadoop fs -rmr /tmp/hive
+</code></pre>
+
+<h2>启用/使用tez</h2>
+
+<pre><code>[hadoop@cu2 hadoop]$ cat ~/hive/conf/hive-site.xml 
+...
+&lt;property&gt;
+&lt;name&gt;hive.execution.engine&lt;/name&gt;
+&lt;value&gt;tez&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;/configuration&gt;
+
+[hadoop@cu2 hive]$ bin/hive
+...
+hive&gt; select count(*) from t_ods_access_log2;
+Query ID = hadoop_20160112200359_f8be3d1c-9adc-42c0-abb9-2643dfef2cc7
+Total jobs = 1
+Launching Job 1 out of 1
+
+
+Status: Running (Executing on YARN cluster with App id application_1452600034599_0001)
+
+--------------------------------------------------------------------------------
+        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+--------------------------------------------------------------------------------
+Map 1 ..........   SUCCEEDED      1          1        0        0       0       0
+Reducer 2 ......   SUCCEEDED      1          1        0        0       0       0
+--------------------------------------------------------------------------------
+VERTICES: 02/02  [==========================&gt;&gt;] 100%  ELAPSED TIME: 20.83 s    
+--------------------------------------------------------------------------------
+OK
+67
+Time taken: 27.823 seconds, Fetched: 1 row(s)
+</code></pre>
+
+<h2>部署/启动hadoop-timeline</h2>
+
+<pre><code>[hadoop@cu2 hadoop]$ vi etc/hadoop/yarn-site.xml 
+...
+&lt;property&gt;
+  &lt;name&gt;yarn.timeline-service.enabled&lt;/name&gt;
+  &lt;value&gt;true&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+  &lt;name&gt;yarn.timeline-service.hostname&lt;/name&gt;
+  &lt;value&gt;hadoop-master2&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+  &lt;name&gt;yarn.timeline-service.http-cross-origin.enabled&lt;/name&gt;
+  &lt;value&gt;true&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+  &lt;name&gt;yarn.resourcemanager.system-metrics-publisher.enabled&lt;/name&gt;
+  &lt;value&gt;true&lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@cu2 hadoop]$ for h in hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --exclude=logs hadoop-2.6.3 $h:~/ ; done
+
+[hadoop@cu2 hadoop]$ sbin/yarn-daemon.sh start timelineserver
+
+[hadoop@cu2 hadoop]$ sbin/stop-all.sh
+[hadoop@cu2 hadoop]$ sbin/start-all.sh
+</code></pre>
+
+<h2>部署tez-ui</h2>
+
+<pre><code>// 放置tez-ui
+[hadoop@cu2 target]$ cd ../../tez-ui/
+[hadoop@cu2 tez-ui]$ cd target/
+[hadoop@cu2 target]$ ll
+total 1476
+drwxrwxr-x 3 hadoop hadoop    4096 Jan 12 19:08 classes
+drwxrwxr-x 2 hadoop hadoop    4096 Jan 12 19:08 maven-archiver
+drwxrwxr-x 8 hadoop hadoop    4096 Jan 12 19:08 tez-ui-0.7.0
+-rw-rw-r-- 1 hadoop hadoop    3058 Jan 12 19:08 tez-ui-0.7.0-tests.jar
+-rw-rw-r-- 1 hadoop hadoop 1491321 Jan 12 19:08 tez-ui-0.7.0.war
+[hadoop@cu2 target]$ mv tez-ui-0.7.0 ~/
+
+// 部署tez-ui
+[hadoop@cu2 ~]$ cd apache-tomcat-7.0.67/conf/
+修改端口为9999
+[hadoop@cu2 apache-tomcat-7.0.67]$ vi conf/server.xml 
+
+[hadoop@cu2 apache-tomcat-7.0.67]$ cd conf/Catalina/localhost/
+[hadoop@cu2 localhost]$ vi tez-ui.xml
+
+[hadoop@cu2 apache-tomcat-7.0.67]$ bin/startup.sh 
+
+// tez添加tez-ui功能
+[hadoop@cu2 hive]$ vi ~/hadoop-2.6.3/etc/hadoop/tez-site.xml 
+&lt;?xml version="1.0"?&gt;
+&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
+
+&lt;configuration&gt;
+
+&lt;property&gt;
+&lt;name&gt;tez.lib.uris&lt;/name&gt;
+&lt;value&gt;${fs.defaultFS}/apps/tez-0.7.0/tez-0.7.0.tar.gz&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;tez.history.logging.service.class&lt;/name&gt;
+&lt;value&gt;org.apache.tez.dag.history.logging.ats.ATSHistoryLoggingService&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;tez.tez-ui.history-url.base&lt;/name&gt;
+&lt;value&gt;http://hadoop-master2:9999/tez-ui/&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;/configuration&gt;
+</code></pre>
+
+<p>再运行一遍hive，查询一两个SQL。</p>
+
+<p>最终效果：</p>
+
+<p><img src="/images/blogs/tez-ui.png" alt="" /></p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://tez.apache.org/install.html">http://tez.apache.org/install.html</a></li>
+<li><a href="http://tez.apache.org/tez-ui.html">http://tez.apache.org/tez-ui.html</a></li>
+</ul>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Hadoop安装与升级-(4)HA升级]]></title>
@@ -796,220 +1009,6 @@ This command was run using /home/hadoop/hadoop-2.2.0/share/hadoop/common/hadoop-
 </code></pre>
 
 <p>通过CRT的Port Forwarding的dynamic socket5，浏览器配置socket5代理就可以通过50070端口查看hadoop hdfs集群的状态了。</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Oozie Start Guide]]></title>
-    <link href="http://winseliu.com/blog/2015/09/08/oozie-start-guide/"/>
-    <updated>2015-09-08T11:15:14+08:00</updated>
-    <id>http://winseliu.com/blog/2015/09/08/oozie-start-guide</id>
-    <content type="html"><![CDATA[<h2>步骤记录</h2>
-
-<p>说明：cu2就是hadoop-master2</p>
-
-<ol>
-<li>打包</li>
-</ol>
-
-
-<pre><code>[hadoop@cu2 oozie-4.2.0]$ vi bin/mkdistro.sh 
-MVN_OPTS="-Dbuild.time=${DATETIME} -Dvc.revision=${VC_REV} -Dvc.url=${VC_URL} "
-
-[hadoop@cu2 oozie-4.2.0]$ bin/mkdistro.sh -DskipTests -Dmaven.javadoc.skip=true
-</code></pre>
-
-<ol>
-<li>依赖</li>
-</ol>
-
-
-<pre><code>打包后，文件的位置
-[hadoop@cu2 ~]$ tar zxvf sources/oozie-4.2.0/distro/target/oozie-4.2.0-distro.tar.gz
-
-下载 &lt;http://dev.sencha.com/deploy/ext-2.2.zip&gt;
-
-yum install zip
-
-[hadoop@cu2 oozie-4.2.0]$ mkdir libext
-[hadoop@cu2 oozie-4.2.0]$ cd libext/
-[hadoop@cu2 libext]$ ll
-total 7584
--rw-rw-r-- 1 hadoop hadoop 6800612 Sep  7 16:00 ext-2.2.zip
--rw-rw-r-- 1 hadoop hadoop  960372 Feb 28  2015 mysql-connector-java-5.1.34.jar
-</code></pre>
-
-<ol>
-<li>安装</li>
-</ol>
-
-
-<pre><code>[hadoop@cu2 oozie-4.2.0]$ bin/oozie-setup.sh prepare-war
-
-setup后，生成的war的位置：/home/hadoop/oozie-4.2.0/oozie-server/webapps/oozie.war
-</code></pre>
-
-<ol>
-<li>初始化数据库</li>
-</ol>
-
-
-<pre><code>创建数据库用户
-
-CREATE DATABASE oozie;
-GRANT ALL ON oozie.* TO 'oozie'@'%' IDENTIFIED BY 'oozie';
-FLUSH PRIVILEGES;
-GRANT ALL ON oozie.* TO 'oozie'@'localhost'  IDENTIFIED BY 'oozie';
-FLUSH PRIVILEGES;
-
-show grants for oozie;
-
-[hadoop@cu2 oozie-4.2.0]$ vi conf/oozie-site.xml 
-
-&lt;property&gt;
-&lt;name&gt;oozie.service.JPAService.jdbc.driver&lt;/name&gt;&lt;value&gt;com.mysql.jdbc.Driver&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;oozie.service.JPAService.jdbc.url&lt;/name&gt;&lt;value&gt;jdbc:mysql://localhost:3306/oozie&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;oozie.service.JPAService.jdbc.username&lt;/name&gt;&lt;value&gt;oozie&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;oozie.service.JPAService.jdbc.password&lt;/name&gt;&lt;value&gt;oozie&lt;/value&gt;
-&lt;/property&gt;
-
-这里直接把hadoop的jar添加到脚本中，不拷贝到libext下面
-[hadoop@cu2 oozie-4.2.0]$ vi bin/ooziedb.sh
-OOZIECPPATH=""
-if [ ! -z ${HADOOP_HOME} ] ; then
-  OOZIECPPATH="${OOZIECPPATH}:$($HADOOP_HOME/bin/hadoop classpath)"
-fi
-
-照着写就行了，不必考虑sql文件的存在与否
-[hadoop@cu2 oozie-4.2.0]$ bin/ooziedb.sh create -sqlfile oozie.sql -run
-  setting CATALINA_OPTS="$CATALINA_OPTS -Xmx1024m"
-
-Validate DB Connection
-DONE
-DB schema does not exist
-Check OOZIE_SYS table does not exist
-DONE
-Create SQL schema
-DONE
-Create OOZIE_SYS table
-DONE
-
-Oozie DB has been created for Oozie version '4.2.0'
-
-
-The SQL commands have been written to: oozie.sql
-</code></pre>
-
-<ol>
-<li>启动服务</li>
-</ol>
-
-
-<pre><code>由于war中没有hadoop的jar，所以这里也需要把它们添加到tomcat
-[hadoop@cu2 oozie-4.2.0]$ $HADOOP_HOME/bin/hadoop classpath | sed 's/:/,/g'
-/home/hadoop/hadoop-2.7.1/etc/hadoop,/home/hadoop/hadoop-2.7.1/share/hadoop/common/lib/*,/home/hadoop/hadoop-2.7.1/share/hadoop/common/*,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs/lib/*,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs/*,/home/hadoop/hadoop-2.7.1/share/hadoop/yarn/lib/*,/home/hadoop/hadoop-2.7.1/share/hadoop/yarn/*,/home/hadoop/hadoop-2.7.1/share/hadoop/mapreduce/lib/*,/home/hadoop/hadoop-2.7.1/share/hadoop/mapreduce/*,/home/hadoop/hadoop-2.7.1/contrib/capacity-scheduler/*.jar
-
-处理下把*改成*.jar
-
-[hadoop@cu2 oozie-4.2.0]$ vi oozie-server/conf/catalina.properties 
-common.loader=${catalina.base}/lib,${catalina.base}/lib/*.jar,${catalina.home}/lib,${catalina.home}/lib/*.jar,/home/hadoop/hadoop-2.7.1/etc/hadoop,/home/hadoop/hadoop-2.7.1/share/hadoop/common/lib/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/common/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs/lib/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/yarn/lib/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/yarn/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/mapreduce/lib/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/mapreduce/*.jar,/home/hadoop/hadoop-2.7.1/contrib/capacity-scheduler/*.jar
-
-# 前台运行 bin/oozied.sh run
-[hadoop@cu2 oozie-4.2.0]$ bin/oozied.sh start
-
-http://localhost:11000/
-</code></pre>
-
-<ol>
-<li>测试</li>
-</ol>
-
-
-<pre><code>[hadoop@cu2 oozie-4.2.0]$ vi bin/oozie
-OOZIECPPATH=""
-if [ ! -z ${HADOOP_HOME} ] ; then
-  OOZIECPPATH="${OOZIECPPATH}:$($HADOOP_HOME/bin/hadoop classpath)"
-fi
-
-[hadoop@cu2 oozie-4.2.0]$ bin/oozie admin -oozie http://localhost:11000/oozie -status
-System mode: NORMAL
-</code></pre>
-
-<ol>
-<li>跑个helloworld</li>
-</ol>
-
-
-<pre><code>[hadoop@cu2 oozie-4.2.0]$ tar zxvf oozie-sharelib-4.2.0.tar.gz 
-[hadoop@cu2 oozie-4.2.0]$ ~/hadoop-2.7.1/bin/hadoop fs -rmr share
-[hadoop@cu2 oozie-4.2.0]$ ~/hadoop-2.7.1/bin/hadoop fs -put share share
-[hadoop@cu2 oozie-4.2.0]$ tar zxvf oozie-examples.tar.gz 
-[hadoop@cu2 oozie-4.2.0]$ ~/hadoop-2.7.1/bin/hadoop fs -put examples examples
-
-修改share后重启下oozie，sharelib在应用中会缓冲，中间上传程序不能识别，会报`Could not locate Oozie sharelib`的错。
-
-[hadoop@cu2 oozie-4.2.0]$ vi examples/apps/map-reduce/job.properties 
-nameNode=hdfs://hadoop-master2:9000
-jobTracker=hadoop-master2:8032
-queueName=default
-examplesRoot=examples
-
-oozie.wf.application.path=${nameNode}/user/${user.name}/${examplesRoot}/apps/map-reduce/workflow.xml
-outputDir=map-reduce
-
-[hadoop@cu2 oozie-4.2.0]$ bin/oozie job -oozie http://localhost:11000/oozie -config examples/apps/map-reduce/job.properties -run
-Error: E0501 : E0501: Could not perform authorization operation, User: hadoop is not allowed to impersonate hadoop
-
-[hadoop@cu2 hadoop-2.7.1]$ vi etc/hadoop/core-site.xml 
-&lt;property&gt;
-&lt;name&gt;hadoop.proxyuser.hadoop.hosts&lt;/name&gt;&lt;value&gt;*&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;hadoop.proxyuser.hadoop.groups&lt;/name&gt;&lt;value&gt;*&lt;/value&gt;
-&lt;/property&gt;
-
-[hadoop@cu2 ~]$ for h in `cat /etc/hosts | grep slaver | awk '{print $2}' ` ; do rsync -vaz hadoop-2.7.1 $h:~/ --exclude=logs ; done
-
-同步重启集群
-
-注：增加以上配置后，无需重启集群，可以直接用hadoop管理员账号重新加载这两个属性值，命令为：
-    hdfs dfsadmin -refreshSuperUserGroupsConfiguration
-    yarn rmadmin -refreshSuperUserGroupsConfiguration
-
-[hadoop@cu2 oozie-4.2.0]$ bin/oozie job -oozie http://localhost:11000/oozie -config examples/apps/map-reduce/job.properties -run
-job: 0000000-150908082015741-oozie-hado-W
-
-[hadoop@cu2 hadoop-2.7.1]$ bin/hadoop fs -cat /user/hadoop/examples/output-data/map-reduce/part-00000
-
-尽管能看到结果了，但是不算任务执行成功。任务是有报错的`JA006: Call From cu2/192.168.0.214 to hadoop-master2:10020 failed on connection exception`
-
-[hadoop@cu2 hadoop-2.7.1]$ sbin/mr-jobhistory-daemon.sh start historyserver
-
-在运行一次就ok了。
-</code></pre>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://oozie.apache.org/docs/4.2.0/DG_QuickStart.html">https://oozie.apache.org/docs/4.2.0/DG_QuickStart.html</a></li>
-<li><a href="http://ju.outofmemory.cn/entry/65688">http://ju.outofmemory.cn/entry/65688</a></li>
-<li><a href="http://stackoverflow.com/questions/30926357/oozie-on-yarn-oozie-is-not-allowed-to-impersonate-hadoop">http://stackoverflow.com/questions/30926357/oozie-on-yarn-oozie-is-not-allowed-to-impersonate-hadoop</a></li>
-<li><a href="http://oozie.apache.org/docs/4.0.0/DG_QuickStart.html#Oozie_Share_Lib_Installation">http://oozie.apache.org/docs/4.0.0/DG_QuickStart.html#Oozie_Share_Lib_Installation</a></li>
-<li><a href="https://oozie.apache.org/docs/4.2.0/DG_Examples.html">https://oozie.apache.org/docs/4.2.0/DG_Examples.html</a></li>
-<li><p><a href="http://hadoop.apache.org/docs/r2.7.1/hadoop-project-dist/hadoop-common/ClusterSetup.html">http://hadoop.apache.org/docs/r2.7.1/hadoop-project-dist/hadoop-common/ClusterSetup.html</a></p></li>
-<li><p><a href="http://blog.csdn.net/wngn123/article/details/41380013">http://blog.csdn.net/wngn123/article/details/41380013</a></p></li>
-</ul>
-
 ]]></content>
   </entry>
   
