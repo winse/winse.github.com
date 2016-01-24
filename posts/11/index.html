@@ -9,23 +9,10 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="计算出从1到100之间所有奇数的平方之和，代码50字符内（QQ群的验证框长度限制为50）。 如题，题目没啥难度，这50字符的条件莫名的增添压迫感。其实java写也不用50个字符就能搞定的 ！ 1
+  <meta name="description" content="code 执行hadoop-2.2.0/bin/hadoop balancer -h查看可以设置的参数（和sbin/start-balancer.sh一样）。 1
 2
 3
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-// (1 to 50) &hellip;">
+Usage: java Balancer [-policy &lt;policy&gt;] the balancing &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -99,6 +86,447 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/09/05/read-hadoop-balancer-source-part2/">[读码] Hadoop2 Balancer磁盘空间平衡（中）</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-09-05T14:57:25+08:00" pubdate data-updated="true">Fri 2014-09-05 14:57</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>code</h2>
+
+<p>执行<code>hadoop-2.2.0/bin/hadoop balancer -h</code>查看可以设置的参数（和sbin/start-balancer.sh一样）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Usage: java Balancer
+</span><span class='line'>  [-policy &lt;policy&gt;]    the balancing policy: datanode or blockpool
+</span><span class='line'>  [-threshold &lt;threshold&gt;]  Percentage of disk capacity</span></code></pre></td></tr></table></div></figure>
+
+
+<p>main方法入口，可以接受threshold（大于等于1小于等于100， 默认值10）和policy（可取datanode[dfsused]/blockpool[
+blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇中的javadoc的描述。</p>
+
+<h3>获取初始化参数</h3>
+
+<p>然后通过ToolRunner解析参数，并运行Cli工具类来执行HDFS的平衡。</p>
+
+<p>1 设置检查</p>
+
+<p><code>WIN_WIDTH</code>(默认1.5h) 已移动的数据会记录movedBlocks（list）变量中，在移动成功的数据<code>CUR_WIN</code>的值经过该时间后会被移动到<code>OLD_WIN</code>&mdash;现在感觉作用不大，为了减少map的大小？</p>
+
+<p><code>checkReplicationPolicyCompatibility()</code>检查配置<code>dfs.block.replicator.classname</code>是否为BlockPlacementPolicyDefault子类，即是否满足3份备份的策略（1st本地，2nd另一个rack，3rd和第二份拷贝不同rack的节点）？</p>
+
+<p>2 获取nameserviceuris</p>
+
+<p>通过<code>DFSUtil#getNsServiceRpcUris()</code>来获取namenodes，调用<code>getNameServiceUris()</code>来得到一个URI的结果集：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>+ nsId &lt;- dfs.nameservices
+</span><span class='line'>  ? ha  &lt;- dfs.namenode.rpc-address + [dfs.nameservices] + [dfs.ha.namenodes]
+</span><span class='line'>    Y+ =&gt; hdfs://nsId
+</span><span class='line'>    N+ =&gt; hdfs://[dfs.namenode.servicerpc-address.[nsId]] 或 hdfs://[dfs.namenode.rpc-address.[nsId]] 第二个满足条件的加入到nonPreferredUris
+</span><span class='line'>+ hdfs://[dfs.namenode.servicerpc-address] 或 hdfs://[dfs.namenode.rpc-address]  第二个满足条件的加入到nonPreferredUris
+</span><span class='line'>? [fs.defaultFs] 以hfds开头，且不在nonPreferredUris集合中是加入结果集</span></code></pre></td></tr></table></div></figure>
+
+
+<p>HA情况下的地址相关配置项可以查看<a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/HDFSHighAvailabilityWithQJM.html">官网的文档</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>dfs.nameservices
+</span><span class='line'>dfs.ha.namenodes.[nameservice ID]
+</span><span class='line'>dfs.namenode.rpc-address.[nameservice ID].[name node ID] </span></code></pre></td></tr></table></div></figure>
+
+
+<p>3 解析threshold和policy参数</p>
+
+<p>默认值: <strong>BalancingPolicy.Node.INSTANCE, 10.0</strong>。运行打印的日志如下，INFO日志中包括了初始化的参数信息。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2014-09-05 10:55:12,183 INFO Balancer: Using a threshold of 1.0
+</span><span class='line'>2014-09-05 10:55:12,186 INFO Balancer: namenodes = [hdfs://umcc97-44:9000]
+</span><span class='line'>2014-09-05 10:55:12,186 INFO Balancer: p         = Balancer.Parameters[BalancingPolicy.Node, threshold=1.0]
+</span><span class='line'>2014-09-05 10:55:13,744 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>2014-09-05 10:55:18,154 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.142:50010
+</span><span class='line'>2014-09-05 10:55:18,249 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.144:50010
+</span><span class='line'>2014-09-05 10:55:18,311 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.143:50010
+</span><span class='line'>2014-09-05 10:55:18,319 INFO Balancer: 2 over-utilized: [Source[10.18.97.144:50010, utilization=8.288283273062705], Source[10.18.97.143:50010, utilization=8.302032354001554]]
+</span><span class='line'>2014-09-05 10:55:18,320 INFO Balancer: 1 underutilized: [BalancerDatanode[10.18.97.142:50010, utilization=4.716543864576553]]
+</span><span class='line'>2014-09-05 10:55:33,918 INFO Balancer: Need to move 3.86 GB to make the cluster balanced.
+</span><span class='line'>2014-09-05 11:21:16,875 INFO Balancer: Decided to move 2.43 GB bytes from 10.18.97.144:50010 to 10.18.97.142:50010
+</span><span class='line'>2014-09-05 11:24:16,712 INFO Balancer: Decided to move 1.84 GB bytes from 10.18.97.143:50010 to 10.18.97.142:50010
+</span><span class='line'>2014-09-05 11:25:55,726 INFO Balancer: Will move 4.27 GB in this iteration</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>执行Balancer</h3>
+
+<p>4 调用Balancer#run执行</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'> # 调试命令
+</span><span class='line'> export HADOOP_OPTS=" -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8087 "
+</span><span class='line'> sbin/start-balancer.sh </span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>Balancer的静态方法run，循环处理所有namenodes。在实例化namenode的NameNodeConnector对象时，会把当前运行balancer程序的hostname写入到HDFS的<code>/system/balancer.id</code>文件中，可以用来控制同时只有一个balancer运行。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/96/wKhkA1QJJNqAXxeaAAAho0g2bEU520.png" alt="" /></p>
+
+<p>在循环处理的时刻使用<code>Collections.shuffle(connectors)</code>打乱了namenodes的顺序。</p>
+
+<p>Balancer的静态方法run中是一个双层循环，实例化Balancer并调用实例方法run来处理每个namenode的平衡。运行后要么<strong>出错</strong>要么就是平衡<strong>顺利完成</strong>才算结束。平衡的返回状态值及其含义可以查看javadoc（上）篇。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  static int run(Collection&lt;URI&gt; namenodes, final Parameters p,
+</span><span class='line'>      Configuration conf) throws IOException, InterruptedException {
+</span><span class='line'>    ...
+</span><span class='line'>      for (URI uri : namenodes) {
+</span><span class='line'>        connectors.add(new NameNodeConnector(uri, conf));
+</span><span class='line'>      }
+</span><span class='line'>    
+</span><span class='line'>      boolean done = false;
+</span><span class='line'>      for(int iteration = 0; !done; iteration++) {
+</span><span class='line'>        done = true;
+</span><span class='line'>        Collections.shuffle(connectors);
+</span><span class='line'>        for(NameNodeConnector nnc : connectors) {
+</span><span class='line'>          final Balancer b = new Balancer(nnc, p, conf);
+</span><span class='line'>          final ReturnStatus r = b.run(iteration, formatter, conf);
+</span><span class='line'>          // clean all lists
+</span><span class='line'>          b.resetData(conf);
+</span><span class='line'>          if (r == ReturnStatus.IN_PROGRESS) {
+</span><span class='line'>            done = false;
+</span><span class='line'>          } else if (r != ReturnStatus.SUCCESS) {
+</span><span class='line'>            //must be an error statue, return.
+</span><span class='line'>            return r.code;
+</span><span class='line'>          }
+</span><span class='line'>        }
+</span><span class='line'>
+</span><span class='line'>        if (!done) {
+</span><span class='line'>          Thread.sleep(sleeptime);
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    ...
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5 <strong>针对每个namenode的平衡处理</strong></p>
+
+<p>针对每个namenode的每次迭代，又可以分出初始化节点、选择移动节点、移动数据三个部分。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private ReturnStatus run(int iteration, Formatter formatter, Configuration conf) {
+</span><span class='line'>      ...
+</span><span class='line'>      final long bytesLeftToMove = initNodes(nnc.client.getDatanodeReport(DatanodeReportType.LIVE));
+</span><span class='line'>      if (bytesLeftToMove == 0) {
+</span><span class='line'>        System.out.println("The cluster is balanced. Exiting...");
+</span><span class='line'>        return ReturnStatus.SUCCESS;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      final long bytesToMove = chooseNodes();
+</span><span class='line'>      if (bytesToMove == 0) {
+</span><span class='line'>        System.out.println("No block can be moved. Exiting...");
+</span><span class='line'>        return ReturnStatus.NO_MOVE_BLOCK;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      if (!this.nnc.shouldContinue(dispatchBlockMoves())) {
+</span><span class='line'>        return ReturnStatus.NO_MOVE_PROGRESS;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      return ReturnStatus.IN_PROGRESS;
+</span><span class='line'>      ...
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>获取集群Live Datanode节点的信息，和通过50070查看的信息差不多，然后调用initNode()方法。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/8F/wKhkA1QJFgaAAsSNAAD4HDo1RfA678.png" alt="" /></p>
+
+<p>5.1 初始化节点</p>
+
+<p><code>initNodes()</code>中获取每个Datanode的capacity和dfsUsed数据，计算整个集群dfs的平均使用率avgUtilization。
+然后根据每个节点的使用率与集群使用率，以及阀值进行比较划分为4种情况：
+<code>overUtilizedDatanodes</code>，<code>aboveAvgUtilizedDatanodes</code>，<code>belowAvgUtilizedDatanodes</code>，<code>underUtilizedDatanodes</code>。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/95/wKhkA1QJH2uAa8UEAABq7RCSLQ0452.png" alt="" /></p>
+
+<p>同时取超出<strong>平均+阀值</strong>和<strong>低于平均-阀值</strong>的字节数最大值，即集群达到平衡需要移动的字节数。</p>
+
+<p>为了测试，如果集群已经平衡，可以搞点数据让集群不平衡，方便查看调试。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>bin/hadoop fs -D dfs.replication=1 -put XXXXX /abc
+</span><span class='line'>
+</span><span class='line'>sbin/start-balancer.sh -threshold 1</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5.2 选择节点</p>
+
+<p>初始化节点后，计算出了需要移动的数据量。接下来就是选择移动数据的节点<code>chooseNodes</code>，以及接收对应数据的节点。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private long chooseNodes() {
+</span><span class='line'>    // First, match nodes on the same node group if cluster is node group aware
+</span><span class='line'>    if (cluster.isNodeGroupAware()) {
+</span><span class='line'>      chooseNodes(SAME_NODE_GROUP);
+</span><span class='line'>    }
+</span><span class='line'>    
+</span><span class='line'>    chooseNodes(SAME_RACK);
+</span><span class='line'>    chooseNodes(ANY_OTHER);
+</span><span class='line'>
+</span><span class='line'>    long bytesToMove = 0L;
+</span><span class='line'>    for (Source src : sources) {
+</span><span class='line'>      bytesToMove += src.scheduledSize;
+</span><span class='line'>    }
+</span><span class='line'>    return bytesToMove;
+</span><span class='line'>  }
+</span><span class='line'>  private void chooseNodes(final Matcher matcher) {
+</span><span class='line'>    chooseDatanodes(overUtilizedDatanodes, underUtilizedDatanodes, matcher);
+</span><span class='line'>    chooseDatanodes(overUtilizedDatanodes, belowAvgUtilizedDatanodes, matcher);
+</span><span class='line'>    chooseDatanodes(underUtilizedDatanodes, aboveAvgUtilizedDatanodes, matcher);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt; void 
+</span><span class='line'>      chooseDatanodes(Collection&lt;D&gt; datanodes, Collection&lt;C&gt; candidates,
+</span><span class='line'>          Matcher matcher) {
+</span><span class='line'>    for (Iterator&lt;D&gt; i = datanodes.iterator(); i.hasNext();) {
+</span><span class='line'>      final D datanode = i.next();
+</span><span class='line'>      for(; chooseForOneDatanode(datanode, candidates, matcher); );
+</span><span class='line'>      if (!datanode.hasSpaceForScheduling()) {
+</span><span class='line'>        i.remove(); // “超出”部分全部有去处了
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;C extends BalancerDatanode&gt; boolean chooseForOneDatanode(
+</span><span class='line'>      BalancerDatanode dn, Collection&lt;C&gt; candidates, Matcher matcher) {
+</span><span class='line'>    final Iterator&lt;C&gt; i = candidates.iterator();
+</span><span class='line'>    final C chosen = chooseCandidate(dn, i, matcher);
+</span><span class='line'>
+</span><span class='line'>    if (chosen == null) {
+</span><span class='line'>      return false;
+</span><span class='line'>    }
+</span><span class='line'>    if (dn instanceof Source) {
+</span><span class='line'>      matchSourceWithTargetToMove((Source)dn, chosen);
+</span><span class='line'>    } else {
+</span><span class='line'>      matchSourceWithTargetToMove((Source)chosen, dn);
+</span><span class='line'>    }
+</span><span class='line'>    if (!chosen.hasSpaceForScheduling()) {
+</span><span class='line'>      i.remove(); // 可用的空间已经全部分配出去了
+</span><span class='line'>    }
+</span><span class='line'>    return true;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt;
+</span><span class='line'>      C chooseCandidate(D dn, Iterator&lt;C&gt; candidates, Matcher matcher) {
+</span><span class='line'>    if (dn.hasSpaceForScheduling()) {
+</span><span class='line'>      for(; candidates.hasNext(); ) {
+</span><span class='line'>        final C c = candidates.next();
+</span><span class='line'>        if (!c.hasSpaceForScheduling()) {
+</span><span class='line'>          candidates.remove();
+</span><span class='line'>        } else if (matcher.match(cluster, dn.getDatanode(), c.getDatanode())) {
+</span><span class='line'>          return c;
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>    return null;
+</span><span class='line'>  }  </span></code></pre></td></tr></table></div></figure>
+
+
+<p>选择到<strong>接收节点</strong>后，接下来计算可以移动的数据量（取双方的available的最大值），然后把<strong>接收节点</strong>和<strong>数据量</strong>的信息NodeTask存储到Source的NodeTasks对象中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private void matchSourceWithTargetToMove(
+</span><span class='line'>      Source source, BalancerDatanode target) {
+</span><span class='line'>    long size = Math.min(source.availableSizeToMove(), target.availableSizeToMove());
+</span><span class='line'>    NodeTask nodeTask = new NodeTask(target, size);
+</span><span class='line'>    source.addNodeTask(nodeTask);
+</span><span class='line'>    target.incScheduledSize(nodeTask.getSize());
+</span><span class='line'>    sources.add(source);
+</span><span class='line'>    targets.add(target);
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5.3 移动数据</p>
+
+<p>（待）</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -740,175 +1168,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-08-25T21:12:13+08:00" pubdate data-updated="true">Mon 2014-08-25 21:12</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>类C语言，继C++之后的最辉煌耀眼的明星都属Java，其中最突出的又数内存管理。JVM对运行在其上的程序进行内存自动化分配和管理，减少开发人员的工作量之外便于统一的维护和管理。JDK提供了各种各样的工具来让开发实施人员了解运行的运行状态。</p>
-
-<ul>
-<li>jps -l -v -m</li>
-<li>jstat -gcutil 2000 100</li>
-<li>jmap</li>
-<li>jinfo <a href="http://file.bmob.cn/M00/03/AD/wKhkA1PE2MGAB4-fAAGTqUeu-cE940.png">查看参数例子</a></li>
-<li>jstack</li>
-<li>jvisualvm/jconsole</li>
-<li>mat(MemoryAnalyzer)</li>
-<li>btrace</li>
-<li>jclasslib（查看局部变量表）</li>
-</ul>
-
-
-<p>前段时间，接手(前面已经有成型的东西)使用Hadoop存储转换的项目，但是生产环境的程序总是隔三差五的OOM，同时使用的hive0.12.0也偶尔出现内存异常。这对于运维来说就是灭顶之灾！搞不好什么时刻程序就挂了！！必须咬咬牙把这个问题处理解决，开始把老古董们请出来，翻来基本不看的后半部分&ndash;Java内存管理。</p>
-
-<ul>
-<li>《Java程序性能优化-让你的Java程序更快、更稳定》第5章JVM调优/第6章Java性能调优工具</li>
-<li>《深入理解Java虚拟机-JVM高级特性与最佳实践》第二部分自动内存管理机制</li>
-</ul>
-
-
-<p>这里用到的理论知识比较少。主要用Java自带的工具，加上内存堆分析工具（mat/jvisualvm）找出大对象，同时结合源代码定位问题。</p>
-
-<p>下面主要讲讲实践，查找问题的思路。在本地进行测试的话，我们可以打断点，可以通过jvisualvm来查看整个运行过程内存的变化趋势图。但是到了linux服务器，并且还是生产环境的话，想要有本地一样的图形化工具来监控是比较困难的！一般服务器的内存都设置的比较大，而windows设置的内存又有限！所以内存达到1G左右，立马dump一个堆的内存快照然后下载到本地进行来分析（可以通过<code>-J-Xmx</code><a href="http://file.bmob.cn/M00/09/83/wKhkA1P7TV-ABDnOAAB-OnVBQic050.png">调整jvisualvm的内存</a>）。</p>
-
-<ul>
-<li>首先，由于报错是在Configuration加载配置文件时抛出OOM，第一反应肯定Configuraiton对象太多导致！同时查看dump的堆内存也佐证了这一点。直接把程序中的Configuration改成单例。</li>
-</ul>
-
-
-<p>程序对象内存占比排行（<code>jmap -histo PID</code>）：</p>
-
-<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7S8yARYSkAAiFW9cVN5w526.png" alt="" /></p>
-
-<p>使用mat或者jvisualvm查看堆，确实Configuration对象过多（<code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code>）：</p>
-
-<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TbmAIdDEAAq3ktPBs6Q266.png" alt="" /></p>
-
-<ul>
-<li><p>修改后再次运行，但是没多大用！还是OOM！！</p></li>
-<li><p>进一步分析，发现在Configuration中的属性/缓冲的都是弱引用是weakhashmap。</p></li>
-</ul>
-
-
-<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TfaAf4nwAAbcdgFiyXs804.png" alt="" /></p>
-
-<p>OOM最终问题不在Configuration对象中的属性，哪谁hold住了Configuration对象呢？？</p>
-
-<ul>
-<li>再次从根源开始查找问题。程序中FileSystem对象使用<code>FileSystem.get(URI, Configuration, String)</code>获取，然后调用<code>get(URI,Configuration)</code>方法，其中的<strong>CACHE</strong>很是刺眼啊！</li>
-</ul>
-
-
-<p><img src="http://file.bmob.cn/M00/09/8D/wKhkA1P72pmAAMdnAAEYMjHFUAI853.png" alt="" /></p>
-
-<p>缓冲FileSystem的Cache对象的Key是URI和UserGroupInformation两个属性来判断是否相等的。对于一个程序来说一般就读取一个HDFS的数据即URI前部分是确定的，重点在UserGroupInformation是通过<code>UserGroupInformation.getCurrentUser()</code>来获取的。</p>
-
-<p>即获取在get时<code>UserGroupInformation.getBestUGI</code>得到的对象。而这个对象在UnSecure情况下每次都是调用<code>createRemoteUser</code>创建新的对象！也就是每调用一次<code>FileSystem.get(URI, Configuration, String)</code>就会缓存一个FileSystem对象，以及其hold住的Configuration都会被保留在内存中。
-<img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TBSAaYEoAAhzUA5j5MI991.png" alt="" /></p>
-
-<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TJ2AfwJzAAhEVFjK7Ek367.png" alt="" /></p>
-
-<p>只消耗不释放终究会坐吃山空啊！到最后也就必然OOM了。从mat的UserGroupInformation的个数查询，以及Cache对象的总量可以印证。</p>
-
-<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TNeAB7JAAAdMg-udeR8285.png" alt="" /></p>
-
-<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TU-ACoaCAApK4n-52hI027.png" alt="" /></p>
-
-<h2>问题处理</h2>
-
-<p>把程序涉及到FileSystem.get调用去掉user参数，使两个参数的方法。由于都使用getCurrentUser获取对象，也就是说程序整个运行过程中就一个FileSystem对象，但是与此同时就不能关闭获取到的FileSystem，如果当前运行的用户与集群所属用户不同，需要设置环境变量指定当前操作的用户！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>System.setProperty("HADOOP_USER_NAME", "hadoop");</span></code></pre></td></tr></table></div></figure>
-
-
-<p>查找代码中调用了FileSystem#close是一个痛苦的过程，由于FileSystem实现的是Closeable的close方法，用<strong>Open Call Hierarchy</strong>基本是大海捞中啊，根本不知道那个代码是自己的！！这里用btrace神器让咋也高大上一把。。。</p>
-
-<p>当时操作的步骤找不到了，下图是调用Cache#getInternal方法监控代码<a href="https://gist.github.com/winse/161f6fe9120f2ec6b024">GIST</a>：</p>
-
-<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7UD2AFk2cAAXRQWzniL0296.png" alt="" /></p>
-
-<h2>hive0.12内存溢出问题</h2>
-
-<p>hive0.12.0查询程序MR内容溢出</p>
-
-<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7StSAOgX1AAoW9v-Fd4s439.png" alt="" /></p>
-
-<p>在hive-0.13前官网文档中有提到内存溢出这一点，可以对应到FileSystem中代码的判断。</p>
-
-<p><img src="http://file.bmob.cn/M00/09/85/wKhkA1P7UP-ACRVdAAJHBKNTq94580.png" alt="" /></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>String disableCacheName = String.format("fs.%s.impl.disable.cache", scheme);
-</span><span class='line'>if (conf.getBoolean(disableCacheName, false)) {
-</span><span class='line'>  return createFileSystem(uri, conf);
-</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
-
-
-<p></p>
-
-<p>hive0.13.1处理</p>
-
-<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T_CAcxVqAARr7CGiDvY177.png" alt="" /></p>
-
-<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T6KAKoUiAAvODPwh1po815.png" alt="" /></p>
-
-<p>新版本在每次查询（session）结束后都会把本次涉及到的FileSystem关闭掉。</p>
-
-<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T9uAQQB3AAWrj_efwZU495.png" alt="" /></p>
-
-<h2>理论知识</h2>
-
-<p>从GC类型开始讲，对自动化内存的垃圾收集有个整体的感知： 新生代/s0（survivor space0、from space）/s1（survivor space1、to space）/永久代。虚拟机参数<code>-Xmx</code>,<code>-Xms</code>,<code>-Xmn</code>（<code>-Xss</code>）来调节各个代的大小和比例。</p>
-
-<ul>
-<li><code>-Xss</code> 参数来设置栈的大小。栈的大小直接决定了函数的调用可达深度</li>
-<li><code>-XX:PrintGCDetails -XX:SurvivorRatio=8 -XX:MaxTenuringThreshold=15 -Xms40m -Xmx40m -Xmn20m</code></li>
-<li><code>-XX:NewSize</code>和<code>-XX:MaxNewSize</code></li>
-<li><code>-XX:NewRatio</code>和<code>-XX:SurvivorRatio</code></li>
-<li><code>-XX:PermSize=2m -XX:MaxPermSize=4m -XX:+PrintGCDetails</code></li>
-<li><code>-verbose:gc</code></li>
-<li><code>-XX:+PrintGC</code></li>
-<li><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/bug.hprof -XX:OnOutOfMemoryError=/reset.sh</code></li>
-<li><code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code></li>
-<li><code>jmap -histo PID &gt; /tmp/s.txt</code></li>
-<li><code>jstack -l PID</code></li>
-</ul>
-
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/12">&larr; Older</a>
@@ -973,6 +1232,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/01/23/install-and-config-ganglia-on-redhat-2/">安装配置Ganglia(2)</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/01/19/hole/">坑</a>
       </li>
     
@@ -998,10 +1261,6 @@
     
       <li class="post">
         <a href="/blog/2015/12/13/postgresql-start-guide/">Postgresql入门</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
       </li>
     
   </ul>
@@ -1034,7 +1293,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (1) 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (2) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1042,7 +1301,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (37) 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (38) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1098,7 +1357,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (28) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (29) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1107,7 +1366,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (105)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (106)</li>
 	</ul>
 	
 </section>
