@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Tools | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/tools/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-01-24T18:26:15+08:00</updated>
+  <updated>2016-01-25T21:01:29+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,173 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Pdsh]]></title>
+    <link href="http://winseliu.com/blog/2016/01/25/pdsh-simple-usage/"/>
+    <updated>2016-01-25T19:50:35+08:00</updated>
+    <id>http://winseliu.com/blog/2016/01/25/pdsh-simple-usage</id>
+    <content type="html"><![CDATA[<p>弄hadoop总是需要不少的机器，光rsync就挺折腾人的，又是还要排除部分机器，以及查看一堆机器使用内存情况，等等。以前都使用 expect 结合 <code>for in</code> 来实现，总归简单用着也觉得还行。但是最近，升级hadoop、tez、安装ganglia被折腾的不行。拷贝for语句拷贝到累，原来看过pdsh的介绍不过原来就部署4-5台机器也就没放在心上，最近查找Ganglia安装问题的博文里面再次pdsh，觉得非常亲切和简洁。</p>
+
+<p>再次安装使用也就有了本文。</p>
+
+<h2>安装</h2>
+
+<pre><code>[root@bigdatamgr1 pdsh-2.29]# umask 0022
+[root@bigdatamgr1 pdsh-2.29]# ./configure -h
+[root@bigdatamgr1 pdsh-2.29]# ./configure --with-dshgroups  --with-exec --with-ssh 
+[root@bigdatamgr1 pdsh-2.29]# make &amp;&amp; make install
+</code></pre>
+
+<p>挺多选项的，以后不够用的时刻慢慢研究。先用ssh和exec差不多够用了。</p>
+
+<h2>简单使用</h2>
+
+<p>方便使用pdsh管理N台机器的前提是已经建立了SSH无密钥登录，而建立这N台机器的无秘钥登录，还是少不了Expect！</p>
+
+<ul>
+<li>加载的模块</li>
+</ul>
+
+
+<pre><code># 查看，安装的ssh/exec
+[eshore@bigdatamgr1 ~]$ pdsh -L
+
+# 设置默认使用的模块
+[eshore@bigdatamgr1 ~]$ export PDSH_RCMD_TYPE=exec
+[eshore@bigdatamgr1 ~]$ pdsh -w bigdata[1-2] ssh %h hostname
+bigdata2: bigdata2
+bigdata1: bigdata1
+
+# 命令行指定模块
+[eshore@bigdatamgr1 ~]$ pdsh -R ssh -w bigdata1,bigdata2 hostname
+bigdata2: bigdata2
+bigdata1: bigdata1
+
+# 一个个的指定
+[eshore@bigdatamgr1 ~]$ pdsh -w ssh:bigdata1,ssh:bigdata2 hostname
+bigdata2: bigdata2
+bigdata1: bigdata1
+[eshore@bigdatamgr1 ~]$ pdsh -w ssh:bigdata[1,2] hostname
+bigdata2: bigdata2
+bigdata1: bigdata1
+</code></pre>
+
+<ul>
+<li>主机加载</li>
+</ul>
+
+
+<pre><code>[eshore@bigdatamgr1 ~]$ pdsh -w bigdata[1-2,5,6-8] -X nodes hostname
+bigdata5: bigdata5
+bigdata6: bigdata6
+bigdata2: bigdata2
+bigdata8: bigdata8
+bigdata7: bigdata7
+</code></pre>
+
+<p>pdsh除了使用 <code>-w</code> 来指定主机列表，还可以通过文件来指定，如编译时的 <code>--with-machines</code> ，同时可以通过读取默认的位置的文件来获取。在编译pdsh时可以通过 <code>--with-dshgroups</code> 参数来激活此选项，默认可以将一组主机列表写入一个文件中并放到本地主机的 <code>~/.dsh/group</code> 或 <code>/etc/dsh/group</code> 目录下，这样就可以通过 <code>-g</code> 参数调用了。同时 <code>-X groupname</code> 可以用来排除主机列表中属于groupname组的主机。</p>
+
+<pre><code>[eshore@bigdatamgr1 ~]$ export PDSH_RCMD_TYPE=ssh
+
+[eshore@bigdatamgr1 ~]$ mkdir -p .dsh/group
+[eshore@bigdatamgr1 ~]$ cd .dsh/group/
+[eshore@bigdatamgr1 group]$ vi nodes
+bigdata1
+bigdata3
+
+[eshore@bigdatamgr1 ~]$ pdsh -g nodes hostname
+bigdata3: bigdata3
+bigdata1: bigdata1
+
+[eshore@bigdatamgr1 ~]$ pdsh -w bigdata[1-8] -X nodes hostname
+bigdata2: bigdata2
+bigdata8: bigdata8
+bigdata5: bigdata5
+bigdata6: bigdata6
+bigdata4: bigdata4
+bigdata7: bigdata7
+</code></pre>
+
+<p><code>-w</code> 参数也可以用来读取特定文件中的主机列表，同时结合其他规则和进行过滤（具体查看man帮助）。<code>-x</code> 在主机列表基础上进行过滤（提供多一种的方式来实现过滤）。</p>
+
+<pre><code>[eshore@bigdatamgr1 ~]$ cat slaves | head -2
+bigdata1
+bigdata2
+
+[eshore@bigdatamgr1 ~]$ pdsh -w ^slaves hostname | head -5
+bigdata8: bigdata8
+bigdata6: bigdata6
+bigdata5: bigdata5
+bigdata2: bigdata2
+bigdata3: bigdata3
+
+[eshore@bigdatamgr1 ~]$ pdsh -w ^slaves,-bigdata[2-8]
+pdsh&gt; hostname
+bigdata1: bigdata1
+pdsh&gt; 
+pdsh&gt; exit
+[eshore@bigdatamgr1 ~]$ pdsh -w ^slaves,-/bigdata.?/
+pdsh@bigdatamgr1: no remote hosts specified
+
+[eshore@bigdatamgr1 ~]$ pdsh -w ^slaves -x bigdata[1-7] hostname
+bigdata8: bigdata8
+</code></pre>
+
+<ul>
+<li>输出格式化</li>
+</ul>
+
+
+<p>当一台主机的输出多余一行时，pdsh输出的内容看起来并不和谐。使用dshbak格式化</p>
+
+<pre><code>[eshore@bigdatamgr1 ~]$ pdsh -w bigdata[1-2] free -m  | dshbak -c
+----------------
+bigdata1
+----------------
+             total       used       free     shared    buffers     cached
+Mem:         64405      59207       5198          0        429      31356
+-/+ buffers/cache:      27420      36985
+Swap:        65535         57      65478
+----------------
+bigdata2
+----------------
+             total       used       free     shared    buffers     cached
+Mem:         64405      58192       6213          0        505      29847
+-/+ buffers/cache:      27838      36566
+Swap:        65535         58      65477
+</code></pre>
+
+<h2>参考</h2>
+
+<pre><code>pdsh -w ssh:user00[1-10] "date"
+此命令用于在user001到user0010上执行date命令。
+pdsh -w ssh:user0[10-31],/1$/ "uptime"
+此命令在选择远程主机时使用了正则表达式，表示在user010到user031中选择以1结尾的主机名，即在user011、user021、user031上执行uptime命令
+
+-l  指定在远程主机上使用的用户名称。例如：
+pdsh -R ssh -l opsuser -w user00[1-9] "date"
+
+-f  设置同时连接到远程主机的个数
+</code></pre>
+
+<ul>
+<li><a href="http://ixdba.blog.51cto.com/2895551/1550184">并行分布式运维工具pdsh</a></li>
+</ul>
+
+
+<pre><code>Some quick tips on how to get started using pdsh:
+Set up your environment:
+export PDSH_SSH_ARGS_APPEND=”-o ConnectTimeout=5 -o CheckHostIP=no -o StrictHostKeyChecking=no” (Add this to your .bashrc to save time.)
+</code></pre>
+
+<ul>
+<li><a href="https://radfest.wordpress.com/2012/05/24/parallel-remote-shelling-via-pdsh/">Parallel remote &ldquo;shelling&rdquo; via pdsh</a></li>
+<li><a href="http://kumu-linux.github.io/blog/2013/06/19/pdsh/">Pdsh使用方法</a></li>
+</ul>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[安装配置Ganglia(2)]]></title>
@@ -166,6 +333,8 @@ vi /usr/local/ganglia/etc/gmond.conf
 </ul>
 
 
+<p><strong>参考思路</strong> (未具体实践)：多网段情况可以用单播解决，要是单网段要配置多个data_source(集群)那就换个多播的端口吧！</p>
+
 <h2>启动以及测试</h2>
 
 <pre><code>service httpd restart
@@ -261,6 +430,8 @@ done
 telnet hadoop-master1 8649
 netstat -anp | grep gm
 </code></pre>
+
+<p>要是集群有变动，添加还好，删除的话，会存在原来的旧数据，页面会提示机器down掉了。可以删除rrds目录下对应集群中节点的数据，然后重庆gmetad/httpd即可。</p>
 
 <h2>参考</h2>
 
@@ -800,155 +971,6 @@ make install
 <ul>
 <li><a href="http://www.cnblogs.com/cgli/archive/2011/05/16/2047920.html">http://www.cnblogs.com/cgli/archive/2011/05/16/2047920.html</a></li>
 <li><a href="http://www.cnblogs.com/tohilary/archive/2012/08/24/2653904.html">http://www.cnblogs.com/tohilary/archive/2012/08/24/2653904.html</a></li>
-</ul>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[树莓派raspberrypi2简单使用]]></title>
-    <link href="http://winseliu.com/blog/2015/11/04/raspberrypi-start-guide/"/>
-    <updated>2015-11-04T11:52:18+08:00</updated>
-    <id>http://winseliu.com/blog/2015/11/04/raspberrypi-start-guide</id>
-    <content type="html"><![CDATA[<h2>买的东西地址：</h2>
-
-<p>现在想来，其实可以多加100，买一整套的比较方便。内存卡还有外壳都在里面。</p>
-
-<ul>
-<li><p><a href="https://item.taobao.com/item.htm?id=520179324500&amp;ali_refid=a3_420434_1006:1103723226:N:%E6%A0%91%E8%8E%93%E6%B4%BE2+b%2B:fc636846d2212679077e26f5f9f14118&amp;ali_trackid=1_fc636846d2212679077e26f5f9f14118&amp;spm=a230r.1.0.0.vhiQsb&amp;qq-pf-to=pcqq.c2c">树莓派2b 树莓派raspberry Pi 2代B型四核开发板 官方正品 树莓派</a></p></li>
-<li><p><a href="http://item.jd.com/679773.html">闪迪（SanDisk）至尊高速移动MicroSDHC UHS-I存储卡 TF卡 32GB Class10 读速48Mb/s</a></p></li>
-<li><a href="http://item.jd.com/667570.html">迅捷（FAST）FW150US 超小型150M无线USB网卡</a></li>
-<li><p><a href="https://detail.tmall.com/item.htm?_u=4jgup6l1c31&amp;id=45729451918">USB转TTL PL2303HX模块 STC单片机下载线刷机线 升级串口模块</a></p></li>
-<li><p><a href="http://item.jd.com/629794.html">雷柏（Rapoo）1860 无线光学键鼠套装</a>  质量一般。临时用用，可以考虑不买！</p></li>
-</ul>
-
-
-<h2>安装系统</h2>
-
-<ul>
-<li>显示器： 恰好同时有HDMI的接口和显示器。如果没有，那就要考虑直接把系统写到SD卡了！！</li>
-<li>无线键盘、鼠标</li>
-<li>电源： 一般的手机充电器都可以，用充电宝也是OK的</li>
-<li><a href="https://www.raspberrypi.org/help/noobs-setup/">NOOBS</a>
-
-<ul>
-<li>NOOBS_v1_4_2.zip</li>
-<li>SDFormatterv4.zip</li>
-</ul>
-</li>
-</ul>
-
-
-<p>插上SD卡，安装系统就行了。</p>
-
-<p><img src="/images/blogs/raspberrypi-os-install.png" alt="" /></p>
-
-<h2>无线网卡</h2>
-
-<p>网站上没说有linux的驱动，但是直接插上后是能检测到设备的！</p>
-
-<pre><code>pi@raspberrypi:~$ lsusb
-Bus 001 Device 004: ID 0bda:8179 Realtek Semiconductor Corp. 
-Bus 001 Device 003: ID 0424:ec00 Standard Microsystems Corp. SMSC9512/9514 Fast Ethernet Adapter
-Bus 001 Device 002: ID 0424:9514 Standard Microsystems Corp. 
-Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
-</code></pre>
-
-<p>ifconfig也能查看到wlan0的无线网卡。接下来修改配置，添加用户密码即可。</p>
-
-<p>配置：</p>
-
-<pre><code>pi@raspberrypi:~$ cat /etc/network/interfaces
-# Please note that this file is written to be used with dhcpcd.
-# For static IP, consult /etc/dhcpcd.conf and 'man dhcpcd.conf'.
-
-auto lo
-iface lo inet loopback
-
-auto eth0
-allow-hotplug eth0
-#iface eth0 inet manual
-iface eth0 inet dhcp
-
-auto wlan0
-allow-hotplug wlan0
-#iface wlan0 inet manual
-iface wlan0 inet dhcp
-wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
-
-auto wlan1
-allow-hotplug wlan1
-iface wlan1 inet manual
-wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
-
-pi@raspberrypi:~$ sudo cat /etc/wpa_supplicant/wpa_supplicant.conf
-ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
-update_config=1
-
-
-network={
-ssid="winse.liu"
-psk="MIMA"
-}
-
-network={
-ssid="1108"
-psk="MIMA"
-}
-</code></pre>
-
-<h2>USB转串口使用COM控制raspberry</h2>
-
-<p>在淘宝上面买的，我系统是win10，抱着尝试下的心态也很便宜就买了一个。买来后，安装了win7的驱动，能用。</p>
-
-<p>配置见图：</p>
-
-<p><img src="/images/blogs/raspberrypi-gpio.png" alt="" /></p>
-
-<p><img src="/images/blogs/raspberrypi-usb-com-install.jpg" alt="" /></p>
-
-<p><img src="/images/blogs/raspberrypi-usb-com-config.jpg" alt="" /></p>
-
-<p>最终效果：</p>
-
-<p><img src="/images/blogs/raspberrypi-finished.jpg" alt="" /></p>
-
-<h2>用到的一些命令</h2>
-
-<pre><code>sudo raspi-config
-修改配置，默认使用图形界面登录，可以使用`Boot Options`修改为文本console模式
-
-sudo iwlist wlan0 scan | grep ESSID
-查看可用的无线
-
-systemctl list-units
-
-sudo apt-get install screen
-
-sudo apt-get -y install vim
-sudo apt-get install nginx
-systemctl status nginx.service
-sudo cp /etc/skel/.* /home/robot/
-</code></pre>
-
-<p>手机放一个热点出来，然后手机安装一个ssh的工具(JuiceSSH v2.0.2)就可以控制树莓派了。</p>
-
-<p>网上有用手机当屏幕，然后键盘连树莓派usb，结合来控制树莓派。一开始挺新奇的，后来感觉挺扯淡的！不过学习到了screen的程序，自动登录啥的没弄成，直接输入用户密码登录也行了。在boot选项看到有自动登录，不知道有没有用。现在有无线网卡和com来控制，感觉已经够用了。</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://www.raspberrypi.org/forums/viewtopic.php?f=91&amp;t=4751&amp;sid=661d1a59e4f85f333b40e6e46db58d32">Getting Started with the Raspberry Pi</a></li>
-<li><a href="http://blog.csdn.net/c80486/article/details/8545307">树莓派(raspberry pi)学习15: 使用WIFI网卡连接无线网络</a></li>
-<li><a href="http://blog.csdn.net/cugbabybear/article/details/23048741">windows下 用串行连接控制树莓派</a></li>
-<li><a href="http://www.alsrobot.cn/article-141.html">【创客学堂】如何在windows系统下用串口通信完爆raspberry pi（树莓派）</a></li>
-<li><a href="http://shumeipai.nxez.com/2013/10/10/raspberry-pi-pick-kindle-display.html">视频详解树莓派如何外接Kindle显示器</a></li>
-<li><p><a href="http://www.ibm.com/developerworks/cn/linux/l-cn-screen/index.html">linux 技巧：使用 screen 管理你的远程会话</a></p></li>
-<li><p><a href="http://www.bkjia.com/Pythonjc/818142.html">RASPBERRY PI wifi配置</a></p></li>
-<li><p><a href="http://blog.sina.com.cn/s/blog_3cb6a78c0101a0fe.html">Raspberry Pi 连接无线网卡</a></p></li>
-<li><p><a href="http://davidrobot.com/2014/11/raspberry_pi_model_b_plus_startup.html">开机篇 – 树莓派 Raspberry Pi Model B+ 入手折腾记 (1)</a></p></li>
-<li><p><a href="http://shumeipai.nxez.com/2013/09/07/no-screen-unknow-ip-login-pi.html#more-184">没有显示器且IP未知的情况下登录树莓派</a></p></li>
-<li><p><a href="http://www.pc6.com/az/104761.html">JuiceSSH v2.0.2</a></p></li>
 </ul>
 
 ]]></content>
