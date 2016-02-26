@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Tools | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/tools/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-02-01T19:38:15+08:00</updated>
+  <updated>2016-02-26T10:00:47+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -147,6 +147,33 @@ bigdata2
 Mem:         64405      58192       6213          0        505      29847
 -/+ buffers/cache:      27838      36566
 Swap:        65535         58      65477
+</code></pre>
+
+<h2>批量SSH无密钥登录</h2>
+
+<pre><code>[hadoop@hadoop-master4 ~]$ cat ssh-copy-id.expect 
+#!/usr/bin/expect  
+
+## Usage $0 [user@]host password
+
+set host [lrange $argv 0 0];
+set password [lrange $argv 1 1] ;
+
+set timeout 30;
+
+spawn ssh-copy-id $host ;
+
+expect {
+  "(yes/no)?" { send yes\n; exp_continue; }
+  "password:" { send $password\n; exp_continue; }
+}
+
+exec sleep 1;
+
+[hadoop@hadoop-master4 ~]$ pdsh -w ^slaves ./ssh-copy-id.expect %h 'PASSWD'
+
+# 验证是否全部成功
+[hadoop@hadoop-master4 ~]# pdsh -w ^slaves -x hadoop-slaver[1-16] -R ssh hostname
 </code></pre>
 
 <h2>参考</h2>
@@ -356,6 +383,44 @@ telnet localhost 8649
 telnet localhost 8651
 </code></pre>
 
+<p>问题：多播地址绑定失败</p>
+
+<blockquote><p><a href="http://llydmissile.blog.51cto.com/7784666/1411239">http://llydmissile.blog.51cto.com/7784666/1411239</a>
+<a href="http://www.cnblogs.com/Cherise/p/4350581.html">http://www.cnblogs.com/Cherise/p/4350581.html</a></p>
+
+<p>测试过程中可能会出现以下错误：Error creating multicast server mcast_join=239.2.11.71 port=8649 mcast_if=NULL family=&lsquo;inet4&rsquo;. Will try again&hellip;，系统不支持多播，需要将多播ip地址加入路由表，使用route add -host 239.2.11.71 dev eth0命令即可，将该命令加入/etc/rc.d/rc.local文件中，一劳永逸</p></blockquote>
+
+<pre><code>[root@hadoop-master4 ~]# gmond -d 10
+loaded module: core_metrics
+loaded module: cpu_module
+loaded module: disk_module
+loaded module: load_module
+loaded module: mem_module
+loaded module: net_module
+loaded module: proc_module
+loaded module: sys_module
+udp_recv_channel mcast_join=239.2.11.71 mcast_if=NULL port=8649 bind=239.2.11.71 buffer=0
+Error creating multicast server mcast_join=239.2.11.71 port=8649 mcast_if=NULL family='inet4'.  Will try again...
+</code></pre>
+
+<p>环境的default route被清理掉了(或者是由于网关和本机不在同一网段)。需要手动添加一条到网卡的route。</p>
+
+<pre><code>[root@hadoop-master4 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.32.0    *               255.255.255.0   U     0      0        0 bond0
+192.168.31.0    192.168.32.254  255.255.255.0   UG    0      0        0 bond0
+link-local      *               255.255.0.0     U     1006   0        0 bond0
+[root@hadoop-master4 ~]# route add -host 239.2.11.71 dev bond0
+[root@hadoop-master4 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+239.2.11.71     *               255.255.255.255 UH    0      0        0 bond0
+192.168.32.0    *               255.255.255.0   U     0      0        0 bond0
+192.168.31.0    192.168.32.254  255.255.255.0   UG    0      0        0 bond0
+link-local      *               255.255.0.0     U     1006   0        0 bond0
+</code></pre>
+
 <h2>安装GWeb</h2>
 
 <pre><code>cd ~/ganglia-web-3.7.1
@@ -413,6 +478,15 @@ vi /etc/httpd/conf/httpd.conf
 service httpd restart
 </code></pre>
 
+<p>如果在nginx做权限控制，一样很简单：</p>
+
+<pre><code>location /ganglia {
+        proxy_pass http://localhost/ganglia;
+        auth_basic "Ganglia Access";
+        auth_basic_user_file "/var/www/html/ganglia/etc/htpasswd.users";
+}
+</code></pre>
+
 <h2>集群配置</h2>
 
 <pre><code>cd /usr/local 
@@ -426,7 +500,7 @@ for h in cu-ud1 cu-ud2 hadoop-master1 hadoop-master2 ; do
     ssh $h "service gmond start" ; 
 done
 
-# 不同的集群，cluster.name需要修改
+# 不同的集群，gmond.conf的cluster.name需要修改
 
 telnet hadoop-master1 8649
 netstat -anp | grep gm
