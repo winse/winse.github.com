@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winseliu.com/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-02-26T10:00:47+08:00</updated>
+  <updated>2016-03-07T18:32:03+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,123 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Rsync与scp优势]]></title>
+    <link href="http://winseliu.com/blog/2016/03/07/rsync-vs-scp/"/>
+    <updated>2016-03-07T17:05:45+08:00</updated>
+    <id>http://winseliu.com/blog/2016/03/07/rsync-vs-scp</id>
+    <content type="html"><![CDATA[<p>今天在做flume写kafka数据时，数据从其他目录cp拷贝过来，flume采集程序报错 <strong>程序采集的时刻文件发生了改变</strong>。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>07 Mar 2016 16:46:05,535 ERROR [pool-3-thread-1] (org.apache.flume.source.SpoolDirectorySource$SpoolDirectoryRunnable.run:256)  - FATAL: Spool Directory source s1: { spoolDir: /home/hadoop/flume/data/ }: Uncaught exception in SpoolDirectorySource thread. Restart or reconfigure Flume to continue processing.
+</span><span class='line'>java.lang.IllegalStateException: File has changed size since being read: /home/hadoop/flume/data/hbase-hadoop-master-cu2.log
+</span><span class='line'>        at org.apache.flume.client.avro.ReliableSpoolingFileEventReader.retireCurrentFile(ReliableSpoolingFileEventReader.java:326)
+</span><span class='line'>        at org.apache.flume.client.avro.ReliableSpoolingFileEventReader.readEvents(ReliableSpoolingFileEventReader.java:259)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>联想到scp和rsync，好像rsync是有重命名这样的步骤的。网上也有很多对比这个两个工具的资料。</p>
+
+<ul>
+<li><a href="http://stackoverflow.com/questions/20244585/how-does-scp-differ-from-rsync">http://stackoverflow.com/questions/20244585/how-does-scp-differ-from-rsync</a></li>
+<li><p><a href="http://superuser.com/questions/193952/why-is-rsync-avz-faster-than-scp-r">http://superuser.com/questions/193952/why-is-rsync-avz-faster-than-scp-r</a></p></li>
+<li><p>rsync可以增量复制，并且只复制内容不同的部分</p></li>
+<li>rsync可以压缩，通过有断点续传 <code>-P</code></li>
+<li>rsync有各种参数： exclude等</li>
+<li>SCP也可以增加压缩参数： <code>scp -C -o 'CompressionLevel 9' -o 'IPQoS throughput'  -c arcfour machine:file .</code></li>
+<li>rsync会先写临时文件，复制完成后再重命名！</li>
+</ul>
+
+
+<p>这里只关注最后一点，对于按照名称来采集的程序非常关键！下面使用inotify监控目录的操作，在进行scp和rsync时发生的操作：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 test]$ scp -r source target/
+</span><span class='line'>[hadoop@cu2 test]$ rm target/source/1234
+</span><span class='line'>[hadoop@cu2 test]$ rsync -vaz source target/
+</span><span class='line'>sending incremental file list
+</span><span class='line'>source/
+</span><span class='line'>source/1234
+</span><span class='line'>
+</span><span class='line'>sent 141 bytes  received 35 bytes  352.00 bytes/sec
+</span><span class='line'>total size is 34  speedup is 0.19</span></code></pre></td></tr></table></div></figure>
+
+
+<p>对应的inotify的输出为：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 test]$ inotifywait -m target/source/
+</span><span class='line'>Setting up watches.
+</span><span class='line'>Watches established.
+</span><span class='line'>target/source/ CREATE 1234
+</span><span class='line'>target/source/ OPEN 1234
+</span><span class='line'>target/source/ MODIFY 1234
+</span><span class='line'>target/source/ CLOSE_WRITE,CLOSE 1234
+</span><span class='line'>
+</span><span class='line'>target/source/ DELETE 1234
+</span><span class='line'>
+</span><span class='line'>target/source/ ATTRIB,ISDIR 
+</span><span class='line'>target/source/ CREATE .1234.ARUg56
+</span><span class='line'>target/source/ OPEN .1234.ARUg56
+</span><span class='line'>target/source/ ATTRIB .1234.ARUg56
+</span><span class='line'>target/source/ MODIFY .1234.ARUg56
+</span><span class='line'>target/source/ CLOSE_WRITE,CLOSE .1234.ARUg56
+</span><span class='line'>target/source/ ATTRIB .1234.ARUg56
+</span><span class='line'>target/source/ MOVED_FROM .1234.ARUg56
+</span><span class='line'>target/source/ MOVED_TO 1234
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>rsync会先写把内容复制到一个临时文件，复制完成后，再重命名为正式的名称。</p>
+
+<p><strong>在生产环境尽量使用rsync来进行文件(夹)的复制/同步操作，即快键有安全。</strong></p>
+
+<p>当然还有奇葩的快速删除海量文件夹的方式也用的是rsync：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>rsync --delete-before -d /data/blank/ /var/spool/clientmqueue/ 
+</span><span class='line'>
+</span><span class='line'>rsync --delete-before -a -H -v --progress --stats /tmp/test/ log/</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><a href="http://logo32.iteye.com/blog/1564727">http://logo32.iteye.com/blog/1564727</a></li>
+<li><a href="http://www.ha97.com/4107.html">http://www.ha97.com/4107.html</a></li>
+</ul>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Ganglia页自定义视图]]></title>
@@ -61,10 +178,14 @@
 <span class='line-number'>37</span>
 <span class='line-number'>38</span>
 <span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# cd /var/www/html/ganglia/
+</span><span class='line'># 查看view放置的位置
 </span><span class='line'>[root@cu2 ganglia]# grep views_dir conf_default.php 
 </span><span class='line'>$conf['views_dir'] = $conf['gweb_confdir'] . '/conf';
 </span><span class='line'>
+</span><span class='line'># view配置目录
 </span><span class='line'>[root@cu2 conf]$ ll
 </span><span class='line'>......
 </span><span class='line'>-rw-rw-r-- 1 apache apache    58 Oct  2 04:38 view_default.json
@@ -118,7 +239,15 @@
     <link href="http://winseliu.com/blog/2016/02/01/ganglia-python-extension/"/>
     <updated>2016-02-01T18:23:43+08:00</updated>
     <id>http://winseliu.com/blog/2016/02/01/ganglia-python-extension</id>
-    <content type="html"><![CDATA[<h2>安装</h2>
+    <content type="html"><![CDATA[<p>最简单的添加metric的方式使用 <code>gmetric</code> ：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>/usr/local/ganglia/bin/gmetric -n "TITLE" -v VALUE -t int16 -g GROUP</span></code></pre></td></tr></table></div></figure>
+
+
+<p>有时指标计算复杂，通过简单的shell不能满足功能需要。我们可以使用python模块来定制。</p>
+
+<h2>安装</h2>
 
 <p>默认安装会检查Python环境，符合条件会自动的安装Python模块。</p>
 
@@ -6399,361 +6528,6 @@ cacti是如何展示数据（绘图）呢？
 </span><span class='line'>yarn.scheduler.minimum-allocation-mb=1024=yarn-default.xml</span></code></pre></td></tr></table></div></figure>
 
 
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Oozie Start Guide]]></title>
-    <link href="http://winseliu.com/blog/2015/09/08/oozie-start-guide/"/>
-    <updated>2015-09-08T11:15:14+08:00</updated>
-    <id>http://winseliu.com/blog/2015/09/08/oozie-start-guide</id>
-    <content type="html"><![CDATA[<h2>步骤记录</h2>
-
-<p>说明：cu2就是hadoop-master2</p>
-
-<ol>
-<li>打包</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 oozie-4.2.0]$ vi bin/mkdistro.sh 
-</span><span class='line'>MVN_OPTS="-Dbuild.time=${DATETIME} -Dvc.revision=${VC_REV} -Dvc.url=${VC_URL} "
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ bin/mkdistro.sh -DskipTests -Dmaven.javadoc.skip=true</span></code></pre></td></tr></table></div></figure>
-
-
-<ol>
-<li>依赖</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>打包后，文件的位置
-</span><span class='line'>[hadoop@cu2 ~]$ tar zxvf sources/oozie-4.2.0/distro/target/oozie-4.2.0-distro.tar.gz
-</span><span class='line'>
-</span><span class='line'>下载 &lt;http://dev.sencha.com/deploy/ext-2.2.zip&gt;
-</span><span class='line'>
-</span><span class='line'>yum install zip
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ mkdir libext
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ cd libext/
-</span><span class='line'>[hadoop@cu2 libext]$ ll
-</span><span class='line'>total 7584
-</span><span class='line'>-rw-rw-r-- 1 hadoop hadoop 6800612 Sep  7 16:00 ext-2.2.zip
-</span><span class='line'>-rw-rw-r-- 1 hadoop hadoop  960372 Feb 28  2015 mysql-connector-java-5.1.34.jar</span></code></pre></td></tr></table></div></figure>
-
-
-<ol>
-<li>安装</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 oozie-4.2.0]$ bin/oozie-setup.sh prepare-war
-</span><span class='line'>
-</span><span class='line'>setup后，生成的war的位置：/home/hadoop/oozie-4.2.0/oozie-server/webapps/oozie.war</span></code></pre></td></tr></table></div></figure>
-
-
-<ol>
-<li>初始化数据库</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>创建数据库用户
-</span><span class='line'>
-</span><span class='line'>CREATE DATABASE oozie;
-</span><span class='line'>GRANT ALL ON oozie.* TO 'oozie'@'%' IDENTIFIED BY 'oozie';
-</span><span class='line'>FLUSH PRIVILEGES;
-</span><span class='line'>GRANT ALL ON oozie.* TO 'oozie'@'localhost'  IDENTIFIED BY 'oozie';
-</span><span class='line'>FLUSH PRIVILEGES;
-</span><span class='line'>
-</span><span class='line'>show grants for oozie;
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ vi conf/oozie-site.xml 
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;oozie.service.JPAService.jdbc.driver&lt;/name&gt;&lt;value&gt;com.mysql.jdbc.Driver&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;oozie.service.JPAService.jdbc.url&lt;/name&gt;&lt;value&gt;jdbc:mysql://localhost:3306/oozie&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;oozie.service.JPAService.jdbc.username&lt;/name&gt;&lt;value&gt;oozie&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;oozie.service.JPAService.jdbc.password&lt;/name&gt;&lt;value&gt;oozie&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>这里直接把hadoop的jar添加到脚本中，不拷贝到libext下面
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ vi bin/ooziedb.sh
-</span><span class='line'>OOZIECPPATH=""
-</span><span class='line'>if [ ! -z ${HADOOP_HOME} ] ; then
-</span><span class='line'>  OOZIECPPATH="${OOZIECPPATH}:$($HADOOP_HOME/bin/hadoop classpath)"
-</span><span class='line'>fi
-</span><span class='line'>
-</span><span class='line'>照着写就行了，不必考虑sql文件的存在与否
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ bin/ooziedb.sh create -sqlfile oozie.sql -run
-</span><span class='line'>  setting CATALINA_OPTS="$CATALINA_OPTS -Xmx1024m"
-</span><span class='line'>
-</span><span class='line'>Validate DB Connection
-</span><span class='line'>DONE
-</span><span class='line'>DB schema does not exist
-</span><span class='line'>Check OOZIE_SYS table does not exist
-</span><span class='line'>DONE
-</span><span class='line'>Create SQL schema
-</span><span class='line'>DONE
-</span><span class='line'>Create OOZIE_SYS table
-</span><span class='line'>DONE
-</span><span class='line'>
-</span><span class='line'>Oozie DB has been created for Oozie version '4.2.0'
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>The SQL commands have been written to: oozie.sql</span></code></pre></td></tr></table></div></figure>
-
-
-<ol>
-<li>启动服务</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>由于war中没有hadoop的jar，所以这里也需要把它们添加到tomcat
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ $HADOOP_HOME/bin/hadoop classpath | sed 's/:/,/g'
-</span><span class='line'>/home/hadoop/hadoop-2.7.1/etc/hadoop,/home/hadoop/hadoop-2.7.1/share/hadoop/common/lib/*,/home/hadoop/hadoop-2.7.1/share/hadoop/common/*,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs/lib/*,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs/*,/home/hadoop/hadoop-2.7.1/share/hadoop/yarn/lib/*,/home/hadoop/hadoop-2.7.1/share/hadoop/yarn/*,/home/hadoop/hadoop-2.7.1/share/hadoop/mapreduce/lib/*,/home/hadoop/hadoop-2.7.1/share/hadoop/mapreduce/*,/home/hadoop/hadoop-2.7.1/contrib/capacity-scheduler/*.jar
-</span><span class='line'>
-</span><span class='line'>处理下把*改成*.jar
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ vi oozie-server/conf/catalina.properties 
-</span><span class='line'>common.loader=${catalina.base}/lib,${catalina.base}/lib/*.jar,${catalina.home}/lib,${catalina.home}/lib/*.jar,/home/hadoop/hadoop-2.7.1/etc/hadoop,/home/hadoop/hadoop-2.7.1/share/hadoop/common/lib/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/common/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs/lib/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/hdfs/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/yarn/lib/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/yarn/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/mapreduce/lib/*.jar,/home/hadoop/hadoop-2.7.1/share/hadoop/mapreduce/*.jar,/home/hadoop/hadoop-2.7.1/contrib/capacity-scheduler/*.jar
-</span><span class='line'>
-</span><span class='line'># 前台运行 bin/oozied.sh run
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ bin/oozied.sh start
-</span><span class='line'>
-</span><span class='line'>http://localhost:11000/</span></code></pre></td></tr></table></div></figure>
-
-
-<ol>
-<li>测试</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 oozie-4.2.0]$ vi bin/oozie
-</span><span class='line'>OOZIECPPATH=""
-</span><span class='line'>if [ ! -z ${HADOOP_HOME} ] ; then
-</span><span class='line'>  OOZIECPPATH="${OOZIECPPATH}:$($HADOOP_HOME/bin/hadoop classpath)"
-</span><span class='line'>fi
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ bin/oozie admin -oozie http://localhost:11000/oozie -status
-</span><span class='line'>System mode: NORMAL</span></code></pre></td></tr></table></div></figure>
-
-
-<ol>
-<li>跑个helloworld</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 oozie-4.2.0]$ tar zxvf oozie-sharelib-4.2.0.tar.gz 
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ ~/hadoop-2.7.1/bin/hadoop fs -rmr share
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ ~/hadoop-2.7.1/bin/hadoop fs -put share share
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ tar zxvf oozie-examples.tar.gz 
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ ~/hadoop-2.7.1/bin/hadoop fs -put examples examples
-</span><span class='line'>
-</span><span class='line'>修改share后重启下oozie，sharelib在应用中会缓冲，中间上传程序不能识别，会报`Could not locate Oozie sharelib`的错。
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ vi examples/apps/map-reduce/job.properties 
-</span><span class='line'>nameNode=hdfs://hadoop-master2:9000
-</span><span class='line'>jobTracker=hadoop-master2:8032
-</span><span class='line'>queueName=default
-</span><span class='line'>examplesRoot=examples
-</span><span class='line'>
-</span><span class='line'>oozie.wf.application.path=${nameNode}/user/${user.name}/${examplesRoot}/apps/map-reduce/workflow.xml
-</span><span class='line'>outputDir=map-reduce
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ bin/oozie job -oozie http://localhost:11000/oozie -config examples/apps/map-reduce/job.properties -run
-</span><span class='line'>Error: E0501 : E0501: Could not perform authorization operation, User: hadoop is not allowed to impersonate hadoop
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.7.1]$ vi etc/hadoop/core-site.xml 
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;hadoop.proxyuser.hadoop.hosts&lt;/name&gt;&lt;value&gt;*&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;hadoop.proxyuser.hadoop.groups&lt;/name&gt;&lt;value&gt;*&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 ~]$ for h in `cat /etc/hosts | grep slaver | awk '{print $2}' ` ; do rsync -vaz hadoop-2.7.1 $h:~/ --exclude=logs ; done
-</span><span class='line'>
-</span><span class='line'>同步重启集群
-</span><span class='line'>
-</span><span class='line'>注：增加以上配置后，无需重启集群，可以直接用hadoop管理员账号重新加载这两个属性值，命令为：
-</span><span class='line'>    hdfs dfsadmin -refreshSuperUserGroupsConfiguration
-</span><span class='line'>    yarn rmadmin -refreshSuperUserGroupsConfiguration
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 oozie-4.2.0]$ bin/oozie job -oozie http://localhost:11000/oozie -config examples/apps/map-reduce/job.properties -run
-</span><span class='line'>job: 0000000-150908082015741-oozie-hado-W
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.7.1]$ bin/hadoop fs -cat /user/hadoop/examples/output-data/map-reduce/part-00000
-</span><span class='line'>
-</span><span class='line'>尽管能看到结果了，但是不算任务执行成功。任务是有报错的`JA006: Call From cu2/192.168.0.214 to hadoop-master2:10020 failed on connection exception`
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.7.1]$ sbin/mr-jobhistory-daemon.sh start historyserver
-</span><span class='line'>
-</span><span class='line'>在运行一次就ok了。</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://oozie.apache.org/docs/4.2.0/DG_QuickStart.html">https://oozie.apache.org/docs/4.2.0/DG_QuickStart.html</a></li>
-<li><a href="http://ju.outofmemory.cn/entry/65688">http://ju.outofmemory.cn/entry/65688</a></li>
-<li><a href="http://stackoverflow.com/questions/30926357/oozie-on-yarn-oozie-is-not-allowed-to-impersonate-hadoop">http://stackoverflow.com/questions/30926357/oozie-on-yarn-oozie-is-not-allowed-to-impersonate-hadoop</a></li>
-<li><a href="http://oozie.apache.org/docs/4.0.0/DG_QuickStart.html#Oozie_Share_Lib_Installation">http://oozie.apache.org/docs/4.0.0/DG_QuickStart.html#Oozie_Share_Lib_Installation</a></li>
-<li><a href="https://oozie.apache.org/docs/4.2.0/DG_Examples.html">https://oozie.apache.org/docs/4.2.0/DG_Examples.html</a></li>
-<li><p><a href="http://hadoop.apache.org/docs/r2.7.1/hadoop-project-dist/hadoop-common/ClusterSetup.html">http://hadoop.apache.org/docs/r2.7.1/hadoop-project-dist/hadoop-common/ClusterSetup.html</a></p></li>
-<li><p><a href="http://blog.csdn.net/wngn123/article/details/41380013">http://blog.csdn.net/wngn123/article/details/41380013</a></p></li>
-</ul>
 
 ]]></content>
   </entry>
