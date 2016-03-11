@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Tools | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/tools/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-03-07T18:32:03+08:00</updated>
+  <updated>2016-03-11T13:57:27+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,251 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[安装配置OpenVPN]]></title>
+    <link href="http://winseliu.com/blog/2016/03/11/install-and-config-openvpn/"/>
+    <updated>2016-03-11T09:46:49+08:00</updated>
+    <id>http://winseliu.com/blog/2016/03/11/install-and-config-openvpn</id>
+    <content type="html"><![CDATA[<p>由于测试环境搭建不在同一个网络，平时查看hadoop集群状态、提交任务都可以通过hadoop-master的外网来操作。但是要读写kafka，需要直接连通所有的节点，全部映射端口太麻烦。一开始想到了VLAN(虚拟局域网），远远超出能力范围。最后通过搭架VPN来实现与测试环境的透明访问。</p>
+
+<h2>使用集成版本</h2>
+
+<p>参考 <a href="https://linux.cn/article-4733-1.html">https://linux.cn/article-4733-1.html</a></p>
+
+<pre><code># download https://openvpn.net/index.php/access-server/download-openvpn-as-sw.html
+
+# 安装
+[root@cu2 ~]# rpm -ivh openvpn-as-2.0.25-CentOS6.x86_64.rpm 
+Preparing...                ########################################### [100%]
+   1:openvpn-as             ########################################### [100%]
+The Access Server has been successfully installed in /usr/local/openvpn_as
+Configuration log file has been written to /usr/local/openvpn_as/init.log
+Please enter "passwd openvpn" to set the initial
+administrative password, then login as "openvpn" to continue
+configuration here: https://192.168.0.214:943/admin
+To reconfigure manually, use the /usr/local/openvpn_as/bin/ovpn-init tool.
+
+Access Server web UIs are available here:
+Admin  UI: https://192.168.0.214:943/admin
+Client UI: https://192.168.0.214:943/
+
+[root@cu2 ~]# passwd openvpn
+
+然后通过web admin进行配置。如主机的信息、hostname以及监听绑定的IP
+</code></pre>
+
+<p>配置好以后，本地通过网页下载client程序安装。连接配置后：</p>
+
+<pre><code>
+C:\Users\winse&gt;tracert  cu3
+
+通过最多 30 个跃点跟踪
+到 cu3 [192.168.0.148] 的路由:
+
+  1     2 ms     2 ms     2 ms  172.27.232.1
+  2     2 ms     2 ms     2 ms  cu3 [192.168.0.148]
+
+跟踪完成。
+
+
+C:\Users\winse&gt;route print
+===========================================================================
+IPv4 路由表
+===========================================================================
+活动路由:
+网络目标        网络掩码          网关       接口   跃点数
+          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.102     20
+          0.0.0.0        128.0.0.0     172.27.232.1     172.27.232.2     20
+...
+</code></pre>
+
+<p><a href="http://designmylife.blog.163.com/blog/static/2067142542013527101659960/">http://designmylife.blog.163.com/blog/static/2067142542013527101659960/</a></p>
+
+<p>路由匹配按最大(最亲)方式匹配。上面路由会先匹配mask为 <code>128.0.0.0</code> 的路由。最终把所有的流量经由VPN出去。</p>
+
+<p>通过 <strong>Access Server</strong> 安装简单，配置通过网页来弄，和网上资料的都匹配不上，还有用户数量的限制，囧。</p>
+
+<h2>编译源码安装</h2>
+
+<ul>
+<li>服务端安装配置</li>
+</ul>
+
+
+<pre><code>[root@cu2 openvpn-2.3.10]# yum install libpam*
+[root@cu2 openvpn-2.3.10]# yum install pam-devel.x86_64
+
+[root@cu2 ~]# rz
+rz waiting to receive.
+Starting zmodem transfer.  Press Ctrl+C to cancel.
+Transferring lzo-2.06.tar.gz...
+  100%     569 KB     569 KB/sec    00:00:01       0 Errors  
+
+[root@cu2 ~]# tar zxvf lzo-2.06.tar.gz 
+[root@cu2 ~]# cd lzo-2.06
+[root@cu2 lzo-2.06]# ./configure 
+[root@cu2 lzo-2.06]# make &amp;&amp;  make install
+
+[root@cu2 openvpn-2.3.10]# ./configure --prefix=/usr/local/openvpn 
+[root@cu2 openvpn-2.3.10]# make &amp;&amp; make install
+
+[root@cu2 openvpn-2.3.10]# /usr/local/openvpn/sbin/openvpn --version
+OpenVPN 2.3.10 x86_64-unknown-linux-gnu [SSL (OpenSSL)] [EPOLL] [MH] [IPv6] built on Mar  9 2016
+
+https://github.com/OpenVPN/easy-rsa/releases
+
+[root@cu2 EasyRSA-3.0.1]# ./easyrsa  help
+
+[root@cu2 EasyRSA-3.0.1]# ./easyrsa init-pki
+[root@cu2 EasyRSA-3.0.1]#  ./easyrsa build-ca
+
+[root@cu2 EasyRSA-3.0.1]# ./easyrsa gen-req openvpn nopass
+[root@cu2 EasyRSA-3.0.1]# ./easyrsa sign client openvpn
+
+[root@cu2 EasyRSA-3.0.1]# ./easyrsa gen-req eshore-cu nopass
+[root@cu2 EasyRSA-3.0.1]# ./easyrsa sign server eshore-cu
+
+[root@cu2 EasyRSA-3.0.1]# tree pki/
+pki/
+├── ca.crt
+├── certs_by_serial
+│   ├── 01.pem
+│   └── 02.pem
+├── index.txt
+├── index.txt.attr
+├── index.txt.attr.old
+├── index.txt.old
+├── issued
+│   ├── eshore-cu.crt
+│   └── openvpn.crt
+├── private
+│   ├── ca.key
+│   ├── eshore-cu.key
+│   └── openvpn.key
+├── reqs
+│   ├── eshore-cu.req
+│   └── openvpn.req
+├── serial
+└── serial.old
+
+[root@cu2 EasyRSA-3.0.1]#  ./easyrsa gen-dh
+[root@cu2 EasyRSA-3.0.1]# cd pki
+[root@cu2 pki]# cp ca.crt dh.pem issued/eshore-cu.crt private/eshore-cu.key /etc/openvpn/ 
+
+[root@cu2 openvpn-2.3.10]# cp sample/sample-config-files/server.conf /etc/openvpn/
+
+    proto tcp
+    cert eshore-cu.crt
+    key eshore-cu.key 
+    dh dh.pem
+    # 在客户端额外添加这条路由到VPN
+    push "route 192.168.0.0 255.255.255.0"
+    # 和AS一样，会添加0.0.0.0到VPN的路由。默认走VPN
+    ;push "redirect-gateway def1 bypass-dhcp"
+    user nobody
+    group nobody
+
+[root@cu2 pki]# cd /etc/openvpn/
+[root@cu2 openvpn]# /usr/local/openvpn/sbin/openvpn --config /etc/openvpn/server.conf 
+[root@cu2 openvpn]# /usr/local/openvpn/sbin/openvpn --daemon --config server.conf 
+</code></pre>
+
+<ul>
+<li>安装客户端：</li>
+</ul>
+
+
+<p><a href="https://openvpn.net/index.php/open-source/downloads.html">https://openvpn.net/index.php/open-source/downloads.html</a> 下载安装对应的版本。</p>
+
+<p>拷贝sample-config/client.ovpn和服务端的ca.crt、openvpn.crt、openvpn.key到config目录下面。</p>
+
+<p>修改client.ovpn:</p>
+
+<pre><code>proto tcp
+remote webcu2 1194
+cert openvpn.crt
+key openvpn.key
+</code></pre>
+
+<p>然后启动 <strong>OpenVPN GUI</strong> ，右键connect就行了。</p>
+
+<pre><code>$ route print
+...
+IPv4 路由表
+===========================================================================
+活动路由:
+网络目标        网络掩码          网关       接口   跃点数
+          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.102     20
+         10.8.0.1  255.255.255.255         10.8.0.5         10.8.0.6     20
+         10.8.0.4  255.255.255.252            在链路上          10.8.0.6    276
+         10.8.0.6  255.255.255.255            在链路上          10.8.0.6    276
+         10.8.0.7  255.255.255.255            在链路上          10.8.0.6    276
+      192.168.0.0    255.255.255.0         10.8.0.5         10.8.0.6     20
+...
+</code></pre>
+
+<h2>问题</h2>
+
+<ul>
+<li>连接到VPN服务端的机器是没有问题，但是不能访问该机器的应用（端口不同）</li>
+</ul>
+
+
+<p>被防火墙限制了，在服务端把10.8.0.0/24加入到防火墙允许。</p>
+
+<pre><code>iptables -A INPUT -s 10.8.0.0/24 -j ACCEPT 
+</code></pre>
+
+<ul>
+<li>不能访问服务端其他机器</li>
+</ul>
+
+
+<p>在iptables上增加转发</p>
+
+<pre><code>iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE
+</code></pre>
+
+<p>查看iptables规则：</p>
+
+<pre><code>iptables -nL -t nat
+</code></pre>
+
+<p>测试下:</p>
+
+<pre><code>$ ping cu3
+
+正在 Ping cu3 [192.168.0.148] 具有 32 字节的数据:
+来自 192.168.0.148 的回复: 字节=32 时间=5ms TTL=63
+来自 192.168.0.148 的回复: 字节=32 时间=5ms TTL=63
+</code></pre>
+
+<p>其他（参数，未实践，记录下来）</p>
+
+<blockquote><p>必须在服务器端的内网网关上将到10.8.0.0/24网段的路由指向到openvpn服务器，不然从服务器端内网其他机器根本找不到去往10.8.0.0/24网段的路由。这里又分两种情况，一种是服务端有内网网关设备的（按如上说法即可）；一种是服务端内网没有网关设备，即服务器通过交换机相连，相互通讯靠广播的情况。我的就是这种情况。需要在想访问的server上增加到10.8.0.0/24的路由，如下</p>
+
+<p>route add -net 10.8.0.0/24 gw 192.168.1.211    #1.211为openvpn服务器的内网IP</p>
+
+<p>Make sure that you&rsquo;ve enabled IP and TUN/TAP forwarding on the OpenVPN server machine.
+确定开启了转发功能，然后在openvpn服务器Iptables添加如下两条规则</p>
+
+<p>iptables -A FORWARD -i tun0 -s 10.8.0.0/24 -j ACCEPT    #简单说，允许数据从客户端到后端server
+iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端server到客户端</p></blockquote>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://openvpn.net/index.php/open-source/documentation/howto.html">https://openvpn.net/index.php/open-source/documentation/howto.html</a></li>
+<li><a href="http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html">http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html</a></li>
+<li><a href="http://www.linuxquestions.org/questions/linux-networking-3/openvpn-conencts-but-can%27t-ping-servers-on-the-other-network-660610/">http://www.linuxquestions.org/questions/linux-networking-3/openvpn-conencts-but-can%27t-ping-servers-on-the-other-network-660610/</a></li>
+<li><a href="http://www.ilanni.com/?p=9877">http://www.ilanni.com/?p=9877</a></li>
+<li><a href="http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html">http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html</a></li>
+<li><a href="http://kaifly.blog.51cto.com/3209616/1367591">http://kaifly.blog.51cto.com/3209616/1367591</a></li>
+</ul>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Rsync与scp优势]]></title>
@@ -938,50 +1183,6 @@ crontab -e
 <li><a href="http://stackoverflow.com/questions/4877637/postgresql-exception-handling">http://stackoverflow.com/questions/4877637/postgresql-exception-handling</a></li>
 </ul>
 
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[搭梯笔记]]></title>
-    <link href="http://winseliu.com/blog/2015/11/22/gfw-ladder/"/>
-    <updated>2015-11-22T20:51:35+08:00</updated>
-    <id>http://winseliu.com/blog/2015/11/22/gfw-ladder</id>
-    <content type="html"><![CDATA[<h2>准备一个SSH账号</h2>
-
-<ul>
-<li><a href="http://www.99ssh.net/">http://www.99ssh.net/</a></li>
-</ul>
-
-
-<h2>SSH -N -D 或者MyEnTunnel</h2>
-
-<ul>
-<li><code>ssh -N -D [PORT] [USER@IP]</code></li>
-<li><a href="http://www.99ssh.net/help/newsshow.php?cid=19&amp;id=21">http://www.99ssh.net/help/newsshow.php?cid=19&amp;id=21</a></li>
-</ul>
-
-
-<p>使用MyEnTunel的话，设置程序为【启动软件时自动连接】，同时把程序的快捷方式加到【C:\Users\winse\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\】目录下。</p>
-
-<h2>Chrome + SwitchyOmega + gfwlist</h2>
-
-<ul>
-<li><a href="https://github.com/FelisCatus/SwitchyOmega/releases">https://github.com/FelisCatus/SwitchyOmega/releases</a> SwitchySharp升级版本</li>
-<li><a href="https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt">https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt</a></li>
-</ul>
-
-
-<p>可以做到智能代理功能，gfwlist的才会走代理。加速访问国内网站，同时减少不必要的流量。</p>
-
-<h2>Firefox + FoxyProxy + gfwlist</h2>
-
-<ul>
-<li><a href="http://mozilla.com.cn/thread-230260-1-1.html">http://mozilla.com.cn/thread-230260-1-1.html</a></li>
-<li><a href="https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt">https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt</a></li>
-</ul>
-
-
-<p>Chrome的版本速度快一点。配置好后，等待一段时间就智能的适配了，firefox的等的时间略长。</p>
 ]]></content>
   </entry>
   
