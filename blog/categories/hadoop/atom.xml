@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-03-11T13:57:27+08:00</updated>
+  <updated>2016-03-17T19:05:51+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,183 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Hadoop内存环境变量和参数]]></title>
+    <link href="http://winseliu.com/blog/2016/03/17/hadoop-memory-opts-and-args/"/>
+    <updated>2016-03-17T14:09:26+08:00</updated>
+    <id>http://winseliu.com/blog/2016/03/17/hadoop-memory-opts-and-args</id>
+    <content type="html"><![CDATA[<h2>问题：</h2>
+
+<p><a href="https://www.zhihu.com/question/25498407">https://www.zhihu.com/question/25498407</a></p>
+
+<p>问题是hadoop内存的配置，涉及两个方面：</p>
+
+<ul>
+<li>namenode/datanode/resourcemanager/nodemanager的HEAPSIZE环境变量</li>
+<li>在配置文件/Configuration中影响MR运行的变量</li>
+</ul>
+
+
+<p>尽管搞hadoop有好一阵子了，对这些变量有个大概的了解，但没有真正的去弄懂他们的区别。乘着这个机会好好的整整（其实就是下载源码然后全文查找<sup>V</sup>^）。</p>
+
+<h2>HEAPSIZE环境变量</h2>
+
+<p>hadoop-env.sh配置文件hdfs和yarn脚本都会加载。hdfs是一脉相承使用 <strong>HADOOP_HEAPSIZE</strong> ，而yarn使用新的环境变量 <strong>YARN_HEAPSIZE</strong> 。</p>
+
+<p>hadoop/hdfs/yarn命令最终会把HEAPSIZE的参数转换了 <strong>JAVA_HEAP_MAX</strong>，把它作为启动参数传递给Java。</p>
+
+<ul>
+<li>hadoop</li>
+</ul>
+
+
+<p>hadoop命令是把 <code>HADOOP_HEAPSIZE</code> 转换为 <code>JAVA_HEAP_MAX</code> ，调用路径：</p>
+
+<p><code>hadoop -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
+
+<pre><code>JAVA_HEAP_MAX=-Xmx1000m 
+
+# check envvars which might override default args
+if [ "$HADOOP_HEAPSIZE" != "" ]; then
+  #echo "run with heapsize $HADOOP_HEAPSIZE"
+  JAVA_HEAP_MAX="-Xmx""$HADOOP_HEAPSIZE""m"
+  #echo $JAVA_HEAP_MAX
+fi
+</code></pre>
+
+<ul>
+<li>hdfs</li>
+</ul>
+
+
+<p>hdfs其实就是从hadoop脚本里面分离出来的。调用路径：</p>
+
+<p><code>hdfs -&gt; hdfs-config.sh -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
+
+<ul>
+<li>yarn</li>
+</ul>
+
+
+<p>yarn也调用了hadoop-env.sh，但是设置内存的参数变成了 <strong>YARN_HEAPSIZE</strong> 。调用路径：</p>
+
+<p><code>yarn -&gt; yarn-config.sh -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
+
+<pre><code>JAVA_HEAP_MAX=-Xmx1000m 
+
+# For setting YARN specific HEAP sizes please use this
+# Parameter and set appropriately
+# YARN_HEAPSIZE=1000
+
+# check envvars which might override default args
+if [ "$YARN_HEAPSIZE" != "" ]; then
+  JAVA_HEAP_MAX="-Xmx""$YARN_HEAPSIZE""m"
+fi
+</code></pre>
+
+<ul>
+<li>实例：</li>
+</ul>
+
+
+<p>配置hadoop参数的时刻，一般都是配置 <strong>hadoop-env.sh</strong> 如：<code>export HADOOP_HEAPSIZE=16000</code> 。查看相关进程命令有：</p>
+
+<pre><code>/usr/local/jdk1.7.0_17/bin/java -Dproc_resourcemanager -Xmx1000m
+/usr/local/jdk1.7.0_17/bin/java -Dproc_timelineserver -Xmx1000m
+/usr/local/jdk1.7.0_17/bin/java -Dproc_nodemanager -Xmx1000m 
+/usr/local/jdk1.7.0_17/bin/java -Dproc_journalnode -Xmx16000m
+/usr/local/jdk1.7.0_17/bin/java -Dproc_namenode -Xmx16000m
+/usr/local/jdk1.7.0_17/bin/java -Dproc_journalnode -Xmx16000m
+/usr/local/jdk1.7.0_17/bin/java -Dproc_datanode -Xmx16000m
+</code></pre>
+
+<p>与hdfs有关的内存都修改成功了。而与yarn的还是默认的1g(堆)内存。</p>
+
+<h2>MR配置文件参数</h2>
+
+<p>分成两组，一种是直接设置数字(mb结束的属性)，一种是配置java虚拟机变量的-Xmx。</p>
+
+<pre><code>* yarn.app.mapreduce.am.resource.mb、mapreduce.map.memory.mb、mapreduce.reduce.memory.mb
+    用于调度计算内存，是不是还能分配任务（计算额度）
+* yarn.app.mapreduce.am.command-opts、mapreduce.map.java.opts、mapreduce.reduce.java.opts
+    程序实际启动使用的参数
+</code></pre>
+
+<p>一个是控制中枢，一个是实实在在的限制。</p>
+
+<ul>
+<li>官网文档的介绍：</li>
+</ul>
+
+
+<blockquote><ul>
+<li>mapreduce.map.memory.mb 1024    The amount of memory to request from the scheduler for each map task.</li>
+<li>mapreduce.reduce.memory.mb  1024    The amount of memory to request from the scheduler for each reduce task.</li>
+<li>mapred.child.java.opts  -Xmx200m    Java opts for the task processes.</li>
+</ul>
+</blockquote>
+
+<ul>
+<li><p>下面用实践来验证效果：</p>
+
+<ul>
+<li>先搞一个很大大只有一个block的文件，把程序运行时间拖长一点</li>
+<li>修改opts参数，查看效果</li>
+<li>修改mb参数，查看效果</li>
+</ul>
+</li>
+<li><p>实践一</p></li>
+</ul>
+
+
+<p>mapreduce.map.memory.mb设置为1000，而mapreduce.map.java.opts设置为1200m。程序照样跑的很欢！！</p>
+
+<p>同时从map的 YarnChild 进程看出起实际作用的是 mapreduce.map.java.opts 参数。memory.mb用来计算节点是否有足够的内存来跑任务，以及用来计算整个集群的可用内存等。而java.opts则是用来限制真正任务的堆内存用量。</p>
+
+<p><strong>注意</strong> ： 这里仅仅是用来测试，正式环境java.opts的内存应该小于memory.mb！！具体配置参考：<a href="http://blog.javachen.com/2015/06/05/yarn-memory-and-cpu-configuration.html">yarn-memory-and-cpu-configuration</a></p>
+
+<p><img src="/images/blogs/hadoop-opts/yarn-opts-mb.jpg" alt="" /></p>
+
+<ul>
+<li>实践二</li>
+</ul>
+
+
+<p>map.memory.mb设置太大，导致调度失败！</p>
+
+<p><img src="/images/blogs/hadoop-opts/yarn-mb-1.jpg" alt="" /></p>
+
+<ul>
+<li>实践三</li>
+</ul>
+
+
+<p>尽管实际才用不大于1.2G的内存，但是由于mapreduce.map.memory.mb设置为8G，整个集群显示已用内存18G（2 * 8g + 1 * 2g）。登录实际运行任务的机器，实际内存其实不多。</p>
+
+<p><img src="/images/blogs/hadoop-opts/yarn-mb-2.jpg" alt="" />
+<img src="/images/blogs/hadoop-opts/yarn-mb-3.jpg" alt="" /></p>
+
+<p>reduce和am（appmaster）的参数类似。</p>
+
+<p><img src="/images/blogs/hadoop-opts/yarn-appmaster-mb-1.jpg" alt="" />
+<img src="/images/blogs/hadoop-opts/yarn-appmaster-mb-2.jpg" alt="" /></p>
+
+<h2>mapred.child.java.opts参数</h2>
+
+<p>这是一个过时的属性，当然你设置也能起效果(没有设置mapreduce.map.java.opts/mapreduce.reduce.java.opts)。相当于把MR的java.opts都设置了。</p>
+
+<p><img src="/images/blogs/hadoop-opts/mapred-opts.jpg" alt="" /></p>
+
+<p>获取map/reduce的opts中间会取 <strong>mapred.child.java.opts</strong> 的值。</p>
+
+<p><img src="/images/blogs/hadoop-opts/mapred-opts-2.jpg" alt="" /></p>
+
+<h2>admin-opts</h2>
+
+<p>查找源码后，其实opts被分成两部分：admin和user。admin的写在前面，user在后面。user设置的opts可以覆盖admin设置的。应该是方便用于设置默认值吧。</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[安装配置Ganglia(2)]]></title>
@@ -956,115 +1133,6 @@ hadoop-master1: starting zkfc, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-
 <li><a href="http://hbase.apache.org/book.html#basic.prerequisites">http://hbase.apache.org/book.html#basic.prerequisites</a></li>
 </ul>
 
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop安装与升级-(2)2.2升级到2.6]]></title>
-    <link href="http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-2-hadoop-upgrade/"/>
-    <updated>2016-01-07T22:04:27+08:00</updated>
-    <id>http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-2-hadoop-upgrade</id>
-    <content type="html"><![CDATA[<p>升级的命令很简单，但是不要瞎整！升级就一个命令就搞定了！</p>
-
-<h2>部署2.6.3</h2>
-
-<pre><code>[hadoop@hadoop-master1 ~]$ tar zxvf hadoop-2.6.3.tar.gz 
-
-[hadoop@hadoop-master1 ~]$ cd hadoop-2.6.3/share/
-[hadoop@hadoop-master1 share]$ rm -rf doc/
-
-[hadoop@hadoop-master1 hadoop-2.6.3]$ rm -rf lib/native/*
-
-#// 拷贝四个配置文件到hadoop-2.6.3
-[hadoop@hadoop-master1 hadoop-2.6.3]$ cd etc/hadoop/
-[hadoop@hadoop-master1 hadoop]$ cp -f ~/hadoop-2.2.0/etc/hadoop/*-site.xml ./
-[hadoop@hadoop-master1 hadoop]$ cp -f ~/hadoop-2.2.0/etc/hadoop/slaves ./
-
-[hadoop@hadoop-master1 hadoop]$ cd 
-[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs hadoop-2.6.3 $h:~/ ; done
-</code></pre>
-
-<h2>升级（最佳方式）</h2>
-
-<p>直接使用upgrade选项启动dfs即可。（secondarynamenode不要单独操作来升级，反正就是执行upgrade启动dfs就好了）。</p>
-
-<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh -upgrade
-
-// 2.2和2.6都没有这个命令
-// hadoop dfsadmin -upgradeProgress status
-hadoop dfsadmin -finalizeUpgrade
-</code></pre>
-
-<p>参考[Hadoop: The Definitive Guide/Chapter 10. Administering Hadoop/Maintenance/Upgrades]</p>
-
-<h2>瞎整1</h2>
-
-<pre><code># 先停集群
-[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
-
-[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh
-</code></pre>
-
-<p>直接在原来的2.2基础上启动，datanode启动没问题，但是namenode报错：</p>
-
-<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-hadoop-master1.log 
-...
-2016-01-07 08:05:23,582 FATAL org.apache.hadoop.hdfs.server.namenode.NameNode: Failed to start namenode.
-java.io.IOException: 
-File system image contains an old layout version -47.
-An upgrade to version -60 is required.
-Please restart NameNode with the "-rollingUpgrade started" option if a rolling upgrade is already started; or restart NameNode with the "-upgrade" option to start a new upgrade.
-        at org.apache.hadoop.hdfs.server.namenode.FSImage.recoverTransitionRead(FSImage.java:232)
-        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.loadFSImage(FSNamesystem.java:1022)
-        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.loadFromDisk(FSNamesystem.java:741)
-        at org.apache.hadoop.hdfs.server.namenode.NameNode.loadNamesystem(NameNode.java:538)
-        at org.apache.hadoop.hdfs.server.namenode.NameNode.initialize(NameNode.java:597)
-        at org.apache.hadoop.hdfs.server.namenode.NameNode.&lt;init&gt;(NameNode.java:764)
-        at org.apache.hadoop.hdfs.server.namenode.NameNode.&lt;init&gt;(NameNode.java:748)
-        at org.apache.hadoop.hdfs.server.namenode.NameNode.createNameNode(NameNode.java:1441)
-        at org.apache.hadoop.hdfs.server.namenode.NameNode.main(NameNode.java:1507)
-2016-01-07 08:05:23,583 INFO org.apache.hadoop.util.ExitUtil: Exiting with status 1
-2016-01-07 08:05:23,585 INFO org.apache.hadoop.hdfs.server.namenode.NameNode: SHUTDOWN_MSG: 
-/************************************************************
-SHUTDOWN_MSG: Shutting down NameNode at hadoop-master1/172.17.0.1
-************************************************************/
-</code></pre>
-
-<p>重新启动，使用upgrade选项启动：</p>
-
-<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-dfs.sh
-[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh -upgrade
-</code></pre>
-
-<p>或者还原到2.2：</p>
-
-<pre><code># **所有**slaver节点的VERSION改回47
-[hadoop@hadoop-slaver3 ~]$ vi /data/tmp/dfs/data/current/VERSION 
-...
-layoutVersion=-47
-
-[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
-[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh -rollback
-</code></pre>
-
-<h2>原理</h2>
-
-<p>升级的时刻，首先备份原来的数据到previous目录下，升级后的放置到current目录下。namenode这样没啥大问题，但是datanode也是这样结构current和previous，那相当有问题，那数据量不是翻倍了？</p>
-
-<p>查看数据后，发现一个名字的文件current和previous里面使用的是一个inode。也就是说用的是硬链接，数据只有一份！</p>
-
-<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hadoop fs -put *.txt /
-
-[hadoop@hadoop-slaver3 ~]$ cd /data/tmp/dfs/data/
-
-[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ test current/finalized/subdir0/subdir0/blk_1073741825 -ef previous/finalized/blk_1073741825
-[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ echo $?
-0
-[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ ls -i current/finalized/subdir0/subdir0/blk_1073741825 
-142510 current/finalized/subdir0/subdir0/blk_1073741825
-[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ ls -i previous/finalized/blk_1073741825
-142510 previous/finalized/blk_1073741825
-</code></pre>
 ]]></content>
   </entry>
   
