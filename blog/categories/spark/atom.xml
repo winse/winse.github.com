@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Spark | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/spark/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-03-17T19:05:51+08:00</updated>
+  <updated>2016-03-28T20:14:55+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,118 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[SparkSQL-on-YARN的Executors池(动态)配置]]></title>
+    <link href="http://winseliu.com/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn/"/>
+    <updated>2016-03-25T15:14:53+08:00</updated>
+    <id>http://winseliu.com/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn</id>
+    <content type="html"><![CDATA[<h2>官网配置资料</h2>
+
+<ul>
+<li><a href="http://spark.apache.org/docs/latest/running-on-yarn.html">http://spark.apache.org/docs/latest/running-on-yarn.html</a></li>
+<li><a href="http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup">http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup</a></li>
+<li><a href="http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
+</ul>
+
+
+<h2>实战</h2>
+
+<h4>修改YARN配置，添加spark-yarn-shuffle.jar，同步配置和jar到nodemanager节点并重启。</h4>
+
+<pre><code>[hadoop@hadoop-master1 hadoop-2.6.3]$ vi etc/hadoop/yarn-site.xml 
+&lt;property&gt;
+&lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
+&lt;value&gt;mapreduce_shuffle,spark_shuffle&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;yarn.nodemanager.aux-services.mapreduce.shuffle.class&lt;/name&gt;
+&lt;value&gt;org.apache.hadoop.mapred.ShuffleHandler&lt;/value&gt;
+&lt;/property&gt;
+
+&lt;property&gt;
+&lt;name&gt;yarn.nodemanager.aux-services.spark_shuffle.class&lt;/name&gt;
+&lt;value&gt;org.apache.spark.network.yarn.YarnShuffleService&lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@hadoop-master1 hadoop-2.6.3]$ cp ~/spark-1.6.0-bin-2.6.3/lib/spark-1.6.0-yarn-shuffle.jar share/hadoop/yarn/
+
+for h in `cat etc/hadoop/slaves` ; do rsync -az share $h:~/hadoop-2.6.3/ ; done 
+for h in `cat etc/hadoop/slaves` ; do rsync -az etc $h:~/hadoop-2.6.3/ ; done 
+
+rsync -vaz etc hadoop-master2:~/hadoop-2.6.3/
+rsync -vaz share hadoop-master2:~/hadoop-2.6.3/
+
+[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
+[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-yarn.sh 
+</code></pre>
+
+<h4>原来已经部署了Hive-1.2.1（和spark-1.6.0的hive是匹配的），直接把hive-site.xml做一个软链到spark/conf下面：</h4>
+
+<pre><code>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ cd conf/
+[hadoop@hadoop-master1 conf]$ ln -s ~/hive/conf/hive-site.xml 
+
+[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ ll conf/hive-site.xml 
+lrwxrwxrwx. 1 hadoop hadoop 36 3月  25 11:30 conf/hive-site.xml -&gt; /home/hadoop/hive/conf/hive-site.xml
+</code></pre>
+
+<p>注意：如果原来配置了tez，把hive-site.xml的 <strong>hive.execution.engine</strong> 配置注释掉。或者启动的时刻换引擎： <code>bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr</code></p>
+
+<h4>修改spark配置</h4>
+
+<p>spark-defaults.conf</p>
+
+<pre><code>[hadoop@hadoop-master1 conf]$ cat spark-defaults.conf 
+spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar
+
+spark.dynamicAllocation.enabled    true
+spark.shuffle.service.enabled      true
+spark.dynamicAllocation.executorIdleTimeout    600s
+spark.dynamicAllocation.minExecutors    160
+spark.dynamicAllocation.maxExecutors    1800
+spark.dynamicAllocation.schedulerBacklogTimeout   5s
+
+spark.driver.maxResultSize   0
+
+spark.eventLog.enabled  true
+spark.eventLog.compress  true
+spark.eventLog.dir    hdfs:///spark-eventlogs
+spark.yarn.historyServer.address hadoop-master2:18080
+
+spark.serializer        org.apache.spark.serializer.KryoSerializer
+</code></pre>
+
+<ul>
+<li>spark.yarn.jar 配置后，spark启动后直接使用该文件作为executor的main-jar，不需要每次都上传一次spark.jar（每次都搞一下180M也不少资源了）</li>
+<li>enabled 启用动态两个都配置必须设置为true</li>
+<li>executorIdleTimeout 关闭不用executors需要等待的时间</li>
+<li>schedulerBacklogTimeout 增加积压的任务时间来判断是否增加executors</li>
+<li>minExecutors 至少存活的executors个数</li>
+</ul>
+
+
+<p>spark-env.sh环境变量</p>
+
+<pre><code>[hadoop@hadoop-master1 conf]$ cat spark-env.sh 
+SPARK_CLASSPATH=/home/hadoop/hive/lib/mysql-connector-java-5.1.21-bin.jar:$SPARK_CLASSPATH
+HADOOP_CONF_DIR=/home/hadoop/hadoop/etc/hadoop
+SPARK_DRIVER_MEMORY=30g
+SPARK_PID_DIR=/home/hadoop/tmp/pids
+</code></pre>
+
+<h4>启动</h4>
+
+<pre><code>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ sbin/start-thriftserver.sh --master yarn-client
+
+[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ sbin/start-history-server.sh hdfs:///spark-eventlogs
+</code></pre>
+
+<p>收工。</p>
+
+<p>整个过程就是：添加spark-shuffle到yarn，然后配置spark参数，最后就是重启任务（yarn/hiveserver）。</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Hadoop不同版本yarn和hdfs混搭，spark-yarn环境配置]]></title>
