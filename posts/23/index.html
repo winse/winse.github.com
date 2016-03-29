@@ -9,9 +9,9 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="需求其实就是把eclipse osgi导出的应用嵌入到原有的ssh开发的程序中。
-但是整合过程遇到一些问题。ssh会对资源进行拦截处理，导致OSGi获取不到请求，OSGi和ssh的应用最好分开管理。
-可以利用SSH提供的excludePattern配置正则表达式来实现排除处理！ &hellip;">
+  <meta name="description" content="源码 \hadoop-1.0.0\src\contrib\index 主要涉及的类 org.apache.hadoop.contrib.index.main.UpdateIndex
+org.apache.hadoop.contrib.index.mapred.IndexUpdater
+org. &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +85,816 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2012/10/01/index-built-on-hadoop-program/">Hadoop上建索引index的程序</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2012-10-01T00:00:00+08:00" pubdate data-updated="true">Mon 2012-10-01 00:00</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>源码</h2>
+
+<p>\hadoop-1.0.0\src\contrib\index</p>
+
+<h2>主要涉及的类</h2>
+
+<ul>
+<li>org.apache.hadoop.contrib.index.main.UpdateIndex</li>
+<li>org.apache.hadoop.contrib.index.mapred.IndexUpdater</li>
+<li>org.apache.hadoop.contrib.index.mapred.IndexUpdateMapper</li>
+<li>org.apache.hadoop.contrib.index.mapred.IndexUpdatePartitioner</li>
+<li>org.apache.hadoop.contrib.index.mapred.IndexUpdateCombiner</li>
+<li>org.apache.hadoop.contrib.index.mapred.IndexUpdateReducer</li>
+<li>org.apache.hadoop.contrib.index.example.LineDocInputFormat</li>
+<li>org.apache.hadoop.contrib.index.mapred.IndexUpdateOutputFormat</li>
+<li>org.apache.hadoop.contrib.index.mapred.IndexUpdateConfiguration</li>
+</ul>
+
+
+<h2>解析</h2>
+
+<p>1、UpdateIndex类（main实现读取控制台参数）</p>
+
+<p>UpdateIndex是整个程序的入口，提供参数给用户配置。</p>
+
+<ul>
+<li>-inputPaths  &ndash;>mapred.input.dir  (V)</li>
+<li>-outputPath &ndash;>mapred.output.dir  (V)</li>
+<li>-shards &ndash;>最终每个reduct建立的索引存放hdfs位置 (V)</li>
+<li>-indexPath &ndash;>sea.index.path</li>
+<li>-numShards &ndash;>sea.num.shards</li>
+<li>-numMapTasks &ndash;>mapred.map.tasks  (V)</li>
+<li>-conf 添加Configuration xml文件形式的配置方式</li>
+</ul>
+
+
+<p>shards  通过<strong>转换</strong>最终保存到Configuration的sea.index.shards</p>
+
+<p>shards参数 与 indexPath和numShards参数 设置一种就可以了。如果没有设置shards，则在main方法中会通过indexPath和numShards生成得到 shards 参数。</p>
+
+<p>从Configuration中获得Updater类: IndexUpdateConfiguration.getIndexUpdaterClass()</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public Class&lt;? extends IIndexUpdater&gt; getIndexUpdaterClass() {
+</span><span class='line'>    return conf.getClass("sea.index.updater", IndexUpdater.class,
+</span><span class='line'>        IIndexUpdater.class);
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在UpdateIndex最终调用IndexUpdater</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>updater.run(conf, inputPaths, outputPath, numMapTasks, shards);</span></code></pre></td></tr></table></div></figure>
+
+
+<p>2、IndexUpdater类（配置MapReduce Job）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public void run(Configuration conf, Path[] inputPaths, Path outputPath,
+</span><span class='line'>      int numMapTasks, Shard[] shards) throws IOException {
+</span><span class='line'>    JobConf jobConf =
+</span><span class='line'>        createJob(conf, inputPaths, outputPath, numMapTasks, shards);
+</span><span class='line'>    JobClient.runJob(jobConf);
+</span><span class='line'>  }
+</span><span class='line'>...
+</span><span class='line'>...
+</span><span class='line'>  JobConf createJob(Configuration conf, Path[] inputPaths, Path outputPath,
+</span><span class='line'>      int numMapTasks, Shard[] shards) throws IOException {
+</span><span class='line'>    setShardGeneration(conf, shards);
+</span><span class='line'>
+</span><span class='line'>    // iconf.set sets properties in conf
+</span><span class='line'>    IndexUpdateConfiguration iconf = new IndexUpdateConfiguration(conf);
+</span><span class='line'>    Shard.setIndexShards(iconf, shards);
+</span><span class='line'>
+</span><span class='line'>    // MapTask.MapOutputBuffer uses "io.sort.mb" to decide its max buffer size
+</span><span class='line'>    // (max buffer size = 1/2 * "io.sort.mb").
+</span><span class='line'>    // Here we half-en "io.sort.mb" because we use the other half memory to
+</span><span class='line'>    // build an intermediate form/index in Combiner.
+</span><span class='line'>    iconf.setIOSortMB(iconf.getIOSortMB() / 2);</span></code></pre></td></tr></table></div></figure>
+
+
+<p>setShardGeneration(conf, shards);方法从shard path路径获得segment_N来获得generation，并更新shard实例的gen属性。</p>
+
+<p>Shard.setIndexShards(iconf, shards);则是序列化shards为String写入到Configuration中。</p>
+
+<p>接下来的代码，就是设置InputFormat，OutputFormat， Map， Reduce，Partitioner，  KeyValue Class， Combine等一些列的Job必备的参数。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>// create the job configuration
+</span><span class='line'>JobConf jobConf = new JobConf(conf, IndexUpdater.class);
+</span><span class='line'>jobConf.setJobName(this.getClass().getName() + "_"
+</span><span class='line'>    + System.currentTimeMillis());
+</span><span class='line'>
+</span><span class='line'>// provided by application
+</span><span class='line'>FileInputFormat.setInputPaths(jobConf, inputPaths);
+</span><span class='line'>FileOutputFormat.setOutputPath(jobConf, outputPath);
+</span><span class='line'>
+</span><span class='line'>jobConf.setNumMapTasks(numMapTasks);
+</span><span class='line'>
+</span><span class='line'>// already set shards
+</span><span class='line'>jobConf.setNumReduceTasks(shards.length);
+</span><span class='line'>
+</span><span class='line'>jobConf.setInputFormat(iconf.getIndexInputFormatClass());
+</span><span class='line'>
+</span><span class='line'>// set by the system
+</span><span class='line'>jobConf.setMapOutputKeyClass(IndexUpdateMapper.getMapOutputKeyClass());
+</span><span class='line'>jobConf.setMapOutputValueClass(IndexUpdateMapper.getMapOutputValueClass());
+</span><span class='line'>jobConf.setOutputKeyClass(IndexUpdateReducer.getOutputKeyClass());
+</span><span class='line'>jobConf.setOutputValueClass(IndexUpdateReducer.getOutputValueClass());
+</span><span class='line'>
+</span><span class='line'>jobConf.setMapperClass(IndexUpdateMapper.class);
+</span><span class='line'>jobConf.setPartitionerClass(IndexUpdatePartitioner.class);
+</span><span class='line'>jobConf.setCombinerClass(IndexUpdateCombiner.class);
+</span><span class='line'>jobConf.setReducerClass(IndexUpdateReducer.class);
+</span><span class='line'>
+</span><span class='line'>jobConf.setOutputFormat(IndexUpdateOutputFormat.class);
+</span><span class='line'>
+</span><span class='line'>return jobConf;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>3、LineDocInputFormat（数据输入类）</p>
+
+<p>从IndexUpdateConfiguration.getIndexInputFormatClass()可以获得当前默认使用的数据输入类org.apache.hadoop.contrib.index.example.LineDocInputFormat。</p>
+
+<p>这里定义了org.apache.hadoop.contrib.index.example.LineDocRecordReader来解析数据，获取建立索引的命令（Insert， Update， Delete）和对应的数据。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public synchronized boolean next(DocumentID key, LineDocTextAndOp value)
+</span><span class='line'>      throws IOException {
+</span><span class='line'>    if (pos &gt;= end) {
+</span><span class='line'>      return false;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    // key is document id, which are bytes until first space
+</span><span class='line'>    if (!readInto(key.getText(), SPACE)) { // 把读到的第一个数据写入Key
+</span><span class='line'>      return false;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    // read operation: i/d/u, or ins/del/upd, or insert/delete/update
+</span><span class='line'>    Text opText = new Text();
+</span><span class='line'>    if (!readInto(opText, SPACE)) {
+</span><span class='line'>      return false;
+</span><span class='line'>    }
+</span><span class='line'>    String opStr = opText.toString();
+</span><span class='line'>    DocumentAndOp.Op op;
+</span><span class='line'>    if (opStr.equals("i") || opStr.equals("ins") || opStr.equals("insert")) {
+</span><span class='line'>      op = DocumentAndOp.Op.INSERT;
+</span><span class='line'>    } else if (opStr.equals("d") || opStr.equals("del")
+</span><span class='line'>        || opStr.equals("delete")) {
+</span><span class='line'>      op = DocumentAndOp.Op.DELETE;
+</span><span class='line'>    } else if (opStr.equals("u") || opStr.equals("upd")
+</span><span class='line'>        || opStr.equals("update")) {
+</span><span class='line'>      op = DocumentAndOp.Op.UPDATE;
+</span><span class='line'>    } else {
+</span><span class='line'>      // default is insert
+</span><span class='line'>      op = DocumentAndOp.Op.INSERT;
+</span><span class='line'>    }
+</span><span class='line'>    value.setOp(op);
+</span><span class='line'>
+</span><span class='line'>    if (op == DocumentAndOp.Op.DELETE) {
+</span><span class='line'>      return true;
+</span><span class='line'>    } else {
+</span><span class='line'>      // read rest of the line
+</span><span class='line'>      return readInto(value.getText(), EOL);
+</span><span class='line'>    }
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>把InputStream offset到分隔符的数据写入到text</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>private boolean readInto(Text text, char delimiter) throws IOException</span></code></pre></td></tr></table></div></figure>
+
+
+<p>Sample 写道</p>
+
+<blockquote><p>0 ins apache dot org<br/>
+2 ins apache<br/>
+3 ins apache<br/>
+4 ins apache</p>
+
+<p>0 del   <br/>
+1 upd hadoop<br/>
+2 del   <br/>
+3 upd hadoop</p></blockquote>
+
+<p>4、IndexUpdateMapper（最终形成IntermediateForm传递给Combiner和Reducer处理）</p>
+
+<p><strong>· ILocalAnalysis</strong> &ndash;>org.apache.hadoop.contrib.index.example.LineDocLocalAnalysis</p>
+
+<p>把Text组成为Lucene需要的Document。</p>
+
+<p><strong>· DocumentAndOp</strong></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public class DocumentAndOp implements Writable {
+</span><span class='line'>
+</span><span class='line'>  private Op op; // 
+</span><span class='line'>  private Document doc; // INSERT UPDATE
+</span><span class='line'>  private Term term; // DELETE UPDATE</span></code></pre></td></tr></table></div></figure>
+
+
+<p><strong>· IntermediateForm</strong></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public class IntermediateForm implements Writable {
+</span><span class='line'>
+</span><span class='line'>  private final Collection&lt;Term&gt; deleteList;
+</span><span class='line'>  private RAMDirectory dir;
+</span><span class='line'>  private IndexWriter writer;
+</span><span class='line'>  private int numDocs;
+</span><span class='line'>
+</span><span class='line'>  public void process(DocumentAndOp doc, Analyzer analyzer) throws IOException {
+</span><span class='line'>    if (doc.getOp() == DocumentAndOp.Op.DELETE
+</span><span class='line'>        || doc.getOp() == DocumentAndOp.Op.UPDATE) {
+</span><span class='line'>      deleteList.add(doc.getTerm());
+</span><span class='line'>
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    if (doc.getOp() == DocumentAndOp.Op.INSERT
+</span><span class='line'>        || doc.getOp() == DocumentAndOp.Op.UPDATE) {
+</span><span class='line'>
+</span><span class='line'>      if (writer == null) {
+</span><span class='line'>        // analyzer is null because we specify an analyzer with addDocument
+</span><span class='line'>        writer = createWriter();
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      writer.addDocument(doc.getDocument(), analyzer);
+</span><span class='line'>      numDocs++;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public void process(IntermediateForm form) throws IOException {
+</span><span class='line'>    if (form.deleteList.size() &gt; 0) {
+</span><span class='line'>      deleteList.addAll(form.deleteList);
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    if (form.dir.sizeInBytes() &gt; 0) {
+</span><span class='line'>      if (writer == null) {
+</span><span class='line'>        writer = createWriter();
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      writer.addIndexesNoOptimize(new Directory[] { form.dir });
+</span><span class='line'>      numDocs++;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p><strong>· HashingDistributionPolicy</strong></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public class HashingDistributionPolicy implements IDistributionPolicy {
+</span><span class='line'>
+</span><span class='line'>  private int numShards;
+</span><span class='line'>
+</span><span class='line'>  public void init(Shard[] shards) {
+</span><span class='line'>    numShards = shards.length;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public int chooseShardForInsert(DocumentID key) {
+</span><span class='line'>    int hashCode = key.hashCode();
+</span><span class='line'>    return hashCode &gt;= 0 ? hashCode % numShards : (-hashCode) % numShards;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public int chooseShardForDelete(DocumentID key) {
+</span><span class='line'>    int hashCode = key.hashCode();
+</span><span class='line'>    return hashCode &gt;= 0 ? hashCode % numShards : (-hashCode) % numShards;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>IndexUpdateMapper.<strong>map</strong>(K, V, OutputCollector&lt;Shard, IntermediateForm>, Reporter)</p>
+
+<p>根据DocumentAndOp形成IntermediateForm，以及DistributionPolicy选择Shard，传入Combiner。</p>
+
+<p>评注： 这里每条数据都要开启和关闭Writer，消耗应该不小。</p>
+
+<p>5、IndexUpdateCombiner</p>
+
+<p>把该节点的IntermediateForm合并成一个大的IntermediateForm集合。</p>
+
+<p>评注： 感觉作用不是很大，合并减少的数据量有限； 但是却又要初始化和关闭一次Writer。</p>
+
+<p>6、IndexUpdateReducer</p>
+
+<p>把从Mapper传递来的IntermediateForm写入到ShardWriter。最终把Lucene索引写入到IndexPath下。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'> public ShardWriter(FileSystem fs, Shard shard, String tempDir,
+</span><span class='line'>      IndexUpdateConfiguration iconf) throws IOException</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在Reducer最后关闭ShardWriter时，由于要等待比较长的时间。这里使用一个新的线程来发送心跳。 <a href="/blog/1687678">使用hadoop/编写mapreduce程序 注意点</a>(! 不要关闭mapreduce的超时)</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>new Closeable() {
+</span><span class='line'>  volatile boolean closed = false;
+</span><span class='line'>
+</span><span class='line'>  public void close() throws IOException {
+</span><span class='line'>    // spawn a thread to give progress heartbeats
+</span><span class='line'>    Thread prog = new Thread() {
+</span><span class='line'>      public void run() {
+</span><span class='line'>        while (!closed) {
+</span><span class='line'>          try {
+</span><span class='line'>            fReporter.setStatus("closing");
+</span><span class='line'>            Thread.sleep(1000);
+</span><span class='line'>          } catch (InterruptedException e) {
+</span><span class='line'>            continue;
+</span><span class='line'>          } catch (Throwable e) {
+</span><span class='line'>            return;
+</span><span class='line'>          }
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    };
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      prog.start();
+</span><span class='line'>
+</span><span class='line'>      if (writer != null) {
+</span><span class='line'>        writer.close();
+</span><span class='line'>      }
+</span><span class='line'>    } finally {
+</span><span class='line'>      closed = true;
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>}.close();</span></code></pre></td></tr></table></div></figure>
+
+
+<p><strong>· ShardWriter</strong></p>
+
+<p>把索引写到本地，等处理完了数据后，关闭IndexWriter后把索引库转入拷贝到HDFS持久化。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  // move the files created in the temp dir into the perm dir
+</span><span class='line'>  // and then delete the temp dir from the local FS
+</span><span class='line'>  private void moveFromTempToPerm() throws IOException {
+</span><span class='line'>    try {
+</span><span class='line'>      FileStatus[] fileStatus =
+</span><span class='line'>          localFs.listStatus(temp, LuceneIndexFileNameFilter.getFilter());
+</span><span class='line'>      Path segmentsPath = null;
+</span><span class='line'>      Path segmentsGenPath = null;
+</span><span class='line'>
+</span><span class='line'>      // move the files created in temp dir except segments_N and segments.gen
+</span><span class='line'>      for (int i = 0; i &lt; fileStatus.length; i++) {
+</span><span class='line'>        Path path = fileStatus[i].getPath();
+</span><span class='line'>        String name = path.getName();
+</span><span class='line'>
+</span><span class='line'>        if (LuceneUtil.isSegmentsGenFile(name)) {
+</span><span class='line'>          assert (segmentsGenPath == null);
+</span><span class='line'>          segmentsGenPath = path;
+</span><span class='line'>        } else if (LuceneUtil.isSegmentsFile(name)) {
+</span><span class='line'>          assert (segmentsPath == null);
+</span><span class='line'>          segmentsPath = path;
+</span><span class='line'>        } else {
+</span><span class='line'>          fs.completeLocalOutput(new Path(perm, name), path);
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      // move the segments_N file
+</span><span class='line'>      if (segmentsPath != null) {
+</span><span class='line'>        fs.completeLocalOutput(new Path(perm, segmentsPath.getName()),
+</span><span class='line'>            segmentsPath);
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      // move the segments.gen file
+</span><span class='line'>      if (segmentsGenPath != null) {
+</span><span class='line'>        fs.completeLocalOutput(new Path(perm, segmentsGenPath.getName()),
+</span><span class='line'>            segmentsGenPath);
+</span><span class='line'>      }
+</span><span class='line'>    } finally {
+</span><span class='line'>      // finally delete the temp dir (files should have been deleted)
+</span><span class='line'>      localFs.delete(temp);
+</span><span class='line'>    }
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<hr />
+
+<p><a href="http://winseclone.iteye.com/blog/1689055">【原文地址】</a></p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2012/09/27/notes-when-written-hadoop-mapreduce-program/">使用hadoop编写mapreduce程序的注意点</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2012-09-27T00:00:00+08:00" pubdate data-updated="true">Thu 2012-09-27 00:00</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>编程时需要注意：</h2>
+
+<p>1、实例化job后，不要再使用原来的configuration，得通过job.getCongfigure()来进行参数的配置</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public static Job createSubmittableJob(Configuration conf, String[] args) 
+</span><span class='line'>      throws IOException {
+</span><span class='line'>  String tableName = args[0];
+</span><span class='line'>
+</span><span class='line'>  conf.set(TableInputFormat.INPUT_TABLE, tableName);
+</span><span class='line'>  conf.set(TableInputFormat.SCAN, 
+</span><span class='line'>      ScanAccessor.getTableInputFormatScan(conf, tableName));
+</span><span class='line'>
+</span><span class='line'>  Job job = new Job(conf, 
+</span><span class='line'>      Index.class.getSimpleName() + "_" + tableName + ":" + Utils.now());
+</span><span class='line'>  job.setJarByClass(Index.class);
+</span><span class='line'>
+</span><span class='line'>  // conf.set(..., ...)设置将不会生效
+</span><span class='line'>  job.getConfiguration().set(...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>2、map输出的keyvalue与reduce的输出keyvalue对象不统一，这种情况不应该把reduce作为combine类。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>job.setMapperClass(TokenizerMapper.class);
+</span><span class='line'>job.setCombinerClass(IntSumReducer.class);
+</span><span class='line'>job.setReducerClass(IntSumReducer.class);
+</span><span class='line'>
+</span><span class='line'>job.setMapOutputKeyClass(Text.class);
+</span><span class='line'>job.setMapOutputValueClass(FloatWritable.class);
+</span><span class='line'>
+</span><span class='line'>job.setOutputKeyClass(Text.class);
+</span><span class='line'>//job.setOutputValueClass(FloatWritable.class);
+</span><span class='line'>job.setOutputValueClass(Text.class);</span></code></pre></td></tr></table></div></figure>
+
+
+<p>这样的错误，出现后，如果不认认真真检查的话，比较难发现问题的！</p>
+
+<blockquote><p>如果map和reduce的keyvalue类型不同时，不要把Reduce的类作为Combine的处理类！</p></blockquote>
+
+<p>3、聚合类型的操作才使用reduce</p>
+
+<ol>
+<li>GOOD： sqoop导数据功能</li>
+<li>WORSE: hadoop contrib index (详&hellip;)</li>
+</ol>
+
+
+<p>4、命令行参数的顺序</p>
+
+<p><strong>-D参数，以及Hadoop内置的参数, </strong>必须放在class后面，不能跟在<strong>args</strong>后</p>
+
+<p><strong>· ERROR</strong>：</p>
+
+<p>% hadoop jar hadoop-*-examples.jar sort -r <strong>numbers.seq sorted</strong> \
+-inFormat org.apache.hadoop.mapred.SequenceFileInputFormat \
+-outFormat org.apache.hadoop.mapred.SequenceFileOutputFormat \
+-outkey org.apache.hadoop.io.IntWritable \
+-outvalue org.apache.hadoop.io.Text</p>
+
+<p><strong>· OK</strong>：</p>
+
+<p>% hadoop jar hadoop-*-examples.jar sort -r \
+-inFormat org.apache.hadoop.mapred.SequenceFileInputFormat \
+-outFormat org.apache.hadoop.mapred.SequenceFileOutputFormat \
+-outkey org.apache.hadoop.io.IntWritable \
+-outvalue org.apache.hadoop.io.Text \
+<strong>numbers.seq sorted</strong></p>
+
+<h2>配置属性注意点：</h2>
+
+<ol>
+<li>开启trash
+ <code>
+ &lt;property&gt;
+ &lt;name&gt;fs.trash.interval&lt;/name&gt;
+ &lt;value&gt;720&lt;/value&gt;
+ &lt;/property&gt;
+</code></li>
+<li>去除mapreduce完成后&#8221;SUCCESS&#8221;，&#8221;history目录&#8221;</li>
+<li>共享jvm</li>
+<li><p>不要关闭mapreduce的超时
+ &#8220;`
+ Configuration conf = &hellip;
+ conf.set(&ldquo;hadoop.job.history.user.location&rdquo;, &ldquo;none&rdquo;);
+ conf.setBoolean(&ldquo;mapreduce.fileoutputcommitter.marksuccessfuljobs&rdquo;, false);</p>
+
+<p> conf.set(&ldquo;mapred.job.reuse.jvm.num.tasks&rdquo;, &ldquo;-1&rdquo;);</p>
+
+<p> // conf.set(&ldquo;mapred.task.timeout&rdquo;, &ldquo;0&rdquo;);
+ &#8220;`
+ 可以在执行任务时，新建一个发送心跳的线程，告诉jobtracker当前的任务没有问题。</p></li>
+<li><p>pid的存放目录最好自定义。长期放置在tmp下的文件将会被清除。
+ <a href="/blog/1772989">http://winseclone.iteye.com/blog/1772989</a></p>
+
+<pre><code class="`"> export HADOOP_PID_DIR=/var/hadoop/pids
+</code></pre></li>
+</ol>
+
+
+<h2>Hadoop入门资料：</h2>
+
+<ol>
+<li>官网</li>
+<li><a href="https://ccp.cloudera.com/display/DOC/Hadoop+Tutorial">https://ccp.cloudera.com/display/DOC/Hadoop+Tutorial</a></li>
+</ol>
+
+
+<hr />
+
+<p><a href="http://winseclone.iteye.com/blog/1687678">【原文地址】</a></p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -638,55 +1448,9 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2010/02/25/sohu-new-start/">新的开始@Sohu</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2010-02-25T23:17:00+08:00" pubdate data-updated="true">Thu 2010-02-25 23:17</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>眼见大四四年的时光即将远去，心中难免彷徨，看着师兄同学都已经有了事业家庭，自己啥也不是，什么也没，技术技术不行，感觉现在很多事情做很多的东西学，前行路上很多的障碍！</p>
-
-<p>今天，跟师兄聊一下论文的事情，感觉自己真的好渺小，一些问题在他们看来根本就不是问题~~</p>
-
-<p>小小总结了一下，决定从今天起，自己也管理一份属于自己的心境，好好的总结自己的每一天，在家过年看了曾国藩，这样的一个&#8221;圣人&#8221;同样每天也还反省~~</p>
-
-<p>一个个总结，一路走来，自己一定能越走越踏实~~</p>
-
-<p><del>以前好多的blog，邮箱，bbs的用户都忘了，密码就更不用说了~以及突发的奇想(想法)……</del></p>
-
-<hr />
-
-<p><a href="http://winsefirst.blog.sohu.com/144882498.html">【原文地址】</a></p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
+    
+      <a class="prev" href="/posts/24">&larr; Older</a>
     
     <a href="/blog/archives">Blog Archives</a>
     
@@ -748,6 +1512,14 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/03/29/parquet-simple-view/">Parquet学习</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/03/29/limit-on-sparksql-and-hive/">Limit on Sparksql and Hive</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
       </li>
     
@@ -769,14 +1541,6 @@
     
       <li class="post">
         <a href="/blog/2016/02/25/ganglia-web-ui-views/">Ganglia页自定义视图</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/02/01/ganglia-python-extension/">Ganglia扩展-Python</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/01/25/pdsh-simple-usage/">Pdsh</a>
       </li>
     
   </ul>
@@ -825,7 +1589,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hive/'>hive</a> (2) 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -861,7 +1625,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/spark/'>spark</a> (4) 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (5) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -882,7 +1646,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (114)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (116)</li>
 	</ul>
 	
 </section>
