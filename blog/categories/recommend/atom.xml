@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Recommend | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/recommend/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-04-02T13:07:36+08:00</updated>
+  <updated>2016-04-10T11:48:30+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,563 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Hive on Spark]]></title>
+    <link href="http://winseliu.com/blog/2016/03/28/hive-on-spark/"/>
+    <updated>2016-03-28T18:20:46+08:00</updated>
+    <id>http://winseliu.com/blog/2016/03/28/hive-on-spark</id>
+    <content type="html"><![CDATA[<p>先看官网的资源<a href="https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started">Hive on Spark: Getting Started</a> 。文档是值得信任和有保证的，但是有前提：<strong>Spark版本</strong>得是hive/pom.xml中指定的。</p>
+
+<h2>重新编译spark(assembly包中去掉hive、hadoop)</h2>
+
+<p>这里hive-1.2.1用的是spark-1.3.1 !!!</p>
+
+<pre><code>[hadoop@cu2 spark-1.3.1]$ ./make-distribution.sh --name "hadoop2.6.3-without-hive" --tgz --mvn "$(which mvn)" -Pyarn,hadoop-provided,hadoop-2.6,parquet-provided -Dhadoop.version=2.6.3 -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+</code></pre>
+
+<p>拷贝打包好的 spark-1.3.1-bin-hadoop2.6.3-without-hive.tgz 到服务器。解压并做一个软链接到spark(或者指定 <strong>SPARK_HOME</strong> 环境变量 )，Hive不遗余力啊，把所有想的jar通过各种办法拿到 ( <code>sparkHome=$(readlink -f $bin/../../spark)</code> )。</p>
+
+<pre><code>[hadoop@hadoop-master2 ~]$ ln -s spark-1.3.1-bin-hadoop2.6.3-without-hive spark
+
+把压缩包传到hdfs，这样每次启动任务就少传几百M的数据。后面spark.yarn.jar配置会用到
+[hadoop@hadoop-master2 ~]$ cd spark/lib/
+[hadoop@hadoop-master2 lib]$ hadoop fs -put spark-assembly-1.3.1-hadoop2.6.3.jar /spark/
+</code></pre>
+
+<p>做好软链接后效果：</p>
+
+<pre><code>[hadoop@hadoop-master2 ~]$ ll | grep -E "hive|spark"
+drwxrwxr-x   9 hadoop hadoop 4096 1月  14 08:08 apache-hive-1.2.1-bin
+lrwxrwxrwx   1 hadoop hadoop   21 1月  14 08:07 hive -&gt; apache-hive-1.2.1-bin
+lrwxrwxrwx   1 hadoop hadoop   40 3月  28 16:38 spark -&gt; spark-1.3.1-bin-hadoop2.6.3-without-hive
+drwxrwxr-x  10 hadoop hadoop 4096 3月  28 16:31 spark-1.3.1-bin-hadoop2.6.3-without-hive
+drwxrwxr-x  12 hadoop hadoop 4096 3月  25 16:18 spark-1.6.0-bin-2.6.3
+drwxrwxr-x  11 hadoop hadoop 4096 3月  28 11:15 spark-1.6.0-bin-hadoop2-without-hive
+</code></pre>
+
+<p>这里的spark-1.6.0是教训啊！记住最好最好用hive/pom.xml中spark的版本！！！</p>
+
+<h2>修改hive配置</h2>
+
+<p>由于spark会加载很多的class，需要把permsize调大。</p>
+
+<pre><code>[hadoop@hadoop-master2 ~]$ less ~/hive/conf/hive-env.sh
+export HADOOP_OPTS="$HADOOP_OPTS -XX:PermSize=256m -Dhive.home=${HIVE_HOME} "
+</code></pre>
+
+<p>在conf目录下增加spark-defaults.conf文件，指定spark的配置。动态资源分配查看：<a href="http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation">dynamic-resource-allocation</a>：</p>
+
+<pre><code>[hadoop@hadoop-master2 conf]$ cat spark-defaults.conf 
+spark.yarn.jar    hdfs:///spark/spark-assembly-1.3.1-hadoop2.6.3.jar
+
+spark.dynamicAllocation.enabled    true
+spark.shuffle.service.enabled      true
+spark.dynamicAllocation.executorIdleTimeout    600
+spark.dynamicAllocation.minExecutors    160 
+spark.dynamicAllocation.maxExecutors    1800
+spark.dynamicAllocation.schedulerBacklogTimeout   5
+
+spark.driver.memory    10g
+spark.driver.maxResultSize   0
+
+spark.eventLog.enabled  true
+spark.eventLog.compress  true
+spark.eventLog.dir    hdfs:///spark-eventlogs
+spark.yarn.historyServer.address hadoop-master2:18080
+
+
+spark.serializer        org.apache.spark.serializer.KryoSerializer
+spark.kryoserializer.buffer.max    512m
+</code></pre>
+
+<ul>
+<li>minExecutors <strong>最好应该是和datanode机器差不多，每台一个executor才能本地计算嘛！</strong></li>
+<li>dynamicAllocation需要yarn的配合，具体查看前一篇文章，或者直接看官网的资料。</li>
+<li>eventlog查看历史记录需要，配置好后每个任务的信息会存储到eventlog.dir的路径。通过18080端口可以看到历史记录。</li>
+</ul>
+
+
+<h2>跑起来</h2>
+
+<p><code>spark.master</code> 默认是 <strong>yarn-cluster</strong>， 这里先本地跑一下看下效果。然后再改成yarn-cluster/yarn-client就可以了(推荐使用yarn-client，如果yarn-cluster模式AppMaster同时也是Driver，内存比较难控制，日志看起来也麻烦)。</p>
+
+<pre><code>[hadoop@hadoop-master2 hive]$ hive --hiveconf hive.execution.engine=spark 
+
+hive&gt; set spark.master=local;
+hive&gt; select count(*) from t_house_info ;
+Query ID = hadoop_20160328163952_93dafddc-c8b1-4bc9-b851-5e51f6d26fa8
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Starting Spark Job = 0
+
+Query Hive on Spark job[0] stages:
+0
+1
+
+Status: Running (Hive on Spark job[0])
+Job Progress Format
+CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+2016-03-28 16:40:02,077 Stage-0_0: 0(+1)/1      Stage-1_0: 0/1
+2016-03-28 16:40:03,078 Stage-0_0: 1/1 Finished Stage-1_0: 1/1 Finished
+Status: Finished successfully in 2.01 seconds
+OK
+1
+Time taken: 10.169 seconds, Fetched: 1 row(s)
+hive&gt; 
+</code></pre>
+
+<p>再回过头看其实挺简单，和官方文档中的差不多。</p>
+
+<p>hive的日志级别可以通过 <strong>hive-log4j.properties</strong> 来配置。</p>
+
+<h2>坑坑坑</h2>
+
+<p>刚开始弄的时刻，没管spark的版本的。直接上spark-1.6.0，然后完全跑不通，看hive.log的日志，啥都看不出来。最后查看<a href="http://markmail.org/message/reingwn556e7e37y">http://markmail.org/message/reingwn556e7e37y</a>Hive on Spark的老大邮件列表的回复，把 <strong>spark.master=local</strong> 设置成本地跑才看到一点点有用的错误信息。</p>
+
+<pre><code>hive&gt; set hive.execution.engine=spark;
+hive&gt; select count(*) from t_ods_access_log2 where day=20160327;
+Query ID = hadoop_20160328083028_a9fb9860-38dc-4288-8415-b5b2b88f920a
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Failed to execute spark task, with exception 'org.apache.hadoop.hive.ql.metadata.HiveException(Failed to create spark client.)'
+FAILED: Execution Error, return code 1 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+</code></pre>
+
+<p>日志里面'毛'有用信息都没有！</p>
+
+<p>把日志级别调成debug（hive-log4j.properties），并把 <code>set spark.master=local;</code> 设置成本地。再跑日志：</p>
+
+<pre><code>2016-03-28 15:13:52,549 DEBUG internal.PlatformDependent (Slf4JLogger.java:debug(71)) - Javassist: unavailable
+2016-03-28 15:13:52,549 DEBUG internal.PlatformDependent (Slf4JLogger.java:debug(71)) - You don't have Javassist in your class path or you don't have enough permission to load dynamically generated classes.  Please check the configuration for better performance.
+
+2016-03-28 15:14:56,594 DEBUG storage.BlockManager (Logging.scala:logDebug(62)) - Putting block broadcast_0_piece0 without replication took  8 ms
+2016-03-28 15:14:56,597 ERROR util.Utils (Logging.scala:logError(95)) - uncaught error in thread SparkListenerBus, stopping SparkContext
+java.lang.AbstractMethodError
+        at org.apache.spark.scheduler.SparkListenerBus$class.onPostEvent(SparkListenerBus.scala:62)
+        at org.apache.spark.scheduler.LiveListenerBus.onPostEvent(LiveListenerBus.scala:31)
+        at org.apache.spark.scheduler.LiveListenerBus.onPostEvent(LiveListenerBus.scala:31)
+        at org.apache.spark.util.ListenerBus$class.postToAll(ListenerBus.scala:55)
+        at org.apache.spark.util.AsynchronousListenerBus.postToAll(AsynchronousListenerBus.scala:37)
+        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply$mcV$sp(AsynchronousListenerBus.scala:80)
+        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply(AsynchronousListenerBus.scala:65)
+        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply(AsynchronousListenerBus.scala:65)
+        at scala.util.DynamicVariable.withValue(DynamicVariable.scala:57)
+        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1.apply$mcV$sp(AsynchronousListenerBus.scala:64)
+        at org.apache.spark.util.Utils$.tryOrStopSparkContext(Utils.scala:1180)
+        at org.apache.spark.util.AsynchronousListenerBus$$anon$1.run(AsynchronousListenerBus.scala:63)
+</code></pre>
+
+<p><strong>调用抽象方法</strong>的错误。然后查看了hive-1.2.1中 SparkListener实现类JobMetricsListener 确实没有(spark-1.6.0)62行错误的onBlockUpdated方法实现。然后把spark换成1.3.1一切就好了，其他就是文章前面写的。</p>
+
+<p><strong>心得</strong>: 刚刚开始用一个新东西的时刻，还是安装官网指定的版本来用省心。等到自己熟悉后，在玩其他的。</p>
+
+<h2><strong>hive on spark</strong> VS <strong>SparkSQL</strong> VS <strong>hive on tez</strong></h2>
+
+<p>前一篇已经弄好了SparkSQL，SparkSQL也有thriftserver服务，这里说说为啥还选择搞hive-on-spark：</p>
+
+<ul>
+<li>SparkSQL-Thriftserver所有结果全部内存，快是快，但是不能满足查询大量数据的需求。如果查询几千万的数据，SparkSQL是搞不定的。而hive-on-spark除了计算用spark其他逻辑都是hive的，返回的结果会先写hdfs，再慢慢返回给客户端。</li>
+<li>SparkSQL-Thriftserver的是全新重写的，和已有hive业务不一定兼容！！</li>
+<li>SparkSQL由于基于内存，再一些调度方面做了优化。如limit: hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。</li>
+</ul>
+
+
+<p>hive和sparksql的理念不同，hive的存储是HDFS，而sparksql只是把HDFS作为持久化工具，它的数据基本都放内存。</p>
+
+<p>查看hive的日志，可以看到返回结果后有写HDFS的动作体现，会有类似日志：</p>
+
+<pre><code>2016-03-28 19:39:25,687 INFO  exec.FileSinkOperator (Utilities.java:mvFileToFinalPath(1882))
+ - Moving tmp dir: hdfs://zfcluster/hive/scratchdir/hadoop/de2b263e-9601-4df7-bc38-ba932ae83f42/hive_2016-03-28_19-38-08_834_7914607982986605890-1/-mr-10000/.hive-staging_hive_2016-03-28_19-38-08_834_7914607982986605890-1/_tmp.-ext-10001 
+ to: hdfs://zfcluster/hive/scratchdir/hadoop/de2b263e-9601-4df7-bc38-ba932ae83f42/hive_2016-03-28_19-38-08_834_7914607982986605890-1/-mr-10000/.hive-staging_hive_2016-03-28_19-38-08_834_7914607982986605890-1/-ext-10001
+</code></pre>
+
+<ul>
+<li>tez的优势spark都有，并且tez其实缓冲优势并不大。而spark的缓冲效果更明显，而且可以快速返回。例如：你查3万条数据，tez是要全部查询然后再返回的，而sparksql取到3万条其他就不算了（效果看起来是这样子，具体没看源码实现；md hive-on-spark还是会全部跑）。</li>
+<li>tez还是进程级别的，spark更加细化，可以有process级别！例如，你查数据记录同时又要返回count，这时有些操作是prcess_local级别的，这个tez是不能比的！</li>
+<li>spark的日志UI看起来更便捷，呵呵</li>
+</ul>
+
+
+<p>单就从用的角度，spark全面取胜啊。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started">https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started</a></li>
+<li><a href="http://spark.apache.org/docs/1.3.1/configuration.html">http://spark.apache.org/docs/1.3.1/configuration.html</a></li>
+<li><a href="http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation">http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation</a></li>
+</ul>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[安装配置Ganglia(2)]]></title>
+    <link href="http://winseliu.com/blog/2016/01/23/install-and-config-ganglia-on-redhat-2/"/>
+    <updated>2016-01-23T17:47:28+08:00</updated>
+    <id>http://winseliu.com/blog/2016/01/23/install-and-config-ganglia-on-redhat-2</id>
+    <content type="html"><![CDATA[<p>前一篇介绍了全部手工安装Ganglia的文章，当时安装测试的环境比较简单。按照网上的步骤安装好，看到图了以为就懂了。Ganglia的基本多播/单播的概念都没弄懂。</p>
+
+<p>这次有机会把Ganglia安装到正式环境，由于网络复杂一些，遇到新的问题。也更进一步的了解了Ganglia。</p>
+
+<p>后端Gmetad(ganglia meta daemon)和Gmond(ganglia monitoring daemon)是Ganglia的两个组件。</p>
+
+<p>Gmetad负责收集各个cluster的数据，并更新到rrd数据库中；Gmond把本机的数据UDP广播（或者单播给某台机），同时收集集群节点的数据供Gmetad读取。Gmetad并不用于监控数据的汇总，是对已经采集好的全部数据处理并存储到rrdtool数据库。</p>
+
+<h2>搭建yum环境</h2>
+
+<p>由于正式环境没有提供外网环境，所以需要把安装光盘拷贝到机器，作为yum的本地源。</p>
+
+<pre><code>mount -t iso9660 -o loop rhel-server-6.4-x86_64-dvd\[ED2000.COM\].iso iso/
+ln -s iso rhel6.4
+
+vi /etc/yum.repos.d/rhel.repo 
+[os]
+name = Linux OS Packages
+baseurl = file:///opt/rhel6.4
+enabled=1
+gpgcheck = 0
+</code></pre>
+
+<p>再极端点，yum程序都没有安装。到 Packages 目录用 rpm 安装 <code>yum*</code> 。</p>
+
+<p>安装httpd后，把 rhel6.4 源建一个软链接到 <code>/var/www/html/rhel6.4</code> ，其他机器就可以使用该源来进行安装软件了。</p>
+
+<pre><code>cat /etc/yum.repos.d/rhel.repo
+[http]
+name=LOCAL YUM server
+baseurl = http://cu-omc1/rhel6.4
+enabled=1
+gpgcheck=0
+</code></pre>
+
+<h2>使用yum安装依赖</h2>
+
+<pre><code>yum install -y gcc gd httpd php php-devel php-mysql php-pear php-common php-gd php-mbstring php-cli 
+
+yum install -y rrdtool 
+
+yum install -y apr*
+
+# 编译Ganglia时加 --with-libpcre=no 可以不安装pcre
+yum install -y pcre*
+
+# yum install -y zlib-devel
+</code></pre>
+
+<h2>(仅)编译安装Ganglia</h2>
+
+<p>下载下面的软件(yum没有这些软件)：</p>
+
+<ul>
+<li><a href="http://rpm.pbone.net/index.php3/stat/4/idpl/15992683/dir/scientific_linux_6/com/rrdtool-devel-1.3.8-6.el6.x86_64.rpm.html">rrdtool-devel-1.3.8-6.el6.x86_64.rpm</a></li>
+<li><a href="http://download.savannah.gnu.org/releases/confuse/">confuse-2.7.tar.gz</a></li>
+<li><a href="http://sourceforge.net/projects/ganglia/files/ganglia%20monitoring%20core/">ganglia</a></li>
+<li><a href="http://sourceforge.net/projects/ganglia/files/ganglia-web/">ganglia-web</a></li>
+</ul>
+
+
+<p>安装：</p>
+
+<pre><code>umask 0022 # 临时修改下，不然后面会遇到权限问题
+
+rpm -ivh rrdtool-devel-1.3.8-6.el6.x86_64.rpm 
+
+# yum install -y libconfuse*
+tar zxf confuse-2.7.tar.gz
+cd confuse-2.7
+./configure CFLAGS=-fPIC --disable-nls
+make &amp;&amp; make install
+
+tar zxf ganglia-3.7.2.tar.gz 
+cd ganglia-3.7.2
+./configure --with-gmetad --enable-gexec --enable-status --prefix=/usr/local/ganglia
+# 可选项，用于指定默认配置位置 `-sysconfdir=/etc/ganglia`
+make &amp;&amp; make install
+
+cp gmetad/gmetad.init /etc/init.d/gmetad
+chkconfig gmetad on
+chkconfig --list | grep gm
+
+df -h # 把rrds目录放到最大的分区，再做个链接到data目录下
+mkdir -p /data/ganglia/rrds
+chown nobody:nobody /data/ganglia/rrds
+ln -s /usr/local/ganglia/sbin/gmetad /usr/sbin/gmetad
+
+gmetad -h # 查看默认的config位置。下面两个步骤二选一根据是否配置 sysconfdir 选项
+# cp gmetad/gmetad.conf /etc/ganglia/
+vi /etc/init.d/gmetad 
+  /usr/local/ganglia/etc/gmetad.conf #修改原来的默认配置路径
+
+cd ganglia-3.7.2/gmond/
+ln -s /usr/local/ganglia/sbin/gmond /usr/sbin/gmond
+cp gmond.init /etc/init.d/gmond
+chkconfig gmond on
+chkconfig --list gmond
+
+gmond -h # 查看默认的config位置。
+./gmond -t &gt;/usr/local/ganglia/etc/gmond.conf
+vi /etc/init.d/gmond 
+  /usr/local/ganglia/etc/gmond.conf #修改原来的默认配置路径
+</code></pre>
+
+<h2>配置</h2>
+
+<ul>
+<li>Ganglia配置</li>
+</ul>
+
+
+<pre><code>vi /usr/local/ganglia/etc/gmetad.conf
+  datasource "HADOOP" hadoop-master1
+  datasource "CU" cu-ud1
+  rrd_rootdir "/data/ganglia/rrds"
+  gridname "bigdata"
+
+vi /usr/local/ganglia/etc/gmond.conf
+  cluster {
+   name = "CU"
+
+  udp_send_channel {
+   bind_hostname = yes
+</code></pre>
+
+<p><a href="http://ixdba.blog.51cto.com/2895551/1149003">http://ixdba.blog.51cto.com/2895551/1149003</a></p>
+
+<p>Ganglia的收集数据工作可以工作在单播（unicast)或多播(multicast)模式下，默认为多播模式。</p>
+
+<ul>
+<li>单播：发送自己 <strong>收集</strong> 到的监控数据到特定的一台或几台机器上，可以跨网段</li>
+<li>多播：发送自己收集到的监控数据到同一网段内所有的机器上，同时收集同一网段内的所有机器发送过来的监控数据。因为是以广播包的形式发送，因此需要同一网段内。但同一网段内，又可以定义不同的发送通道。</li>
+</ul>
+
+
+<p>主机多网卡(多IP)情况下需要绑定到特定的IP，设置bind_hostname来设置要绑定的IP地址。单IP情况下可以不需要考虑。</p>
+
+<p>多播情况下只能在单一网段进行，如果集群存在多个网段，可以分拆成多个子集群（data_source)，或者使用单播来进行配置。期望配置简单点的话，配置多个 data_source 。</p>
+
+<ul>
+<li><code>data_source "cluster-db" node1 node2</code>  定义集群名称，以及获取集群监控数据的节点。由于采用multicast模式，每台gmond节点都有本集群内节点服务器的所有监控数据，因此不必把所有节点都列出来。node1 node2是or的关系，如果node1无法下载，则才会尝试去node2下载，所以它们应该都是同一个集群的节点，保存着同样的数据。</li>
+<li><code>cluster.name</code> 本节点属于哪个cluster，需要与data_source对应。</li>
+<li><code>host.location</code> 类似于hostname的作用。</li>
+<li><code>udp_send_channel.mcast_join/host</code> 多播地址，工作在239.2.11.71通道下。如果使用单播模式，则要写host=node1，单播模式下可以配置多个upd_send_channel</li>
+<li><code>udp_recv_channel.mcast_join</code></li>
+</ul>
+
+
+<p><strong>参考思路</strong> (未具体实践)：多网段情况可以用单播解决，要是单网段要配置多个data_source(集群)那就换个多播的端口吧！</p>
+
+<h2>启动以及测试</h2>
+
+<pre><code>service httpd restart
+service gmetad start
+service gmond start
+
+service gmond status
+
+netstat -anp | grep -E "gmond|gmetad"
+
+# 启动如果有问题，使用调试模式启动查找问题
+/usr/sbin/gmetad -d 10
+
+/usr/local/ganglia/bin/gstat -a
+/usr/local/ganglia/bin/gstat -a -i hadoop-master1
+
+telnet localhost 8649
+telnet localhost 8651
+</code></pre>
+
+<p>问题：多播地址绑定失败</p>
+
+<blockquote><p><a href="http://llydmissile.blog.51cto.com/7784666/1411239">http://llydmissile.blog.51cto.com/7784666/1411239</a>
+<a href="http://www.cnblogs.com/Cherise/p/4350581.html">http://www.cnblogs.com/Cherise/p/4350581.html</a></p>
+
+<p>测试过程中可能会出现以下错误：Error creating multicast server mcast_join=239.2.11.71 port=8649 mcast_if=NULL family=&lsquo;inet4&rsquo;. Will try again&hellip;，系统不支持多播，需要将多播ip地址加入路由表，使用route add -host 239.2.11.71 dev eth0命令即可，将该命令加入/etc/rc.d/rc.local文件中，一劳永逸</p></blockquote>
+
+<pre><code>[root@hadoop-master4 ~]# gmond -d 10
+loaded module: core_metrics
+loaded module: cpu_module
+loaded module: disk_module
+loaded module: load_module
+loaded module: mem_module
+loaded module: net_module
+loaded module: proc_module
+loaded module: sys_module
+udp_recv_channel mcast_join=239.2.11.71 mcast_if=NULL port=8649 bind=239.2.11.71 buffer=0
+Error creating multicast server mcast_join=239.2.11.71 port=8649 mcast_if=NULL family='inet4'.  Will try again...
+</code></pre>
+
+<p>环境的default route被清理掉了(或者是由于网关和本机不在同一网段)。需要手动添加一条到网卡的route。</p>
+
+<pre><code>[root@hadoop-master4 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.32.0    *               255.255.255.0   U     0      0        0 bond0
+192.168.31.0    192.168.32.254  255.255.255.0   UG    0      0        0 bond0
+link-local      *               255.255.0.0     U     1006   0        0 bond0
+[root@hadoop-master4 ~]# route add -host 239.2.11.71 dev bond0
+[root@hadoop-master4 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+239.2.11.71     *               255.255.255.255 UH    0      0        0 bond0
+192.168.32.0    *               255.255.255.0   U     0      0        0 bond0
+192.168.31.0    192.168.32.254  255.255.255.0   UG    0      0        0 bond0
+link-local      *               255.255.0.0     U     1006   0        0 bond0
+</code></pre>
+
+<h2>安装GWeb</h2>
+
+<pre><code>cd ~/ganglia-web-3.7.1
+vi Makefile # 一次性配置好，不再需要去修改conf_default.php
+    GDESTDIR = /var/www/html/ganglia
+    GCONFDIR = /usr/local/ganglia/etc/
+    GWEB_STATEDIR = /var/www/html/ganglia
+    # Gmetad rootdir (parent location of rrd folder)
+    GMETAD_ROOTDIR = /data/ganglia
+    APACHE_USER = apache
+make install
+
+# 注意：内网还是需要改下 conf_default.php 一堆jquery的js。
+# 如果Web不能访问，查看下防火墙以及SELinux
+</code></pre>
+
+<ul>
+<li>httpd登录密码配置</li>
+</ul>
+
+
+<pre><code>htpasswd -c /var/www/html/ganglia/etc/htpasswd.users gangliaadmin 
+
+vi /etc/httpd/conf/httpd.conf 
+
+    &lt;Directory "/var/www/html/ganglia"&gt;
+    #  SSLRequireSSL
+       Options None
+       AllowOverride None
+       &lt;IfVersion &gt;= 2.3&gt;
+          &lt;RequireAll&gt;
+             Require all granted
+    #        Require host 127.0.0.1
+
+             AuthName "Ganglia Access"
+             AuthType Basic
+             AuthUserFile /var/www/html/ganglia/etc/htpasswd.users
+             Require valid-user
+          &lt;/RequireAll&gt;
+       &lt;/IfVersion&gt;
+       &lt;IfVersion &lt; 2.3&gt;
+          Order allow,deny
+          Allow from all
+    #     Order deny,allow
+    #     Deny from all
+    #     Allow from 127.0.0.1
+
+          AuthName "Ganglia Access"
+          AuthType Basic
+          AuthUserFile /var/www/html/ganglia/etc/htpasswd.users
+          Require valid-user
+       &lt;/IfVersion&gt;
+    &lt;/Directory&gt;
+
+service httpd restart
+</code></pre>
+
+<p>如果在nginx做权限控制，一样很简单：</p>
+
+<pre><code>location /ganglia {
+        proxy_pass http://localhost/ganglia;
+        auth_basic "Ganglia Access";
+        auth_basic_user_file "/var/www/html/ganglia/etc/htpasswd.users";
+}
+</code></pre>
+
+<h2>集群配置</h2>
+
+<pre><code>cd /usr/local 
+for h in cu-ud1 cu-ud2 hadoop-master1 hadoop-master2 ; do 
+    cd /usr/local;
+    rsync -vaz  ganglia $h:/usr/local/ ;
+    ssh $h ln -s /usr/local/ganglia/sbin/gmond /usr/sbin/gmond ;
+    scp /etc/init.d/gmond $h:/etc/init.d/ ;
+    ssh $h "chkconfig gmond on" ;
+    ssh $h "yum install apr* -y" ; 
+    ssh $h "service gmond start" ; 
+done
+
+# 不同的集群，gmond.conf的cluster.name需要修改
+
+telnet hadoop-master1 8649
+netstat -anp | grep gm
+</code></pre>
+
+<p>要是集群有变动，添加还好，删除的话，会存在原来的旧数据，页面会提示机器down掉了。可以删除rrds目录下对应集群中节点的数据，然后重庆gmetad/httpd即可。</p>
+
+<h2>参考</h2>
+
+<h3>内容</h3>
+
+<pre><code>防火墙规则设置
+iptables -I INPUT 3 -p tcp -m tcp --dport 80 -j ACCEPT
+iptables -I INPUT 3 -p udp -m udp --dport 8649 -j ACCEPT
+
+service iptables save
+service iptables restart
+
+关闭selinux
+vi /etc/selinux/config
+SELINUX=disabled
+setenforce 0
+</code></pre>
+
+<p>实际应用中，需要监控的机器往往在不同的网段内，这个时候，就不能用gmond默认的多播方式（用于同一个网段内）来传送数据，必须使用单播的方法。</p>
+
+<p>gmond可以配置成为一个cluster，这些gmond节点之间相互发送各自的监控数据。所以每个gmond节点上实际上都会有 cluster内的所有节点的监控数据。gmetad只需要去某一个节点获取数据就可以了。</p>
+
+<p>web front-end 一个基于web的监控界面，通常和Gmetad安装在同一个节点上(还需确认是否可以不在一个节点上，因为php的配置文件中ms可配置gmetad的地址及端口)，它从Gmetad取数据，并且读取rrd数据库，生成图片，显示出来。</p>
+
+<p>gmetad周期性的去gmond节点或者gmetad节点poll数据。一个gmetad可以设置多个datasource，每个datasource可以有多个备份，一个失败还可以去其他host取数据。Gmetad只有tcp通道，一方面他向datasource发送请求，另一方面会使用一个tcp端口，发 布自身收集的xml文件，默认使用8651端口。所以gmetad即可以从gmond也可以从其他的gmetad得到xml数据。</p>
+
+<p>对于IO来说，Gmetad默认15秒向gmond取一次xml数据，如果gmond和gmetad都是在同一个节点，这样就相当于本地io请求。同时gmetad请求完xml文件后，还需要对其解析，也就是说按默认设置每15秒需要解析一个10m级别的xml文件，这样cpu的压力就会很大。同时它还有写入RRD数据库，还要处理来自web客户端的解析请求，也会读RRD数据库。这样本身的IO CPU 网络压力就很大，因此这个节点至少应该是个空闲的而且能力比较强的节点。</p>
+
+<ul>
+<li>多播模式配置
+这个是默认的方式，基本上不需要修改配置文件，且所有节点的配置是一样的。这种模式的好处是所有的节点上的 gmond 都有完备的数据，gmetad 连接其中任意一个就可以获取整个集群的所有监控数据，很方便。
+其中可能要修改的是 mcast_if 这个参数，用于指定多播的网络接口。如果有多个网卡，要填写对应的内网接口。</li>
+<li>单播模式配置
+监控机上的接收 Channel 配置。我们使用 UDP 单播模式，非常简单。我们的集群有部分机器在另一个机房，所以监听了 0.0.0.0，如果整个集群都在一个内网中，建议只 bind 内网地址。如果有防火墙，要打开相关的端口。</li>
+<li>最重要的配置项是 data_source: <code>data_source "my-cluster" localhost:8648</code> 如果使用的是默认的 8649 端口，则端口部分可以省略。如果有多个集群，则可以指定多个 data_source，每行一个。</li>
+<li>最后是 gridname 配置，用于给整个 Grid 命名</li>
+<li><a href="https://github.com/ganglia/gmond_python_modules">https://github.com/ganglia/gmond_python_modules</a></li>
+</ul>
+
+
+<h3>网址</h3>
+
+<ul>
+<li><a href="http://yhz.me/blog/Install-Ganglia-On-CentOS.html">在 CentOS 6.5 上安装 Ganglia 3.6.0</a></li>
+<li>*<a href="http://ixdba.blog.51cto.com/2895551/1149003">分布式监控系统ganglia配置文档</a></li>
+<li><p>*<a href="http://www.3mu.me/%E4%BC%81%E4%B8%9A%E7%BA%A7%E5%BC%80%E6%BA%90%E7%9B%91%E6%8E%A7%E8%BD%AF%E4%BB%B6ganglia-%E5%AE%89%E8%A3%85%E4%B8%8E%E9%85%8D%E7%BD%AE/">企业级开源监控软件Ganglia 安装与配置</a></p></li>
+<li><p>*<a href="http://jerrypeng.me/2014/07/04/server-side-java-monitoring-ganglia/">Java 服务端监控方案（二. Ganglia 篇）</a></p></li>
+<li><a href="http://jerrypeng.me/2014/07/22/server-side-java-monitoring-nagios/">Java 服务端监控方案（三. Nagios 篇）</a></li>
+<li><p><a href="https://github.com/ganglia/ganglia-web/wiki/Nagios-Integration">https://github.com/ganglia/ganglia-web/wiki/Nagios-Integration</a></p></li>
+<li><p><a href="https://ganglia.wikimedia.org/latest/">维基百科Ganglia</a></p></li>
+</ul>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Hadoop安装与升级-(3)HA配置]]></title>
@@ -561,6 +1118,8 @@ cp -r /mnt/hgfs/hadoop-2.6.0-src ~/
 mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true #Q:这里为啥不能用maven.test.skip?
 </code></pre>
 
+<p>$$TAG centos5 20160402</p>
+
 <ul>
 <li>docker build hadoop-2.6.3(比自己搞个虚拟机更快)</li>
 </ul>
@@ -618,6 +1177,8 @@ tar zcvf native-hadoop2.6.3-centos5.tar.gz native
 [root@8fb11f6b3ced hadoop-2.6.3]# cd lib/
 [root@8fb11f6b3ced lib]# tar zcvf native-hadoop2.6.3-centos5-with-snappy.tar.gz native
 </code></pre>
+
+<p>$$END TAG centos5 20160402</p>
 
 <h2>遇到的问题</h2>
 
@@ -815,876 +1376,6 @@ Found 3 items
 -rw-r--r--   1 hadoop supergroup       1366 2015-03-06 16:49 /README.txt
 drwx------   - hadoop supergroup          0 2015-03-06 16:54 /tmp
 drwxr-xr-x   - hadoop supergroup          0 2015-03-06 16:54 /user
-</code></pre>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[编译/搭建Spark环境]]></title>
-    <link href="http://winseliu.com/blog/2014/10/16/spark-build-and-configuration/"/>
-    <updated>2014-10-16T20:02:46+08:00</updated>
-    <id>http://winseliu.com/blog/2014/10/16/spark-build-and-configuration</id>
-    <content type="html"><![CDATA[<p>记录spark编译和打包成tar的整个流程。包括各个版本的编译过程，使用make-distribution脚本打包，搭建本地、standalone、yarn的spark环境。</p>
-
-<ul>
-<li>2016-1 spark-1.6.0</li>
-<li>2015-04 【Spark-1.3.0】单独附在最后，添加了spark-sql功能使用和spark-HA的配置</li>
-</ul>
-
-
-<h2>编译和打包</h2>
-
-<ul>
-<li>spark-1.6.0</li>
-</ul>
-
-
-<pre><code>// java version "1.7.0_17" &amp; Apache Maven 3.3.9 &amp; CentOS release 6.6 (Final)
-[hadoop@cu2 spark-1.6.0]$ export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
-[hadoop@cu2 spark-1.6.0]$ mvn package eclipse:eclipse -Phadoop-2.6 -Dhadoop.version=2.6.3 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
-
-[hadoop@cu2 spark-1.6.0]$ vi make-distribution.sh 
-BUILD_COMMAND=("$MVN" package -DskipTests $@)
-
-[hadoop@cu2 spark-1.6.0]$ ./make-distribution.sh --tgz --mvn "$(which mvn)"  -Dhadoop-2.6 -Dhadoop.version=2.6.3 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests 
-[hadoop@cu2 spark-1.6.0]$ ll spark-1.6.0-bin-2.6.3.tgz 
-
-// examples
-[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ export HADOOP_CONF_DIR=~/hadoop-2.6.3/etc/hadoop
-[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ bin/spark-submit --class org.apache.spark.examples.SparkPi --master yarn-client lib/spark-examples-1.6.0-hadoop2.6.3.jar 10
-
-[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ export HADOOP_CONF_DIR=~/hadoop-2.6.3/etc/hadoop
-[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ export SPARK_PRINT_LAUNCH_COMMAND=true
-// export HADOOP_ROOT_LOGGER=DEBUG,console Spark的脚本不认这个变量
-[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ bin/spark-submit --master yarn --deploy-mode client --class org.apache.spark.examples.streaming.HdfsWordCount lib/spark-examples-1.6.0-hadoop2.6.3.jar /data
-
-// --driver-java-options "-Dhadoop.root.logger=WARN,console" 
-// --driver-java-options "-Dhadoop.root.logger=WARN,console -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090"
-
-// org.apache.spark.deploy.yarn.Client#copyFileToRemote
-// --conf "spark.yarn.jar=hdfs://hadoop-master2:9000/spark-assembly-1.6.0-hadoop2.6.3.jar"
-
-// http://spark.apache.org/docs/latest/running-on-yarn.html
-</code></pre>
-
-<ul>
-<li>spark-1.5</li>
-</ul>
-
-
-<pre><code>-- jdk8-x64 &amp; spark-1.5.2 &amp; maven-3.3.9
-set or export MAVEN_OPTS=-Xmx2g
-mvn package eclipse:eclipse -Phadoop-2.6 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
--- 注释掉pom.xml中的&lt;useZincServer&gt;true&lt;/useZincServer&gt; @see http://stackoverflow.com/questions/31844848/building-spark-with-maven-error-finding-javac-but-path-is-correct
--- 公司网络不稳定，遇到下载maven包报错，多重试几次！！
-</code></pre>
-
-<ul>
-<li>spark-1.4.1</li>
-</ul>
-
-
-<pre><code>[hadoop@cu2 spark-1.4.1]$ export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
-
-[hadoop@cu2 spark-1.4.1]$ mvn package -Phadoop-2.6 -Dhadoop.version=2.7.1 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
-
--- 打包：
--- // 修改BUILD_COMMAND变量
-[hadoop@cu2 spark-1.4.1]$ vi make-distribution.sh 
-BUILD_COMMAND=("$MVN"  package -DskipTests $@)
-
-[hadoop@cu2 spark-1.4.1]$ ./make-distribution.sh --mvn `which mvn` --tgz  --skip-java-test   -Phadoop-2.6 -Dhadoop.version=2.7.1 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
-</code></pre>
-
-<ul>
-<li>spark-1.1.0</li>
-</ul>
-
-
-<p>官网提供的hadoop版本没有2.5的。这里我自己下载源码再进行编译。先下载spark-1.1.0.tgz，解压然后执行命令编译：</p>
-
-<pre><code>export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
-mvn -Pyarn -Phadoop-2.4 -Dhadoop.version=2.5.1 -Phive -X -DskipTests clean package
-
--- mvn package eclipse:eclipse -Phadoop-2.2 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
-</code></pre>
-
-<p>注意事项：用64位的JDK！！加上maven参数，不然很可能出现OOM（甚至各种稀奇古怪的问题）。编译的时间也挺长的，可以先去吃个饭。或者取消一些功能的编译（如hive）。</p>
-
-<p>编译完后，在assembly功能下会生成包括所有spark及其依赖的jar文件。</p>
-
-<pre><code>[root@docker scala-2.10]# cd spark-1.1.0/assembly/target/scala-2.10/
-[root@docker scala-2.10]# ll -h
-total 135M
--rw-r--r--. 1 root root 135M Oct 15 21:18 spark-assembly-1.1.0-hadoop2.5.1.jar
-</code></pre>
-
-<p>打包:</p>
-
-<p>上面我们已经编译好了spark程序，这里对其进行打包集成到一个压缩包。使用程序自带的make-distribution.sh即可。</p>
-
-<p>为了减少重新编译的巨长的等待时间，修改下脚本<code>make-distribution.sh</code>的maven编译参数，去掉maven的clean阶段操作（最好直接注释掉mvn那行），修改最终结果如下：</p>
-
-<pre><code>#BUILD_COMMAND="mvn clean package -DskipTests $@"
-BUILD_COMMAND="mvn package -DskipTests $@"
-</code></pre>
-
-<p>然后执行命令：</p>
-
-<pre><code>[root@docker spark-1.1.0]# sh -x make-distribution.sh --tgz  --skip-java-test -Pyarn -Phadoop-2.4 -Dhadoop.version=2.5.1 -Phive 
-[root@docker spark-1.1.0]# ll -h
-total 185M
-...
--rw-r--r--. 1 root root 185M Oct 16 00:09 spark-1.1.0-bin-2.5.1.tgz
-</code></pre>
-
-<p>最终会在目录行打包生成tgz的文件。</p>
-
-<h2>本地运行</h2>
-
-<p>把本机ip主机名写入到hosts，方便以后windows本机查看日志</p>
-
-<pre><code>[root@docker spark-1.1.0-bin-2.5.1]# echo 192.168.154.128 docker &gt;&gt; /etc/hosts
-[root@docker spark-1.1.0-bin-2.5.1]# cat /etc/hosts
-...
-192.168.154.128 docker
-</code></pre>
-
-<ul>
-<li>运行helloworld：</li>
-</ul>
-
-
-<pre><code>[root@docker spark-1.1.0-bin-2.5.1]# bin/run-example SparkPi 10
-Spark assembly has been built with Hive, including Datanucleus jars on classpath
-...
-14/10/16 00:22:36 INFO SparkContext: Job finished: reduce at SparkPi.scala:35, took 2.848632007 s
-Pi is roughly 3.139344
-14/10/16 00:22:36 INFO SparkUI: Stopped Spark web UI at http://docker:4040
-...
-</code></pre>
-
-<ul>
-<li>交互式操作：</li>
-</ul>
-
-
-<pre><code>[root@docker spark-1.1.0-bin-2.5.1]# bin/spark-shell --master local[2]
-Welcome to
-      ____              __
-     / __/__  ___ _____/ /__
-    _\ \/ _ \/ _ `/ __/  '_/
-   /___/ .__/\_,_/_/ /_/\_\   version 1.1.0
-      /_/
-
-Using Scala version 2.10.4 (Java HotSpot(TM) 64-Bit Server VM, Java 1.7.0_60)
-...
-14/10/16 00:25:57 INFO SparkUI: Started SparkUI at http://docker:4040
-14/10/16 00:25:57 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-14/10/16 00:25:58 INFO Executor: Using REPL class URI: http://192.168.154.128:39385
-14/10/16 00:25:58 INFO AkkaUtils: Connecting to HeartbeatReceiver: akka.tcp://sparkDriver@docker:57417/user/HeartbeatReceiver
-14/10/16 00:25:58 INFO SparkILoop: Created spark context..
-Spark context available as sc.
-
-scala&gt; 
-</code></pre>
-
-<p>说明下环境：我使用windows作为开发环境，使用虚拟机中的linux作为测试环境。同时通过ssh连接的隧道来实现windows无缝的访问虚拟机linux操作系统（可以通过浏览器socket5代理查看web页面）。</p>
-
-<p>启动交互式访问后，就可以通过浏览器访问4040查看spark程序的状态。</p>
-
-<p><img src="http://file.bmob.cn/M00/1E/4B/wKhkA1Q_3NOALefuAAEimqVy6-s418.png" alt="" /></p>
-
-<p>任务已经启动，接下来就可以进行操作：</p>
-
-<pre><code>scala&gt; val textFile=sc.textFile("README.md")
-textFile: org.apache.spark.rdd.RDD[String] = README.md MappedRDD[1] at textFile at &lt;console&gt;:12
-
-scala&gt; textFile.count()
-res0: Long = 141
-
-scala&gt; textFile.first()
-res1: String = # Apache Spark
-
-scala&gt; val linesWithSpark = textFile.filter(line=&gt;line.contains("Spark"))
-linesWithSpark: org.apache.spark.rdd.RDD[String] = FilteredRDD[2] at filter at &lt;console&gt;:14
-
-scala&gt; textFile.filter(line=&gt;line.contains("Spark")).count()
-res2: Long = 21
-
-scala&gt; textFile.map(_.split(" ").size).reduce((a,b) =&gt; if(a&gt;b) a else b)
-res3: Int = 15
-
-scala&gt; import java.lang.Math
-import java.lang.Math
-
-scala&gt; textFile.map(_.split(" ").size).reduce((a,b)=&gt;Math.max(a,b))
-res4: Int = 15
-
-scala&gt; val wordCounts = textFile.flatMap(_.split(" ")).map((_, 1)).reduceByKey(_+_)
-wordCounts: org.apache.spark.rdd.RDD[(String, Int)] = ShuffledRDD[8] at reduceByKey at &lt;console&gt;:15
-
-scala&gt; wordCounts.collect()
-res5: Array[(String, Int)] = Array((means,1), (under,2), (this,4), (Because,1), (Python,2), (agree,1), (cluster.,1), (its,1), (follows.,1), (general,2), (have,2), (YARN,,3), (pre-built,1), (locally.,1), (locally,2), (changed,1), (MRv1,,1), (several,1), (only,1), (sc.parallelize(1,1), (This,2), (learning,,1), (basic,1), (requests,1), (first,1), (Configuration,1), (MapReduce,2), (CLI,1), (graph,1), (without,1), (documentation,1), ("yarn-client",1), ([params]`.,1), (any,2), (setting,2), (application,1), (prefer,1), (SparkPi,2), (engine,1), (version,3), (file,1), (documentation,,1), (&lt;http://spark.apache.org/&gt;,1), (MASTER,1), (entry,1), (example,3), (are,2), (systems.,1), (params,1), (scala&gt;,1), (provides,1), (refer,1), (MLLib,1), (Interactive,2), (artifact,1), (configure,1), (can,8), (&lt;art...
-</code></pre>
-
-<p>执行了上面一些操作后，通过网页查看状态变化：</p>
-
-<p><img src="http://file.bmob.cn/M00/1E/4C/wKhkA1Q_3w6AM6njAAF-MCCYh2s170.png" alt="" /></p>
-
-<h2>Spark-standalone集群</h2>
-
-<p>部署集群需要用到多个服务器，这里我使用docker来进行部署。</p>
-
-<p>本来应该早早完成本文的实践，但是在搭建docker-hadoop集群时花费了很多的时间。关于搭建集群dnsmasq处理域名问题参见下一篇文章。
-最终实现可以参考：<a href="https://github.com/winse/docker-hadoop/tree/spark-yarn">docker-hadoop</a></p>
-
-<pre><code>[root@docker docker-hadoop]# docker run -d  --dns 172.17.42.1 --name slaver2 -h slaver1 spark-yarn
-[root@docker docker-hadoop]# docker run -d  --dns 172.17.42.1 --name slaver2 -h slaver2 spark-yarn
-[root@docker docker-hadoop]# docker run -d  --dns 172.17.42.1 --name master -h master spark-yarn
-
-[root@docker docker-hadoop]# docker ps | grep spark | awk '{print $1}' | xargs -I{} docker inspect -f ' ' {} &gt; /etc/dnsmasq.hosts
-[root@docker docker-hadoop]# cat /etc/dnsmasq.hosts 
-172.17.0.29 master
-172.17.0.28 slaver2
-172.17.0.27 slaver1
-[root@docker docker-hadoop]# service dnsmasq restart
-[root@docker docker-hadoop]# ssh hadoop@master
-
-[hadoop@master ~]$ ssh-copy-id master
-[hadoop@master ~]$ ssh-copy-id localhost
-[hadoop@master ~]$ ssh-copy-id slaver1
-[hadoop@master ~]$ ssh-copy-id slaver2
-[hadoop@master spark-1.1.0-bin-2.5.1]$ sbin/start-all.sh 
-[hadoop@master spark-1.1.0-bin-2.5.1]$ /opt/jdk1.7.0_67/bin/jps  -m
-266 Jps -m
-132 Master --ip master --port 7077 --webui-port 8080
-</code></pre>
-
-<p>通过网页可以查看集群的状态：</p>
-
-<p><img src="http://file.bmob.cn/M00/1E/F8/wKhkA1RClV2AE0biAAEmpXJlzTc914.png" alt="" /></p>
-
-<p>运行任务连接到master：</p>
-
-<pre><code>[hadoop@master spark-1.1.0-bin-2.5.1]$ bin/spark-shell --master spark://master:7077
-...
-14/10/17 11:31:08 INFO BlockManagerMasterActor: Registering block manager slaver2:55473 with 265.4 MB RAM
-14/10/17 11:31:09 INFO BlockManagerMasterActor: Registering block manager slaver1:33441 with 265.4 MB RAM
-
-scala&gt; 
-</code></pre>
-
-<p><img src="http://file.bmob.cn/M00/1E/F9/wKhkA1RCmG-AO--XAAD84ATrCew955.png" alt="" /></p>
-
-<p>从上图可以看到，程序已经正确连接到spark集群，master为driver，任务节点为slaver1和slaver2。下面运行下程序，然后通过网页查看运行的状态。</p>
-
-<pre><code>scala&gt; val textFile=sc.textFile("README.md")
-scala&gt; textFile.count()
-scala&gt; textFile.map(_.split(" ").size).reduce((a,b) =&gt; if(a&gt;b) a else b)
-</code></pre>
-
-<p><img src="http://file.bmob.cn/M00/1E/F9/wKhkA1RCmdmAB3M9AAFIzMb4yk0370.png" alt="" /></p>
-
-<p>系统安装好了，启动spark-standalone集群和hadoop-yarn一样。配置ssh、java，然后启动，配合网页8080/4040可以实时的了解任务的指标。</p>
-
-<h2>yarn集群</h2>
-
-<p>注意：如果你是按照前面的步骤来操作的，需要先把spark-standalone的集群停掉。端口8080和yarn web使用端口冲突，会导致yarn启动失败。</p>
-
-<p>修改spark-env.sh，添加HADOOP_CONF_DIR参数。然后提交任务到yarn上执行就行了。</p>
-
-<pre><code>[hadoop@master spark-1.1.0-bin-2.5.1]$ cat conf/spark-env.sh
-#!/usr/bin/env bash
-
-JAVA_HOME=/opt/jdk1.7.0_67 
-
-HADOOP_CONF_DIR=/opt/hadoop-2.5.1/etc/hadoop
-
-[hadoop@master spark-1.1.0-bin-2.5.1]$ bin/spark-submit --class org.apache.spark.examples.SparkPi --master yarn-cluster lib/spark-examples-1.1.0-hadoop2.5.1.jar  10
-</code></pre>
-
-<p><img src="http://file.bmob.cn/M00/1E/FD/wKhkA1RCszeAALCPAAK1Nzk6faQ330.png" alt="" /></p>
-
-<p>运行的结果输出在driver的slaver2节点，对应输出型来说不是很直观。spark-yarn提供了另一种方式，driver直接本地运行<em>yarn-client</em>。</p>
-
-<pre><code>[hadoop@master spark-1.1.0-bin-2.5.1]$ bin/spark-submit --class org.apache.spark.examples.SparkPi --master yarn-client lib/spark-examples-1.1.0-hadoop2.5.1.jar  10
-...
-14/10/17 13:31:02 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 0.0 (TID 0) in 8248 ms on slaver1 (1/10)
-14/10/17 13:31:02 INFO scheduler.TaskSetManager: Starting task 2.0 in stage 0.0 (TID 2, slaver1, PROCESS_LOCAL, 1228 bytes)
-14/10/17 13:31:02 INFO scheduler.TaskSetManager: Finished task 1.0 in stage 0.0 (TID 1) in 231 ms on slaver1 (2/10)
-14/10/17 13:31:02 INFO scheduler.TaskSetManager: Starting task 3.0 in stage 0.0 (TID 3, slaver1, PROCESS_LOCAL, 1228 bytes)
-14/10/17 13:31:02 INFO scheduler.TaskSetManager: Finished task 2.0 in stage 0.0 (TID 2) in 158 ms on slaver1 (3/10)
-14/10/17 13:31:02 INFO scheduler.TaskSetManager: Starting task 4.0 in stage 0.0 (TID 4, slaver1, PROCESS_LOCAL, 1228 bytes)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Finished task 3.0 in stage 0.0 (TID 3) in 284 ms on slaver1 (4/10)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Starting task 5.0 in stage 0.0 (TID 5, slaver1, PROCESS_LOCAL, 1228 bytes)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Finished task 4.0 in stage 0.0 (TID 4) in 175 ms on slaver1 (5/10)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Starting task 6.0 in stage 0.0 (TID 6, slaver1, PROCESS_LOCAL, 1228 bytes)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Finished task 5.0 in stage 0.0 (TID 5) in 301 ms on slaver1 (6/10)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Starting task 7.0 in stage 0.0 (TID 7, slaver1, PROCESS_LOCAL, 1228 bytes)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Finished task 6.0 in stage 0.0 (TID 6) in 175 ms on slaver1 (7/10)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Starting task 8.0 in stage 0.0 (TID 8, slaver1, PROCESS_LOCAL, 1228 bytes)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Finished task 7.0 in stage 0.0 (TID 7) in 143 ms on slaver1 (8/10)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Finished task 8.0 in stage 0.0 (TID 8) in 164 ms on slaver1 (9/10)
-14/10/17 13:31:03 INFO scheduler.TaskSetManager: Starting task 9.0 in stage 0.0 (TID 9, slaver1, PROCESS_LOCAL, 1228 bytes)
-14/10/17 13:31:03 INFO cluster.YarnClientSchedulerBackend: Registered executor: Actor[akka.tcp://sparkExecutor@slaver2:51923/user/Executor#1132577949] with ID 1
-14/10/17 13:31:04 INFO util.RackResolver: Resolved slaver2 to /default-rack
-14/10/17 13:31:04 INFO scheduler.TaskSetManager: Finished task 9.0 in stage 0.0 (TID 9) in 397 ms on slaver1 (10/10)
-14/10/17 13:31:04 INFO cluster.YarnClientClusterScheduler: Removed TaskSet 0.0, whose tasks have all completed, from pool 
-14/10/17 13:31:04 INFO scheduler.DAGScheduler: Stage 0 (reduce at SparkPi.scala:35) finished in 26.084 s
-14/10/17 13:31:04 INFO spark.SparkContext: Job finished: reduce at SparkPi.scala:35, took 28.31400558 s
-Pi is roughly 3.140248
-</code></pre>
-
-<p>thrift连接yarn运行时时受容器内存最大值限制，需要修改yarn-site.xml。</p>
-
-<pre><code>cat yarn-site.xml 
-&lt;property&gt;
-  &lt;name&gt;yarn.nodemanager.resource.memory-mb&lt;/name&gt;
-  &lt;value&gt;32000&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-  &lt;name&gt;yarn.nodemanager.resource.memory-mb&lt;/name&gt;
-  &lt;value&gt;32768&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-  &lt;name&gt;yarn.scheduler.minimum-allocation-mb&lt;/name&gt;
-  &lt;value&gt;2048&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-  &lt;name&gt;yarn.scheduler.maximum-allocation-mb&lt;/name&gt;
-  &lt;value&gt;32768&lt;/value&gt;
-&lt;/property&gt;
-
-./sbin/start-thriftserver.sh --executor-memory 29g --master yarn-client
-</code></pre>
-
-<p>不能把executor-memory的内存设置为等于最大值，否则会报错：</p>
-
-<pre><code>Exception in thread "main" java.lang.IllegalArgumentException: Required executor memory (30720+2150 MB) is above the max threshold (32768 MB) of this cluster!
-</code></pre>
-
-<h2>总结</h2>
-
-<p>本文主要是搭建spark的环境搭建，本地运行、以及在docker中搭建spark集群、yarn集群三种方式。本地运行最简单方便，但是没有模拟到集群环境；spark提供了yarn框架上的实现，直接提交任务到yarn即可；spark集群相对比较简单和方便，接下来的远程调试主要通过spark伪分布式集群方式来进行。</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://spark.apache.org/docs/latest/building-with-maven.html">Building Spark with Maven</a></li>
-<li><a href="http://spark.apache.org/docs/latest/quick-start.html">Quick Start</a></li>
-<li><a href="http://spark.apache.org/docs/latest/spark-standalone.html">Spark Standalone Mode</a></li>
-<li><a href="http://spark.apache.org/docs/latest/configuration.html">Spark Configuration</a></li>
-<li><a href="http://www.07net01.com/linux/zuixindnsmasqanzhuangbushuxiangjie_centos6__653221_1381214991.html">DNS</a></li>
-<li>[spark上安装mysql与hive](<a href="http://blog.csdn.net/hwssg/article/details/38424529">http://blog.csdn.net/hwssg/article/details/38424529</a>]</li>
-</ul>
-
-
-<h2>后记 Spark-1.3.0</h2>
-
-<h3>编译1.3.0(cygwin)</h3>
-
-<p>正式环境用的hadoop-2.2，不是开发环境，没有maven等工具。先本地编译后，再方式去。（由于是添加计算的工具，可以随便一点）。</p>
-
-<pre><code>export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
-mvn package eclipse:eclipse -Phadoop-2.2 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
-
--- // 删除生成的eclipse文件中的including
-find . -name ".classpath" | xargs -I{} sed -i 's/ including="\*\*\/\*\.java"//' {}
-
-dos2unix make-distribution.sh
-./make-distribution.sh --mvn `which mvn` --tgz  --skip-java-test -Phadoop-2.2 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
-
--- linux环境部署
--- // 这个版本，windows-cygwin编译的shell文件也是**windows的换行符**！！需要注意下！
-[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ find bin/* -perm /u+x | xargs -I{} sed -i 's/^M//g' {} 
-[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ find sbin/* -perm /u+x | xargs -I{} sed -i 's/^M//g' {} 
-</code></pre>
-
-<h3>spark-1.3.0运行spark-sql</h3>
-
-<ol>
-<li><p>连接到hive-engine</p></li>
-<li><p>依赖tez</p></li>
-</ol>
-
-
-<p>hive的<code>hive.execution.engine</code>的tez，添加tez的jar和hive-site到CLASSPATH。</p>
-
-<p>包的导入以及配置：（如果使用meta-service的就不用这么麻烦）</p>
-
-<pre><code>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ vi conf/spark-env.sh 
-...
-JAVA_HOME=/home/eshore/jdk1.7.0_60
-
-# log4j
-
-__add_to_classpath() {
-
-  root=$1
-
-  if [ -d "$root" ] ; then
-    for f in `ls $root/*.jar | grep -v -E '/hive.*.jar'`  ; do
-      if [ -n "$SPARK_DIST_CLASSPATH" ] ; then
-        export SPARK_DIST_CLASSPATH=$SPARK_DIST_CLASSPATH:$f
-      else
-        export SPARK_DIST_CLASSPATH=$f
-      fi
-    done
-  fi
-
-}
-
-__add_to_classpath "/home/eshore/tez-0.4.0-incubating"
-__add_to_classpath "/home/eshore/tez-0.4.0-incubating/lib"
-__add_to_classpath "/home/eshore/apache-hive-0.13.1/lib"
-
-export HADOOP_CONF_DIR=/data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop
-export SPARK_CLASSPATH=/home/eshore/spark-1.3.0-bin-2.2.0/conf:$HADOOP_CONF_DIR
-
-不能直接把hive的包全部加进去，hive-0.13.1a和hive-0.13.1的部分包不一致！！
-
-    java.lang.NoSuchMethodException: org.apache.hadoop.hive.ql.exec.Utilities.deserializeObjectByKryo(com.esotericsoftware.kryo.Kryo, java.io.InputStream, java.lang.Class)
-
-    private static java.lang.Object org.apache.hadoop.hive.ql.exec.Utilities.deserializeObjectByKryo(org.apache.hive.com.esotericsoftware.kryo.Kryo,java.io.InputStream,java.lang.Class)
-
-* 如果不依赖tez，可以直接把datanucleus的三个包拷贝到lib目录下。
-
-[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ll lib
-total 262364
--rw-rw-r-- 1 hadoop hadoop    339666 Mar 25 19:35 datanucleus-api-jdo-3.2.6.jar
--rw-rw-r-- 1 hadoop hadoop   1890075 Mar 25 19:35 datanucleus-core-3.2.10.jar
--rw-rw-r-- 1 hadoop hadoop   1809447 Mar 25 19:35 datanucleus-rdbms-3.2.9.jar
--rwxr-xr-x 1 hadoop hadoop   4136686 Mar 31 13:05 spark-1.3.0-yarn-shuffle.jar
--rwxr-xr-x 1 hadoop hadoop 154198768 Mar 31 13:05 spark-assembly-1.3.0-hadoop2.2.0.jar
--rwxr-xr-x 1 hadoop hadoop 106275583 Mar 31 13:05 spark-examples-1.3.0-hadoop2.2.0.jar
-
-[eshore@bigdatamgr1 conf]$ ll
-...
-lrwxrwxrwx 1 eshore biadmin   50 Mar 31 13:26 hive-site.xml -&gt; /home/eshore/apache-hive-0.13.1/conf/hive-site.xml
--rw-r--r-- 1 eshore biadmin  632 Mar 31 15:12 log4j.properties
-lrwxrwxrwx 1 eshore biadmin   44 Mar 31 10:20 slaves -&gt; /data/opt/ibm/biginsights/hadoop-conf/slaves
--rwxr-xr-x 1 eshore biadmin 3380 Mar 31 16:17 spark-env.sh
-lrwxrwxrwx 1 eshore biadmin   62 Mar 31 16:17 tez-site.xml -&gt; /data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop/tez-site.xml
-</code></pre>
-
-<p>上面用的是hive-site.xml直接连接数据库的方式。也可以起hive-metaserver，然后spark通过连接meta即可：</p>
-
-<pre><code># 起meta服务
-nohup bin/hive --service metastore &gt; metastore.log 2&gt;&amp;1 &amp;
-
-# hive客户端配置
-vi hive-site.xml
-&lt;property&gt;
-  &lt;name&gt;hive.metastore.uris&lt;/name&gt;
-  &lt;value&gt;thrift://DataNode2:9083&lt;/value&gt;
-  &lt;description&gt;Thrift uri for the remote metastore. Used by metastore client to connect to remote metastore.&lt;/description&gt;
-&lt;/property&gt;
-</code></pre>
-
-<ol>
-<li>运行：</li>
-</ol>
-
-
-<pre><code>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$  bin/spark-sql 2&gt;sql.log
-SET spark.sql.hive.version=0.13.1
-spark-sql&gt; show databases;
-default
-neva2dta
-spark-sql&gt; show tables;
-pokes   false
-t_neva2_dps_xdr false
-t_neva2_ipdr_xdr        false
-spark-sql&gt; select count(*) from pokes;
-500
-spark-sql&gt; 
-
-[eshore@bigdatamgr1 conf]$ vi spark-env.sh 
-#!/usr/bin/env bash
-
-JAVA_HOME=/home/eshore/jdk1.7.0_60
-SPARK_CLASSPATH='/home/eshore/apache-hive-0.13.1/lib/*:/home/eshore/tez-0.4.0-incubating/*:/home/eshore/tez-0.4.0-incubating/lib/*'
-
-# 同步
-[eshore@bigdatamgr1 ~]$ for h in `cat ~/spark-1.3.0-bin-2.2.0/conf/slaves` ; do rsync -vaz /data/opt/ibm/biginsights/hadoop-2.2.0 $h:/data/opt/ibm/biginsights/  ; done
-</code></pre>
-
-<p>运行hivesever服务</p>
-
-<pre><code>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ cat start_thrift.sh 
-#!/bin/bash
-# hive-classpath已经在spark-env.sh中添加
-
-./sbin/start-thriftserver.sh --master spark://bigdatamgr1:7077 --executor-memory 16g
-[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ./start_thrift.sh 
-
-[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ bin/beeline -u jdbc:hive2://bigdatamgr1:10001 -n eshore -p '' 
-</code></pre>
-
-<p>在不依赖外部的jar时，spark的启动脚本是没有问题的，但是我们添加了很多依赖的jar这么写就有问题了，尽管thrift启动正常，但是shell总是打印错误：</p>
-
-<pre><code>failed to launch org.apache.spark.sql.hive.thriftserver.HiveThriftServer2:
-  ========================================
-
-full log in /home/eshore/spark-1.3.0-bin-2.2.0/sbin/../logs/spark-eshore-org.apache.spark.sql.hive.thriftserver.HiveThriftServer2-1-bigdatamgr1.out
-</code></pre>
-
-<p>比较隐晦，问题在<code>sbin/spark-daemon.sh</code>，启动完后通过<code>if [[ ! $(ps -p "$newpid" -o args=) =~ $command ]]; then</code>（其中<code>=~</code>表示正则匹配，最终<code>spark-class.sh</code>调用java会加上classpath），而上面的classpath会很长，导致上面的匹配失败！！</p>
-
-<pre><code>[hadoop@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ vi bin/spark-class
-...
-  exec "$RUNNER" -cp "$CLASSPATH" $JAVA_OPTS "$@"
-fi
-
--- 匹配失败时的值
-[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ps -p 1925344 -o args=
-/home/eshore/jdk1.7.0_60/bin/java -cp :/home/eshore/spark-1.3.0-bin-2.2.0/sbin/../conf:/home/eshore/spark-1.3.0-bin-2.2.0/lib/spark-assembly-1.3.0-hadoop2.2.0.jar:/home/eshore/spark
-</code></pre>
-
-<h4>解决办法</h4>
-
-<p>先看实验：</p>
-
-<pre><code>[dpi@dacs tmp]$ java -cp ~/kettle/data-integration/lib/mysql-connector-java-5.1.31-bin.jar:. JDBCConnTest
-
-[dpi@dacs tmp]$ echo $CLASSPATH
-.
-[dpi@dacs tmp]$ export CLASSPATH=~/kettle/data-integration/lib/mysql-connector-java-5.1.31-bin.jar
-[dpi@dacs tmp]$ java JDBCConnTest
-错误: 找不到或无法加载主类 JDBCConnTest
-[dpi@dacs tmp]$ java -cp . JDBCConnTest
-java.lang.ClassNotFoundException: com.mysql.jdbc.Driver
-
-[dpi@dacs tmp]$ echo $CLASSPATH
-/home/dpi/kettle/data-integration/lib/mysql-connector-java-5.1.31-bin.jar
-[dpi@dacs tmp]$ export CLASSPATH=~/kettle/data-integration/lib/mysql-connector-java-5.1.31-bin.jar:.
-[dpi@dacs tmp]$ java JDBCConnTest
-</code></pre>
-
-<p>设置cp后会覆盖CLASSPATH。所以问题的解决方法：直接把cp的路径删掉（不添加），前面export的classpath路径。java程序会去主动获取改环境变量。</p>
-
-<pre><code>  export CLASSPATH
-  exec "$RUNNER" $JAVA_OPTS "$@"
-</code></pre>
-
-<p>效果如下：</p>
-
-<pre><code>++ ps -p 1932338 -o args=
-+ [[ ! /home/eshore/jdk1.7.0_60/bin/java -XX:MaxPermSize=128m -Xms512m -Xmx512m org.apache.spark.deploy.SparkSubmit --class org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 --executor-memory 48g spark-internal =~ org.apache.spark.sql.hive.thriftserver.HiveThriftServer2 ]]
-</code></pre>
-
-<ul>
-<li>[=~的作用]<a href="http://bbs.chinaunix.net/thread-1623121-1-1.html">http://bbs.chinaunix.net/thread-1623121-1-1.html</a></li>
-<li><a href="http://docs.oracle.com/javase/tutorial/essential/environment/paths.html">http://docs.oracle.com/javase/tutorial/essential/environment/paths.html</a></li>
-<li><a href="https://docs.oracle.com/javase/8/docs/technotes/tools/windows/classpath.html">https://docs.oracle.com/javase/8/docs/technotes/tools/windows/classpath.html</a></li>
-</ul>
-
-
-<h3>Spark-HA</h3>
-
-<p>仅需要配置，重启spark集群即可。</p>
-
-<pre><code>[eshore@bigdata8 spark-1.3.0-bin-2.2.0]$ cat conf/spark-env.sh
-...
-SPARK_DAEMON_JAVA_OPTS="-Dspark.deploy.recoveryMode=ZOOKEEPER -Dspark.deploy.zookeeper.url=bi-00-01.bi.domain.com:2181 -Dspark.deploy.zookeeper.dir=/spark"
-
-[eshore@bigdatamgr1 conf]$ vi spark-defaults.conf 
-spark.master                     spark://bigdatamgr1:7077,bigdata8:7077
-...
-</code></pre>
-
-<p>各个master要单独的启动:</p>
-
-<pre><code>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ sbin/start-all.sh 
-[eshore@bigdata8 spark-1.3.0-bin-2.2.0]$ sbin/start-master.sh 
-</code></pre>
-
-<p>通过查看<a href="http://bigdata8:8080/">http://bigdata8:8080/</a>当前的状态为<strong>STANDBY</strong>。Workers列表为空。</p>
-
-<pre><code>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ sbin/stop-master.sh 
-</code></pre>
-
-<p>停了bigdatamgr1后，刷新<code>bigdata8:8080</code>页面等1分钟左右就变成ALIVE，然后其他所有的节点也连接到bigdata8了。</p>
-
-<ul>
-<li><a href="http://www.cnblogs.com/byrhuangqiang/p/3937654.html">http://www.cnblogs.com/byrhuangqiang/p/3937654.html</a></li>
-<li><a href="http://spark.apache.org/docs/latest/spark-standalone.html#high-availability">http://spark.apache.org/docs/latest/spark-standalone.html#high-availability</a></li>
-</ul>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[在windows开发测试mapreduce几种方式]]></title>
-    <link href="http://winseliu.com/blog/2014/09/17/windows-hadoop2-test-your-mapreduce-feature/"/>
-    <updated>2014-09-17T12:55:38+08:00</updated>
-    <id>http://winseliu.com/blog/2014/09/17/windows-hadoop2-test-your-mapreduce-feature</id>
-    <content type="html"><![CDATA[<blockquote><p>备注： 文后面的maven打包、以及执行的shell脚本还是极好的&hellip;</p></blockquote>
-
-<p>hadoop提供的两大组件HDFS、MapReduce。其中HDFS提供了丰富的API，最重要的有类似shell的脚本进行操作。而编写程序，要很方便的调试测试，其实是一件比较麻烦和繁琐的事情。</p>
-
-<p>首先可能针对拆分的功能进行<strong>单独的方法</strong>级别的单元测试，然后到map/reduce的一个<strong>完整的处理过程</strong>的测试，再就是针对<strong>整个MR</strong>的测试，前面说的都是在IDE中完成后，最后需要到<strong>测试环境</strong>对其进行验证。</p>
-
-<ul>
-<li>单独的方法这里就不必多讲，直接使用eclipse自带的junit即可完成。</li>
-<li>mrunit，针对map/reduce的测试，以至于整个MR流程的测试，但是mrunit的输入是针对小数据量的。</li>
-<li>本地模式运行程序，模拟正式的环境来进行测试，数据直接从hdfs获取。</li>
-<li>测试环境远程调试，尽管经过前面的步骤可能还会遇到各种问题，此时可结合<code>remote debug</code>来定位问题。</li>
-</ul>
-
-
-<h3>mrunit测试map/reduce</h3>
-
-<p>首先去到<a href="http://mrunit.apache.org/">官网下载</a>，把对应的jar加入到你项目的依赖。懒得去手工下载的话直接使用maven。</p>
-
-<pre><code>    &lt;dependency&gt;
-        &lt;groupId&gt;org.apache.mrunit&lt;/groupId&gt;
-        &lt;artifactId&gt;mrunit&lt;/artifactId&gt;
-        &lt;version&gt;1.1.0&lt;/version&gt;
-        &lt;classifier&gt;hadoop2&lt;/classifier&gt;
-        &lt;scope&gt;test&lt;/scope&gt;
-    &lt;/dependency&gt;
-</code></pre>
-
-<p>可以对mapreduce的各种情况（map/reduce/map-reduce/map-combine-reduce）进行简单的测试，验证逻辑上是否存在问题。<a href="https://cwiki.apache.org/confluence/display/MRUNIT/MRUnit+Tutorial">官方文档的例子</a>已经很具体详细了。</p>
-
-<p>先新建初始化driver（MapDriver/ReduceDriver/MapReduceDriver)，然后添加配置配置信息（configuration），再指定withInput来进行输入数据，和withOutput对应的输出数据。运行调用runTest方法就会模拟mr的整个运行机制来对单条的记录进行处理。因为都是在一个jvm中执行，调试是很方便的。</p>
-
-<pre><code>    private MapReduceDriver&lt;LongWritable, Text, KeyWrapper, ValueWrapper, Text, Text&gt; mrDriver;
-
-    @Before
-    public void setUp() {
-        AccessLogMapper mapper = new AccessLogMapper();
-        AccessLogReducer reducer = new AccessLogReducer();
-        // AccessLogCombiner combiner = new AccessLogCombiner();
-
-        mrDriver = MapReduceDriver.newMapReduceDriver(mapper, reducer);
-
-        // mDriver = MapDriver.newMapDriver(mapper);
-        // mcrDriver = MapReduceDriver.newMapReduceDriver(mapper, reducer, combiner);
-    }
-
-    private String[] datas;
-
-    @After
-    public void run() throws IOException {
-        if (datas != null) {
-            // 配置
-            ...
-            mrDriver.setConfiguration(config);
-            // mrDriver.getConfiguration().addResource("job_1399189058775_0627_conf.xml");
-
-          // 输入输出
-            Text input = new Text();
-            int i = 0;
-            for (String data : datas) {
-                input.set(data);
-                mrDriver.withInput(new LongWritable(++i), new Text(data));
-            }
-            mrDriver.withOutputFormat(MultipleFileOutputFormat.class, TextInputFormat.class);
-            mrDriver.runTest();
-        }
-    }
-
-    // / datas
-
-    private String[] datas() {
-        return ...;
-    }
-
-    @Test
-    public void testOne() throws IOException {
-        datas = new String[] { datas()[0] };
-    }
-</code></pre>
-
-<h2>local方式进行本地测试</h2>
-
-<p>mapreduce默认提供了两种任务框架： local和yarn。YARN环境需要把程序发布到nodemanager上去运行，对于开发测试来讲，还是太繁琐了。</p>
-
-<p>使用local的方式，既不用打包同时拥有IDE本地调试的便利，同时数据直接从HDFS中获取，也就是说，除了任务框架不同，其他都一样，程序的输入输出，任务代码的业务逻辑。为全面开发调试/测试提供了极其重要的方式。</p>
-
-<p>只需要指定服务为local的服务框架，再加上输入输出即可。如果本地用户和hdfs的用户不同，设置下环境变量<code>HADOOP_USER_NAME</code>。同样map、reduce通过线程来模拟，都运行的同一个JVM中，断点调试也很方便。</p>
-
-<pre><code>public class WordCountTest {
-
-    static {
-        System.setProperty("HADOOP_USER_NAME", "hadoop");
-    }
-
-    private static final String HDFS_SERVER = "hdfs://umcc97-44:9000";
-
-    @Test
-    public void test() throws Exception {
-        WordCount.main(new String[]{
-                "-Dmapreduce.framework.name=local", 
-                "-Dfs.defaultFS=" + HDFS_SERVER, 
-                HDFS_SERVER + "/user/hadoop/dta/001.tar.gz", 
-                HDFS_SERVER + "/user/hadoop/output/"});
-    }
-
-}
-</code></pre>
-
-<h3>测试环境打包测试</h3>
-
-<p>放到测试环境后，appmanager、map、reduce都是运行在不同的jvm；还有就是需要对程序进行打包，挺啰嗦而且麻烦的事情，依赖包多的话，包还挺大，每次job都需要传递这么大一个文件，也挺浪费的。</p>
-
-<p>提供两种打包方式，一种是直接jar运行的，一种是所有的jar压缩包tar.gz方式。可以结合distributecache减少每次执行程序需要传递给nodemanager的数据量，以及结合mapreduce运行时配置参数可以进行远程调试。</p>
-
-<pre><code>调试appmanager
--Dyarn.app.mapreduce.am.command-opts="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090" 
-调试map
--Dmapreduce.map.java.opts
-调试reduce
--Dmapreduce.reduce.java.opts
-</code></pre>
-
-<h3>小结</h3>
-
-<p>通过以上3中方式基本上能处理工作终于到的大部分问题了。大部分的功能使用mrunit测试就可以了，还可以单独的测试map，或者reduce挺不错的。</p>
-
-<h3>附录：maven打包</h3>
-
-<pre><code>    &lt;profile&gt;
-        &lt;id&gt;jar&lt;/id&gt;
-        &lt;build&gt;
-            &lt;plugins&gt;
-                &lt;plugin&gt;
-                    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
-                    &lt;artifactId&gt;maven-assembly-plugin&lt;/artifactId&gt;
-                    &lt;executions&gt;
-                        &lt;execution&gt;
-                            &lt;id&gt;make-assembly&lt;/id&gt;
-                            &lt;phase&gt;package&lt;/phase&gt;
-                            &lt;goals&gt;
-                                &lt;goal&gt;single&lt;/goal&gt;
-                            &lt;/goals&gt;
-                        &lt;/execution&gt;
-                    &lt;/executions&gt;
-                    &lt;configuration&gt;
-                        &lt;descriptorRefs&gt;
-                            &lt;descriptorRef&gt;
-                                jar-with-dependencies
-                            &lt;/descriptorRef&gt;
-                        &lt;/descriptorRefs&gt;
-                    &lt;/configuration&gt;
-                &lt;/plugin&gt;
-
-            &lt;/plugins&gt;
-        &lt;/build&gt;
-    &lt;/profile&gt;
-
-    &lt;profile&gt;
-        &lt;id&gt;tar&lt;/id&gt;
-        &lt;build&gt;
-            &lt;plugins&gt;
-                &lt;plugin&gt;
-                    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
-                    &lt;artifactId&gt;maven-assembly-plugin&lt;/artifactId&gt;
-                    &lt;executions&gt;
-                        &lt;execution&gt;
-                            &lt;id&gt;make-assembly&lt;/id&gt;
-                            &lt;phase&gt;package&lt;/phase&gt;
-                            &lt;goals&gt;
-                                &lt;goal&gt;single&lt;/goal&gt;
-                            &lt;/goals&gt;
-                        &lt;/execution&gt;
-                    &lt;/executions&gt;
-                    &lt;configuration&gt;
-                        &lt;appendAssemblyId&gt;true&lt;/appendAssemblyId&gt;
-                        &lt;descriptors&gt;
-                            &lt;descriptor&gt;${basedir}/../assemblies/application.xml&lt;/descriptor&gt;
-                        &lt;/descriptors&gt;
-                    &lt;/configuration&gt;
-                &lt;/plugin&gt;
-            &lt;/plugins&gt;
-        &lt;/build&gt;
-    &lt;/profile&gt;
-</code></pre>
-
-<p>打包成tar.gz的描述文件：</p>
-
-<pre><code>    &lt;assembly&gt;
-        &lt;id&gt;dist-${env}&lt;/id&gt;
-        &lt;formats&gt;
-            &lt;format&gt;tar.gz&lt;/format&gt;
-        &lt;/formats&gt;
-        &lt;includeBaseDirectory&gt;true&lt;/includeBaseDirectory&gt;
-        &lt;fileSets&gt;
-            &lt;fileSet&gt;
-                &lt;directory&gt;${basedir}/src/main/scripts&lt;/directory&gt;
-                &lt;outputDirectory&gt;/bin&lt;/outputDirectory&gt;
-                &lt;includes&gt;
-                    &lt;include&gt;*.sh&lt;/include&gt;
-                &lt;/includes&gt;
-                &lt;fileMode&gt;0755&lt;/fileMode&gt;
-                &lt;lineEnding&gt;unix&lt;/lineEnding&gt;
-            &lt;/fileSet&gt;
-            &lt;fileSet&gt;
-                &lt;directory&gt;${basedir}/target/classes&lt;/directory&gt;
-                &lt;outputDirectory&gt;/conf&lt;/outputDirectory&gt;
-                &lt;includes&gt;
-                    &lt;include&gt;*.xml&lt;/include&gt;
-                    &lt;include&gt;*.properties&lt;/include&gt;
-                &lt;/includes&gt;
-            &lt;/fileSet&gt;
-            &lt;fileSet&gt;
-                &lt;directory&gt;${basedir}/target&lt;/directory&gt;
-                &lt;outputDirectory&gt;/lib/core&lt;/outputDirectory&gt;
-                &lt;includes&gt;
-                    &lt;include&gt;${project.artifactId}-${project.version}.jar
-                    &lt;/include&gt;
-                &lt;/includes&gt;
-            &lt;/fileSet&gt;
-        &lt;/fileSets&gt;
-        &lt;dependencySets&gt;
-            &lt;dependencySet&gt;
-                &lt;useProjectArtifact&gt;false&lt;/useProjectArtifact&gt;
-                &lt;outputDirectory&gt;/lib/common&lt;/outputDirectory&gt;
-                &lt;scope&gt;runtime&lt;/scope&gt;
-            &lt;/dependencySet&gt;
-        &lt;/dependencySets&gt;
-    &lt;/assembly&gt;
-</code></pre>
-
-<p>运行整个程序的shell脚本</p>
-
-<pre><code>#!/bin/sh
-
-bin=`which $0`
-bin=`dirname ${bin}`
-bin=`cd "$bin"; pwd`
-
-export ANAYSER_HOME=`dirname "$bin"`
-
-export ANAYSER_LOG_DIR=$ANAYSER_HOME/logs
-
-export ANAYSER_OPTS="-Dproc_dta_analyser -server -Xms1024M -Xmx2048M -Danalyser.log.dir=${ANAYSER_LOG_DIR}"
-
-export HADOOP_HOME=${HADOOP_HOME:-/home/hadoop/hadoop-2.2.0}
-export ANAYSER_CLASSPATH=$ANAYSER_HOME/conf
-export ANAYSER_CLASSPATH=$ANAYSER_CLASSPATH:$HADOOP_HOME/etc/hadoop
-
-for f in $ANAYSER_HOME/lib/core/*.jar ; do
-  export ANAYSER_CLASSPATH+=:$f
-done
-
-for f in $ANAYSER_HOME/lib/common/*.jar ; do
-  export ANAYSER_CLASSPATH+=:$f
-done
-
-if [ ! -d $ANAYSER_LOG_DIR ] ; then
-  mkdir -p $ANAYSER_LOG_DIR
-fi
-
-[ -w "$ANAYSER_PID_DIR" ] ||  mkdir -p "$ANAYSER_PID_DIR"
-
-nohup ${JAVA_HOME}/bin/java $ANAYSER_OPTS -cp $ANAYSER_CLASSPATH com.analyser.AnalyserStarter &gt;$ANAYSER_LOG_DIR/stdout 2&gt;$ANAYSER_LOG_DIR/stderr &amp;
 </code></pre>
 ]]></content>
   </entry>

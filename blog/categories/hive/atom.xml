@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hive | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hive/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-04-02T13:07:36+08:00</updated>
+  <updated>2016-04-10T11:48:30+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,111 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[DBCP参数在Hive JDBC上的实践]]></title>
+    <link href="http://winseliu.com/blog/2016/04/08/dbcp-parameters/"/>
+    <updated>2016-04-08T19:48:01+08:00</updated>
+    <id>http://winseliu.com/blog/2016/04/08/dbcp-parameters</id>
+    <content type="html"><![CDATA[<p>查询程序一开始只是简单使用dbcp来做连接的限制。在实践的过程中遇到各种问题，本文记录DBCP的参数优化提高程序健壮性的两次过程。</p>
+
+<p>最开始的DBCP的配置：</p>
+
+<pre><code>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+    destroy-method="close" 
+    p:driverClassName="${hiveDriverClassName}"
+    p:url="${hiveUrl}" 
+    p:username="${hiveUsername}" 
+    p:password="${hivePassword}"
+    p:maxIdle="${hiveMaxIdle}" 
+    p:maxWait="${hiveMaxWait}" 
+    p:maxActive="${hiveMaxActive}" /&gt;
+
+&lt;bean id="hiveTemplate" class="org.springframework.jdbc.core.JdbcTemplate"&gt;
+    &lt;property name="dataSource"&gt;
+        &lt;ref bean="hiveDataSource" /&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+</code></pre>
+
+<p>第一个遇到的问题，就是每次hiveserver2重启后，这个查询程序也得重启。在实际使用过程中非常的麻烦！！</p>
+
+<h4>重启问题（连接断开后不能重连）</h4>
+
+<p>首先给出学习的链接 <a href="http://elf8848.iteye.com/blog/1931778">http://elf8848.iteye.com/blog/1931778</a> 巨详细，同时问题的场景都一模一样啊！！</p>
+
+<p>添加三个参数：</p>
+
+<ul>
+<li>testOnBorrow = &ldquo;true&rdquo;       借出连接时不要测试，否则很影响性能</li>
+<li>testWhileIdle = &ldquo;true&rdquo;       指明连接是否被空闲连接回收器(如果有)进行检验.如果检测失败,则连接将被从池中去除.</li>
+<li>validationQuery = &ldquo;show databases&rdquo; 验证连接是否可用，使用的SQL语句</li>
+</ul>
+
+
+<p>解释：</p>
+
+<p>testWhileIdle = &ldquo;true&rdquo; 表示每 {timeBetweenEvictionRunsMillis} (默认-1，不执行)秒，取出 {numTestsPerEvictionRun} (默认值3)条连接，使用 {validationQuery} 进行测试 ，测试不成功就销毁连接。销毁连接后，连接数量就少了，如果小于minIdle数量，就新建连接。</p>
+
+<p>testOnBorrow = &ldquo;false&rdquo; 它的默认值是true，如果测试失败会drop掉然后再borrow。false表示每次从连接池中取出连接时，不需要执行 {validationQuery} 中的SQL进行测试。若配置为true,对性能有非常大的影响，性能会下降7-10倍。所在一定要配置为false.</p>
+
+<p>调整参数后hiveserver2重启，查询再连会先报错然后再连。在每次取连接的时刻使用 <code>show databases</code> 测试，如果失败则从pool中删掉这个连接，重新再取，实现了重连的效果。这里不用 <code>select 1</code> hive里面执行很慢， 同时testWhileIdle并没有生效，因为没有配置timeBetweenEvictionRunsMillis参数。</p>
+
+<p>调整后的：</p>
+
+<pre><code>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+destroy-method="close" 
+p:driverClassName="${hiveDriverClassName}"
+p:url="${hiveUrl}" 
+p:username="${hiveUsername}" 
+p:password="${hivePassword}"
+p:testOnBorrow="${hiveTestOnBorrow}"
+p:testWhileIdle="${hiveTestWhileIdle}" 
+p:validationQuery="${hiveValidationQuery}"
+p:maxIdle="${hiveMaxIdle}" 
+p:maxWait="${hiveMaxWait}" 
+p:maxActive="${hiveMaxActive}" 
+/&gt;
+</code></pre>
+
+<p>问题又来了，由于测试切换tez和spark才配置了上面的重连。但是切换到spark后，启动的spark会一直保持(连接创建的session不会主动关闭)，直到hiveserver2 session超时(默认6h检查一次，7h idle就关闭)。</p>
+
+<h4>第二个问题，服务端session强制关闭</h4>
+
+<p>问题其实和参考中的: <strong>MySQL8小时问题，Mysql服务器默认连接的“wait_timeout”是8小时，也就是说一个connection空闲超过8个小时，Mysql将自动断开该 connection</strong> 一模一样的。在增加 <strong>minEvictableIdleTimeMillis</strong> 和 <strong>timeBetweenEvictionRunsMillis</strong> 设置检查和回收的时间。</p>
+
+<ul>
+<li>timeBetweenEvictionRunsMillis = &ldquo;1800000&rdquo;  每30分钟运行一次空闲连接回收器，没必要那么频繁。</li>
+<li>minEvictableIdleTimeMillis = &ldquo;3600000&rdquo;  池中的连接空闲1个小时后被回收，如果1个半小时没有操作，这个session就会被客户端关闭。可以通过yarn-8088的scheduler页面查看。</li>
+</ul>
+
+
+<p>设置后的最终效果：</p>
+
+<pre><code>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+destroy-method="close" 
+p:driverClassName="${hiveDriverClassName}"
+p:url="${hiveUrl}" 
+p:username="${hiveUsername}" 
+p:password="${hivePassword}"
+p:testOnBorrow="${hiveTestOnBorrow}"
+p:validationQuery="${hiveValidationQuery}"
+p:maxWait="${hiveMaxWait}" 
+p:maxIdle="${hiveMaxIdle}" 
+p:maxActive="${hiveMaxActive}" 
+p:testWhileIdle="${hiveTestWhileIdle}" 
+p:timeBetweenEvictionRunsMillis="${hiveTimeBetweenEvictionRunsMillis}" 
+p:minEvictableIdleTimeMillis="${hiveMinEvictableIdleTimeMillis}" 
+p:removeAbandoned="true"
+p:logAbandoned="true"
+/&gt;
+</code></pre>
+
+<p>很多程序都有很多参数，大部分能通过文档明白，但是一些参数不到实践真的很难真正体会它的含义。参考的文章两次改进我查看了，但是第一次看的时刻根本没去加其他参数，因为对我来说没用，解决当前问题用不到嘛。</p>
+
+<p>hadoop的参数更多，core/hdfs/mapred/yarn需要多用才能发现参数的功能和妙用。<strong>纸上得来终觉浅，绝知此事要躬行</strong> 。</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Parquet学习]]></title>
@@ -791,7 +896,7 @@ spark.kryoserializer.buffer.max    512m
 </code></pre>
 
 <ul>
-<li>minExecutors最好应该是和datanode机器差不多，每台一个executor才能本地计算嘛！</li>
+<li>minExecutors <strong>最好应该是和datanode机器差不多，每台一个executor才能本地计算嘛！</strong></li>
 <li>dynamicAllocation需要yarn的配合，具体查看前一篇文章，或者直接看官网的资料。</li>
 <li>eventlog查看历史记录需要，配置好后每个任务的信息会存储到eventlog.dir的路径。通过18080端口可以看到历史记录。</li>
 </ul>
