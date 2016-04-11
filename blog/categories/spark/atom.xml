@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Spark | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/spark/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-04-10T13:32:23+08:00</updated>
+  <updated>2016-04-11T21:33:46+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,194 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Spark-on-yarn内存分配]]></title>
+    <link href="http://winseliu.com/blog/2016/04/11/spark-on-yarn-memory-allocate/"/>
+    <updated>2016-04-11T19:44:51+08:00</updated>
+    <id>http://winseliu.com/blog/2016/04/11/spark-on-yarn-memory-allocate</id>
+    <content type="html"><![CDATA[<p>上次写了一篇关于配置参数是如何影响mapreduce的实际调度的<a href="/blog/2016/03/17/hadoop-memory-opts-and-args/">参考</a>：</p>
+
+<ul>
+<li>opts（yarn.app.mapreduce.am.command-opts、mapreduce.map.java.opts、mapreduce.reduce.java.opts）是实际运行程序是内存参数。</li>
+<li>memory（yarn.app.mapreduce.am.resource.mb、mapreduce.map.memory.mb、mapreduce.reduce.memory.mb）是用于ResourceManager计算集群资源使用和调度。</li>
+</ul>
+
+
+<p>了解参数区别，就没有再深究task内存的问题了。</p>
+
+<h2>新问题-内存分配</h2>
+
+<p>这次又遇到内存问题：spark使用yarn-client的方式运行时，spark有memoryOverhead的设置，但是加了额外的内存后，再经过集群调度内存浪费严重，对于本来就小内存的集群来说完全无法接受。</p>
+
+<ul>
+<li>am默认是512加上384 overhead，也就是896m。但是调度后am分配内存资源为1024。</li>
+<li>executor默认是1024加上384，等于1408M。单调度后executor分配内存资源为2048。</li>
+</ul>
+
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-0.png" alt="" /></p>
+
+<p>从appmaster的日志可以看出来请求的内存大小是1408：</p>
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-1.png" alt="" /></p>
+
+<p><strong>一个executor就浪费了500M，本来可以跑4个executor的但现在只能执行3个！</strong></p>
+
+<p>关于内存参数的具体含义查看官网： <a href="http://spark.apache.org/docs/latest/running-on-yarn.html">spark-on-yarn</a> 和 <a href="http://hadoop.apache.org/docs/r2.6.4/hadoop-yarn/hadoop-yarn-common/yarn-default.xml">yarn-default.xml</a></p>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:center;"> <em>参数</em>                                  </th>
+<th></th>
+<th style="text-align:left;"> <em>值</em></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.yarn.am.memory                    </td>
+<td></td>
+<td style="text-align:left;"> 512m</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.driver.memory                     </td>
+<td></td>
+<td style="text-align:left;"> 1g</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.yarn.executor.memoryOverhead      </td>
+<td></td>
+<td style="text-align:left;"> executorMemory * 0.10, with minimum of 384</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.yarn.driver.memoryOverhead        </td>
+<td></td>
+<td style="text-align:left;"> driverMemory * 0.10, with minimum of 384</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.yarn.am.memoryOverhead            </td>
+<td></td>
+<td style="text-align:left;"> AM memory * 0.10, with minimum of 384</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> yarn.nodemanager.resource.memory-mb     </td>
+<td></td>
+<td style="text-align:left;"> 8192</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> yarn.scheduler.minimum-allocation-mb    </td>
+<td></td>
+<td style="text-align:left;"> 1024</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> yarn.scheduler.maximum-allocation-mb    </td>
+<td></td>
+<td style="text-align:left;"> 8192</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>分配的内存看着像是 <strong>最小分配内存</strong> 的整数倍。把 <code>yarn.scheduler.minimum-allocation-mb</code> 修改为512，重启yarn再运行，executor的分配的内存果真减少到1536(<strong>512*3</strong>)。</p>
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-3.png" alt="" /></p>
+
+<p>同时 <a href="http://blog.javachen.com/2015/06/09/memory-in-spark-on-yarn.html">http://blog.javachen.com/2015/06/09/memory-in-spark-on-yarn.html</a> 这篇文章也讲 <strong>在YARN中，Container申请的内存大小必须为yarn.scheduler.minimum-allocation-mb的整数倍</strong> 。我们不去猜，调试下调度代码，看看究竟是什么情况。</p>
+
+<pre><code>[hadoop@cu2 hadoop-2.6.3]$ sbin/yarn-daemon.sh stop resourcemanager 
+
+[hadoop@cu2 hadoop]$ grep "minimum-allocation-mb" -1 yarn-site.xml 
+&lt;property&gt;
+&lt;name&gt;yarn.scheduler.minimum-allocation-mb&lt;/name&gt;&lt;value&gt;512&lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@cu2 hadoop-2.6.3]$ export YARN_RESOURCEMANAGER_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=8000"
+[hadoop@cu2 hadoop-2.6.3]$ sbin/yarn-daemon.sh start resourcemanager 
+</code></pre>
+
+<p>本地eclipse在 <code>CapacityScheduler#allocate</code> 打断点，然后跑任务：</p>
+
+<pre><code>hive&gt; set hive.execution.engine=spark;
+hive&gt; select count(*) from t_ods_access_log2 where month=201512;
+</code></pre>
+
+<p>AppMaster内存分配：</p>
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-appmaster.png" alt="" /></p>
+
+<p>Executor内存分配：</p>
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-executor.png" alt="" /></p>
+
+<p>request进到allocate后，最终调用 <code>DefaultResourceCalculator.normalize</code> 重新计算了一遍请求需要的资源，把内存调整了。默认的DefaultResourceCalculator可以通过 capacity-scheduler.xml 的 <code>yarn.scheduler.capacity.resource-calculator</code> 来修改。</p>
+
+<p>具体代码调度过程如下：</p>
+
+<pre><code>  public Allocation allocate(ApplicationAttemptId applicationAttemptId,
+      List&lt;ResourceRequest&gt; ask, List&lt;ContainerId&gt; release, 
+      List&lt;String&gt; blacklistAdditions, List&lt;String&gt; blacklistRemovals) {
+    ...
+    // Sanity check
+    SchedulerUtils.normalizeRequests(
+        ask, getResourceCalculator(), getClusterResource(),
+        getMinimumResourceCapability(), maximumAllocation);
+...
+
+  public static void normalizeRequest(
+      ResourceRequest ask, 
+      ResourceCalculator resourceCalculator, 
+      Resource clusterResource,
+      Resource minimumResource,
+      Resource maximumResource,
+      Resource incrementResource) {
+    Resource normalized = 
+        Resources.normalize(
+            resourceCalculator, ask.getCapability(), minimumResource,
+            maximumResource, incrementResource);
+    ask.setCapability(normalized);
+  } 
+...
+
+  public static Resource normalize(
+      ResourceCalculator calculator, Resource lhs, Resource min,
+      Resource max, Resource increment) {
+    return calculator.normalize(lhs, min, max, increment);
+  }
+...
+
+  public Resource normalize(Resource r, Resource minimumResource,
+      Resource maximumResource, Resource stepFactor) {
+    int normalizedMemory = Math.min(
+        roundUp(
+            Math.max(r.getMemory(), minimumResource.getMemory()),
+            stepFactor.getMemory()),
+            maximumResource.getMemory());
+    return Resources.createResource(normalizedMemory);
+  }
+...
+
+  public static int roundUp(int a, int b) {
+    return divideAndCeil(a, b) * b;
+  }
+</code></pre>
+
+<h2>小结</h2>
+
+<p>今天又重新认识一个yarn参数 <code>yarn.scheduler.minimum-allocation-mb</code> ，不仅仅是最小分配的内存，同时分配的资源也是minimum-allocation-mb的整数倍，还告诉我们 <code>yarn.nodemanager.resource.memory-mb</code> 也最好是minimum-allocation-mb的整数倍。</p>
+
+<p>间接的学习了新的参数，可以通过 <code>yarn.scheduler.capacity.resource-calculator</code> 参数 来修改 CapacityScheduler 调度器的资源计算类。</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Limit on Sparksql and Hive]]></title>
@@ -1159,136 +1347,6 @@ spark.master                     spark://bigdatamgr1:7077,bigdata8:7077
 <ul>
 <li><a href="http://www.cnblogs.com/byrhuangqiang/p/3937654.html">http://www.cnblogs.com/byrhuangqiang/p/3937654.html</a></li>
 <li><a href="http://spark.apache.org/docs/latest/spark-standalone.html#high-availability">http://spark.apache.org/docs/latest/spark-standalone.html#high-availability</a></li>
-</ul>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[[读码] Spark1.1.0前篇--代码统计导入Eclipse]]></title>
-    <link href="http://winseliu.com/blog/2014/10/12/spark-read-source-starter/"/>
-    <updated>2014-10-12T13:12:57+08:00</updated>
-    <id>http://winseliu.com/blog/2014/10/12/spark-read-source-starter</id>
-    <content type="html"><![CDATA[<p>看过亚太研究院的spark在线教学视频，说spark1.0的源码仅有3w+的代码，蠢蠢欲动。先具体看下源码的量，估算估算；然后搭建eclipse读码环境。</p>
-
-<h2>计算源码行数</h2>
-
-<pre><code>winse@Lenovo-PC ~/git/spark
-$ git branch -v
-* (detached from v1.1.0) 2f9b2bd [maven-release-plugin] prepare release v1.1.0-rc4
-  master                 4d8ae70 [behind 1246] Cleanup on Connection and ConnectionManager
-
-winse@Lenovo-PC ~/git/spark
-$ find . -name "*.scala" | grep 'src/main' | xargs sed  -e 's:\/\*.*\*\/::' -e  '/\/\*/, /\*\//{
-/\/\*/{
- s:\/\*.*::p
-}
-/\*\//{
- s:.*\*\/::p
-}
-d
-}' | sed -e '/^\s*$/d' -e '/^\s*\/\//d' | grep -v '^import' | grep -v '^package' | wc -l
-72967
-
-winse@Lenovo-PC ~/git/spark
-$ ^scala^java
-1749
-
-winse@Lenovo-PC ~/git/spark
-$ ^src/main^core/src/main
-877
-
-winse@Lenovo-PC ~/git/spark
-$ ^java^scala
-38526
-</code></pre>
-
-<p>全部源码的数量（去掉测试）大概在7W左右，仅计算核心代码core下面的代码量在4W。从量上面来说还是比较乐观的，学习scala然后读spark的源码。</p>
-
-<p>spark1.0.0的核心代码量在3w左右。1.1多了大概1w行！！</p>
-
-<h2>Docker</h2>
-
-<p>查看目录结构的时刻，看到spark1下面竟然有docker，不过看Dockerfile的内容只是简单的安装了scala、把本机的spark映射到docker容器、然后运行spark主从集群。</p>
-
-<h2>导入eclipse</h2>
-
-<p>spark使用主要使用scala编写，首先需要下载<a href="http://scala-ide.org/download/sdk.html">scala-ide</a>直接下载2.10的版本（基于eclipse，很多操作都类似）；然后下载<a href="https://github.com/apache/spark.git">spark的源码</a>检出v1.1.0的；然后使用maven生成eclipse工程文件。</p>
-
-<p>(不推荐)使用<a href="https://cwiki.apache.org/confluence/display/SPARK/Contributing+to+Spark#ContributingtoSpark-Eclipse">sbt生成工程文件</a>。这种方式会缺少一些依赖的jar，处理比较麻烦，还不清楚到底是少了啥！</p>
-
-<pre><code>$ cd sbt/
-$ sed -i 's/^M//g' *
-$ cd ..
-$ sbt/sbt eclipse -mem 512
-</code></pre>
-
-<p>(推荐)使用MVN编译生成，<a href="http://spark.apache.org/docs/latest/building-with-maven.html">使用Maven生成官网文章</a></p>
-
-<pre><code>winse@Lenovo-PC ~/git/spark
-$ git clean -x -fd #清理非仓库代码
-
-$ echo $SCALA_HOME #指定scala-home
-/cygdrive/d/scala
-
-# 这里我直接修改默认值，理论上加 -Phadoop-2.2 选项应该也是可以的
-$ vi pom.xml # hadoop.version 2.2.0
-$ mvn eclipse:eclipse
-
-$ find . -name ".classpath" | xargs sed -i -e 's/including="\*\*\/\*.java"//' -e 's/excluding="\*\*\/\*.java"//'
-
-#也可以把添加特性的操作/添加scala源码包操作批量处理掉
-</code></pre>
-
-<p>然后导入到eclipse，然后再针对性的处理报错：</p>
-
-<ul>
-<li>先把每个工程都<strong>添加scala特性</strong></li>
-<li>把含有python源码包的去掉（手动删除.classpath中classpathentry即可）</li>
-<li>确认下并加上<code>src/test/scala</code>的源码包。</li>
-</ul>
-
-
-<p>注意，进行上面的步骤之前，由于scala源文件比较多，编译的时间会比较长，先把Project->Build Automatically去掉，然后一次性把问题处理掉后再手动build！</p>
-
-<ul>
-<li>手动使用<code>existing maven projects</code>导入yarn/stable，然后把<strong>yarn/common以链接的形式引入</strong>，并添加到源码包。</li>
-</ul>
-
-
-<p><img src="http://file.bmob.cn/M00/1C/E7/wKhkA1Q7jQ2AMhweAAOC-l-jcz4872.png" alt="" /></p>
-
-<p>还有一个<strong> value q is not a member of StringContext </strong><a href="http://docs.scala-lang.org/overviews/quasiquotes/intro.html">quasiquotes</a>的错误，有些类需要在2.10添加编译组件才能正常编译，修改scala编译首选项。</p>
-
-<p><img src="http://file.bmob.cn/M00/1D/07/wKhkA1Q76GyAFNYPAAEYJfk_ZGw816.png" alt="" /></p>
-
-<p>添加依赖的编译组件后，整个功能就能正常编译通过了。接下来就能调试看源码了。</p>
-
-<p><strong>备注：</strong>clean后发现target目录下并没有重新编译生成class，去掉<code>-Xshow-phases</code>才行。</p>
-
-<blockquote><p> -Xshow-phases                  Print a synopsis of compiler phases.</p></blockquote>
-
-<h2>Maven编译spark</h2>
-
-<p>如果使用的hadoop版本在官网没有集成assembly版本，可以使用maven手动构建。至于打包可以查看下一篇文章。</p>
-
-<pre><code>$ export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
-$ mvn -Pyarn -Phadoop-2.2 -Dhadoop.version=2.2.0 -DskipTests clean package
-</code></pre>
-
-<p><code>yarn</code>的profile能够编译成可执行的jar文件（包括所有依赖的spark），具体内容下一篇讲。</p>
-
-<h2>小结</h2>
-
-<p>断断续续的写了两天，字数统计弄了大半天，主要在于多行注释的处理。时间最主要都消耗在sbt、maven构建eclipse项目文件（生成、fixed）上。编译scala量上去后确实非常非常的慢，不管是maven还是eclipse都慢！</p>
-
-<p>下一篇将使用docker搭建spark环境，并使用远程调试连接到helloworld程序。</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://stackoverflow.com/questions/24800129/scala-maven-builder-doesnt-understand-quasiquotes">Scala maven builder doesn&rsquo;t understand quasiquotes</a></li>
-<li><a href="http://docs.scala-lang.org/overviews/macros/paradise.html">Macro Paradise</a></li>
 </ul>
 
 ]]></content>

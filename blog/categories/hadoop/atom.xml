@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-04-10T13:32:23+08:00</updated>
+  <updated>2016-04-11T21:33:46+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,194 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Spark-on-yarn内存分配]]></title>
+    <link href="http://winseliu.com/blog/2016/04/11/spark-on-yarn-memory-allocate/"/>
+    <updated>2016-04-11T19:44:51+08:00</updated>
+    <id>http://winseliu.com/blog/2016/04/11/spark-on-yarn-memory-allocate</id>
+    <content type="html"><![CDATA[<p>上次写了一篇关于配置参数是如何影响mapreduce的实际调度的<a href="/blog/2016/03/17/hadoop-memory-opts-and-args/">参考</a>：</p>
+
+<ul>
+<li>opts（yarn.app.mapreduce.am.command-opts、mapreduce.map.java.opts、mapreduce.reduce.java.opts）是实际运行程序是内存参数。</li>
+<li>memory（yarn.app.mapreduce.am.resource.mb、mapreduce.map.memory.mb、mapreduce.reduce.memory.mb）是用于ResourceManager计算集群资源使用和调度。</li>
+</ul>
+
+
+<p>了解参数区别，就没有再深究task内存的问题了。</p>
+
+<h2>新问题-内存分配</h2>
+
+<p>这次又遇到内存问题：spark使用yarn-client的方式运行时，spark有memoryOverhead的设置，但是加了额外的内存后，再经过集群调度内存浪费严重，对于本来就小内存的集群来说完全无法接受。</p>
+
+<ul>
+<li>am默认是512加上384 overhead，也就是896m。但是调度后am分配内存资源为1024。</li>
+<li>executor默认是1024加上384，等于1408M。单调度后executor分配内存资源为2048。</li>
+</ul>
+
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-0.png" alt="" /></p>
+
+<p>从appmaster的日志可以看出来请求的内存大小是1408：</p>
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-1.png" alt="" /></p>
+
+<p><strong>一个executor就浪费了500M，本来可以跑4个executor的但现在只能执行3个！</strong></p>
+
+<p>关于内存参数的具体含义查看官网： <a href="http://spark.apache.org/docs/latest/running-on-yarn.html">spark-on-yarn</a> 和 <a href="http://hadoop.apache.org/docs/r2.6.4/hadoop-yarn/hadoop-yarn-common/yarn-default.xml">yarn-default.xml</a></p>
+
+<table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align:center;"> <em>参数</em>                                  </th>
+<th></th>
+<th style="text-align:left;"> <em>值</em></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.yarn.am.memory                    </td>
+<td></td>
+<td style="text-align:left;"> 512m</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.driver.memory                     </td>
+<td></td>
+<td style="text-align:left;"> 1g</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.yarn.executor.memoryOverhead      </td>
+<td></td>
+<td style="text-align:left;"> executorMemory * 0.10, with minimum of 384</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.yarn.driver.memoryOverhead        </td>
+<td></td>
+<td style="text-align:left;"> driverMemory * 0.10, with minimum of 384</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> spark.yarn.am.memoryOverhead            </td>
+<td></td>
+<td style="text-align:left;"> AM memory * 0.10, with minimum of 384</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> yarn.nodemanager.resource.memory-mb     </td>
+<td></td>
+<td style="text-align:left;"> 8192</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> yarn.scheduler.minimum-allocation-mb    </td>
+<td></td>
+<td style="text-align:left;"> 1024</td>
+</tr>
+<tr>
+<td></td>
+<td style="text-align:center;"> yarn.scheduler.maximum-allocation-mb    </td>
+<td></td>
+<td style="text-align:left;"> 8192</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>分配的内存看着像是 <strong>最小分配内存</strong> 的整数倍。把 <code>yarn.scheduler.minimum-allocation-mb</code> 修改为512，重启yarn再运行，executor的分配的内存果真减少到1536(<strong>512*3</strong>)。</p>
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-3.png" alt="" /></p>
+
+<p>同时 <a href="http://blog.javachen.com/2015/06/09/memory-in-spark-on-yarn.html">http://blog.javachen.com/2015/06/09/memory-in-spark-on-yarn.html</a> 这篇文章也讲 <strong>在YARN中，Container申请的内存大小必须为yarn.scheduler.minimum-allocation-mb的整数倍</strong> 。我们不去猜，调试下调度代码，看看究竟是什么情况。</p>
+
+<pre><code>[hadoop@cu2 hadoop-2.6.3]$ sbin/yarn-daemon.sh stop resourcemanager 
+
+[hadoop@cu2 hadoop]$ grep "minimum-allocation-mb" -1 yarn-site.xml 
+&lt;property&gt;
+&lt;name&gt;yarn.scheduler.minimum-allocation-mb&lt;/name&gt;&lt;value&gt;512&lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@cu2 hadoop-2.6.3]$ export YARN_RESOURCEMANAGER_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=8000"
+[hadoop@cu2 hadoop-2.6.3]$ sbin/yarn-daemon.sh start resourcemanager 
+</code></pre>
+
+<p>本地eclipse在 <code>CapacityScheduler#allocate</code> 打断点，然后跑任务：</p>
+
+<pre><code>hive&gt; set hive.execution.engine=spark;
+hive&gt; select count(*) from t_ods_access_log2 where month=201512;
+</code></pre>
+
+<p>AppMaster内存分配：</p>
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-appmaster.png" alt="" /></p>
+
+<p>Executor内存分配：</p>
+
+<p><img src="/images/blogs/hive-on-spark-memory/hive-on-spark-memory-allocate-executor.png" alt="" /></p>
+
+<p>request进到allocate后，最终调用 <code>DefaultResourceCalculator.normalize</code> 重新计算了一遍请求需要的资源，把内存调整了。默认的DefaultResourceCalculator可以通过 capacity-scheduler.xml 的 <code>yarn.scheduler.capacity.resource-calculator</code> 来修改。</p>
+
+<p>具体代码调度过程如下：</p>
+
+<pre><code>  public Allocation allocate(ApplicationAttemptId applicationAttemptId,
+      List&lt;ResourceRequest&gt; ask, List&lt;ContainerId&gt; release, 
+      List&lt;String&gt; blacklistAdditions, List&lt;String&gt; blacklistRemovals) {
+    ...
+    // Sanity check
+    SchedulerUtils.normalizeRequests(
+        ask, getResourceCalculator(), getClusterResource(),
+        getMinimumResourceCapability(), maximumAllocation);
+...
+
+  public static void normalizeRequest(
+      ResourceRequest ask, 
+      ResourceCalculator resourceCalculator, 
+      Resource clusterResource,
+      Resource minimumResource,
+      Resource maximumResource,
+      Resource incrementResource) {
+    Resource normalized = 
+        Resources.normalize(
+            resourceCalculator, ask.getCapability(), minimumResource,
+            maximumResource, incrementResource);
+    ask.setCapability(normalized);
+  } 
+...
+
+  public static Resource normalize(
+      ResourceCalculator calculator, Resource lhs, Resource min,
+      Resource max, Resource increment) {
+    return calculator.normalize(lhs, min, max, increment);
+  }
+...
+
+  public Resource normalize(Resource r, Resource minimumResource,
+      Resource maximumResource, Resource stepFactor) {
+    int normalizedMemory = Math.min(
+        roundUp(
+            Math.max(r.getMemory(), minimumResource.getMemory()),
+            stepFactor.getMemory()),
+            maximumResource.getMemory());
+    return Resources.createResource(normalizedMemory);
+  }
+...
+
+  public static int roundUp(int a, int b) {
+    return divideAndCeil(a, b) * b;
+  }
+</code></pre>
+
+<h2>小结</h2>
+
+<p>今天又重新认识一个yarn参数 <code>yarn.scheduler.minimum-allocation-mb</code> ，不仅仅是最小分配的内存，同时分配的资源也是minimum-allocation-mb的整数倍，还告诉我们 <code>yarn.nodemanager.resource.memory-mb</code> 也最好是minimum-allocation-mb的整数倍。</p>
+
+<p>间接的学习了新的参数，可以通过 <code>yarn.scheduler.capacity.resource-calculator</code> 参数 来修改 CapacityScheduler 调度器的资源计算类。</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Hadoop内存环境变量和参数]]></title>
@@ -958,189 +1146,6 @@ org.apache.hadoop.hdfs.qjournal.client.QuorumException: Got too many exceptions 
 <li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html#HDFS_UpgradeFinalizationRollback_with_HA_Enabled">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html#HDFS_UpgradeFinalizationRollback_with_HA_Enabled</a></li>
 <li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html#Upgrade_and_Rollback">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html#Upgrade_and_Rollback</a></li>
 <li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsRollingUpgrade.html">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsRollingUpgrade.html</a></li>
-</ul>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop安装与升级-(3)HA配置]]></title>
-    <link href="http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-3-ha/"/>
-    <updated>2016-01-07T23:04:27+08:00</updated>
-    <id>http://winseliu.com/blog/2016/01/07/hadoop-install-and-upgrade-3-ha</id>
-    <content type="html"><![CDATA[<p>官网的文档[HDFSHighAvailabilityWithQJM.html]很详细，但是没有一个整体的案例。这里整理下操作记录下来。</p>
-
-<h2>配置</h2>
-
-<p>hadoop-master1和hadoop-master2之间无密钥登录（failover要用到）：</p>
-
-<pre><code>[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-keygen
-[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-copy-id hadoop-master2
-[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-copy-id hadoop-master1
-</code></pre>
-
-<p>配置文件修改：</p>
-
-<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ vi etc/hadoop/core-site.xml 
-
-&lt;property&gt;
-&lt;name&gt;fs.defaultFS&lt;/name&gt;
-&lt;value&gt;hdfs://zfcluster&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;ha.zookeeper.quorum&lt;/name&gt;
-&lt;value&gt;hadoop-master1&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;hadoop.tmp.dir&lt;/name&gt;
-&lt;value&gt;/data/tmp&lt;/value&gt;
-&lt;/property&gt;
-
-[hadoop@hadoop-master1 hadoop-2.2.0]$ vi etc/hadoop/hdfs-site.xml 
-
-&lt;property&gt;
-&lt;name&gt;dfs.replication&lt;/name&gt;
-&lt;value&gt;1&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.namenode.secondary.http-address&lt;/name&gt;
-&lt;value&gt; &lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.nameservices&lt;/name&gt;
-&lt;value&gt;zfcluster&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.ha.namenodes.zfcluster&lt;/name&gt;
-&lt;value&gt;nn1,nn2&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.namenode.rpc-address.zfcluster.nn1&lt;/name&gt;
-&lt;value&gt;hadoop-master1:8020&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.namenode.rpc-address.zfcluster.nn2&lt;/name&gt;
-&lt;value&gt;hadoop-master2:8020&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.namenode.http-address.zfcluster.nn1&lt;/name&gt;
-&lt;value&gt;hadoop-master1:50070&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.namenode.http-address.zfcluster.nn2&lt;/name&gt;
-&lt;value&gt;hadoop-master2:50070&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.namenode.shared.edits.dir&lt;/name&gt;
-&lt;value&gt;qjournal://hadoop-master1:8485/zfcluster&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.client.failover.proxy.provider.zfcluster&lt;/name&gt;
-&lt;value&gt;org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.journalnode.edits.dir&lt;/name&gt;
-&lt;value&gt;/data/journal&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.ha.fencing.methods&lt;/name&gt;
-&lt;value&gt;sshfence&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.ha.fencing.ssh.private-key-files&lt;/name&gt;
-&lt;value&gt;/home/hadoop/.ssh/id_rsa&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;dfs.ha.automatic-failover.enabled&lt;/name&gt;
-&lt;value&gt;true&lt;/value&gt;
-&lt;/property&gt;
-</code></pre>
-
-<h2>启动</h2>
-
-<pre><code>[hadoop@hadoop-master1 hadoop-2.2.0]$ cd ..
-[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs hadoop-2.2.0 $h:~/ ; done
-
-[hadoop@hadoop-master1 ~]$ cd hadoop-2.2.0/
-
-[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start journalnode
-
-[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start namenode
-[hadoop@hadoop-master2 hadoop-2.2.0]$ bin/hdfs namenode -bootstrapStandby
-
-[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs namenode -initializeSharedEdits
-
-#// 此时可以启动datanode，通过50070端口看namenode的状态
-
-#// Automatic failover，zkfc和namenode没有启动顺序的问题！
-[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs zkfc -formatZK
-[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start zkfc
-[hadoop@hadoop-master2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start zkfc
-
-[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs haadmin -failover nn1 nn2
-
-#// 测试failover，把一个active的namenode直接kill掉，看看另一个是否变成active！
-
-# 重启
-[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
-16/01/07 10:57:50 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-Stopping namenodes on [hadoop-master1 hadoop-master2]
-hadoop-master1: stopping namenode
-hadoop-master2: stopping namenode
-hadoop-slaver1: stopping datanode
-hadoop-slaver2: stopping datanode
-hadoop-slaver3: stopping datanode
-Stopping journal nodes [hadoop-master1]
-hadoop-master1: stopping journalnode
-16/01/07 10:58:08 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-Stopping ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
-hadoop-master2: no zkfc to stop
-hadoop-master1: no zkfc to stop
-
-[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh
-16/01/07 10:59:14 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-Starting namenodes on [hadoop-master1 hadoop-master2]
-hadoop-master2: starting namenode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-namenode-hadoop-master2.out
-hadoop-master1: starting namenode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-namenode-hadoop-master1.out
-hadoop-slaver1: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver1.out
-hadoop-slaver3: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver3.out
-hadoop-slaver2: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver2.out
-Starting journal nodes [hadoop-master1]
-hadoop-master1: starting journalnode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-journalnode-hadoop-master1.out
-16/01/07 10:59:30 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-Starting ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
-hadoop-master2: starting zkfc, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-zkfc-hadoop-master2.out
-hadoop-master1: starting zkfc, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-zkfc-hadoop-master1.out
-
-[hadoop@hadoop-master1 ~]$ jps
-15241 DFSZKFailoverController
-14882 NameNode
-244 QuorumPeerMain
-18715 Jps
-15076 JournalNode
-</code></pre>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html</a></li>
-<li><a href="http://www.xlgps.com/article/40993.html">http://www.xlgps.com/article/40993.html</a></li>
-<li><a href="http://hbase.apache.org/book.html#basic.prerequisites">http://hbase.apache.org/book.html#basic.prerequisites</a></li>
 </ul>
 
 ]]></content>
