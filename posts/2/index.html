@@ -9,15 +9,9 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="前一篇提到sparksql查询limit的时刻会提前返回，不需要查询所有的数据。hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。 把日志记录下面： hive1.2.1-on-spark1.3.1 1
-2
-3
-4
-5
-6
-7
-8
-9 &hellip;">
+  <meta name="description" content="经典文章 http://parquet.apache.org/documentation/latest/
+https://blog.twitter.com/2013/dremel-made-simple-with-parquet
+https://cwiki.apache.org/ &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -91,6 +85,670 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/03/29/parquet-simple-view/">Parquet学习</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-03-29T19:13:53+08:00" pubdate data-updated="true">Tue 2016-03-29 19:13</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>经典文章</h2>
+
+<ul>
+<li><a href="http://parquet.apache.org/documentation/latest/">http://parquet.apache.org/documentation/latest/</a></li>
+<li><a href="https://blog.twitter.com/2013/dremel-made-simple-with-parquet">https://blog.twitter.com/2013/dremel-made-simple-with-parquet</a></li>
+<li><a href="https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL">https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL</a></li>
+</ul>
+
+
+<h2>概念</h2>
+
+<ul>
+<li>Row Group
+
+<ul>
+<li>Column Chunk
+
+<ul>
+<li>Page
+
+<ul>
+<li>Definition Levels: To support nested records we need to store the level for which the field is null. This is what the definition level is for: from 0 at the root of the schema up to the maximum level for this column. When a field is defined then all its parents are defined too, but <strong>when it is null we need to record the level at which it started being null to be able to reconstruct the record</strong>.</li>
+<li>Repetition Levels: To support repeated fields we need to store when new lists are starting in a column of values. This is what repetition level is for: it is the level at which we have to create a new list for the current value. <strong>In other words, the repetition level can be seen as a marker of when to start a new list and at which level</strong>.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>FileMetaData</li>
+</ul>
+
+
+<p>The definition and repetition levels are optional, based on the schema definition. If the column is not nested (i.e. the path to the column has length 1), we do not encode the repetition levels (it would always have the value 1). For data that is required, the definition levels are skipped (if encoded, it will always have the value of the max definition level).</p>
+
+<p>For example, in the case where the column is non-nested and required, the data in the page is only the encoded values.</p>
+
+<p><strong>An optimized read setup would be: 1GB row groups, 1GB HDFS block size, 1 HDFS block per HDFS file.</strong></p>
+
+<h2>texfile转parquet</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ cd apache-hive-1.2.1-bin/
+</span><span class='line'>[hadoop@hadoop-master2 apache-hive-1.2.1-bin]$ bin/hive
+</span><span class='line'>hive&gt; CREATE TABLE `t_ods_access_log2_parquet`(   `houseid` string,    `sourceip` string,    `destinationip` string,    `sourceport` string,    `destinationport` string,    `domain` string,    `url` string,    `accesstime` string,    `logid` string,    `sourceipnum` bigint,    `timedetected` string,    `protocol` string,    `duration` string) ROW FORMAT DELIMITED    FIELDS TERMINATED BY '|'  STORED AS PARQUET LOCATION   '/user/hive/t_ods_access_log2_parquet'</span></code></pre></td></tr></table></div></figure>
+
+
+<p>关键 <strong>STORED AS PARQUET</strong>。</p>
+
+<p>关于压缩，可以通过mapreduce参数设置（ <code>mapreduce.output.fileoutputformat.compress</code> 和 <code>mapreduce.output.fileoutputformat.compress.codec</code> ），但是推荐使用 <code>parquet.compression</code> 属性来指定。</p>
+
+<p>reader/writer都会从 <code>CodecConfig.getCodec()</code> 获取压缩编码。代码中会从parquet属性和mapreduce获取压缩参数。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>alter table t_ods_access_log2_parquet SET TBLPROPERTIES ('parquet.compression' = 'SNAPPY' );
+</span><span class='line'>
+</span><span class='line'>create table t_ods_access_log2_parquet_none like t_ods_access_log2_parquet TBLPROPERTIES ('parquet.compression' = 'UNCOMPRESSED' );
+</span><span class='line'>create table t_ods_access_log2_parquet_gzip like t_ods_access_log2_parquet TBLPROPERTIES ('parquet.compression' = 'GZIP' );</span></code></pre></td></tr></table></div></figure>
+
+
+<p>直接使用hive的insert into语句就可以把原来的textfile的文件转成parquet格式。同时也转成gzip和uncompress比较了一下：</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">文件格式     </th>
+<th style="text-align:left;"> 压缩       </th>
+<th style="text-align:left;"> 大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> snappy     </td>
+<td style="text-align:left;"> 4.1G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> snappy     </td>
+<td style="text-align:left;"> 3.6G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> uncompress </td>
+<td style="text-align:left;"> 7.2G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> gzip       </td>
+<td style="text-align:left;"> 2.2G</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>直接count整个数据表，使用parquet的输入1M不到数据，太环保了！！（文件都是几十M的，一个文件都在一台机器上）。</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">文件格式     </th>
+<th style="text-align:left;"> 运行引擎       </th>
+<th style="text-align:left;"> 大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> tez            </td>
+<td style="text-align:left;"> HDFS_BYTES_READ    4,454,071,542</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> tez            </td>
+<td style="text-align:left;"> HDFS_BYTES_READ    415,870</td>
+</tr>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> sparksql       </td>
+<td style="text-align:left;"> Input  4.1 GB</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> sparksql       </td>
+<td style="text-align:left;"> Input  384.9 KB</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>用sparksql跑textfile尽让更快。果然内存大暴力也很牛啊！！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+<span class='line-number'>100</span>
+<span class='line-number'>101</span>
+<span class='line-number'>102</span>
+<span class='line-number'>103</span>
+<span class='line-number'>104</span>
+<span class='line-number'>105</span>
+<span class='line-number'>106</span>
+<span class='line-number'>107</span>
+<span class='line-number'>108</span>
+<span class='line-number'>109</span>
+<span class='line-number'>110</span>
+<span class='line-number'>111</span>
+<span class='line-number'>112</span>
+<span class='line-number'>113</span>
+<span class='line-number'>114</span>
+<span class='line-number'>115</span>
+<span class='line-number'>116</span>
+<span class='line-number'>117</span>
+<span class='line-number'>118</span>
+<span class='line-number'>119</span>
+<span class='line-number'>120</span>
+<span class='line-number'>121</span>
+<span class='line-number'>122</span>
+<span class='line-number'>123</span>
+<span class='line-number'>124</span>
+<span class='line-number'>125</span>
+<span class='line-number'>126</span>
+<span class='line-number'>127</span>
+<span class='line-number'>128</span>
+<span class='line-number'>129</span>
+<span class='line-number'>130</span>
+<span class='line-number'>131</span>
+<span class='line-number'>132</span>
+<span class='line-number'>133</span>
+<span class='line-number'>134</span>
+<span class='line-number'>135</span>
+<span class='line-number'>136</span>
+<span class='line-number'>137</span>
+<span class='line-number'>138</span>
+<span class='line-number'>139</span>
+<span class='line-number'>140</span>
+<span class='line-number'>141</span>
+<span class='line-number'>142</span>
+<span class='line-number'>143</span>
+<span class='line-number'>144</span>
+<span class='line-number'>145</span>
+<span class='line-number'>146</span>
+<span class='line-number'>147</span>
+<span class='line-number'>148</span>
+<span class='line-number'>149</span>
+<span class='line-number'>150</span>
+<span class='line-number'>151</span>
+<span class='line-number'>152</span>
+<span class='line-number'>153</span>
+<span class='line-number'>154</span>
+<span class='line-number'>155</span>
+<span class='line-number'>156</span>
+<span class='line-number'>157</span>
+<span class='line-number'>158</span>
+<span class='line-number'>159</span>
+<span class='line-number'>160</span>
+<span class='line-number'>161</span>
+<span class='line-number'>162</span>
+<span class='line-number'>163</span>
+<span class='line-number'>164</span>
+<span class='line-number'>165</span>
+<span class='line-number'>166</span>
+<span class='line-number'>167</span>
+<span class='line-number'>168</span>
+<span class='line-number'>169</span>
+<span class='line-number'>170</span>
+<span class='line-number'>171</span>
+<span class='line-number'>172</span>
+<span class='line-number'>173</span>
+<span class='line-number'>174</span>
+<span class='line-number'>175</span>
+<span class='line-number'>176</span>
+<span class='line-number'>177</span>
+<span class='line-number'>178</span>
+<span class='line-number'>179</span>
+<span class='line-number'>180</span>
+<span class='line-number'>181</span>
+<span class='line-number'>182</span>
+<span class='line-number'>183</span>
+<span class='line-number'>184</span>
+<span class='line-number'>185</span>
+<span class='line-number'>186</span>
+<span class='line-number'>187</span>
+<span class='line-number'>188</span>
+<span class='line-number'>189</span>
+<span class='line-number'>190</span>
+<span class='line-number'>191</span>
+<span class='line-number'>192</span>
+<span class='line-number'>193</span>
+<span class='line-number'>194</span>
+<span class='line-number'>195</span>
+<span class='line-number'>196</span>
+<span class='line-number'>197</span>
+<span class='line-number'>198</span>
+<span class='line-number'>199</span>
+<span class='line-number'>200</span>
+<span class='line-number'>201</span>
+<span class='line-number'>202</span>
+<span class='line-number'>203</span>
+<span class='line-number'>204</span>
+<span class='line-number'>205</span>
+<span class='line-number'>206</span>
+<span class='line-number'>207</span>
+<span class='line-number'>208</span>
+<span class='line-number'>209</span>
+<span class='line-number'>210</span>
+<span class='line-number'>211</span>
+<span class='line-number'>212</span>
+<span class='line-number'>213</span>
+<span class='line-number'>214</span>
+<span class='line-number'>215</span>
+<span class='line-number'>216</span>
+<span class='line-number'>217</span>
+<span class='line-number'>218</span>
+<span class='line-number'>219</span>
+<span class='line-number'>220</span>
+<span class='line-number'>221</span>
+<span class='line-number'>222</span>
+<span class='line-number'>223</span>
+<span class='line-number'>224</span>
+<span class='line-number'>225</span>
+<span class='line-number'>226</span>
+<span class='line-number'>227</span>
+<span class='line-number'>228</span>
+<span class='line-number'>229</span>
+<span class='line-number'>230</span>
+<span class='line-number'>231</span>
+<span class='line-number'>232</span>
+<span class='line-number'>233</span>
+<span class='line-number'>234</span>
+<span class='line-number'>235</span>
+<span class='line-number'>236</span>
+<span class='line-number'>237</span>
+<span class='line-number'>238</span>
+<span class='line-number'>239</span>
+<span class='line-number'>240</span>
+<span class='line-number'>241</span>
+<span class='line-number'>242</span>
+<span class='line-number'>243</span>
+<span class='line-number'>244</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hive&gt; insert into t_ods_access_log2_back select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 ;
+</span><span class='line'>Query ID = hadoop_20160329200414_96f1de35-48c5-4b38-977f-05de8554f388
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Status: Running (Executing on YARN cluster with App id application_1458893800770_3955)
+</span><span class='line'>
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Map 1 ..........   SUCCEEDED    152        152        0        0       1       0
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>VERTICES: 01/01  [==========================&gt;&gt;] 100%  ELAPSED TIME: 341.56 s   
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Loading data to table default.t_ods_access_log2_back
+</span><span class='line'>Table default.t_ods_access_log2_back stats: [numFiles=152, numRows=57688987, totalSize=4454071542, rawDataSize=11018516544]
+</span><span class='line'>OK
+</span><span class='line'>Time taken: 347.997 seconds
+</span><span class='line'>hive&gt; insert into t_ods_access_log2_parquet select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 ;
+</span><span class='line'>Query ID = hadoop_20160329212157_57b66595-5dfc-4fc9-9ad1-398e2b8ade6b
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>Tez session was closed. Reopening...
+</span><span class='line'>Session re-established.
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+</span><span class='line'>
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Map 1 ..........   SUCCEEDED    152        152        0        0       0       0
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>VERTICES: 01/01  [==========================&gt;&gt;] 100%  ELAPSED TIME: 237.28 s   
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Loading data to table default.t_ods_access_log2_parquet
+</span><span class='line'>Table default.t_ods_access_log2_parquet stats: [numFiles=0, numRows=1305035789, totalSize=0, rawDataSize=16965465257]
+</span><span class='line'>OK
+</span><span class='line'>Time taken: 260.515 seconds
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_back;
+</span><span class='line'>Query ID = hadoop_20160329212644_da8e7997-5bcc-41ab-8b63-f1a5919c5a2f
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+</span><span class='line'>
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Map 1 ..........   SUCCEEDED    107        107        0        0       0       0
+</span><span class='line'>Reducer 2 ......   SUCCEEDED      1          1        0        0       0       0
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>VERTICES: 02/02  [==========================&gt;&gt;] 100%  ELAPSED TIME: 59.01 s    
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 59.768 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_parquet;
+</span><span class='line'>Query ID = hadoop_20160329212813_2fb8dafa-5c9a-40e8-a904-13e7cf865ec6
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+</span><span class='line'>
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Map 1 ..........   SUCCEEDED    106        106        0        0       0       0
+</span><span class='line'>Reducer 2 ......   SUCCEEDED      1          1        0        0       0       0
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>VERTICES: 02/02  [==========================&gt;&gt;] 100%  ELAPSED TIME: 45.82 s    
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 47.275 seconds, Fetched: 1 row(s)
+</span><span class='line'>
+</span><span class='line'>hive&gt; set hive.execution.engine=spark;
+</span><span class='line'>hive&gt; set spark.master=yarn-client;
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_back;
+</span><span class='line'>Query ID = hadoop_20160329214550_a58d1056-9c91-4bbe-be7d-122ec3efdd8d
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 3a03d432-83a4-4d5a-a878-c9e52aa94bed
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[0] stages:
+</span><span class='line'>0
+</span><span class='line'>1
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[0])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 21:46:26,523 Stage-0_0: 0(+114)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:27,535 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:30,563 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:33,582 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:36,606 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:39,624 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:41,637 Stage-0_0: 0(+118)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:42,644 Stage-0_0: 4(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:43,651 Stage-0_0: 110(+41)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:44,658 Stage-0_0: 124(+28)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:45,665 Stage-0_0: 128(+24)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:46,671 Stage-0_0: 138(+14)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:47,677 Stage-0_0: 142(+10)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:48,684 Stage-0_0: 144(+8)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:49,691 Stage-0_0: 147(+5)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:50,698 Stage-0_0: 148(+4)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:51,705 Stage-0_0: 149(+3)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:52,712 Stage-0_0: 150(+2)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:55,731 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:58,750 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:47:01,769 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:47:02,776 Stage-0_0: 152/152 Finished     Stage-1_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:05,793 Stage-0_0: 152/152 Finished     Stage-1_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 70.33 seconds
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 75.211 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_back;
+</span><span class='line'>Query ID = hadoop_20160329214723_9663eaf7-7014-46b1-b2ca-811ba64fc55c
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = f2dbcd55-b23c-4eb3-9439-8f1c825fbac3
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[1] stages:
+</span><span class='line'>2
+</span><span class='line'>3
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[1])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 21:47:24,449 Stage-2_0: 0(+122)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:25,455 Stage-2_0: 96(+56)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:26,462 Stage-2_0: 123(+29)/152 Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:27,469 Stage-2_0: 128(+24)/152 Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:28,476 Stage-2_0: 132(+20)/152 Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:29,483 Stage-2_0: 137(+15)/152 Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:30,489 Stage-2_0: 145(+7)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:31,495 Stage-2_0: 146(+6)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:32,500 Stage-2_0: 150(+2)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:33,506 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:36,524 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:39,540 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:42,557 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:45,573 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:48,589 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:49,594 Stage-2_0: 152/152 Finished     Stage-3_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 26.15 seconds
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 26.392 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_parquet;
+</span><span class='line'>Query ID = hadoop_20160329214758_25084e25-fdaf-4ef8-9c1a-2573515caca6
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 4360be5c-4188-49c4-a2a7-e5bb80164646
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[2] stages:
+</span><span class='line'>5
+</span><span class='line'>4
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[2])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 21:47:59,472 Stage-4_0: 0(+63)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:00,478 Stage-4_0: 1(+62)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:01,486 Stage-4_0: 49(+14)/65   Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:02,492 Stage-4_0: 51(+14)/65   Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:03,498 Stage-4_0: 57(+8)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:04,505 Stage-4_0: 62(+3)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:05,511 Stage-4_0: 63(+2)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:06,518 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:09,537 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:12,556 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:15,574 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:18,592 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:21,608 Stage-4_0: 65/65 Finished       Stage-5_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 23.14 seconds
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 23.376 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_parquet;
+</span><span class='line'>Query ID = hadoop_20160329214826_173311b1-0083-4e11-9a29-fe13f48bb649
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = c452b02b-c68f-4c68-bc28-cb9748d7dcb2
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[3] stages:
+</span><span class='line'>6
+</span><span class='line'>7
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[3])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 21:48:27,332 Stage-6_0: 3(+60)/65    Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:28,338 Stage-6_0: 53(+10)/65   Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:29,343 Stage-6_0: 60(+3)/65    Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:30,349 Stage-6_0: 61(+4)/65    Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:31,354 Stage-6_0: 63(+2)/65    Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:32,360 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:35,377 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:38,393 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:40,404 Stage-6_0: 65/65 Finished       Stage-7_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 14.08 seconds
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 14.306 seconds, Fetched: 1 row(s)
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr 
+</span><span class='line'>         &gt; select count(*) from t_ods_access_log2_parquet;
+</span><span class='line'>57688987
+</span><span class='line'>16/03/29 22:19:51 INFO CliDriver: Time taken: 21.82 seconds, Fetched 1 row(s)
+</span><span class='line'>
+</span><span class='line'>         &gt; select count(*) from t_ods_access_log2_back;
+</span><span class='line'>57688987
+</span><span class='line'>16/03/29 22:20:44 INFO CliDriver: Time taken: 6.634 seconds, Fetched 1 row(s)
+</span></code></pre></td></tr></table></div></figure>
+
+
+
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1521,420 +2179,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/03/11/install-and-config-openvpn/">安装配置OpenVPN</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-03-11T09:46:49+08:00" pubdate data-updated="true">Fri 2016-03-11 09:46</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>由于测试环境搭建不在同一个网络，平时查看hadoop集群状态、提交任务都可以通过hadoop-master的外网来操作。但是要读写kafka，需要直接连通所有的节点，全部映射端口太麻烦。一开始想到了VLAN(虚拟局域网），远远超出能力范围。最后通过搭架VPN来实现与测试环境的透明访问。</p>
-
-<h2>使用集成版本</h2>
-
-<p>参考 <a href="https://linux.cn/article-4733-1.html">https://linux.cn/article-4733-1.html</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># download https://openvpn.net/index.php/access-server/download-openvpn-as-sw.html
-</span><span class='line'>
-</span><span class='line'># 安装
-</span><span class='line'>[root@cu2 ~]# rpm -ivh openvpn-as-2.0.25-CentOS6.x86_64.rpm 
-</span><span class='line'>Preparing...                ########################################### [100%]
-</span><span class='line'>   1:openvpn-as             ########################################### [100%]
-</span><span class='line'>The Access Server has been successfully installed in /usr/local/openvpn_as
-</span><span class='line'>Configuration log file has been written to /usr/local/openvpn_as/init.log
-</span><span class='line'>Please enter "passwd openvpn" to set the initial
-</span><span class='line'>administrative password, then login as "openvpn" to continue
-</span><span class='line'>configuration here: https://192.168.0.214:943/admin
-</span><span class='line'>To reconfigure manually, use the /usr/local/openvpn_as/bin/ovpn-init tool.
-</span><span class='line'>
-</span><span class='line'>Access Server web UIs are available here:
-</span><span class='line'>Admin  UI: https://192.168.0.214:943/admin
-</span><span class='line'>Client UI: https://192.168.0.214:943/
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# passwd openvpn
-</span><span class='line'>
-</span><span class='line'>然后通过web admin进行配置。如主机的信息、hostname以及监听绑定的IP</span></code></pre></td></tr></table></div></figure>
-
-
-<p>配置好以后，本地通过网页下载client程序安装。连接配置后：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>C:\Users\winse&gt;tracert  cu3
-</span><span class='line'>
-</span><span class='line'>通过最多 30 个跃点跟踪
-</span><span class='line'>到 cu3 [192.168.0.148] 的路由:
-</span><span class='line'>
-</span><span class='line'>  1     2 ms     2 ms     2 ms  172.27.232.1
-</span><span class='line'>  2     2 ms     2 ms     2 ms  cu3 [192.168.0.148]
-</span><span class='line'>
-</span><span class='line'>跟踪完成。
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>C:\Users\winse&gt;route print
-</span><span class='line'>===========================================================================
-</span><span class='line'>IPv4 路由表
-</span><span class='line'>===========================================================================
-</span><span class='line'>活动路由:
-</span><span class='line'>网络目标        网络掩码          网关       接口   跃点数
-</span><span class='line'>          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.102     20
-</span><span class='line'>          0.0.0.0        128.0.0.0     172.27.232.1     172.27.232.2     20
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<p><a href="http://designmylife.blog.163.com/blog/static/2067142542013527101659960/">http://designmylife.blog.163.com/blog/static/2067142542013527101659960/</a></p>
-
-<p>路由匹配按最大(最亲)方式匹配。上面路由会先匹配mask为 <code>128.0.0.0</code> 的路由。最终把所有的流量经由VPN出去。</p>
-
-<p>通过 <strong>Access Server</strong> 安装简单，配置通过网页来弄，和网上资料的都匹配不上，还有用户数量的限制，囧。</p>
-
-<h2>编译源码安装</h2>
-
-<ul>
-<li>服务端安装配置</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 openvpn-2.3.10]# yum install libpam*
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# yum install pam-devel.x86_64
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# rz
-</span><span class='line'>rz waiting to receive.
-</span><span class='line'>Starting zmodem transfer.  Press Ctrl+C to cancel.
-</span><span class='line'>Transferring lzo-2.06.tar.gz...
-</span><span class='line'>  100%     569 KB     569 KB/sec    00:00:01       0 Errors  
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# tar zxvf lzo-2.06.tar.gz 
-</span><span class='line'>[root@cu2 ~]# cd lzo-2.06
-</span><span class='line'>[root@cu2 lzo-2.06]# ./configure 
-</span><span class='line'>[root@cu2 lzo-2.06]# make &&  make install
-</span><span class='line'>
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# ./configure --prefix=/usr/local/openvpn 
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# /usr/local/openvpn/sbin/openvpn --version
-</span><span class='line'>OpenVPN 2.3.10 x86_64-unknown-linux-gnu [SSL (OpenSSL)] [EPOLL] [MH] [IPv6] built on Mar  9 2016
-</span><span class='line'>
-</span><span class='line'>https://github.com/OpenVPN/easy-rsa/releases
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa  help
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa init-pki
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]#  ./easyrsa build-ca
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa gen-req openvpn nopass
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa sign client openvpn
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa gen-req eshore-cu nopass
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa sign server eshore-cu
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# tree pki/
-</span><span class='line'>pki/
-</span><span class='line'>├── ca.crt
-</span><span class='line'>├── certs_by_serial
-</span><span class='line'>│   ├── 01.pem
-</span><span class='line'>│   └── 02.pem
-</span><span class='line'>├── index.txt
-</span><span class='line'>├── index.txt.attr
-</span><span class='line'>├── index.txt.attr.old
-</span><span class='line'>├── index.txt.old
-</span><span class='line'>├── issued
-</span><span class='line'>│   ├── eshore-cu.crt
-</span><span class='line'>│   └── openvpn.crt
-</span><span class='line'>├── private
-</span><span class='line'>│   ├── ca.key
-</span><span class='line'>│   ├── eshore-cu.key
-</span><span class='line'>│   └── openvpn.key
-</span><span class='line'>├── reqs
-</span><span class='line'>│   ├── eshore-cu.req
-</span><span class='line'>│   └── openvpn.req
-</span><span class='line'>├── serial
-</span><span class='line'>└── serial.old
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]#  ./easyrsa gen-dh
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# cd pki
-</span><span class='line'>[root@cu2 pki]# cp ca.crt dh.pem issued/eshore-cu.crt private/eshore-cu.key /etc/openvpn/ 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# cp sample/sample-config-files/server.conf /etc/openvpn/
-</span><span class='line'>
-</span><span class='line'>  proto tcp
-</span><span class='line'>  cert eshore-cu.crt
-</span><span class='line'>  key eshore-cu.key 
-</span><span class='line'>  dh dh.pem
-</span><span class='line'>  # 在客户端额外添加这条路由到VPN
-</span><span class='line'>  push "route 192.168.0.0 255.255.255.0"
-</span><span class='line'>  # 和AS一样，会添加0.0.0.0到VPN的路由。默认走VPN
-</span><span class='line'>  ;push "redirect-gateway def1 bypass-dhcp"
-</span><span class='line'>  user nobody
-</span><span class='line'>  group nobody
-</span><span class='line'>
-</span><span class='line'>[root@cu2 pki]# cd /etc/openvpn/
-</span><span class='line'>[root@cu2 openvpn]# /usr/local/openvpn/sbin/openvpn --config /etc/openvpn/server.conf 
-</span><span class='line'>[root@cu2 openvpn]# /usr/local/openvpn/sbin/openvpn --daemon --config server.conf </span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>安装客户端：</li>
-</ul>
-
-
-<p><a href="https://openvpn.net/index.php/open-source/downloads.html">https://openvpn.net/index.php/open-source/downloads.html</a> 下载安装对应的版本。</p>
-
-<p>拷贝sample-config/client.ovpn和服务端的ca.crt、openvpn.crt、openvpn.key到config目录下面。</p>
-
-<p>修改client.ovpn:</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>proto tcp
-</span><span class='line'>remote webcu2 1194
-</span><span class='line'>cert openvpn.crt
-</span><span class='line'>key openvpn.key</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后启动 <strong>OpenVPN GUI</strong> ，右键connect就行了。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ route print
-</span><span class='line'>...
-</span><span class='line'>IPv4 路由表
-</span><span class='line'>===========================================================================
-</span><span class='line'>活动路由:
-</span><span class='line'>网络目标        网络掩码          网关       接口   跃点数
-</span><span class='line'>          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.102     20
-</span><span class='line'>         10.8.0.1  255.255.255.255         10.8.0.5         10.8.0.6     20
-</span><span class='line'>         10.8.0.4  255.255.255.252            在链路上          10.8.0.6    276
-</span><span class='line'>         10.8.0.6  255.255.255.255            在链路上          10.8.0.6    276
-</span><span class='line'>         10.8.0.7  255.255.255.255            在链路上          10.8.0.6    276
-</span><span class='line'>      192.168.0.0    255.255.255.0         10.8.0.5         10.8.0.6     20
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>问题</h2>
-
-<ul>
-<li>连接到VPN服务端的机器是没有问题，但是不能访问该机器的应用（端口不同）</li>
-</ul>
-
-
-<p>被防火墙限制了，在服务端把10.8.0.0/24加入到防火墙允许。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>iptables -A INPUT -s 10.8.0.0/24 -j ACCEPT </span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>不能访问服务端其他机器</li>
-</ul>
-
-
-<p>在iptables上增加转发</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE</span></code></pre></td></tr></table></div></figure>
-
-
-<p>查看iptables规则：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>iptables -nL -t nat</span></code></pre></td></tr></table></div></figure>
-
-
-<p>测试下:</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ ping cu3
-</span><span class='line'>
-</span><span class='line'>正在 Ping cu3 [192.168.0.148] 具有 32 字节的数据:
-</span><span class='line'>来自 192.168.0.148 的回复: 字节=32 时间=5ms TTL=63
-</span><span class='line'>来自 192.168.0.148 的回复: 字节=32 时间=5ms TTL=63</span></code></pre></td></tr></table></div></figure>
-
-
-<p>其他（参数，未实践，记录下来）</p>
-
-<blockquote><p>必须在服务器端的内网网关上将到10.8.0.0/24网段的路由指向到openvpn服务器，不然从服务器端内网其他机器根本找不到去往10.8.0.0/24网段的路由。这里又分两种情况，一种是服务端有内网网关设备的（按如上说法即可）；一种是服务端内网没有网关设备，即服务器通过交换机相连，相互通讯靠广播的情况。我的就是这种情况。需要在想访问的server上增加到10.8.0.0/24的路由，如下</p>
-
-<p>route add -net 10.8.0.0/24 gw 192.168.1.211    #1.211为openvpn服务器的内网IP</p>
-
-<p>Make sure that you&rsquo;ve enabled IP and TUN/TAP forwarding on the OpenVPN server machine.
-确定开启了转发功能，然后在openvpn服务器Iptables添加如下两条规则</p>
-
-<p>iptables -A FORWARD -i tun0 -s 10.8.0.0/24 -j ACCEPT    #简单说，允许数据从客户端到后端server
-iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端server到客户端</p></blockquote>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://openvpn.net/index.php/open-source/documentation/howto.html">https://openvpn.net/index.php/open-source/documentation/howto.html</a></li>
-<li><a href="http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html">http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html</a></li>
-<li><a href="http://www.linuxquestions.org/questions/linux-networking-3/openvpn-conencts-but-can%27t-ping-servers-on-the-other-network-660610/">http://www.linuxquestions.org/questions/linux-networking-3/openvpn-conencts-but-can%27t-ping-servers-on-the-other-network-660610/</a></li>
-<li><a href="http://www.ilanni.com/?p=9877">http://www.ilanni.com/?p=9877</a></li>
-<li><a href="http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html">http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html</a></li>
-<li><a href="http://kaifly.blog.51cto.com/3209616/1367591">http://kaifly.blog.51cto.com/3209616/1367591</a></li>
-</ul>
-
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/3">&larr; Older</a>
@@ -2027,6 +2271,10 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
       </li>
     
       <li class="post">
+        <a href="/blog/2016/04/08/snappy-centos5-on-hive-on-spark/">Hive-on-spark Snappy on Centos5</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/04/08/puppet-install/">puppet4.4.1入门安装</a>
       </li>
     
@@ -2048,10 +2296,6 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
     
       <li class="post">
         <a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn/">SparkSQL-on-YARN的Executors池(动态)配置</a>
       </li>
     
   </ul>
@@ -2100,7 +2344,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hive/'>hive</a> (5) 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2140,7 +2384,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/spark/'>spark</a> (6) 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (7) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2161,7 +2405,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (120)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (121)</li>
 	</ul>
 	
 </section>
