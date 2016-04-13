@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Recommend | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/recommend/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-04-12T21:20:57+08:00</updated>
+  <updated>2016-04-13T14:28:56+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -83,7 +83,7 @@ spark.kryoserializer.buffer.max    512m
 </code></pre>
 
 <ul>
-<li>minExecutors <strong>最好应该是和datanode机器差不多，每台一个executor才能本地计算嘛！</strong></li>
+<li>minExecutors <strong>最好应该是和datanode机器数量差不多，每台一个executor才能本地计算嘛！</strong></li>
 <li>dynamicAllocation需要yarn的配合，具体查看前一篇文章，或者直接看官网的资料。</li>
 <li>eventlog查看历史记录需要，配置好后每个任务的信息会存储到eventlog.dir的路径。通过18080端口可以看到历史记录。</li>
 </ul>
@@ -91,7 +91,7 @@ spark.kryoserializer.buffer.max    512m
 
 <h2>跑起来</h2>
 
-<p><code>spark.master</code> 默认是 <strong>yarn-cluster</strong>， 这里先本地跑一下看下效果。然后再改成yarn-cluster/yarn-client就可以了(推荐使用yarn-client，如果yarn-cluster模式AppMaster同时也是Driver，内存比较难控制，日志看起来也麻烦)。</p>
+<p><code>spark.master</code> 默认是 <strong>yarn-cluster</strong>， 这里先本地(local)跑一下看下效果。然后再改成yarn-cluster/yarn-client就可以了(推荐使用yarn-client，如果yarn-cluster模式AppMaster同时也是Driver，内存比较难控制，日志看起来也麻烦)。</p>
 
 <pre><code>[hadoop@hadoop-master2 hive]$ hive --hiveconf hive.execution.engine=spark 
 
@@ -126,7 +126,29 @@ hive&gt;
 
 <p>再回过头看其实挺简单，和官方文档中的差不多。</p>
 
-<p>hive的日志级别可以通过 <strong>hive-log4j.properties</strong> 来配置。</p>
+<p>注意：hive的日志级别可以通过 <strong>hive-log4j.properties</strong> 来配置。</p>
+
+<p>有一个问题，不管yarn-cluser还是yarn-client（hive1.2.1-on-spark1.3.1），application强制kill掉以后，再查询会失败，应该是application杀了但是session还在！</p>
+
+<pre><code>[hadoop@file1 ~]$ yarn application -kill application_1460379750886_0012
+16/04/13 08:47:17 INFO client.RMProxy: Connecting to ResourceManager at file1/192.168.102.6:8032
+Killing application application_1460379750886_0012
+16/04/13 08:47:18 INFO impl.YarnClientImpl: Killed application application_1460379750886_0012
+
+    &gt; select count(*) from t_info where edate=20160413;
+Query ID = hadoop_20160413084736_ac8f88bb-5ee1-4941-9745-f4a8a504f2f3
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Starting Spark Job = eb7e038a-2db0-45d7-9b0d-1e55d354e5e9
+Status: Failed
+FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+</code></pre>
 
 <h2>坑坑坑</h2>
 
@@ -181,8 +203,8 @@ java.lang.AbstractMethodError
 
 <ul>
 <li>SparkSQL-Thriftserver所有结果全部内存，快是快，但是不能满足查询大量数据的需求。如果查询几千万的数据，SparkSQL是搞不定的。而hive-on-spark除了计算用spark其他逻辑都是hive的，返回的结果会先写hdfs，再慢慢返回给客户端。</li>
-<li>SparkSQL-Thriftserver的是全新重写的，和已有hive业务不一定兼容！！</li>
-<li>SparkSQL由于基于内存，再一些调度方面做了优化。如limit: hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。</li>
+<li>SparkSQL-Thriftserver代码的是全部用scala重写的，和已有hive业务不一定兼容！！</li>
+<li>SparkSQL由于基于内存，再一些调度方面做了优化。如[limit]: hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。</li>
 </ul>
 
 
@@ -197,7 +219,7 @@ java.lang.AbstractMethodError
 
 <ul>
 <li>tez的优势spark都有，并且tez其实缓冲优势并不大。而spark的缓冲效果更明显，而且可以快速返回。例如：你查3万条数据，tez是要全部查询然后再返回的，而sparksql取到3万条其他就不算了（效果看起来是这样子，具体没看源码实现；md hive-on-spark还是会全部跑）。</li>
-<li>tez还是进程级别的，spark更加细化，可以有process级别！例如，你查数据记录同时又要返回count，这时有些操作是prcess_local级别的，这个tez是不能比的！</li>
+<li>tez任务缓冲不能共享，spark更加细化，可以有process级别缓冲（就是用上次计算过的结果，加载过的缓冲）！例如，你查数据记录同时又要返回count，这时有些操作是prcess_local级别的，这个tez是不能比的！</li>
 <li>spark的日志UI看起来更便捷，呵呵</li>
 </ul>
 
