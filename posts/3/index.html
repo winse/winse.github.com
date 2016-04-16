@@ -9,8 +9,9 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="问题： https://www.zhihu.com/question/25498407 问题是hadoop内存的配置，涉及两个方面： namenode/datanode/resourcemanager/nodemanager的HEAPSIZE环境变量
-在配置文件/ &hellip;">
+  <meta name="description" content="官网配置资料 http://spark.apache.org/docs/latest/running-on-yarn.html
+http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup
+http &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -84,6 +85,203 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn/">SparkSQL-on-YARN的Executors池(动态)配置</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-03-25T15:14:53+08:00" pubdate data-updated="true">Fri 2016-03-25 15:14</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>官网配置资料</h2>
+
+<ul>
+<li><a href="http://spark.apache.org/docs/latest/running-on-yarn.html">http://spark.apache.org/docs/latest/running-on-yarn.html</a></li>
+<li><a href="http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup">http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup</a></li>
+<li><a href="http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
+</ul>
+
+
+<h2>实战</h2>
+
+<h4>修改YARN配置，添加spark-yarn-shuffle.jar，同步配置和jar到nodemanager节点并重启。</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ vi etc/hadoop/yarn-site.xml 
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;mapreduce_shuffle,spark_shuffle&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.mapreduce.shuffle.class&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.hadoop.mapred.ShuffleHandler&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.spark_shuffle.class&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.spark.network.yarn.YarnShuffleService&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ cp ~/spark-1.6.0-bin-2.6.3/lib/spark-1.6.0-yarn-shuffle.jar share/hadoop/yarn/
+</span><span class='line'>
+</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az share $h:~/hadoop-2.6.3/ ; done 
+</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az etc $h:~/hadoop-2.6.3/ ; done 
+</span><span class='line'>
+</span><span class='line'>rsync -vaz etc hadoop-master2:~/hadoop-2.6.3/
+</span><span class='line'>rsync -vaz share hadoop-master2:~/hadoop-2.6.3/
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-yarn.sh </span></code></pre></td></tr></table></div></figure>
+
+
+<h4>原来已经部署了Hive-1.2.1（和spark-1.6.0的hive是匹配的），直接把hive-site.xml做一个软链到spark/conf下面：</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ cd conf/
+</span><span class='line'>[hadoop@hadoop-master1 conf]$ ln -s ~/hive/conf/hive-site.xml 
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ ll conf/hive-site.xml 
+</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop 36 3月  25 11:30 conf/hive-site.xml -&gt; /home/hadoop/hive/conf/hive-site.xml</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：如果原来配置了tez，把hive-site.xml的 <strong>hive.execution.engine</strong> 配置注释掉。或者启动的时刻换引擎： <code>bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr</code></p>
+
+<h4>修改spark配置</h4>
+
+<p>spark-defaults.conf</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-defaults.conf 
+</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar
+</span><span class='line'>
+</span><span class='line'>spark.dynamicAllocation.enabled    true
+</span><span class='line'>spark.shuffle.service.enabled      true
+</span><span class='line'>spark.dynamicAllocation.executorIdleTimeout    600s
+</span><span class='line'>spark.dynamicAllocation.minExecutors    160
+</span><span class='line'>spark.dynamicAllocation.maxExecutors    1800
+</span><span class='line'>spark.dynamicAllocation.schedulerBacklogTimeout   5s
+</span><span class='line'>
+</span><span class='line'>spark.driver.maxResultSize   0
+</span><span class='line'>
+</span><span class='line'>spark.eventLog.enabled  true
+</span><span class='line'>spark.eventLog.compress  true
+</span><span class='line'>spark.eventLog.dir    hdfs:///spark-eventlogs
+</span><span class='line'>spark.yarn.historyServer.address hadoop-master2:18080
+</span><span class='line'>
+</span><span class='line'>spark.serializer        org.apache.spark.serializer.KryoSerializer
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>spark.yarn.jar 配置后，spark启动后直接使用该文件作为executor的main-jar，不需要每次都上传一次spark.jar（每次都搞一下180M也不少资源了）</li>
+<li>enabled 启用动态两个都配置必须设置为true</li>
+<li>executorIdleTimeout 关闭不用executors需要等待的时间</li>
+<li>schedulerBacklogTimeout 增加积压的任务时间来判断是否增加executors</li>
+<li>minExecutors 至少存活的executors个数</li>
+</ul>
+
+
+<p>spark-env.sh环境变量</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-env.sh 
+</span><span class='line'>SPARK_CLASSPATH=/home/hadoop/hive/lib/mysql-connector-java-5.1.21-bin.jar:$SPARK_CLASSPATH
+</span><span class='line'>HADOOP_CONF_DIR=/home/hadoop/hadoop/etc/hadoop
+</span><span class='line'>SPARK_DRIVER_MEMORY=30g
+</span><span class='line'>SPARK_PID_DIR=/home/hadoop/tmp/pids</span></code></pre></td></tr></table></div></figure>
+
+
+<h4>启动</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ sbin/start-thriftserver.sh --master yarn-client
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ sbin/start-history-server.sh hdfs:///spark-eventlogs</span></code></pre></td></tr></table></div></figure>
+
+
+<p>收工。</p>
+
+<p>整个过程就是：添加spark-shuffle到yarn，然后配置spark参数，最后就是重启任务（yarn/hiveserver）。</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1013,263 +1211,6 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/02/01/ganglia-python-extension/">Ganglia扩展-Python</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-02-01T18:23:43+08:00" pubdate data-updated="true">Mon 2016-02-01 18:23</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>最简单的添加metric的方式使用 <code>gmetric</code> ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>/usr/local/ganglia/bin/gmetric -n "TITLE" -v VALUE -t int16 -g GROUP</span></code></pre></td></tr></table></div></figure>
-
-
-<p>有时指标计算复杂，通过简单的shell不能满足功能需要。我们可以使用python模块来定制。</p>
-
-<h2>安装</h2>
-
-<p>默认安装会检查Python环境，符合条件会自动的安装Python模块。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia-3.7.2]# yum install -y python-devel
-</span><span class='line'>[root@cu2 ganglia-3.7.2]# ./configure --with-gmetad --enable-gexec --enable-status --prefix=/usr/local/ganglia
-</span><span class='line'>...
-</span><span class='line'>Checking for python
-</span><span class='line'>checking for python... /usr/bin/python
-</span><span class='line'>checking Python version... 2.6
-</span><span class='line'>checking Python support... yes
-</span><span class='line'>checking Perl support... no
-</span><span class='line'>checking for pkg-config... /usr/bin/pkg-config
-</span><span class='line'>checking pkg-config is at least version 0.9.0... yes
-</span><span class='line'>...
-</span><span class='line'>[root@cu2 ganglia-3.7.2]# make && make install</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>安装成功</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia]# pwd
-</span><span class='line'>/usr/local/ganglia
-</span><span class='line'>[root@cu2 ganglia]# ll lib64/ganglia/
-</span><span class='line'>total 704
-</span><span class='line'>-rwxr-xr-x 1 root root 87344 Feb  1 16:52 modcpu.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84566 Feb  1 16:52 moddisk.so
-</span><span class='line'>-rwxr-xr-x 1 root root 17896 Feb  1 16:52 modgstatus.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84526 Feb  1 16:52 modload.so
-</span><span class='line'>-rwxr-xr-x 1 root root 86280 Feb  1 16:52 modmem.so
-</span><span class='line'>-rwxr-xr-x 1 root root 31695 Feb  1 16:52 modmulticpu.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84928 Feb  1 16:52 modnet.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84246 Feb  1 16:52 modproc.so
-</span><span class='line'>-rwxr-xr-x 1 root root 53994 Feb  1 16:52 modpython.so
-</span><span class='line'>-rwxr-xr-x 1 root root 85584 Feb  1 16:52 modsys.so
-</span><span class='line'>[root@cu2 ganglia]# ll etc/conf.d/
-</span><span class='line'>total 4
-</span><span class='line'>-rw-r--r-- 1 root root 408 Feb  1 16:52 modpython.conf
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia]# vi etc/gmetad.conf
-</span><span class='line'> rrdtool_dir
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia]# cat etc/conf.d/modpython.conf 
-</span><span class='line'>/*
-</span><span class='line'>  params - path to the directory where mod_python
-</span><span class='line'>           should look for python metric modules
-</span><span class='line'>
-</span><span class='line'>  the "pyconf" files in the include directory below
-</span><span class='line'>  will be scanned for configurations for those modules
-</span><span class='line'>*/
-</span><span class='line'>modules {
-</span><span class='line'>  module {
-</span><span class='line'>    name = "python_module"
-</span><span class='line'>    path = "modpython.so"
-</span><span class='line'>    params = "/usr/local/ganglia/lib64/ganglia/python_modules"
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>include ("/usr/local/ganglia/etc/conf.d/*.pyconf")
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>Hello World</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia]# cd lib64/ganglia/
-</span><span class='line'>[root@cu2 ganglia]# mkdir python_modules
-</span><span class='line'>[root@cu2 ganglia]# cd python_modules/
-</span><span class='line'>
-</span><span class='line'>[root@cu2 python_modules]# cp ~/ganglia-3.7.2/gmond/python_modules/example/example.py ./
-</span><span class='line'>[root@cu2 python_modules]# 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 python_modules]# cd /usr/local/ganglia/etc/conf.d/
-</span><span class='line'>[root@cu2 conf.d]# vi example.pyconf
-</span><span class='line'>modules {
-</span><span class='line'>  module {
-</span><span class='line'>    name = "example"
-</span><span class='line'>    language = "python"
-</span><span class='line'>    param RandomMax {
-</span><span class='line'>      value = 600
-</span><span class='line'>    }
-</span><span class='line'>    param ConstantValue {
-</span><span class='line'>      value = 112
-</span><span class='line'>    }
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>collection_group {
-</span><span class='line'>  collect_every = 10
-</span><span class='line'>  time_threshold = 50
-</span><span class='line'>  metric {
-</span><span class='line'>    name = "PyRandom_Numbers"
-</span><span class='line'>    title = "Random"
-</span><span class='line'>    value_threshold = 70
-</span><span class='line'>  }
-</span><span class='line'>  metric {
-</span><span class='line'>    name = "PyConstant_Number"
-</span><span class='line'>    title = "Constant"
-</span><span class='line'>    value_threshold = 70
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>[root@cu2 conf.d]# service gmond restart
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><strong>example.py</strong> 初始化函数 <code>metric_init</code> 从 <strong>example.pyconf</strong> 文件获取配置、返回可用指标对象（ <code>call_back</code> 关联执行的handler; <code>groups</code> 数据的分组）。</p>
-
-<p>模块中必须包含的三个方法是：</p>
-
-<ul>
-<li>def metric_init(params):</li>
-<li>def metric_cleanup():</li>
-<li>def metric_handler(name):</li>
-</ul>
-
-
-<p>前面两个方法的名字必须是一定的，而最后一个 metric_handler与 <code>metric_init</code> 返回对象的callback对应。<code>__main__</code> 函数用于debug，可以单独调试该模块，以检测是否有错。
-更详细的内容看官网的文档<a href="https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules">Ganglia-GMond-Python-Modules</a></p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules">https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules</a></li>
-<li><a href="http://www.cnblogs.com/marysam/archive/2012/01/03/2311187.html">http://www.cnblogs.com/marysam/archive/2012/01/03/2311187.html</a></li>
-<li><a href="http://blog.csdn.net/cloudeep/article/details/5669295">http://blog.csdn.net/cloudeep/article/details/5669295</a></li>
-</ul>
-
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/4">&larr; Older</a>
@@ -1358,6 +1299,10 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/04/15/alluxio-quickstart2/">Alluxio入门大全2</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/04/13/hiveserver2-ui-and-upgrade-hive2-dot-0-0/">Hiveserver2 Ui and Upgrade hive2.0.0</a>
       </li>
     
@@ -1385,10 +1330,6 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
         <a href="/blog/2016/03/29/parquet-simple-view/">Parquet学习</a>
       </li>
     
-      <li class="post">
-        <a href="/blog/2016/03/29/limit-on-sparksql-and-hive/">Limit on Sparksql and Hive</a>
-      </li>
-    
   </ul>
 </section>
 <section>
@@ -1397,6 +1338,10 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 	 
 	<ul role="list">
 		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/android/'>android</a> (1) 
@@ -1479,7 +1424,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (2) 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1496,7 +1441,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (122)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (123)</li>
 	</ul>
 	
 </section>

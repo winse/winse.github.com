@@ -9,11 +9,22 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="资料 http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html
-用 RPM 打包软件-打包教程
-用 RPM 打包软件-高级部分：安装前后控制
-RPM 打包技术与典型 SPEC 文件分析-各变量含义
-http://hlee.iteye.com/blog/ &hellip;">
+  <meta name="description" content="查询程序一开始只是简单使用dbcp来做连接的限制。在实践的过程中遇到各种问题，本文记录DBCP的参数优化提高程序健壮性的两次过程。 最开始的DBCP的配置： 1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+&lt;bean id="hiveDataSource" class &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -87,6 +98,187 @@ http://hlee.iteye.com/blog/ &hellip;">
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/04/08/dbcp-parameters/">DBCP参数在Hive JDBC上的实践</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2016-04-08T19:48:01+08:00" pubdate data-updated="true">Fri 2016-04-08 19:48</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>查询程序一开始只是简单使用dbcp来做连接的限制。在实践的过程中遇到各种问题，本文记录DBCP的参数优化提高程序健壮性的两次过程。</p>
+
+<p>最开始的DBCP的配置：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+</span><span class='line'>  destroy-method="close" 
+</span><span class='line'>  p:driverClassName="${hiveDriverClassName}"
+</span><span class='line'>  p:url="${hiveUrl}" 
+</span><span class='line'>  p:username="${hiveUsername}" 
+</span><span class='line'>  p:password="${hivePassword}"
+</span><span class='line'>  p:maxIdle="${hiveMaxIdle}" 
+</span><span class='line'>  p:maxWait="${hiveMaxWait}" 
+</span><span class='line'>  p:maxActive="${hiveMaxActive}" /&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;bean id="hiveTemplate" class="org.springframework.jdbc.core.JdbcTemplate"&gt;
+</span><span class='line'>  &lt;property name="dataSource"&gt;
+</span><span class='line'>      &lt;ref bean="hiveDataSource" /&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>&lt;/bean&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>第一个遇到的问题，就是每次hiveserver2重启后，这个查询程序也得重启。在实际使用过程中非常的麻烦！！</p>
+
+<h4>重启问题（连接断开后不能重连）</h4>
+
+<p>首先给出学习的链接 <a href="http://elf8848.iteye.com/blog/1931778">http://elf8848.iteye.com/blog/1931778</a> 巨详细，同时问题的场景都一模一样啊！！</p>
+
+<p>添加三个参数：</p>
+
+<ul>
+<li>testOnBorrow = &ldquo;true&rdquo;       借出连接时不要测试，否则很影响性能</li>
+<li>testWhileIdle = &ldquo;true&rdquo;       指明连接是否被空闲连接回收器(如果有)进行检验.如果检测失败,则连接将被从池中去除.</li>
+<li>validationQuery = &ldquo;show databases&rdquo; 验证连接是否可用，使用的SQL语句</li>
+</ul>
+
+
+<p>解释：</p>
+
+<p>testWhileIdle = &ldquo;true&rdquo; 表示每 {timeBetweenEvictionRunsMillis} (默认-1，不执行)秒，取出 {numTestsPerEvictionRun} (默认值3)条连接，使用 {validationQuery} 进行测试 ，测试不成功就销毁连接。销毁连接后，连接数量就少了，如果小于minIdle数量，就新建连接。</p>
+
+<p>testOnBorrow = &ldquo;true&rdquo; 它的默认值是true，如果测试失败会drop掉然后再borrow。false表示每次从连接池中取出连接时，不需要执行 {validationQuery} 中的SQL进行测试。若配置为true,对性能有非常大的影响，性能会下降7-10倍。所在一定要配置为false.</p>
+
+<p>调整参数后hiveserver2重启，查询再连会先报错然后再连。在每次取连接的时刻使用 <code>show databases</code> 测试，如果失败则从pool中删掉这个连接，重新再取，实现了重连的效果。这里不用 <code>select 1</code> hive里面执行很慢， 同时testWhileIdle并没有生效，因为没有配置timeBetweenEvictionRunsMillis参数。</p>
+
+<p>调整后的：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+</span><span class='line'>destroy-method="close" 
+</span><span class='line'>p:driverClassName="${hiveDriverClassName}"
+</span><span class='line'>p:url="${hiveUrl}" 
+</span><span class='line'>p:username="${hiveUsername}" 
+</span><span class='line'>p:password="${hivePassword}"
+</span><span class='line'>p:testOnBorrow="${hiveTestOnBorrow}"
+</span><span class='line'>p:testWhileIdle="${hiveTestWhileIdle}" 
+</span><span class='line'>p:validationQuery="${hiveValidationQuery}"
+</span><span class='line'>p:maxIdle="${hiveMaxIdle}" 
+</span><span class='line'>p:maxWait="${hiveMaxWait}" 
+</span><span class='line'>p:maxActive="${hiveMaxActive}" 
+</span><span class='line'>/&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>问题又来了，由于测试切换tez和spark才配置了上面的重连。但是切换到spark后，启动的spark会一直保持(连接创建的session不会主动关闭)，直到hiveserver2 session超时(默认6h检查一次，7h idle就关闭)。</p>
+
+<p>注意：有个隐忧，hive-on-spark每个连接都创建一个SESSION，这就退化到MR操作了。不能完全利用SPARK的优势！！例如业务中，即查询count、又获取一页数据，这里就是两个单独的spark程序！！N个session就N个 <strong>hive on spark</strong> 啊！！</p>
+
+<h4>第二个问题，服务端session强制关闭</h4>
+
+<p>问题其实和参考中的: <strong>MySQL8小时问题，Mysql服务器默认连接的“wait_timeout”是8小时，也就是说一个connection空闲超过8个小时，Mysql将自动断开该 connection</strong> 一模一样的。在增加 <strong>minEvictableIdleTimeMillis</strong> 和 <strong>timeBetweenEvictionRunsMillis</strong> 设置检查和回收的时间。</p>
+
+<ul>
+<li>timeBetweenEvictionRunsMillis = &ldquo;1800000&rdquo;  每30分钟运行一次空闲连接回收器，没必要那么频繁。</li>
+<li>minEvictableIdleTimeMillis = &ldquo;3600000&rdquo;  池中的连接空闲1个小时后被回收，如果1个半小时没有操作，这个session就会被客户端关闭。可以通过yarn-8088的scheduler页面查看。</li>
+</ul>
+
+
+<p>设置后的最终效果：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+</span><span class='line'>destroy-method="close" 
+</span><span class='line'>p:driverClassName="${hiveDriverClassName}"
+</span><span class='line'>p:url="${hiveUrl}" 
+</span><span class='line'>p:username="${hiveUsername}" 
+</span><span class='line'>p:password="${hivePassword}"
+</span><span class='line'>p:testOnBorrow="${hiveTestOnBorrow}"
+</span><span class='line'>p:validationQuery="${hiveValidationQuery}"
+</span><span class='line'>p:maxWait="${hiveMaxWait}" 
+</span><span class='line'>p:maxIdle="${hiveMaxIdle}" 
+</span><span class='line'>p:maxActive="${hiveMaxActive}" 
+</span><span class='line'>p:testWhileIdle="${hiveTestWhileIdle}" 
+</span><span class='line'>p:timeBetweenEvictionRunsMillis="${hiveTimeBetweenEvictionRunsMillis}" 
+</span><span class='line'>p:minEvictableIdleTimeMillis="${hiveMinEvictableIdleTimeMillis}" 
+</span><span class='line'>p:removeAbandoned="true"
+</span><span class='line'>p:logAbandoned="true"
+</span><span class='line'>/&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>很多程序都有很多参数，大部分能通过文档明白，但是一些参数不到实践真的很难真正体会它的含义。参考的文章两次改进我查看了，但是第一次看的时刻根本没去加其他参数，因为对我来说没用，解决当前问题用不到嘛。</p>
+
+<p>hadoop的参数更多，core/hdfs/mapred/yarn需要多用才能发现参数的功能和妙用。<strong>纸上得来终觉浅，绝知此事要躬行</strong> 。</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1758,7 +1950,7 @@ http://hlee.iteye.com/blog/ &hellip;">
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ less ~/hive/conf/hive-env.sh
-</span><span class='line'>export HADOOP_OPTS="$HADOOP_OPTS -XX:PermSize=256m -Dhive.home=${HIVE_HOME} "</span></code></pre></td></tr></table></div></figure>
+</span><span class='line'>export HADOOP_OPTS="$HADOOP_OPTS -XX:MaxPermSize=256m -Dhive.home=${HIVE_HOME} "</span></code></pre></td></tr></table></div></figure>
 
 
 <p>在conf目录下增加spark-defaults.conf文件，指定spark的配置。动态资源分配查看：<a href="http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation">dynamic-resource-allocation</a>：</p>
@@ -2011,6 +2203,7 @@ http://hlee.iteye.com/blog/ &hellip;">
 <ul>
 <li>SparkSQL-Thriftserver所有结果全部内存，快是快，但是不能满足查询大量数据的需求。如果查询几千万的数据，SparkSQL是搞不定的。而hive-on-spark除了计算用spark其他逻辑都是hive的，返回的结果会先写hdfs，再慢慢返回给客户端。</li>
 <li>SparkSQL-Thriftserver代码的是全部用scala重写的，和已有hive业务不一定兼容！！</li>
+<li>SparkSQL-Thriftserver有一个最大的优势就是整个server相当于hive-on-spark的一个session，网页监控漂亮清晰。而hive-on-spark不同的session那就相当于不同的application！！（2016-4-13 20:57:23）用了动态分配，没感觉SparkSQLThriftserver快很多。</li>
 <li>SparkSQL由于基于内存，再一些调度方面做了优化。如[limit]: hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。</li>
 </ul>
 
@@ -2045,203 +2238,6 @@ http://hlee.iteye.com/blog/ &hellip;">
 <li><a href="http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation">http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation</a></li>
 </ul>
 
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn/">SparkSQL-on-YARN的Executors池(动态)配置</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-03-25T15:14:53+08:00" pubdate data-updated="true">Fri 2016-03-25 15:14</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>官网配置资料</h2>
-
-<ul>
-<li><a href="http://spark.apache.org/docs/latest/running-on-yarn.html">http://spark.apache.org/docs/latest/running-on-yarn.html</a></li>
-<li><a href="http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup">http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup</a></li>
-<li><a href="http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
-</ul>
-
-
-<h2>实战</h2>
-
-<h4>修改YARN配置，添加spark-yarn-shuffle.jar，同步配置和jar到nodemanager节点并重启。</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ vi etc/hadoop/yarn-site.xml 
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;mapreduce_shuffle,spark_shuffle&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.mapreduce.shuffle.class&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;org.apache.hadoop.mapred.ShuffleHandler&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.spark_shuffle.class&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;org.apache.spark.network.yarn.YarnShuffleService&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ cp ~/spark-1.6.0-bin-2.6.3/lib/spark-1.6.0-yarn-shuffle.jar share/hadoop/yarn/
-</span><span class='line'>
-</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az share $h:~/hadoop-2.6.3/ ; done 
-</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az etc $h:~/hadoop-2.6.3/ ; done 
-</span><span class='line'>
-</span><span class='line'>rsync -vaz etc hadoop-master2:~/hadoop-2.6.3/
-</span><span class='line'>rsync -vaz share hadoop-master2:~/hadoop-2.6.3/
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
-</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-yarn.sh </span></code></pre></td></tr></table></div></figure>
-
-
-<h4>原来已经部署了Hive-1.2.1（和spark-1.6.0的hive是匹配的），直接把hive-site.xml做一个软链到spark/conf下面：</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ cd conf/
-</span><span class='line'>[hadoop@hadoop-master1 conf]$ ln -s ~/hive/conf/hive-site.xml 
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ ll conf/hive-site.xml 
-</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop 36 3月  25 11:30 conf/hive-site.xml -&gt; /home/hadoop/hive/conf/hive-site.xml</span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意：如果原来配置了tez，把hive-site.xml的 <strong>hive.execution.engine</strong> 配置注释掉。或者启动的时刻换引擎： <code>bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr</code></p>
-
-<h4>修改spark配置</h4>
-
-<p>spark-defaults.conf</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-defaults.conf 
-</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar
-</span><span class='line'>
-</span><span class='line'>spark.dynamicAllocation.enabled    true
-</span><span class='line'>spark.shuffle.service.enabled      true
-</span><span class='line'>spark.dynamicAllocation.executorIdleTimeout    600s
-</span><span class='line'>spark.dynamicAllocation.minExecutors    160
-</span><span class='line'>spark.dynamicAllocation.maxExecutors    1800
-</span><span class='line'>spark.dynamicAllocation.schedulerBacklogTimeout   5s
-</span><span class='line'>
-</span><span class='line'>spark.driver.maxResultSize   0
-</span><span class='line'>
-</span><span class='line'>spark.eventLog.enabled  true
-</span><span class='line'>spark.eventLog.compress  true
-</span><span class='line'>spark.eventLog.dir    hdfs:///spark-eventlogs
-</span><span class='line'>spark.yarn.historyServer.address hadoop-master2:18080
-</span><span class='line'>
-</span><span class='line'>spark.serializer        org.apache.spark.serializer.KryoSerializer
-</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>spark.yarn.jar 配置后，spark启动后直接使用该文件作为executor的main-jar，不需要每次都上传一次spark.jar（每次都搞一下180M也不少资源了）</li>
-<li>enabled 启用动态两个都配置必须设置为true</li>
-<li>executorIdleTimeout 关闭不用executors需要等待的时间</li>
-<li>schedulerBacklogTimeout 增加积压的任务时间来判断是否增加executors</li>
-<li>minExecutors 至少存活的executors个数</li>
-</ul>
-
-
-<p>spark-env.sh环境变量</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-env.sh 
-</span><span class='line'>SPARK_CLASSPATH=/home/hadoop/hive/lib/mysql-connector-java-5.1.21-bin.jar:$SPARK_CLASSPATH
-</span><span class='line'>HADOOP_CONF_DIR=/home/hadoop/hadoop/etc/hadoop
-</span><span class='line'>SPARK_DRIVER_MEMORY=30g
-</span><span class='line'>SPARK_PID_DIR=/home/hadoop/tmp/pids</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>启动</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ sbin/start-thriftserver.sh --master yarn-client
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ sbin/start-history-server.sh hdfs:///spark-eventlogs</span></code></pre></td></tr></table></div></figure>
-
-
-<p>收工。</p>
-
-<p>整个过程就是：添加spark-shuffle到yarn，然后配置spark参数，最后就是重启任务（yarn/hiveserver）。</p>
 </div>
   
   
@@ -2337,6 +2333,10 @@ http://hlee.iteye.com/blog/ &hellip;">
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/04/15/alluxio-quickstart2/">Alluxio入门大全2</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/04/13/hiveserver2-ui-and-upgrade-hive2-dot-0-0/">Hiveserver2 Ui and Upgrade hive2.0.0</a>
       </li>
     
@@ -2364,10 +2364,6 @@ http://hlee.iteye.com/blog/ &hellip;">
         <a href="/blog/2016/03/29/parquet-simple-view/">Parquet学习</a>
       </li>
     
-      <li class="post">
-        <a href="/blog/2016/03/29/limit-on-sparksql-and-hive/">Limit on Sparksql and Hive</a>
-      </li>
-    
   </ul>
 </section>
 <section>
@@ -2376,6 +2372,10 @@ http://hlee.iteye.com/blog/ &hellip;">
 	 
 	<ul role="list">
 		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/android/'>android</a> (1) 
@@ -2458,7 +2458,7 @@ http://hlee.iteye.com/blog/ &hellip;">
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (2) 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2475,7 +2475,7 @@ http://hlee.iteye.com/blog/ &hellip;">
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (122)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (123)</li>
 	</ul>
 	
 </section>
