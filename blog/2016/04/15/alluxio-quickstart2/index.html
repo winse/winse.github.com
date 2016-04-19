@@ -117,6 +117,8 @@
 
 <p>首先介绍alluxio的编译，然后进行本地和集群两种方式的部署，同时介绍HDFS底层存储系统配置和一些常用命令行的使用，最后通过代码和spark读写Alluxio数据，以及升级到V1.1查看系统的Metrics指标来了解存储系统使用情况。</p>
 
+<p>回头看：Alluxio启动时会挂载一个Mem内存盘，其实可以把内存盘路径指定到 /dev/shm 。其他操作就很简单了，也不需要root权限。</p>
+
 <h1>编译</h1>
 
 <ul>
@@ -144,6 +146,58 @@
 <p>编译成功后会生成 assembly/target/alluxio-1.0.1.tar.gz 文件。部署的时刻直接用编译好的 tar.gz 就行了，内容比较简洁和清晰。</p>
 
 <p>还有一个问题，不要加Profile <strong>compileJsp</strong> ，编译没问题但是部署后访问网页抛 ClassNotFound 异常。</p>
+
+<p>windows alluxio-1.1-snapshot 编译需要注意下。打包 assembly 的时刻换行符没有格式化，还有 mvn 编译时需要用到 test 项目(改成skipTests)。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ git diff assembly/src/main/assembly/alluxio-dist.xml
+</span><span class='line'>diff --git a/assembly/src/main/assembly/alluxio-dist.xml b/assembly/src/main/assembly/alluxio-dist.xml
+</span><span class='line'>index 14ecd19..06ddd51 100644
+</span><span class='line'>--- a/assembly/src/main/assembly/alluxio-dist.xml
+</span><span class='line'>+++ b/assembly/src/main/assembly/alluxio-dist.xml
+</span><span class='line'>@@ -11,6 +11,7 @@
+</span><span class='line'>       &lt;outputDirectory&gt;/bin&lt;/outputDirectory&gt;
+</span><span class='line'>       &lt;fileMode&gt;0755&lt;/fileMode&gt;
+</span><span class='line'>       &lt;directoryMode&gt;0755&lt;/directoryMode&gt;
+</span><span class='line'>+      &lt;lineEnding&gt;unix&lt;/lineEnding&gt;
+</span><span class='line'>     &lt;/fileSet&gt;
+</span><span class='line'>     &lt;fileSet&gt;
+</span><span class='line'>       &lt;directory&gt;${basedir}/../conf&lt;/directory&gt;
+</span><span class='line'>@@ -19,6 +20,7 @@
+</span><span class='line'>     &lt;fileSet&gt;
+</span><span class='line'>       &lt;directory&gt;${basedir}/../libexec&lt;/directory&gt;
+</span><span class='line'>       &lt;outputDirectory&gt;/libexec&lt;/outputDirectory&gt;
+</span><span class='line'>+      &lt;lineEnding&gt;unix&lt;/lineEnding&gt;
+</span><span class='line'>     &lt;/fileSet&gt;
+</span><span class='line'>     &lt;fileSet&gt;
+</span><span class='line'>       &lt;directory&gt;${basedir}/..&lt;/directory&gt;
+</span><span class='line'>
+</span><span class='line'>E:\git\alluxio&gt;set MAVEN_OPTS="-Xmx2g"
+</span><span class='line'>E:\git\alluxio&gt;mvn clean package assembly:single -Phadoop-2.6 -Dhadoop.version=2.6.3 -Pyarn,spark -DskipTests -Dmaven.javadoc.skip=true</span></code></pre></td></tr></table></div></figure>
+
 
 <h1>Local部署配置</h1>
 
@@ -249,7 +303,7 @@
 
 <p>这里完全安装官网的步骤来弄，正式环境的时刻可以用 root 来 mount 内存盘。下面集群部署再介绍。</p>
 
-<p><img src="images/blogs/alluxio-local.png" alt="" /></p>
+<p><img src="/images/blogs/alluxio-local.png" alt="" /></p>
 
 <h1>集群部署</h1>
 
@@ -318,6 +372,8 @@
 <span class='line-number'>55</span>
 <span class='line-number'>56</span>
 <span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'># master 和 workers 的无密钥登录。部署过apache-hadoop的肯定都已经弄过了
 </span><span class='line'>
 </span><span class='line'># 修改配置
@@ -327,11 +383,13 @@
 </span><span class='line'>ALLUXIO_MASTER_ADDRESS=hadoop-master2
 </span><span class='line'>
 </span><span class='line'># 部署程序
-</span><span class='line'># bin/alluxio copyDir &lt;!-- &lt;dirname&gt; --&gt; 慎用，会把logs目录也同步过去的，
+</span><span class='line'># bin/alluxio copyDir &lt;dirname&gt; 慎用，会把logs目录也同步过去的，
 </span><span class='line'># 当然可以修改alluxio的脚本，反正要知道脚本的作用
 </span><span class='line'>[hadoop@hadoop-master2 ~]$ rsync -az alluxio-1.0.1 bigdata1:~/ --exclude=logs --exclude=/*/src --exclude=underfs --exclude=journal
 </span><span class='line'>
 </span><span class='line'># 使用root用户挂载(workers)节点的内存盘
+</span><span class='line'># 当然还有最简单的方式，直接把 ALLUXIO_RAM_FOLDER=/dev/shm 指定到系统的tmpfs，系统的tmpfs其实也主要用的是内存。
+</span><span class='line'># 变量 ALLUXIO_WORKER_MEMORY_SIZE=512MB 修改内存盘的大小，小于 /dev/shm 的空间大小。
 </span><span class='line'>[root@hadoop-master2 ~]# cd /home/hadoop/alluxio-1.0.1
 </span><span class='line'>[root@hadoop-master2 alluxio-1.0.1]# bin/alluxio-mount.sh Mount workers
 </span><span class='line'>Connecting to bigdata1 as root...
