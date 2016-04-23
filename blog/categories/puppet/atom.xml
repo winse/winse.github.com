@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Puppet | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/puppet/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-04-21T11:35:29+08:00</updated>
+  <updated>2016-04-23T14:14:29+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,108 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Puppetexplorer设置]]></title>
+    <link href="http://winseliu.com/blog/2016/04/21/puppetexplorer-setting/"/>
+    <updated>2016-04-21T14:28:11+08:00</updated>
+    <id>http://winseliu.com/blog/2016/04/21/puppetexplorer-setting</id>
+    <content type="html"><![CDATA[<p>注意： 使用 <a href="https://github.com/spotify/puppetexplorer/releases">PuppetExplorer</a> 的前提是已经安装 PuppetDB （安装参考：<a href="/blog/2016/04/21/puppetdb-install-and-config/">Puppetdb安装配置</a>）。</p>
+
+<p>PuppetDB 提供的8080界面太过于简单，其实8080主要提供非常多的接口。PuppetExplorer 就是使用这些 restful 查询接口来进行展示。比默认的 PuppetDB-UI 更具体和详细。</p>
+
+<p>配置 PuppetExplorer 有两种方式：</p>
+
+<ul>
+<li>两个服务在 <strong>同一个域</strong> 下面，配置 /api 跳转到 PuppetDB:8080</li>
+<li>两个服务，<strong>配置各自的地址</strong> 。修改config.js，同时处理跨域的问题。</li>
+</ul>
+
+
+<blockquote><p><a href="https://github.com/spotify/puppetexplorer">https://github.com/spotify/puppetexplorer</a></p>
+
+<ul>
+<li>The recommended way to install it is on the same host as your PuppetDB instance. Then proxy /api to port 8080 of your PuppetDB instance (except the /commands endpoint). This avoids the need for any CORS headers.</li>
+<li>It is possible to have it on a separate domain from your PuppetDB though. If you do, make sure you have the correct Access-Control-Allow-Origin header and a Access-Control-Expose-Headers: X-Records header.</li>
+</ul>
+</blockquote>
+
+<h2>适配 PuppetDB4</h2>
+
+<p>官网的版本已经几个月没有更新，新的 API 接口略有不同：</p>
+
+<pre><code># puppetdb-4.0
+/metrics/v1/mbeans/puppetlabs.puppetdb.population:name=num-active-nodes
+
+# puppetexplorer-2.0.0
+/metrics/v1/mbeans/puppetlabs.puppetdb.query.population:type=default,name=num-nodes
+</code></pre>
+
+<p>修改 app.js 拼接链接的字符串即可，删除 <strong>.query.</strong> 和 <strong>type=default</strong> :</p>
+
+<p><img src="/images/blogs/puppetdb4-puppetexplorer.png" alt="" /></p>
+
+<p>配置好后的效果：</p>
+
+<p><img src="/images/blogs/puppetexplorer.png" alt="" /></p>
+
+<h1>同一服务器下访问配置</h1>
+
+<p>使用 nginx 作为html的服务器，同时 proxy_pass 代理跳转到 cu3:8080(PuppetDB服务) :</p>
+
+<pre><code>[hadoop@cu2 puppetexplorer-2.0.0]$ mv config.js.example config.js
+
+[hadoop@cu2 nginx]$ vi conf/nginx.conf
+...
+# 路径最后带上 / ！！
+location /api/ {
+    proxy_pass http://cu3:8080/;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Host $http_host;
+}
+location /puppetexplorer {
+    alias /opt/puppetlabs/puppetexplorer-2.0.0;
+}
+
+[hadoop@cu2 nginx]$ sbin/nginx -s reload
+</code></pre>
+
+<p>然后打开网页访问 <a href="http://cu2:8888/puppetexplorer">http://cu2:8888/puppetexplorer</a> 即可。</p>
+
+<p>nginx的配置参考： <a href="http://wangwei007.blog.51cto.com/68019/1103734">Nginx配置proxy_pass转发的/路径问题</a>, <a href="http://stackoverflow.com/questions/20730858/how-do-i-configure-nginx-as-proxy-to-jetty">nginx as proxy to jetty</a></p>
+
+<h1>不同服务器，跨域访问</h1>
+
+<p>老实说，完全不推荐这种做法。但是跨域的设置震惊到我了，原来自认为的方式完全不对。例如A javascript访问B，<strong>跨域头设置在B服务</strong>，是要B容许A访问！！</p>
+
+<pre><code>[root@hadoop-master2 puppetexplorer]# vi config.js 
+// List of PuppetDB servers, pairs of name, URL and $http config object
+// The first one will be used as the default server
+PUPPETDB_SERVERS = [
+  ['production', 'http://cu2:8888'],
+  ['testing', 'http://cu2:8888']
+];
+
+# Nginx配置，加上跨域访问源范围控制
+location ~ /(metrics|pdb) {
+add_header "Access-Control-Allow-Origin" "*";
+proxy_pass http://cu3:8080;
+}
+</code></pre>
+
+<p></p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://www.html5rocks.com/en/tutorials/cors/?redirect_from_locale=zh">http://www.html5rocks.com/en/tutorials/cors/?redirect_from_locale=zh</a></li>
+<li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS#Requests_with_credentials">https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS#Requests_with_credentials</a></li>
+<li><a href="https://en.wikipedia.org/wiki/Cross-origin_resource_sharing">https://en.wikipedia.org/wiki/Cross-origin_resource_sharing</a></li>
+</ul>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Puppetdb安装配置]]></title>
@@ -25,6 +127,15 @@
 <li>cu3: puppetdb, agent</li>
 </ul>
 
+
+<pre><code>[root@cu3 puppet]# puppetdb -v
+puppetdb version: 4.0.0
+
+[root@cu2 ~]# puppetserver -v
+puppetserver version: 2.3.1
+[root@cu2 ~]# puppet -V
+4.4.1
+</code></pre>
 
 <h1>安装PuppetDB</h1>
 
@@ -256,6 +367,9 @@ log-slow-statements = 10
 [root@cu3 ~]# vi /etc/puppetlabs/puppetdb/conf.d/jetty.ini
 ...
 host = 0.0.0.0
+
+# JVM 参数修改
+[root@cu3 ~]# less /etc/sysconfig/puppetdb 
 
 [root@cu3 ~]# service puppetdb start
 Starting puppetdb:                                         [  OK  ]
@@ -627,6 +741,10 @@ Notice: Removing file Puppet::SSL::CertificateRequest cu3.eshore.cn at '/etc/pup
 
 <p>反正都是学习，在无尽的折腾成长。如果是生产环境最好不要清理服务端的已签名证书，不但客户端要重新签，如果安装了puppetdb等其他程序需要签名都得重新配置签名。</p>
 
+<p>注意： 如果已经安装官网的步骤安装 PuppetDB ，清理服务端的证书建议通过命令 puppet cert clean DOMAIN 来清理。否则 PuppetDB 中还有对应的证书缓存信息。</p>
+
+<p><img src="/images/blogs/puppet-puppetdb-resign.png" alt="" /></p>
+
 <pre><code># https://tickets.puppetlabs.com/browse/PUP-1426
 # 貌似不支持全部清除已签名证书
 [root@cu2 ~]# puppet cert clean --all 
@@ -729,7 +847,7 @@ Notice: Applied catalog in 0.01 seconds
 [root@cu2 puppet]# vi puppet.conf 
 ...
 autosign = true
-
+# 或者添加配置文件
 [root@cu2 puppet]# vi autosign.conf
 *.eshore.cn
 
@@ -767,6 +885,15 @@ Notice: Applied catalog in 0.02 seconds
 </code></pre>
 
 <p>autosign 除了使用 autosign.conf 配置，还可以使用 shell/命令 来进行适配，具体查看官网文档： <a href="https://docs.puppet.com/puppet/4.4/reference/ssl_autosign.html">https://docs.puppet.com/puppet/4.4/reference/ssl_autosign.html</a></p>
+
+<p>agent执行同步命令每次都要指定server很麻烦，可以修改 puppet.conf 配置，每次执行是从配置文件读取：</p>
+
+<pre><code>[root@cu2 plugins]# vi /etc/puppetlabs/puppet/puppet.conf 
+...
+[agent]
+server = cu2.eshore.cn
+certname = cu2.eshore.cn  # 主机名不确定情况下，可以通过这个来指定当前机器的主机名！！每台机器根据主机单独设置！
+</code></pre>
 
 <h1>命令合集</h1>
 
