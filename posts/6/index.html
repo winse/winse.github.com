@@ -9,10 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="官网的文档[HDFSHighAvailabilityWithQJM.html]很详细，但是没有一个整体的案例。这里整理下操作记录下来。 配置 hadoop-master1和hadoop-master2之间无密钥登录（failover要用到）： 1
-2
-3
-[hadoop@hadoop- &hellip;">
+  <meta name="description" content="官网的文档[HDFSHighAvailabilityWithQJM.html]和[HdfsRollingUpgrade.html]（Note that rolling upgrade is supported only from Hadoop-2.4.0 onwards.）很详细， &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -86,6 +83,355 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/01/07/hadoop-install-and-upgrade-4-ha-upgrade/">Hadoop安装与升级-(4)HA升级</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-01-07T23:04:27+08:00" pubdate data-updated="true">Thu 2016-01-07 23:04</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>官网的文档[HDFSHighAvailabilityWithQJM.html]和[HdfsRollingUpgrade.html]（Note that rolling upgrade is supported only from Hadoop-2.4.0 onwards.）很详细，但是没有一个整体的案例。这里整理下操作记录下来。</p>
+
+<ol>
+<li>关闭所有的namenode，部署新版本的hadoop</li>
+<li>启动所有的journalnode，是所有！！升级namenode的同时，也会升级所有journalnode！！</li>
+<li>使用-upgrade选项启动一台namenode。启动的这台namenode会直接进入active状态，升级本地的元数据，同时会升级shared edit log（也就是journalnode的数据）</li>
+<li>使用-bootstrapStandby启动其他namenode，同步更新。不能使用-upgrade选项！（我也没试，不知道试了是啥效果）</li>
+</ol>
+
+
+<h2>关闭集群，部署新版本的hadoop</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+</span><span class='line'>16/01/08 09:10:25 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Stopping namenodes on [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master2: stopping namenode
+</span><span class='line'>hadoop-master1: stopping namenode
+</span><span class='line'>hadoop-slaver1: stopping datanode
+</span><span class='line'>hadoop-slaver2: stopping datanode
+</span><span class='line'>hadoop-slaver3: stopping datanode
+</span><span class='line'>Stopping journal nodes [hadoop-master1]
+</span><span class='line'>hadoop-master1: stopping journalnode
+</span><span class='line'>16/01/08 09:10:43 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Stopping ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master1: stopping zkfc
+</span><span class='line'>hadoop-master2: stopping zkfc
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ 
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ cd ~/hadoop-2.6.3
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ ll
+</span><span class='line'>total 52
+</span><span class='line'>drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 bin
+</span><span class='line'>lrwxrwxrwx 1 hadoop hadoop    32 Jan  8 06:05 etc -&gt; /home/hadoop/hadoop-2.2.0/ha-etc
+</span><span class='line'>drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 include
+</span><span class='line'>drwxr-xr-x 3 hadoop hadoop  4096 Dec 18 01:52 lib
+</span><span class='line'>drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 libexec
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 15429 Dec 18 01:52 LICENSE.txt
+</span><span class='line'>drwxrwxr-x 2 hadoop hadoop  4096 Jan  8 03:37 logs
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   101 Dec 18 01:52 NOTICE.txt
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  1366 Dec 18 01:52 README.txt
+</span><span class='line'>drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 sbin
+</span><span class='line'>drwxr-xr-x 3 hadoop hadoop  4096 Jan  7 08:00 share
+</span><span class='line'>
+</span><span class='line'>#// 同步
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs ~/hadoop-2.6.3 $h:~/ ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>启动所有Journalnode</h2>
+
+<p>2.6和2.2用的是一份配置！etc通过软链接到2.2的ha-etc配置。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/hadoop-daemons.sh --hostnames "hadoop-master1" --script /home/hadoop/hadoop-2.2.0/bin/hdfs start journalnode
+</span><span class='line'>hadoop-master1: starting journalnode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-journalnode-hadoop-master1.out
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ jps
+</span><span class='line'>31047 JournalNode
+</span><span class='line'>244 QuorumPeerMain
+</span><span class='line'>31097 Jps</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>升级一台namenode</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ bin/hdfs namenode -upgrade
+</span><span class='line'>...
+</span><span class='line'>16/01/08 09:13:54 INFO namenode.NameNode: createNameNode [-upgrade]
+</span><span class='line'>...
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.FSImage: Starting upgrade of local storage directories.
+</span><span class='line'>   old LV = -47; old CTime = 0.
+</span><span class='line'>   new LV = -60; new CTime = 1452244437060
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.NNUpgradeUtil: Starting upgrade of storage directory /data/tmp/dfs/name
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.FSImageTransactionalStorageInspector: No version file in /data/tmp/dfs/name
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/tmp/dfs/name
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.FSNamesystem: Need to save fs image? false (staleImage=false, haEnabled=true, isRollingUpgrade=false)
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>官网文档上说，除了升级了namenode的本地元数据外，sharededitlog也被升级了的。</p>
+
+<p>查看journalnode的日志，确实journalnode也升级了：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ less logs/hadoop-hadoop-journalnode-hadoop-master1.log 
+</span><span class='line'>...
+</span><span class='line'>2016-01-08 09:13:57,070 INFO org.apache.hadoop.hdfs.server.namenode.FileJournalManager: Starting upgrade of edits directory /data/journal/zfcluster
+</span><span class='line'>2016-01-08 09:13:57,072 INFO org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil: Starting upgrade of storage directory /data/journal/zfcluster
+</span><span class='line'>2016-01-08 09:13:57,185 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Starting upgrade of edits directory: .
+</span><span class='line'>   old LV = -47; old CTime = 0.
+</span><span class='line'>   new LV = -60; new CTime = 1452244437060
+</span><span class='line'>2016-01-08 09:13:57,185 INFO org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/journal/zfcluster
+</span><span class='line'>2016-01-08 09:13:57,222 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Updating lastWriterEpoch from 2 to 3 for client /172.17.0.1
+</span><span class='line'>2016-01-08 09:16:57,731 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Updating lastPromisedEpoch from 3 to 4 for client /172.17.0.1
+</span><span class='line'>2016-01-08 09:16:57,735 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Scanning storage FileJournalManager(root=/data/journal/zfcluster)
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>升级的namenode是前台运行的，不要关闭这个进程。接下来把另一台namenode同步一下。</p>
+
+<h2>同步另一台namenode</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.3]$ bin/hdfs namenode -bootstrapStandby
+</span><span class='line'>...
+</span><span class='line'>=====================================================
+</span><span class='line'>About to bootstrap Standby ID nn2 from:
+</span><span class='line'>           Nameservice ID: zfcluster
+</span><span class='line'>        Other Namenode ID: nn1
+</span><span class='line'>  Other NN's HTTP address: http://hadoop-master1:50070
+</span><span class='line'>  Other NN's IPC  address: hadoop-master1/172.17.0.1:8020
+</span><span class='line'>             Namespace ID: 639021326
+</span><span class='line'>            Block pool ID: BP-1695500896-172.17.0.1-1452152050513
+</span><span class='line'>               Cluster ID: CID-7d5c31d8-5cd4-46c8-8e04-49151578e5bb
+</span><span class='line'>           Layout version: -60
+</span><span class='line'>       isUpgradeFinalized: false
+</span><span class='line'>=====================================================
+</span><span class='line'>16/01/08 09:15:19 INFO ha.BootstrapStandby: The active NameNode is in Upgrade. Prepare the upgrade for the standby NameNode as well.
+</span><span class='line'>16/01/08 09:15:19 INFO common.Storage: Lock on /data/tmp/dfs/name/in_use.lock acquired by nodename 5008@hadoop-master2
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.TransferFsImage: Opening connection to http://hadoop-master1:50070/imagetransfer?getimage=1&txid=1126&storageInfo=-60:639021326:1452244437060:CID-7d5c31d8-5cd4-46c8-8e04-49151578e5bb
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.TransferFsImage: Image Transfer timeout configured to 60000 milliseconds
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.TransferFsImage: Transfer took 0.00s at 0.00 KB/s
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.TransferFsImage: Downloaded file fsimage.ckpt_0000000000000001126 size 977 bytes.
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/tmp/dfs/name
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>重新启动集群</h2>
+
+<p>ctrl+c关闭hadoop-master1 upgrade的namenode。启动整个集群。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh
+</span><span class='line'>16/01/08 09:16:44 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Starting namenodes on [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master1: starting namenode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-namenode-hadoop-master1.out
+</span><span class='line'>hadoop-master2: starting namenode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-namenode-hadoop-master2.out
+</span><span class='line'>hadoop-slaver3: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver3.out
+</span><span class='line'>hadoop-slaver2: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver2.out
+</span><span class='line'>hadoop-slaver1: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver1.out
+</span><span class='line'>Starting journal nodes [hadoop-master1]
+</span><span class='line'>hadoop-master1: journalnode running as process 31047. Stop it first.
+</span><span class='line'>16/01/08 09:16:55 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Starting ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master2: starting zkfc, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-zkfc-hadoop-master2.out
+</span><span class='line'>hadoop-master1: starting zkfc, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-zkfc-hadoop-master1.out
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ jps
+</span><span class='line'>31047 JournalNode
+</span><span class='line'>244 QuorumPeerMain
+</span><span class='line'>31596 DFSZKFailoverController
+</span><span class='line'>31655 Jps
+</span><span class='line'>31294 NameNode
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>后记：Journalnode重置</h2>
+
+<p>在HA和non-HA环境来回的切换，最后启动HA时master起不来，执行bootstrapStandby也不行。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-01-08 06:15:36,746 WARN org.apache.hadoop.hdfs.server.namenode.FSEditLog: Unable to determine input streams from QJM to [172.17.0.1:8485]. Skipping.
+</span><span class='line'>org.apache.hadoop.hdfs.qjournal.client.QuorumException: Got too many exceptions to achieve quorum size 1/1. 1 exceptions thrown:
+</span><span class='line'>172.17.0.1:8485: Asked for firstTxId 1022 which is in the middle of file /data/journal/zfcluster/current/edits_0000000000000001021-0000000000000001022
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FileJournalManager.getRemoteEditLogs(FileJournalManager.java:198)
+</span><span class='line'>        at org.apache.hadoop.hdfs.qjournal.server.Journal.getEditLogManifest(Journal.java:640)
+</span><span class='line'>        at org.apache.hadoop.hdfs.qjournal.server.JournalNodeRpcServer.getEditLogManifest(JournalNodeRpcServer.java:181)
+</span><span class='line'>        at org.apache.hadoop.hdfs.qjournal.protocolPB.QJournalProtocolServerSideTranslatorPB.getEditLogManifest(QJournalProtocolServerSideTranslatorPB.java:203)
+</span><span class='line'>        at org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos$QJournalProtocolService$2.callBlockingMethod(QJournalProtocolProtos.java:17453)
+</span><span class='line'>        at org.apache.hadoop.ipc.ProtobufRpcEngine$Server$ProtoBufRpcInvoker.call(ProtobufRpcEngine.java:585)</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>关闭集群，启动journalnode，跳转到没有问题的namenode机器，执行initializeSharedEdits命令。然后在有问题的namenode上重新初始化！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start journalnode
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ bin/hdfs namenode -initializeSharedEdits
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start namenode
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs namenode -bootstrapStandby
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh</span></code></pre></td></tr></table></div></figure>
+
+
+<p>后话（谨慎，没有试验过，猜想而已）： 其实上面HA升级的步骤，如果upgrade时没用启动journalnode，导致了问题的话，把journalnode重置应该也是可以的。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html#HDFS_UpgradeFinalizationRollback_with_HA_Enabled">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html#HDFS_UpgradeFinalizationRollback_with_HA_Enabled</a></li>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html#Upgrade_and_Rollback">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html#Upgrade_and_Rollback</a></li>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsRollingUpgrade.html">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsRollingUpgrade.html</a></li>
+</ul>
+
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -774,7 +1120,7 @@
 </span><span class='line'>hadoop-slaver3</span></code></pre></td></tr></table></div></figure>
 
 
-<p>重启后，hosts文件会被重置！最好就是测试好之前不要重启docker！（新版本的docker已经没有这个问题了，并且可以手动修改hosts文件）</p>
+<p>重启后，hosts文件会被重置！最好就是测试好之前不要重启docker！（长期用docker集群实例，还是指定DNS!!）</p>
 
 <h2>机器配置</h2>
 
@@ -1753,79 +2099,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2015-11-22T20:51:35+08:00" pubdate data-updated="true">Sun 2015-11-22 20:51</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>准备一个SSH账号</h2>
-
-<ul>
-<li><a href="http://www.99ssh.net/">http://www.99ssh.net/</a> 更改为 <a href="http://99ss.in/">http://99ss.in/</a></li>
-</ul>
-
-
-<h2>SSH -N -D 或者MyEnTunnel</h2>
-
-<ul>
-<li><code>ssh -N -D [PORT] [USER@IP]</code></li>
-<li><a href="http://www.99ssh.net/help/newsshow.php?cid=19&amp;id=21">http://www.99ssh.net/help/newsshow.php?cid=19&amp;id=21</a></li>
-</ul>
-
-
-<p>使用MyEnTunel的话，设置程序为【启动软件时自动连接】，同时把程序的快捷方式加到【C:\Users\winse\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\】目录下。</p>
-
-<h2>Chrome + SwitchyOmega + gfwlist</h2>
-
-<ul>
-<li><a href="https://github.com/FelisCatus/SwitchyOmega/releases">https://github.com/FelisCatus/SwitchyOmega/releases</a> SwitchySharp升级版本</li>
-<li><a href="https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt">https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt</a></li>
-</ul>
-
-
-<p>可以做到智能代理功能，gfwlist的才会走代理。加速访问国内网站，同时减少不必要的流量。</p>
-
-<h2>Firefox + FoxyProxy + gfwlist</h2>
-
-<ul>
-<li><a href="http://mozilla.com.cn/thread-230260-1-1.html">http://mozilla.com.cn/thread-230260-1-1.html</a></li>
-<li><a href="https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt">https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt</a></li>
-</ul>
-
-
-<p>Chrome的版本速度快一点。配置好后，等待一段时间就智能的适配了，firefox的等的时间略长。</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/7">&larr; Older</a>
@@ -1898,6 +2171,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/04/28/mcollective-quick-start/">MCollective安装配置</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
       </li>
     
@@ -1923,10 +2200,6 @@
     
       <li class="post">
         <a href="/blog/2016/04/11/spark-on-yarn-memory-allocate/">Spark-on-yarn内存分配</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/08/snappy-centos5-on-hive-on-spark/">Hive-on-spark Snappy on Centos5</a>
       </li>
     
   </ul>
@@ -1999,7 +2272,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/puppet/'>puppet</a> (4) 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (5) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2040,7 +2313,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (127)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (128)</li>
 	</ul>
 	
 </section>
