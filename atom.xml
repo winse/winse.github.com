@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winseliu.com/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-05-05T12:54:16+08:00</updated>
+  <updated>2016-05-06T11:26:47+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,367 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Hdfs异构存储实操]]></title>
+    <link href="http://winseliu.com/blog/2016/05/05/hdfs-heterogeneous-storage/"/>
+    <updated>2016-05-05T21:41:39+08:00</updated>
+    <id>http://winseliu.com/blog/2016/05/05/hdfs-heterogeneous-storage</id>
+    <content type="html"><![CDATA[<p>[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.3<->2.7.2）！</p>
+
+<p>我这里测试环境使用的是 2.6.3 <a href="https://hadoop.apache.org/docs/r2.6.3/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html">Heterogeneous Storage: Archival Storage, SSD &amp; Memory</a></p>
+
+<h2>配置</h2>
+
+<p>直接把内存盘放到 /dev/shm 下，单独挂载一个 tmpfs 的效果也差不多。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/MemoryStorage.html">r2.7.2 Memory Storage Support in HDFS</a> 2.6.3没有这个文档 概念都适应的。</p>
+
+<p>1 调节系统参数</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>vi /etc/security/limits.conf
+</span><span class='line'>
+</span><span class='line'>  hadoop           -       nofile          65535
+</span><span class='line'>  hadoop           -       nproc           65535
+</span><span class='line'>  hadoop           -       memlock         268435456
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>需要调节memlock的大小，否则启动datanode报错。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-05-05 19:22:22,674 FATAL org.apache.hadoop.hdfs.server.datanode.DataNode: Exception in secureMain
+</span><span class='line'>java.lang.RuntimeException: Cannot start datanode because the configured max locked memory size (dfs.datanode.max.locked.memory) of 134217728 bytes is more than the datanode's available RLIMIT_MEMLOCK ulimit of 65536 bytes.
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.datanode.DataNode.startDataNode(DataNode.java:1067)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.datanode.DataNode.&lt;init&gt;(DataNode.java:417)
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>2 添加RAM_DISK</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>vi hdfs-site.xml
+</span><span class='line'>
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>  &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;/data/bigdata/hadoop/dfs/data,[RAM_DISK]/dev/shm/dfs/data&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>  &lt;name&gt;dfs.datanode.max.locked.memory&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;134217728&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>  </span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意内存盘的写法，<code>[RAM_DISK]</code> 必须这些写，不然datanode不知道指定路径的storage的类型(默认是 DISK )。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html#Storage_Types_and_Storage_Policies">Storage_Types_and_Storage_Policies</a></p>
+
+<blockquote><p>The default storage type of a datanode storage location will be DISK if it does not have a storage type tagged explicitly.</p></blockquote>
+
+<p>3 同步配置并重启dfs</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# scp /etc/security/limits.conf cu3:/etc/security/
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ rsync -vaz etc cu3:~/hadoop-2.6.3/ 
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3] sbin/stop-dfs.sh
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3] sbin/start-dfs.sh</span></code></pre></td></tr></table></div></figure>
+
+
+<p>可以去到datanode查看日志，可以看到 /dev/shm/dfs/data 路径 <strong>StorageType</strong> 为 <strong>RAM_DISK</strong> ：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /data/bigdata/hadoop/dfs/data/current
+</span><span class='line'>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /data/bigdata/hadoop/dfs/data/current, StorageType: DISK
+</span><span class='line'>2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /dev/shm/dfs/data/current
+</span><span class='line'>2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /dev/shm/dfs/data/current, StorageType: RAM_DISK</span></code></pre></td></tr></table></div></figure>
+
+
+<p>同时查看 内存盘 的路径内容：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ ssh cu3 tree /dev/shm/dfs
+</span><span class='line'>/dev/shm/dfs
+</span><span class='line'>└── data
+</span><span class='line'>    ├── current
+</span><span class='line'>    │   ├── BP-1108852639-192.168.0.148-1452322889531
+</span><span class='line'>    │   │   ├── current
+</span><span class='line'>    │   │   │   ├── finalized
+</span><span class='line'>    │   │   │   ├── rbw
+</span><span class='line'>    │   │   │   └── VERSION
+</span><span class='line'>    │   │   └── tmp
+</span><span class='line'>    │   └── VERSION
+</span><span class='line'>    └── in_use.lock
+</span><span class='line'>
+</span><span class='line'>7 directories, 3 files</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>测试使用</h2>
+
+<p>通过三个例子对比，简单描述下使用。首先，使用默认的方式主要用于对比，第二个例子写文件是添加参数，第三个设置目录的存储类型（目录/文件会继承父目录的存储类型）</p>
+
+<p>1 测试1</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /tmp/
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /tmp/README.txt -files -blocks -locations
+</span><span class='line'>...
+</span><span class='line'>/tmp/README.txt 1366 bytes, 1 block(s):  OK
+</span><span class='line'>0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752574_11776 len=1366 repl=1 [192.168.0.148:50010]
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu3 hadoop-2.6.3]$ find /data/bigdata/hadoop/dfs/data/ /dev/shm/dfs/data/ -name "*1073752574*"
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574_11776.meta
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574</span></code></pre></td></tr></table></div></figure>
+
+
+<p>2 写文件是添加 lazy_persist 标识</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 添加 -l 参数，后台代码会加上 LAZY_PERSIST 标识。
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -help put 
+</span><span class='line'>-put [-f] [-p] [-l] &lt;localsrc&gt; ... &lt;dst&gt; :
+</span><span class='line'>  Copy files from the local file system into fs. Copying fails if the file already
+</span><span class='line'>  exists, unless the -f flag is given.
+</span><span class='line'>  Flags:
+</span><span class='line'>                                                                       
+</span><span class='line'>  -p  Preserves access and modification times, ownership and the mode. 
+</span><span class='line'>  -f  Overwrites the destination if it already exists.                 
+</span><span class='line'>  -l  Allow DataNode to lazily persist the file to disk. Forces        
+</span><span class='line'>         replication factor of 1. This flag will result in reduced
+</span><span class='line'>         durability. Use with care.
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p><img src="http://winseliu.com/images/blogs/storage-lazy.png" alt="" /></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># -l 参数会把 replication 强制设置成数字1 ！
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put -l README.txt /tmp/readme.txt2
+</span><span class='line'>
+</span><span class='line'># 查看namenode的日志，可以看到文件写入到 RAM_DISK 类型的存储
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-cu2.log 
+</span><span class='line'>
+</span><span class='line'>  2016-05-05 20:38:36,465 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /tmp/readme.txt2._COPYING_. BP-1108852639-192.168.0.148-1452322889531 blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-dcb2673f-3297-4bd7-af1c-ac0ee3eebaf9:NORMAL:192.168.0.30:50010|RBW]]}
+</span><span class='line'>  2016-05-05 20:38:36,592 INFO BlockStateChange: BLOCK* addStoredBlock: blockMap updated: 192.168.0.30:50010 is added to blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[RAM_DISK]DS-bf1ab64f-7eb3-41e0-8466-43287de9893d:NORMAL:192.168.0.30:50010|FINALIZED]]} size 0
+</span><span class='line'>  2016-05-05 20:38:36,594 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /tmp/readme.txt2._COPYING_ is closed by DFSClient_NONMAPREDUCE_-1388277364_1
+</span><span class='line'>
+</span><span class='line'># 具体的内容所在位置
+</span><span class='line'>[hadoop@cu4 ~]$ tree /dev/shm/dfs/data/
+</span><span class='line'>/dev/shm/dfs/data/
+</span><span class='line'>├── current
+</span><span class='line'>│   ├── BP-1108852639-192.168.0.148-1452322889531
+</span><span class='line'>│   │   ├── current
+</span><span class='line'>│   │   │   ├── finalized
+</span><span class='line'>│   │   │   │   └── subdir0
+</span><span class='line'>│   │   │   │       └── subdir42
+</span><span class='line'>│   │   │   │           ├── blk_1073752578
+</span><span class='line'>│   │   │   │           └── blk_1073752578_11780.meta
+</span><span class='line'>│   │   │   ├── rbw
+</span><span class='line'>│   │   │   └── VERSION
+</span><span class='line'>│   │   └── tmp
+</span><span class='line'>│   └── VERSION
+</span><span class='line'>└── in_use.lock
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>3 设置目录的存储类型</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -mkdir /ramdisk
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -setStoragePolicy /ramdisk LAZY_PERSIST 
+</span><span class='line'>Set storage policy LAZY_PERSIST on /ramdisk
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /ramdisk
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk
+</span><span class='line'>The storage policy of /ramdisk:
+</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+</span><span class='line'>
+</span><span class='line'># 不支持通配符
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/*
+</span><span class='line'>getStoragePolicy: File/Directory does not exist: /ramdisk/*
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/README.txt
+</span><span class='line'>The storage policy of /ramdisk/README.txt:
+</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 添加replication参数，再测试多个备份只有一个写ram_disk
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -Ddfs.replication=3 -put README.txt /ramdisk/readme.txt2
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/readme.txt2
+</span><span class='line'>The storage policy of /ramdisk/readme.txt2:
+</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /ramdisk/readme.txt2 -files -blocks -locations
+</span><span class='line'>
+</span><span class='line'>  /ramdisk/readme.txt2 1366 bytes, 1 block(s):  OK
+</span><span class='line'>  0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752580_11782 len=1366 repl=3 [192.168.0.30:50010, 192.168.0.174:50010, 192.168.0.148:50010]
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu3 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+</span><span class='line'>
+</span><span class='line'># 已经把ram_disk的内容持久化到磁盘了("Lazy_Persist")
+</span><span class='line'>[hadoop@cu4 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580_11782.meta
+</span><span class='line'>/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+</span><span class='line'>/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>[设想] 对于那些处理完就删除的临时文件，可以把持久化的时间设置的久一点 <code>dfs.datanode.lazywriter.interval.sec</code>。这样就不需要写磁盘了。</p>
+
+<p>不要妄想了，反正都会持久化！就是缓冲的效果，其他没有了！！一次性存储并且不需要持久化的还是用alluxio吧。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl.LazyWriter#saveNextReplica
+</span><span class='line'>  org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskAsyncLazyPersistService#submitLazyPersistTask</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>参考</h2>
+
+<ul>
+<li>挺详细的<a href="http://blog.csdn.net/androidlushangderen/article/details/51105876">HDFS异构存储</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Puppetboard Install]]></title>
@@ -2208,6 +2569,7 @@ Notice: Applied catalog in 0.02 seconds
 <li><a href="http://winseliu.com/blog/2016/04/08/snappy-centos5-on-hive-on-spark/">Hive-on-spark Snappy on Centos5</a></li>
 </ul>
 </li>
+<li><a href="http://winseliu.com/blog/2016/05/05/hdfs-heterogeneous-storage.markdown">HDFS RamDisk内存缓冲</a></li>
 </ul>
 
 
@@ -9410,283 +9772,6 @@ appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9&#8217; not found 
 <p>收工。</p>
 
 <p>整个过程就是：添加spark-shuffle到yarn，然后配置spark参数，最后就是重启任务（yarn/hiveserver）。</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop内存环境变量和参数]]></title>
-    <link href="http://winseliu.com/blog/2016/03/17/hadoop-memory-opts-and-args/"/>
-    <updated>2016-03-17T14:09:26+08:00</updated>
-    <id>http://winseliu.com/blog/2016/03/17/hadoop-memory-opts-and-args</id>
-    <content type="html"><![CDATA[<h2>问题：</h2>
-
-<p><a href="https://www.zhihu.com/question/25498407">https://www.zhihu.com/question/25498407</a></p>
-
-<p>问题是hadoop内存的配置，涉及两个方面：</p>
-
-<ul>
-<li>namenode/datanode/resourcemanager/nodemanager的HEAPSIZE环境变量</li>
-<li>在配置文件/Configuration中影响MR运行的变量</li>
-</ul>
-
-
-<p>尽管搞hadoop有好一阵子了，对这些变量有个大概的了解，但没有真正的去弄懂他们的区别。乘着这个机会好好的整整（其实就是下载源码然后全文查找<sup>V</sup>^）。</p>
-
-<h2>HEAPSIZE环境变量</h2>
-
-<p>hadoop-env.sh配置文件hdfs和yarn脚本都会加载。hdfs是一脉相承使用 <strong>HADOOP_HEAPSIZE</strong> ，而yarn使用新的环境变量 <strong>YARN_HEAPSIZE</strong> 。</p>
-
-<p>hadoop/hdfs/yarn命令最终会把HEAPSIZE的参数转换了 <strong>JAVA_HEAP_MAX</strong>，把它作为启动参数传递给Java。</p>
-
-<ul>
-<li>hadoop</li>
-</ul>
-
-
-<p>hadoop命令是把 <code>HADOOP_HEAPSIZE</code> 转换为 <code>JAVA_HEAP_MAX</code> ，调用路径：</p>
-
-<p><code>hadoop -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>JAVA_HEAP_MAX=-Xmx1000m 
-</span><span class='line'>
-</span><span class='line'># check envvars which might override default args
-</span><span class='line'>if [ "$HADOOP_HEAPSIZE" != "" ]; then
-</span><span class='line'>  #echo "run with heapsize $HADOOP_HEAPSIZE"
-</span><span class='line'>  JAVA_HEAP_MAX="-Xmx""$HADOOP_HEAPSIZE""m"
-</span><span class='line'>  #echo $JAVA_HEAP_MAX
-</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>hdfs</li>
-</ul>
-
-
-<p>hdfs其实就是从hadoop脚本里面分离出来的。调用路径：</p>
-
-<p><code>hdfs -&gt; hdfs-config.sh -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<ul>
-<li>yarn</li>
-</ul>
-
-
-<p>yarn也调用了hadoop-env.sh，但是设置内存的参数变成了 <strong>YARN_HEAPSIZE</strong> 。调用路径：</p>
-
-<p><code>yarn -&gt; yarn-config.sh -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>JAVA_HEAP_MAX=-Xmx1000m 
-</span><span class='line'>
-</span><span class='line'># For setting YARN specific HEAP sizes please use this
-</span><span class='line'># Parameter and set appropriately
-</span><span class='line'># YARN_HEAPSIZE=1000
-</span><span class='line'>
-</span><span class='line'># check envvars which might override default args
-</span><span class='line'>if [ "$YARN_HEAPSIZE" != "" ]; then
-</span><span class='line'>  JAVA_HEAP_MAX="-Xmx""$YARN_HEAPSIZE""m"
-</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>实例：</li>
-</ul>
-
-
-<p>配置hadoop参数的时刻，一般都是配置 <strong>hadoop-env.sh</strong> 如：<code>export HADOOP_HEAPSIZE=16000</code> 。查看相关进程命令有：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_resourcemanager -Xmx1000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_timelineserver -Xmx1000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_nodemanager -Xmx1000m 
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_journalnode -Xmx16000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_namenode -Xmx16000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_journalnode -Xmx16000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_datanode -Xmx16000m</span></code></pre></td></tr></table></div></figure>
-
-
-<p>与hdfs有关的内存都修改成功了。而与yarn的还是默认的1g(堆)内存。</p>
-
-<h2>MR配置文件参数</h2>
-
-<p>分成两组，一种是直接设置数字(mb结束的属性)，一种是配置java虚拟机变量的-Xmx。</p>
-
-<pre><code>* yarn.app.mapreduce.am.resource.mb、mapreduce.map.memory.mb、mapreduce.reduce.memory.mb
-    用于调度计算内存，是不是还能分配任务（计算额度）
-* yarn.app.mapreduce.am.command-opts、mapreduce.map.java.opts、mapreduce.reduce.java.opts
-    程序实际启动使用的参数
-</code></pre>
-
-<p>一个是控制中枢，一个是实实在在的限制。</p>
-
-<ul>
-<li>官网文档的介绍：</li>
-</ul>
-
-
-<blockquote><ul>
-<li>mapreduce.map.memory.mb 1024    The amount of memory to request from the scheduler for each map task.</li>
-<li>mapreduce.reduce.memory.mb  1024    The amount of memory to request from the scheduler for each reduce task.</li>
-<li>mapred.child.java.opts  -Xmx200m    Java opts for the task processes.</li>
-</ul>
-</blockquote>
-
-<ul>
-<li><p>下面用实践来验证效果：</p>
-
-<ul>
-<li>先搞一个很大大只有一个block的文件，把程序运行时间拖长一点</li>
-<li>修改opts参数，查看效果</li>
-<li>修改mb参数，查看效果</li>
-</ul>
-</li>
-<li><p>实践一</p></li>
-</ul>
-
-
-<p>mapreduce.map.memory.mb设置为1000，而mapreduce.map.java.opts设置为1200m。程序照样跑的很欢！！</p>
-
-<p>同时从map的 YarnChild 进程看出起实际作用的是 mapreduce.map.java.opts 参数。memory.mb用来计算节点是否有足够的内存来跑任务，以及用来计算整个集群的可用内存等。而java.opts则是用来限制真正任务的堆内存用量。</p>
-
-<p><strong>注意</strong> ： 这里仅仅是用来测试，正式环境java.opts的内存应该小于memory.mb！！具体配置参考：<a href="http://blog.javachen.com/2015/06/05/yarn-memory-and-cpu-configuration.html">yarn-memory-and-cpu-configuration</a></p>
-
-<p><img src="http://winseliu.com/images/blogs/hadoop-opts/yarn-opts-mb.jpg" alt="" /></p>
-
-<ul>
-<li>实践二</li>
-</ul>
-
-
-<p>map.memory.mb设置太大，导致调度失败！</p>
-
-<p><img src="http://winseliu.com/images/blogs/hadoop-opts/yarn-mb-1.jpg" alt="" /></p>
-
-<ul>
-<li>实践三</li>
-</ul>
-
-
-<p>尽管实际才用不大于1.2G的内存，但是由于mapreduce.map.memory.mb设置为8G，整个集群显示已用内存18G（2 * 8g + 1 * 2g）。登录实际运行任务的机器，实际内存其实不多。</p>
-
-<p><img src="http://winseliu.com/images/blogs/hadoop-opts/yarn-mb-2.jpg" alt="" />
-<img src="http://winseliu.com/images/blogs/hadoop-opts/yarn-mb-3.jpg" alt="" /></p>
-
-<p>reduce和am（appmaster）的参数类似。</p>
-
-<p><img src="http://winseliu.com/images/blogs/hadoop-opts/yarn-appmaster-mb-1.jpg" alt="" />
-<img src="http://winseliu.com/images/blogs/hadoop-opts/yarn-appmaster-mb-2.jpg" alt="" /></p>
-
-<h2>mapred.child.java.opts参数</h2>
-
-<p>这是一个过时的属性，当然你设置也能起效果(没有设置mapreduce.map.java.opts/mapreduce.reduce.java.opts)。相当于把MR的java.opts都设置了。</p>
-
-<p><img src="http://winseliu.com/images/blogs/hadoop-opts/mapred-opts.jpg" alt="" /></p>
-
-<p>获取map/reduce的opts中间会取 <strong>mapred.child.java.opts</strong> 的值。</p>
-
-<p><img src="http://winseliu.com/images/blogs/hadoop-opts/mapred-opts-2.jpg" alt="" /></p>
-
-<h2>admin-opts</h2>
-
-<p>查找源码后，其实opts被分成两部分：admin和user。admin的写在前面，user在后面。user设置的opts可以覆盖admin设置的。应该是方便用于设置默认值吧。</p>
-
-<h2>实例</h2>
-
-<p>同时在一台很牛掰的机器上跑程序（分了yarn.nodemanager.resource.memory-mb 26G内存），但是总是只能一次跑一个任务，但还剩很多内存(20G)没有用啊！！初步怀疑是调度算法的问题。</p>
-
-<p>查看了调度的日志，初始化的时刻会输出 <strong>scheduler.capacity.LeafQueue</strong> 的日志，打印了集群控制的一些参数。然后 同时找到一篇<a href="http://stackoverflow.com/questions/33465300/why-does-yarn-job-not-transition-to-running-state">http://stackoverflow.com/questions/33465300/why-does-yarn-job-not-transition-to-running-state</a> 说是调整 <strong>yarn.scheduler.capacity.maximum-am-resource-percent</strong> ，是用于控制appmaster最多可用的资源。</p>
-
-<p>appmaster的默认内存是： <strong>yarn.app.mapreduce.am.resource.mb  1536</strong>（client设置有效）， <strong>yarn.scheduler.capacity.maximum-am-resource-percent 0.1</strong>。</p>
-
-<p>跑第二job的时刻，第二个appmaster调度的时刻没有足够的内存（26G * 0.1 - 1.536 > 1.536），所以就跑不了两个job。</p>
-
-<h2>CLIENT_OPTS</h2>
-
-<p>一般 HADOOP 集群都会配套 HIVE，hive直接用 sql 来查询数据比mapreduce简单很多。启动hive是直接用 hadoop jar 来启动的。相对于一个客户端程序。控制hive内存的就是 HADOOP_CLIENT_OPTS 环境变量中的 -Xmx 。</p>
-
-<p>所以要调整 hive 内存的使用，可以通过调整 HADOOP_CLIENT_OPTS 来控制。（当然理解这些环境变量，你就可以随心随欲的改）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hive]$ sh -x bin/hiveserver2 
-</span><span class='line'>...
-</span><span class='line'>++ exec /home/hadoop/hadoop/bin/hadoop jar /home/hadoop/hive/lib/hive-service-1.2.1.jar org.apache.hive.service.server.HiveServer2
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hive]$ grep -3  "HADOOP_CLIENT_OPTS" ~/hadoop/etc/hadoop/hadoop-env.sh
-</span><span class='line'>export HADOOP_PORTMAP_OPTS="-Xmx512m $HADOOP_PORTMAP_OPTS"
-</span><span class='line'>
-</span><span class='line'># The following applies to multiple commands (fs, dfs, fsck, distcp etc)
-</span><span class='line'>export HADOOP_CLIENT_OPTS="-Xmx128m $HADOOP_CLIENT_OPTS"
-</span><span class='line'>#HADOOP_JAVA_PLATFORM_OPTS="-XX:-UsePerfData $HADOOP_JAVA_PLATFORM_OPTS"
-</span><span class='line'>
-</span><span class='line'># On secure datanodes, user to run the datanode as after dropping privileges.
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hive]$ jinfo 10249
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>VM Flags:
-</span><span class='line'>
-</span><span class='line'>-Xmx256m -Djava.net.preferIPv4Stack=true -Dhadoop.log.dir=/home/hadoop/hadoop-2.6.3/logs -Dhadoop.log.file=hadoop.log -Dhadoop.home.dir=/home/hadoop/hadoop-2.6.3 -Dhadoop.id.str=hadoop -Dhadoop.root.logger=INFO,console -Djava.library.path=/home/hadoop/hadoop-2.6.3/lib/native -Dhadoop.policy.file=hadoop-policy.xml -Djava.net.preferIPv4Stack=true -Xmx128m -Dhadoop.security.logger=INFO,NullAppender
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hive]$ jmap -heap 10249
-</span><span class='line'>...
-</span><span class='line'>Heap Configuration:
-</span><span class='line'>   MinHeapFreeRatio = 40
-</span><span class='line'>   MaxHeapFreeRatio = 70
-</span><span class='line'>   MaxHeapSize      = 134217728 (128.0MB)
-</span><span class='line'>...
-</span></code></pre></td></tr></table></div></figure>
-
 
 <p>&ndash;END</p>
 ]]></content>

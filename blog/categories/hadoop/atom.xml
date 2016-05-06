@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-05-05T12:54:16+08:00</updated>
+  <updated>2016-05-06T11:26:47+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,222 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Hdfs异构存储实操]]></title>
+    <link href="http://winseliu.com/blog/2016/05/05/hdfs-heterogeneous-storage/"/>
+    <updated>2016-05-05T21:41:39+08:00</updated>
+    <id>http://winseliu.com/blog/2016/05/05/hdfs-heterogeneous-storage</id>
+    <content type="html"><![CDATA[<p>[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.3<->2.7.2）！</p>
+
+<p>我这里测试环境使用的是 2.6.3 <a href="https://hadoop.apache.org/docs/r2.6.3/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html">Heterogeneous Storage: Archival Storage, SSD &amp; Memory</a></p>
+
+<h2>配置</h2>
+
+<p>直接把内存盘放到 /dev/shm 下，单独挂载一个 tmpfs 的效果也差不多。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/MemoryStorage.html">r2.7.2 Memory Storage Support in HDFS</a> 2.6.3没有这个文档 概念都适应的。</p>
+
+<p>1 调节系统参数</p>
+
+<pre><code>vi /etc/security/limits.conf
+
+    hadoop           -       nofile          65535
+    hadoop           -       nproc           65535
+    hadoop           -       memlock         268435456
+</code></pre>
+
+<p>需要调节memlock的大小，否则启动datanode报错。</p>
+
+<pre><code>2016-05-05 19:22:22,674 FATAL org.apache.hadoop.hdfs.server.datanode.DataNode: Exception in secureMain
+java.lang.RuntimeException: Cannot start datanode because the configured max locked memory size (dfs.datanode.max.locked.memory) of 134217728 bytes is more than the datanode's available RLIMIT_MEMLOCK ulimit of 65536 bytes.
+        at org.apache.hadoop.hdfs.server.datanode.DataNode.startDataNode(DataNode.java:1067)
+        at org.apache.hadoop.hdfs.server.datanode.DataNode.&lt;init&gt;(DataNode.java:417)
+</code></pre>
+
+<p>2 添加RAM_DISK</p>
+
+<pre><code>vi hdfs-site.xml
+
+    &lt;property&gt;
+    &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
+    &lt;value&gt;/data/bigdata/hadoop/dfs/data,[RAM_DISK]/dev/shm/dfs/data&lt;/value&gt;
+    &lt;/property&gt;
+
+    &lt;property&gt;
+    &lt;name&gt;dfs.datanode.max.locked.memory&lt;/name&gt;
+    &lt;value&gt;134217728&lt;/value&gt;
+    &lt;/property&gt;
+</code></pre>
+
+<p>注意内存盘的写法，<code>[RAM_DISK]</code> 必须这些写，不然datanode不知道指定路径的storage的类型(默认是 DISK )。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html#Storage_Types_and_Storage_Policies">Storage_Types_and_Storage_Policies</a></p>
+
+<blockquote><p>The default storage type of a datanode storage location will be DISK if it does not have a storage type tagged explicitly.</p></blockquote>
+
+<p>3 同步配置并重启dfs</p>
+
+<pre><code>[root@cu2 ~]# scp /etc/security/limits.conf cu3:/etc/security/
+[hadoop@cu2 hadoop-2.6.3]$ rsync -vaz etc cu3:~/hadoop-2.6.3/ 
+
+[hadoop@cu2 hadoop-2.6.3] sbin/stop-dfs.sh
+[hadoop@cu2 hadoop-2.6.3] sbin/start-dfs.sh
+</code></pre>
+
+<p>可以去到datanode查看日志，可以看到 /dev/shm/dfs/data 路径 <strong>StorageType</strong> 为 <strong>RAM_DISK</strong> ：</p>
+
+<pre><code>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /data/bigdata/hadoop/dfs/data/current
+2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /data/bigdata/hadoop/dfs/data/current, StorageType: DISK
+2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /dev/shm/dfs/data/current
+2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /dev/shm/dfs/data/current, StorageType: RAM_DISK
+</code></pre>
+
+<p>同时查看 内存盘 的路径内容：</p>
+
+<pre><code>[hadoop@cu2 hadoop-2.6.3]$ ssh cu3 tree /dev/shm/dfs
+/dev/shm/dfs
+└── data
+    ├── current
+    │   ├── BP-1108852639-192.168.0.148-1452322889531
+    │   │   ├── current
+    │   │   │   ├── finalized
+    │   │   │   ├── rbw
+    │   │   │   └── VERSION
+    │   │   └── tmp
+    │   └── VERSION
+    └── in_use.lock
+
+7 directories, 3 files
+</code></pre>
+
+<h2>测试使用</h2>
+
+<p>通过三个例子对比，简单描述下使用。首先，使用默认的方式主要用于对比，第二个例子写文件是添加参数，第三个设置目录的存储类型（目录/文件会继承父目录的存储类型）</p>
+
+<p>1 测试1</p>
+
+<pre><code>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /tmp/
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /tmp/README.txt -files -blocks -locations
+...
+/tmp/README.txt 1366 bytes, 1 block(s):  OK
+0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752574_11776 len=1366 repl=1 [192.168.0.148:50010]
+
+[hadoop@cu3 hadoop-2.6.3]$ find /data/bigdata/hadoop/dfs/data/ /dev/shm/dfs/data/ -name "*1073752574*"
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574_11776.meta
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574
+</code></pre>
+
+<p>2 写文件是添加 lazy_persist 标识</p>
+
+<pre><code># 添加 -l 参数，后台代码会加上 LAZY_PERSIST 标识。
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -help put 
+-put [-f] [-p] [-l] &lt;localsrc&gt; ... &lt;dst&gt; :
+  Copy files from the local file system into fs. Copying fails if the file already
+  exists, unless the -f flag is given.
+  Flags:
+
+  -p  Preserves access and modification times, ownership and the mode. 
+  -f  Overwrites the destination if it already exists.                 
+  -l  Allow DataNode to lazily persist the file to disk. Forces        
+         replication factor of 1. This flag will result in reduced
+         durability. Use with care.
+</code></pre>
+
+<p><img src="/images/blogs/storage-lazy.png" alt="" /></p>
+
+<pre><code># -l 参数会把 replication 强制设置成数字1 ！
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put -l README.txt /tmp/readme.txt2
+
+# 查看namenode的日志，可以看到文件写入到 RAM_DISK 类型的存储
+[hadoop@cu2 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-cu2.log 
+
+    2016-05-05 20:38:36,465 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /tmp/readme.txt2._COPYING_. BP-1108852639-192.168.0.148-1452322889531 blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-dcb2673f-3297-4bd7-af1c-ac0ee3eebaf9:NORMAL:192.168.0.30:50010|RBW]]}
+    2016-05-05 20:38:36,592 INFO BlockStateChange: BLOCK* addStoredBlock: blockMap updated: 192.168.0.30:50010 is added to blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[RAM_DISK]DS-bf1ab64f-7eb3-41e0-8466-43287de9893d:NORMAL:192.168.0.30:50010|FINALIZED]]} size 0
+    2016-05-05 20:38:36,594 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /tmp/readme.txt2._COPYING_ is closed by DFSClient_NONMAPREDUCE_-1388277364_1
+
+# 具体的内容所在位置
+[hadoop@cu4 ~]$ tree /dev/shm/dfs/data/
+/dev/shm/dfs/data/
+├── current
+│   ├── BP-1108852639-192.168.0.148-1452322889531
+│   │   ├── current
+│   │   │   ├── finalized
+│   │   │   │   └── subdir0
+│   │   │   │       └── subdir42
+│   │   │   │           ├── blk_1073752578
+│   │   │   │           └── blk_1073752578_11780.meta
+│   │   │   ├── rbw
+│   │   │   └── VERSION
+│   │   └── tmp
+│   └── VERSION
+└── in_use.lock
+</code></pre>
+
+<p>3 设置目录的存储类型</p>
+
+<pre><code>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -mkdir /ramdisk
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -setStoragePolicy /ramdisk LAZY_PERSIST 
+Set storage policy LAZY_PERSIST on /ramdisk
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /ramdisk
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk
+The storage policy of /ramdisk:
+BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+
+# 不支持通配符
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/*
+getStoragePolicy: File/Directory does not exist: /ramdisk/*
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/README.txt
+The storage policy of /ramdisk/README.txt:
+BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+
+
+# 添加replication参数，再测试多个备份只有一个写ram_disk
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -Ddfs.replication=3 -put README.txt /ramdisk/readme.txt2
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/readme.txt2
+The storage policy of /ramdisk/readme.txt2:
+BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /ramdisk/readme.txt2 -files -blocks -locations
+
+    /ramdisk/readme.txt2 1366 bytes, 1 block(s):  OK
+    0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752580_11782 len=1366 repl=3 [192.168.0.30:50010, 192.168.0.174:50010, 192.168.0.148:50010]
+
+[hadoop@cu3 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+
+# 已经把ram_disk的内容持久化到磁盘了("Lazy_Persist")
+[hadoop@cu4 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580_11782.meta
+/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+
+[hadoop@cu5 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+</code></pre>
+
+<p>[设想] 对于那些处理完就删除的临时文件，可以把持久化的时间设置的久一点 <code>dfs.datanode.lazywriter.interval.sec</code>。这样就不需要写磁盘了。</p>
+
+<p>不要妄想了，反正都会持久化！就是缓冲的效果，其他没有了！！一次性存储并且不需要持久化的还是用alluxio吧。</p>
+
+<pre><code>org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl.LazyWriter#saveNextReplica
+    org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskAsyncLazyPersistService#submitLazyPersistTask
+</code></pre>
+
+<h2>参考</h2>
+
+<ul>
+<li>挺详细的<a href="http://blog.csdn.net/androidlushangderen/article/details/51105876">HDFS异构存储</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[[整理] Hadoop入门]]></title>
@@ -86,6 +302,7 @@
 <li><a href="/blog/2016/04/08/snappy-centos5-on-hive-on-spark/">Hive-on-spark Snappy on Centos5</a></li>
 </ul>
 </li>
+<li><a href="/blog/2016/05/05/hdfs-heterogeneous-storage.markdown">HDFS RamDisk内存缓冲</a></li>
 </ul>
 
 
@@ -1059,223 +1276,6 @@ setenforce 0
 <li><a href="http://jerrypeng.me/2014/07/22/server-side-java-monitoring-nagios/">Java 服务端监控方案（三. Nagios 篇）</a></li>
 <li><p><a href="https://github.com/ganglia/ganglia-web/wiki/Nagios-Integration">https://github.com/ganglia/ganglia-web/wiki/Nagios-Integration</a></p></li>
 <li><p><a href="https://ganglia.wikimedia.org/latest/">维基百科Ganglia</a></p></li>
-</ul>
-
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[配置TEZ-UI]]></title>
-    <link href="http://winseliu.com/blog/2016/01/12/tez-ui-config-and-run/"/>
-    <updated>2016-01-12T20:28:35+08:00</updated>
-    <id>http://winseliu.com/blog/2016/01/12/tez-ui-config-and-run</id>
-    <content type="html"><![CDATA[<p>tez-ui很早就出来了，荒废了很多时间。今天才把它配置出来，效果挺不错的，和spark-web差不多。</p>
-
-<p>记录了在hive-1.2.1上配置tez-0.7.0过程，配置运行hadoop2.6.3-timeline以及为tez添加tez-ui特性的步骤。</p>
-
-<h2>编译tez-0.7.0</h2>
-
-<pre><code>[hadoop@cu2 apache-tez-0.7.0-src]$ mvn package -Dhadoop.version=2.6.3 -DskipTests
-
-[INFO] Reactor Summary:
-[INFO] 
-[INFO] tez ................................................ SUCCESS [  0.831 s]
-[INFO] tez-api ............................................ SUCCESS [  6.580 s]
-[INFO] tez-common ......................................... SUCCESS [  0.124 s]
-[INFO] tez-runtime-internals .............................. SUCCESS [  0.676 s]
-[INFO] tez-runtime-library ................................ SUCCESS [  1.378 s]
-[INFO] tez-mapreduce ...................................... SUCCESS [  0.989 s]
-[INFO] tez-examples ....................................... SUCCESS [  0.105 s]
-[INFO] tez-dag ............................................ SUCCESS [  2.391 s]
-[INFO] tez-tests .......................................... SUCCESS [  0.187 s]
-[INFO] tez-ui ............................................. SUCCESS [02:23 min]
-[INFO] tez-plugins ........................................ SUCCESS [  0.017 s]
-[INFO] tez-yarn-timeline-history .......................... SUCCESS [  0.595 s]
-[INFO] tez-yarn-timeline-history-with-acls ................ SUCCESS [  0.316 s]
-[INFO] tez-mbeans-resource-calculator ..................... SUCCESS [  0.189 s]
-[INFO] tez-tools .......................................... SUCCESS [  0.017 s]
-[INFO] tez-dist ........................................... SUCCESS [ 16.554 s]
-[INFO] Tez ................................................ SUCCESS [  0.015 s]
-[INFO] ------------------------------------------------------------------------
-[INFO] BUILD SUCCESS
-[INFO] ------------------------------------------------------------------------
-[INFO] Total time: 02:55 min
-[INFO] Finished at: 2016-01-12T19:08:50+08:00
-[INFO] Final Memory: 63M/756M
-[INFO] ------------------------------------------------------------------------
-</code></pre>
-
-<h2>tez嵌入到hive</h2>
-
-<pre><code>// 上传tez程序到hdfs
-[hadoop@cu2 ~]$ cd sources/apache-tez-0.7.0-src/tez-dist/target/
-[hadoop@cu2 target]$ hadoop fs -mkdir -p /apps/tez-0.7.0
-[hadoop@cu2 target]$ hadoop fs -put tez-0.7.0.tar.gz /apps/tez-0.7.0/
-
-// TEZ_CONF_DIR = HADOOP_CONF_DIR
-[hadoop@cu2 ~]$ cd hadoop-2.6.3/etc/hadoop/
-[hadoop@cu2 hadoop]$ vi tez-site.xml
-&lt;?xml version="1.0"?&gt;
-&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-
-&lt;configuration&gt;
-
-&lt;property&gt;
-&lt;name&gt;tez.lib.uris&lt;/name&gt;
-&lt;value&gt;${fs.defaultFS}/apps/tez-0.7.0/tez-0.7.0.tar.gz&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;/configuration&gt;
-
-// 本地tez jars加入HADOOP_CLASSPATH
-[hadoop@cu2 apache-tez-0.7.0-src]$ cd tez-dist/target/
-archive-tmp/              maven-archiver/           tez-0.7.0/                tez-0.7.0-minimal.tar.gz  tez-0.7.0.tar.gz          tez-dist-0.7.0-tests.jar  
-[hadoop@cu2 apache-tez-0.7.0-src]$ cd tez-dist/target/
-[hadoop@cu2 target]$ mv tez-0.7.0 ~/
-
-[hadoop@cu2 ~]$ vi apache-hive-1.2.1-bin/conf/hive-env.sh
-
-// 多个jline版本 http://stackoverflow.com/questions/28997441/hive-startup-error-terminal-initialization-failed-falling-back-to-unsupporte
-export HADOOP_USER_CLASSPATH_FIRST=true
-export TEZ_HOME=/home/hadoop/tez-0.7.0
-export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:$TEZ_HOME/*:$TEZ_HOME/lib/*
-
-// http://stackoverflow.com/questions/26988388/hive-0-14-0-not-starting [/tmp/hive on HDFS should be writable. Current permissions are: rwxrwxr-x]
-// hive.metastore.warehouse.dir  hive.exec.scratchdir
-[hadoop@cu2 hive]$ rm -rf /tmp/hive
-[hadoop@cu2 hive]$ hadoop fs -rmr /tmp/hive
-// 或者修改权限 hadoop fs -chmod 777 /tmp/hive
-</code></pre>
-
-<h2>启用/使用tez</h2>
-
-<pre><code>[hadoop@cu2 hadoop]$ cat ~/hive/conf/hive-site.xml 
-...
-&lt;property&gt;
-&lt;name&gt;hive.execution.engine&lt;/name&gt;
-&lt;value&gt;tez&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;/configuration&gt;
-
-[hadoop@cu2 hive]$ bin/hive
-...
-hive&gt; select count(*) from t_ods_access_log2;
-Query ID = hadoop_20160112200359_f8be3d1c-9adc-42c0-abb9-2643dfef2cc7
-Total jobs = 1
-Launching Job 1 out of 1
-
-
-Status: Running (Executing on YARN cluster with App id application_1452600034599_0001)
-
---------------------------------------------------------------------------------
-        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
---------------------------------------------------------------------------------
-Map 1 ..........   SUCCEEDED      1          1        0        0       0       0
-Reducer 2 ......   SUCCEEDED      1          1        0        0       0       0
---------------------------------------------------------------------------------
-VERTICES: 02/02  [==========================&gt;&gt;] 100%  ELAPSED TIME: 20.83 s    
---------------------------------------------------------------------------------
-OK
-67
-Time taken: 27.823 seconds, Fetched: 1 row(s)
-</code></pre>
-
-<h2>部署/启动hadoop-timeline</h2>
-
-<pre><code>[hadoop@cu2 hadoop]$ vi etc/hadoop/yarn-site.xml 
-...
-&lt;property&gt;
-  &lt;name&gt;yarn.timeline-service.enabled&lt;/name&gt;
-  &lt;value&gt;true&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-  &lt;name&gt;yarn.timeline-service.hostname&lt;/name&gt;
-  &lt;value&gt;hadoop-master2&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-  &lt;name&gt;yarn.timeline-service.http-cross-origin.enabled&lt;/name&gt;
-  &lt;value&gt;true&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-  &lt;name&gt;yarn.resourcemanager.system-metrics-publisher.enabled&lt;/name&gt;
-  &lt;value&gt;true&lt;/value&gt;
-&lt;/property&gt;
-
-[hadoop@cu2 hadoop]$ for h in hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --exclude=logs hadoop-2.6.3 $h:~/ ; done
-
-[hadoop@cu2 hadoop]$ sbin/yarn-daemon.sh start timelineserver
-
-[hadoop@cu2 hadoop]$ sbin/stop-all.sh
-[hadoop@cu2 hadoop]$ sbin/start-all.sh
-</code></pre>
-
-<h2>部署tez-ui</h2>
-
-<pre><code>// 放置tez-ui
-[hadoop@cu2 target]$ cd ../../tez-ui/
-[hadoop@cu2 tez-ui]$ cd target/
-[hadoop@cu2 target]$ ll
-total 1476
-drwxrwxr-x 3 hadoop hadoop    4096 Jan 12 19:08 classes
-drwxrwxr-x 2 hadoop hadoop    4096 Jan 12 19:08 maven-archiver
-drwxrwxr-x 8 hadoop hadoop    4096 Jan 12 19:08 tez-ui-0.7.0
--rw-rw-r-- 1 hadoop hadoop    3058 Jan 12 19:08 tez-ui-0.7.0-tests.jar
--rw-rw-r-- 1 hadoop hadoop 1491321 Jan 12 19:08 tez-ui-0.7.0.war
-[hadoop@cu2 target]$ mv tez-ui-0.7.0 ~/
-
-// 部署tez-ui
-[hadoop@cu2 ~]$ cd apache-tomcat-7.0.67/conf/
-修改端口为9999
-[hadoop@cu2 apache-tomcat-7.0.67]$ vi conf/server.xml 
-
-[hadoop@cu2 apache-tomcat-7.0.67]$ cd conf/Catalina/localhost/
-[hadoop@cu2 localhost]$ vi tez-ui.xml
-
-[hadoop@cu2 apache-tomcat-7.0.67]$ bin/startup.sh 
-
-// tez添加tez-ui功能
-[hadoop@cu2 hive]$ vi ~/hadoop-2.6.3/etc/hadoop/tez-site.xml 
-&lt;?xml version="1.0"?&gt;
-&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-
-&lt;configuration&gt;
-
-&lt;property&gt;
-&lt;name&gt;tez.lib.uris&lt;/name&gt;
-&lt;value&gt;${fs.defaultFS}/apps/tez-0.7.0/tez-0.7.0.tar.gz&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;tez.history.logging.service.class&lt;/name&gt;
-&lt;value&gt;org.apache.tez.dag.history.logging.ats.ATSHistoryLoggingService&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;property&gt;
-&lt;name&gt;tez.tez-ui.history-url.base&lt;/name&gt;
-&lt;value&gt;http://hadoop-master2:9999/tez-ui/&lt;/value&gt;
-&lt;/property&gt;
-
-&lt;/configuration&gt;
-</code></pre>
-
-<p>再运行一遍hive，查询一两个SQL。</p>
-
-<p>最终效果：</p>
-
-<p><img src="/images/blogs/tez-ui.png" alt="" /></p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://tez.apache.org/install.html">http://tez.apache.org/install.html</a></li>
-<li><a href="http://tez.apache.org/tez-ui.html">http://tez.apache.org/tez-ui.html</a></li>
-<li><a href="http://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/TimelineServer.html">http://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/TimelineServer.html</a></li>
 </ul>
 
 
