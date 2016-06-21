@@ -9,57 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="原有环境 1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-17
-18
-19
-20
-21
-22
-23
-24
-25
-26
-27
-28
-29
-30
-31
-32
-33
-34
-35
-36
-37
-38
-39
-40
-41
-42
-43
-44
-45
-46
-47
-48
-49
-50
-51 &hellip;">
+  <meta name="description" content="hadoop分为存储和计算两个主要的功能，hdfs步入hadoop2后不论稳定性还是HA等等功能都比hadoop1要更吸引人。hadoop-2.2.0的hdfs已经比较稳定，但是yarn高版本有更加丰富的功能。本文主要关注spark-yarn下日志的查看，以及spark-yarn- &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -133,6 +83,868 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2015/06/10/hadoop-deploy-spark-diff-version-yarn-and-hdfs/">Hadoop不同版本yarn和hdfs混搭，spark-yarn环境配置</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2015-06-10T18:48:19+08:00" pubdate data-updated="true">Wed 2015-06-10 18:48</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>hadoop分为存储和计算两个主要的功能，hdfs步入hadoop2后不论稳定性还是HA等等功能都比hadoop1要更吸引人。hadoop-2.2.0的hdfs已经比较稳定，但是yarn高版本有更加丰富的功能。本文主要关注spark-yarn下日志的查看，以及spark-yarn-dynamic的配置。</p>
+
+<p>hadoop-2.2.0的hdfs原本已经在使用的环境，在这基础上搭建运行yarn-2.6.0，以及spark-1.3.0-bin-2.2.0。</p>
+
+<ul>
+<li>编译</li>
+</ul>
+
+
+<p>我是在虚拟机里面编译，共享了host主机的maven库。参考【VMware共享目录】，【VMware-Centos6 Build hadoop-2.6】注意<strong>cmake_symlink_library的异常，由于共享的windows目录下不能创建linux的软链接</strong></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>tar zxvf ~/hadoop-2.6.0-src.tar.gz 
+</span><span class='line'>cd hadoop-2.6.0-src/
+</span><span class='line'>mvn package -Pdist,native -DskipTests -Dtar -Dmaven.javadoc.skip=true
+</span><span class='line'>
+</span><span class='line'># 由于hadoop-hdfs还是2.2的，这里编译spark需要用2.2版本！
+</span><span class='line'># 如果用2.6会遇到[UnsatisfiedLinkError:org.apache.hadoop.util.NativeCrc32.nativeComputeChunkedSumsByteArray ](http://blog.csdn.net/zeng_84_long/article/details/44340441)
+</span><span class='line'>cd spark-1.3.0
+</span><span class='line'>export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=1g -XX:ReservedCodeCacheSize=512m"
+</span><span class='line'>mvn clean package -Phadoop-2.2 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+</span><span class='line'>
+</span><span class='line'>vi make-distribution.sh #注释掉BUILD_COMMAND那一行，不重复执行package！
+</span><span class='line'>./make-distribution.sh  --mvn `which mvn` --tgz  --skip-java-test -Phadoop-2.6 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><p>配置注意点</p></li>
+<li><p>core-site不要全部拷贝原来的，只要一些主要的配置即可。</p></li>
+<li>yarn-site的<code>yarn.resourcemanager.webapp.address</code>需要填写具体的地址，不能写<code>0.0.0.0</code>。</li>
+<li>yarn-site的<code>yarn.nodemanager.aux-services</code>添加spark_shuffle服务。<a href="https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation">https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation</a></li>
+<li>把hive-site的文件拷贝/链接到spark的conf目录下。</li>
+<li>spark-yarn-dynamic配置: <a href="https://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">https://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ cat conf/spark-defaults.conf 
+</span><span class='line'># spark.master                     spark://bigdatamgr1:7077,bigdata8:7077
+</span><span class='line'># spark.eventLog.enabled           true
+</span><span class='line'># spark.eventLog.dir               hdfs://namenode:8021/directory
+</span><span class='line'># spark.executor.extraJavaOptions  -XX:+PrintGCDetails -Dkey=value -Dnumbers="one two three"
+</span><span class='line'># spark.executor.extraJavaOptions       -Xmx16g -Xms16g -Xmn256m -XX:+UseParNewGC -XX:+UseConcMarkSweepGC -XX:CMSInitiatingOccupancyFraction=70 -XX:ParallelGCThreads=10
+</span><span class='line'>spark.driver.memory              48g
+</span><span class='line'>spark.executor.memory            48g
+</span><span class='line'>spark.sql.shuffle.partitions     200
+</span><span class='line'>
+</span><span class='line'>#spark.scheduler.mode FAIR
+</span><span class='line'>spark.serializer  org.apache.spark.serializer.KryoSerializer
+</span><span class='line'>spark.driver.maxResultSize 8g
+</span><span class='line'>#spark.kryoserializer.buffer.max.mb 2048
+</span><span class='line'>
+</span><span class='line'>spark.dynamicAllocation.enabled true
+</span><span class='line'>spark.dynamicAllocation.minExecutors 4
+</span><span class='line'>spark.shuffle.service.enabled true
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 conf]$ cat spark-env.sh 
+</span><span class='line'>#!/usr/bin/env bash
+</span><span class='line'>
+</span><span class='line'>JAVA_HOME=/home/eshore/jdk1.7.0_60
+</span><span class='line'>
+</span><span class='line'># log4j
+</span><span class='line'>
+</span><span class='line'>__add_to_classpath() {
+</span><span class='line'>
+</span><span class='line'>  root=$1
+</span><span class='line'>
+</span><span class='line'>  if [ -d "$root" ] ; then
+</span><span class='line'>    for f in `ls $root/*.jar | grep -v -E '/hive.*.jar'`  ; do
+</span><span class='line'>      if [ -n "$SPARK_DIST_CLASSPATH" ] ; then
+</span><span class='line'>        export SPARK_DIST_CLASSPATH=$SPARK_DIST_CLASSPATH:$f
+</span><span class='line'>      else
+</span><span class='line'>        export SPARK_DIST_CLASSPATH=$f
+</span><span class='line'>      fi
+</span><span class='line'>    done
+</span><span class='line'>  fi
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'># this add tail of SPARK_CLASSPATH
+</span><span class='line'>__add_to_classpath "/home/eshore/apache-hive-0.13.1/lib"
+</span><span class='line'>
+</span><span class='line'>#export HADOOP_CONF_DIR=/data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop
+</span><span class='line'>export HADOOP_CONF_DIR=/home/eshore/hadoop-2.6.0/etc/hadoop
+</span><span class='line'>export SPARK_CLASSPATH=$SPARK_CLASSPATH:/home/eshore/spark-1.3.0-bin-2.2.0/conf:$HADOOP_CONF_DIR
+</span><span class='line'>
+</span><span class='line'># HA
+</span><span class='line'>SPARK_DAEMON_JAVA_OPTS="-Dspark.deploy.recoveryMode=ZOOKEEPER -Dspark.deploy.zookeeper.url=bi-00-01.bi.domain.com:2181 -Dspark.deploy.zookeeper.dir=/spark" 
+</span><span class='line'>
+</span><span class='line'>SPARK_PID_DIR=${SPARK_HOME}/pids
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>同步</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>for h in `cat slaves ` ; do rsync -vaz hadoop-2.6.0 $h:~/ --delete --exclude=work --exclude=logs --exclude=metastore_db --exclude=data --exclude=pids ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>启动spark-hive-thrift</li>
+</ul>
+
+
+<p>./sbin/start-thriftserver.sh &ndash;executor-memory 29g &ndash;master yarn-client</p>
+
+<p>对于多任务的集群来说，配置自动动态分配（类似资源池）更有利于资源的使用。可以通过【All Applications】-【ApplicationMaster】-【Executors】来观察执行进程的变化。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2015/04/18/tachyon-deep-source/">Tachyon剖析</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2015-04-18T23:13:01+08:00" pubdate data-updated="true">Sat 2015-04-18 23:13</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>要了解一个框架，一般都是从框架提供/开放的接口入手。先从最直接的方式下手，可以通过<code>tachyon tfs</code>和浏览器19999端口获取集群以及文件的相关信息。</p>
+
+<ul>
+<li>要了解tachyon首先就是其文件系统，可以从两个功能开始：命令行tachyon.command.TFsShell和web-servlet。</li>
+<li>然后会深入tachyon.client包，了解<strong>TachyonFS</strong>和TachyonFile处理io的方式。以及tachyon.hadoop的包。</li>
+<li>io处理：
+
+<ul>
+<li>写：BlockOutStream（#getLocalBlockTemporaryPath； MappedByteBuffer）、FileOutStream</li>
+<li>读：RemoteBlockInStream、LocalBlockInStream</li>
+</ul>
+</li>
+<li>了解thrift：MasterClient、MasterServiceHandler、WorkerClient、WorkerServiceHandler、ClientBlockInfo、ClientFileInfo。</li>
+<li>看tachyon.example，巩固</li>
+</ul>
+
+
+<p>注：MappedByteBuffer在windows存在资源占用的bug！参见<a href="http://www.th7.cn/Program/java/2012/01/31/57401.shtml">http://www.th7.cn/Program/java/2012/01/31/57401.shtml</a>，</p>
+
+<p>把整个io流理清之后，然后需要了解tachyon是怎么维护这些信息的：</p>
+
+<ul>
+<li>配置：WorkerConf、MasterConf、UserConf</li>
+<li>了解thrift：MasterClient、MasterServiceHandler、ClientWorkerInfo、MasterInfo</li>
+<li>TachyonMaster和TachyonWorker的启动</li>
+<li>Checkpoint、Image、Journal</li>
+<li>内存淘汰策略</li>
+<li>DataServer在哪里用到（nio/netty）：TachyonFile#readRemoteByteBuffer、RemoteBlockInStream#read(byte[], int, int)</li>
+<li>HA</li>
+<li>Dependency（不知道怎么用）</li>
+</ul>
+
+
+<p>远程调试Worker以及tfs：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ cat conf/tachyon-env.sh 
+</span><span class='line'>export TACHYON_WORKER_JAVA_OPTS="$TACHYON_JAVA_OPTS -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8070"
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ export TACHYON_JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8070"
+</span><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ bin/tachyon tfs lsr /</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>IO/client</h2>
+
+<ul>
+<li>TachyonFS是client与Master/Worker的纽带，请求<strong>文件系统和文件</strong>的元数据CRUD操作。其中的WorkerClient仅用于写（保存）文件。</li>
+<li>TachyonFile是文件的抽象处理集合，可以获取文件的基本属性（元数据），同时提供了IO的接口用于文件内容的读写。</li>
+<li>InStream读、获取文件内容
+
+<ul>
+<li>EmptyBlockInStream(文件包括的块为0）</li>
+<li>BlockInStream(文件包括的块为1）
+
+<ul>
+<li>LocalBlockInStream 仅当是localworker且该块在本机时，通过MappedByteBuffer获取数据（数据在ramdisk也就是内存盘上哦）。</li>
+<li>RemoteBlockInStream （通过nio从远程的worker#DataServer机器获取数据#retrieveByteBufferFromRemoteMachine，如果readtype设置为cache同时把数据缓冲到本地worker）</li>
+</ul>
+</li>
+<li>FileInStream(文件包括的块为1+，可以理解为BlocksInStream。通过mCurrentPosition / mBlockCapacity来获取当前的blockindex最终还是调用BlockInStream）</li>
+</ul>
+</li>
+<li>FileOutStream写，写数据入口就是只有FileOutStream
+
+<ul>
+<li>BlockOutStream（WriteType设置了需要缓冲，会写到本地localworker。<strong>由于需要进行分块，会复杂些#appendCurrentBuffer</strong>）</li>
+<li>UnderFileSystem（如果WriteType设置了Through，则把数据写一份到underfs文件系统）</li>
+</ul>
+</li>
+</ul>
+
+
+<h2>Master</h2>
+
+<p>TachyonMaster是master的启动类，所有的服务都是在这个类里面初始化启动的。</p>
+
+<ul>
+<li>HA：LeaderSelectorClient</li>
+<li>EditLog：EditLogProcessor、Journal。
+
+<ul>
+<li>如果是HA模式，leader调用setup方法把EditLogProcessor停掉。也就是说在HA模式下，standby才会运行EditLogProcessor实时处理editlog。</li>
+<li>leader和非HA master则仅在启动时通过调用MasterInfo#init处理editlog一次。</li>
+</ul>
+</li>
+<li>Thrift: TServer、MasterServiceHandler；与MasterClient对应的服务端。</li>
+<li>Web: UIWebServer，使用jetty的内嵌服务器。</li>
+<li>MasterInfo</li>
+</ul>
+
+
+<h2>Worker</h2>
+
+<h2>Thrift</h2>
+
+<h2>HA</h2>
+
+<p>当配置<code>tachyon.usezookeeper</code>设置为true时，启动master时会初始化LeaderSelectorClient对象。使用curator连接到zookeeper服务器进行leader的选举。</p>
+
+<p><strong>LeaderSelectorClient</strong>实现了LeaderSelectorListener接口，创建LeaderSelector并传入当前实例作为监听实例，当选举完成后，被选leader触发takeLeadership事件。</p>
+
+<blockquote><p>public void takeLeadership(CuratorFramework client) throws Exception
+Called when your instance has been granted leadership. This method should not return until you wish to release leadership</p></blockquote>
+
+<p>takeLeadership方法中把<code>mIsLeader</code>设置为true（master自己判断）、创建<code>mLeaderFolder + mName</code>路径（客户端获取master leader）；然后隔5s的死循环（运行在LeaderSelector单独的线程池）。</p>
+
+<h2>Checkpoint</h2>
+
+<h2>Journal</h2>
+
+<hr />
+
+<h2>问题</h2>
+
+<ul>
+<li>程序没有返回内容，没有响应（v1.1.0已经没有这个问题了）</li>
+</ul>
+
+
+<p>tfs 默认是CACHE_THROUGH，会缓冲同时写ufs。如果改成must则只写cache，然后清理内存，再获取数据，一直没有内容返回，不知道为什么？</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ export TACHYON_JAVA_OPTS="-Dtachyon.user.file.writetype.default=MUST_CACHE "
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs copyFromLocal LICENSE /LICENSE2
+</span><span class='line'>Copied LICENSE to /LICENSE2
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs free /LICENSE2
+</span><span class='line'>/LICENSE2 was successfully freed from memory.
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs cat /LICENSE2</span></code></pre></td></tr></table></div></figure>
+
+
+<p>v1.1</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs ls /README.txt                                            
+</span><span class='line'>1366.00B  04-16-2016 07:56:24:499  In Memory      /README.txt
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs free /README.txt
+</span><span class='line'>/README.txt was successfully freed from memory.
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs cat /README.txt 
+</span><span class='line'>Block 402653184 is not available in Alluxio</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2015/04/15/tachyon-quickstart/">Tachyon入门指南</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2015-04-15T22:56:09+08:00" pubdate data-updated="true">Wed 2015-04-15 22:56</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>tachyon程序是在HDFS与程序之间缓冲，相当于CPU与磁盘设备之间内存的功能。tachyon提供了TachyonFS、TachyonFile等API使操作起来更像一个文件系统；同时实现了HDFS的FileSystem接口，方便原有程序的迁移，只要把url的模式（schema）hdfs改成tachyon。</p>
+
+<p>tachyon和HDFS一样也是master-slaver（worker）结构：master保存元数据，worker节点使用内存盘缓冲数据。</p>
+
+<h2>部署集群</h2>
+
+<p>下载tachyon的编译文件后，按下面的步骤部署：</p>
+
+<ul>
+<li>解压</li>
+<li>修改conf/tachyon-env.sh（JAVA_HOME，TACHYON_UNDERFS_ADDRESS，TACHYON_MASTER_ADDRESS）</li>
+<li>修改conf/worker</li>
+<li>同步代码到workers子节点</li>
+<li>格式化tachyon（建立master和worker所需的各种目录）</li>
+<li>挂载内存盘</li>
+<li>启动集群</li>
+<li>通过19999端口访问</li>
+</ul>
+
+
+<p>如果hadoop集群的版本不是最新的2.6.0，需要手工编译源码：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ mvn clean package assembly:single -Dhadoop.version=2.2.0 -DskipTests -Dmaven.javadoc.skip=true</span></code></pre></td></tr></table></div></figure>
+
+
+<p>同步程序的脚本如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 ~]$ for h in `cat slaves ` ; do  rsync -vaz tachyon-0.6.1 $h:~/ --exclude=logs --exclude=underfs --exclude=journal ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<p>用tachyon用户格式化：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>bin/tachyon format</span></code></pre></td></tr></table></div></figure>
+
+
+<p>使用root挂载内存盘：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>bin/tachyon-mount.sh Mount workers
+</span><span class='line'>for h in `cat slaves ` ; do  ssh $h "chmod 777 /mnt/ramdisk; chmod 777 /mnt/tachyon_default_home"  ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<p>确认下worker节点是否有underfs/tmp/tachyon/data，如果没有手动创建下。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 ~]$ for h in `cat slaves ` ; do ssh $h mkdir -p ~/tachyon-0.6.1/underfs/tmp/tachyon/data ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<p>启动集群：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 tachyon-0.6.1]$ bin/tachyon-start.sh all NoMount</span></code></pre></td></tr></table></div></figure>
+
+
+<p>上传文件到tachyon：（注意，这里是在worker节点！）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs copyFromLocal README.md /
+</span><span class='line'>Copied README.md to /</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>集成到Spark</h2>
+
+<p>注意，这里是在worker节点，使用local本地集群的方式（spark集群资源全部被spark-sql占用了，导致提交的任务分配不到资源！）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdata1 spark-1.3.0-bin-2.2.0]$ export SPARK_CLASSPATH=/home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar 
+</span><span class='line'>[eshore@bigdata1 spark-1.3.0-bin-2.2.0]$ bin/spark-shell --master local[1] -Dspark.ui.port=4041
+</span><span class='line'>scala&gt; val s = sc.textFile("tachyon://bigdatamgr1:19998/README.md")
+</span><span class='line'>s: org.apache.spark.rdd.RDD[String] = tachyon://bigdatamgr1:19998/README.md MapPartitionsRDD[1] at textFile at &lt;console&gt;:21
+</span><span class='line'>
+</span><span class='line'>scala&gt; s.count()
+</span><span class='line'>15/04/03 11:13:09 WARN : tachyon.home is not set. Using /mnt/tachyon_default_home as the default value.
+</span><span class='line'>res0: Long = 45
+</span><span class='line'>
+</span><span class='line'>scala&gt; val wordCounts = s.flatMap(_.split(" ")).map((_,1)).reduceByKey(_+_)
+</span><span class='line'>wordCounts: org.apache.spark.rdd.RDD[(String, Int)] = ShuffledRDD[4] at reduceByKey at &lt;console&gt;:23
+</span><span class='line'>
+</span><span class='line'>scala&gt; wordCounts.saveAsTextFile("tachyon://bigdatamgr1:19998/wordcount-README")
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 tachyon-0.6.1]$ bin/tachyon tfs ls /wordcount-README/
+</span><span class='line'>1407.00 B 04-03-2015 11:16:05:483  In Memory      /wordcount-README/part-00000
+</span><span class='line'>0.00 B    04-03-2015 11:16:05:787  In Memory      /wordcount-README/_SUCCESS</span></code></pre></td></tr></table></div></figure>
+
+
+<p>为啥要在worker节点运行呢？不能在master节点运行？运行肯定是可以的：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ export SPARK_CLASSPATH=/home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar
+</span><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ bin/spark-shell --master local[1] --jars /home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar
+</span><span class='line'>
+</span><span class='line'>scala&gt; val s = sc.textFile("tachyon://bigdatamgr1:19998/NOTICE")
+</span><span class='line'>s: org.apache.spark.rdd.RDD[String] = tachyon://bigdatamgr1:19998/NOTICE MapPartitionsRDD[1] at textFile at &lt;console&gt;:15
+</span><span class='line'>
+</span><span class='line'>scala&gt; s.count()
+</span><span class='line'>15/04/13 16:05:45 WARN BlockReaderLocal: The short-circuit local reads feature cannot be used because libhadoop cannot be loaded.
+</span><span class='line'>15/04/13 16:05:45 WARN : tachyon.home is not set. Using /mnt/tachyon_default_home as the default value.
+</span><span class='line'>java.io.IOException: The machine does not have any local worker.
+</span><span class='line'>        at tachyon.client.BlockOutStream.&lt;init&gt;(BlockOutStream.java:94)
+</span><span class='line'>        at tachyon.client.BlockOutStream.&lt;init&gt;(BlockOutStream.java:65)
+</span><span class='line'>        at tachyon.client.RemoteBlockInStream.read(RemoteBlockInStream.java:204)
+</span><span class='line'>        at tachyon.hadoop.HdfsFileInputStream.read(HdfsFileInputStream.java:142)
+</span><span class='line'>        at java.io.DataInputStream.read(DataInputStream.java:100)
+</span><span class='line'>        at org.apache.hadoop.util.LineReader.readDefaultLine(LineReader.java:211)
+</span><span class='line'>        at org.apache.hadoop.util.LineReader.readLine(LineReader.java:174)
+</span><span class='line'>        at org.apache.hadoop.mapred.LineRecordReader.next(LineRecordReader.java:206)
+</span><span class='line'>        at org.apache.hadoop.mapred.LineRecordReader.next(LineRecordReader.java:45)
+</span><span class='line'>        at org.apache.spark.rdd.HadoopRDD$$anon$1.getNext(HadoopRDD.scala:245)
+</span><span class='line'>        at org.apache.spark.rdd.HadoopRDD$$anon$1.getNext(HadoopRDD.scala:212)
+</span><span class='line'>        at org.apache.spark.util.NextIterator.hasNext(NextIterator.scala:71)
+</span><span class='line'>        at org.apache.spark.InterruptibleIterator.hasNext(InterruptibleIterator.scala:39)
+</span><span class='line'>        at scala.collection.Iterator$$anon$11.hasNext(Iterator.scala:327)
+</span><span class='line'>        at org.apache.spark.util.Utils$.getIteratorSize(Utils.scala:1466)
+</span><span class='line'>        at org.apache.spark.rdd.RDD$$anonfun$count$1.apply(RDD.scala:1006)
+</span><span class='line'>        at org.apache.spark.rdd.RDD$$anonfun$count$1.apply(RDD.scala:1006)
+</span><span class='line'>        at org.apache.spark.SparkContext$$anonfun$runJob$5.apply(SparkContext.scala:1497)
+</span><span class='line'>        at org.apache.spark.SparkContext$$anonfun$runJob$5.apply(SparkContext.scala:1497)
+</span><span class='line'>        at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:61)
+</span><span class='line'>        at org.apache.spark.scheduler.Task.run(Task.scala:64)
+</span><span class='line'>        at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:203)
+</span><span class='line'>        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+</span><span class='line'>        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+</span><span class='line'>        at java.lang.Thread.run(Thread.java:745)
+</span><span class='line'>res0: Long = 2</span></code></pre></td></tr></table></div></figure>
+
+
+<p>两个点：</p>
+
+<ul>
+<li>这里是运行的spark local集群；</li>
+<li>运行当然没有问题，但是会打印不和谐的<strong>The machine does not have any local worker</strong>警告日志。这与FileSystem的获取输入流<code>ReadType.CACHE</code>实现有关（见源码HdfsFileInputStream）。</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>mTachyonFileInputStream = mTachyonFile.getInStream(ReadType.CACHE);</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果master为spark集群，spark-driver不管运行在哪台集群都没有问题。因为，此时运行任务的spark-worker就是tachyon-worker节点啊，当然就有local worker了。</p>
+
+<p>为了更深入的了解，还可以试验一下<code>ReadType.CACHE</code>的作用：原本不在内存的数据，计算后就会被载入到缓冲（内存）！！</p>
+
+<p>可以再试一次，先从内存中删掉（此处underfs配置存储在HDFS）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ~/tachyon-0.6.1/bin/tachyon tfs free /NOTICE
+</span><span class='line'>/NOTICE was successfully freed from memory.
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ~/tachyon-0.6.1/bin/tachyon tfs fileinfo /NOTICE
+</span><span class='line'>/NOTICE with file id 2 has the following blocks: 
+</span><span class='line'>ClientBlockInfo(blockId:2147483648, offset:0, length:62, locations:[NetAddress(mHost:bigdata8, mPort:-1, mSecondaryPort:-1), NetAddress(bigdata6, mPort:-1, mSecondaryPort:-1), NetAddress(mHost:bigdata5, mPort:-1, mSecondaryPort:-1)])</span></code></pre></td></tr></table></div></figure>
+
+
+<p>再次运行count：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>scala&gt; s.count()
+</span><span class='line'>res1: Long = 2</span></code></pre></td></tr></table></div></figure>
+
+
+<p>再次查看文件状态：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ ~/tachyon-0.6.1/bin/tachyon tfs fileinfo /NOTICE
+</span><span class='line'>/NOTICE with file id 2 has the following blocks: 
+</span><span class='line'>ClientBlockInfo(blockId:2147483648, offset:0, length:62, locations:[NetAddress(mHost:bigdata1, mPort:29998, mSecondaryPort:29999)])</span></code></pre></td></tr></table></div></figure>
+
+
+<p>此时文件对应的block所在机器变成了bigdata1，也就是spark-worker运行的节点（这里用local，worker和driver都在bigdata1上）。</p>
+
+<p>参考</p>
+
+<ul>
+<li><a href="http://tachyon-project.org/Running-Tachyon-on-a-Cluster.html">http://tachyon-project.org/Running-Tachyon-on-a-Cluster.html</a></li>
+<li><a href="http://spark.apache.org/docs/latest/configuration.html">http://spark.apache.org/docs/latest/configuration.html</a></li>
+<li><a href="http://tachyon-project.org/Running-Spark-on-Tachyon.html">http://tachyon-project.org/Running-Spark-on-Tachyon.html</a></li>
+</ul>
+
+
+<h2>集成到Hadoop集群</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 ~]$ export HADOOP_CLASSPATH=/home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 hadoop-2.2.0]$ bin/hadoop jar share/hadoop/mapreduce/hadoop-mapreduce-examples-2.2.0.jar wordcount -libjars /home/eshore/tachyon-0.6.1/core/target/tachyon-0.6.1-jar-with-dependencies.jar tachyon://bigdatamgr1:19998/NOTICE tachyon://bigdatamgr1:19998/NOTICE-wordcount
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 hadoop-2.2.0]$ ~/tachyon-0.6.1/bin/tachyon tfs cat /NOTICE-wordcount/part-r-00000
+</span><span class='line'>2012-2014       1
+</span><span class='line'>Berkeley        1
+</span><span class='line'>California,     1
+</span><span class='line'>Copyright       1
+</span><span class='line'>Tachyon 1
+</span><span class='line'>University      1
+</span><span class='line'>of      1</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>后记</h2>
+
+<p>当前apache开源大部分集群的部署都是同一种模式，源码也基本都是用maven来进行构建。部署其实没有什么难度，如果是应用到spark、hadoop这样的平台，其实只要部署，然后用FileSystem的接口就一切ok了。但是要了解其原理，官网的文档也不是很全，那得需要深入源码。</p>
+
+<p>入门写到这里，差不多了，下一篇从TachyonFS角度解析tachyon。</p>
+
+<h2>附录</h2>
+
+<ul>
+<li>spark-env.sh</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>JAVA_HOME=/home/eshore/jdk1.7.0_60
+</span><span class='line'>
+</span><span class='line'># log4j
+</span><span class='line'>
+</span><span class='line'>__add_to_classpath() {
+</span><span class='line'>
+</span><span class='line'>  root=$1
+</span><span class='line'>
+</span><span class='line'>  if [ -d "$root" ] ; then
+</span><span class='line'>    for f in `ls $root/*.jar | grep -v -E '/hive.*.jar'`  ; do
+</span><span class='line'>      if [ -n "$SPARK_DIST_CLASSPATH" ] ; then
+</span><span class='line'>        export SPARK_DIST_CLASSPATH=$SPARK_DIST_CLASSPATH:$f
+</span><span class='line'>      else
+</span><span class='line'>        export SPARK_DIST_CLASSPATH=$f
+</span><span class='line'>      fi
+</span><span class='line'>    done
+</span><span class='line'>  fi
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>__add_to_classpath "/home/eshore/tez-0.4.0-incubating"
+</span><span class='line'>__add_to_classpath "/home/eshore/tez-0.4.0-incubating/lib"
+</span><span class='line'>__add_to_classpath "/home/eshore/apache-hive-0.13.1/lib"
+</span><span class='line'>
+</span><span class='line'>export HADOOP_CONF_DIR=/data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop
+</span><span class='line'>export SPARK_CLASSPATH=$SPARK_CLASSPATH:/home/eshore/spark-1.3.0-bin-2.2.0/conf:$HADOOP_CONF_DIR
+</span><span class='line'>
+</span><span class='line'># HA
+</span><span class='line'>SPARK_DAEMON_JAVA_OPTS="-Dspark.deploy.recoveryMode=ZOOKEEPER -Dspark.deploy.zookeeper.url=bi-00-01.bi.domain.com:2181 -Dspark.deploy.zookeeper.dir=/spark"
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 ~]$ for h in `cat slaves ` ; do rsync -vaz spark-1.3.0-bin-2.2.0 $h:~/ --exclude=logs --exclude=metastore_db --exclude=work --delete ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2015/04/12/optimize-system-ramdisk/">使用RamDisk来优化系统</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2015-04-12T16:56:09+08:00" pubdate data-updated="true">Sun 2015-04-12 16:56</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>最近加了一条8G的内存，总共16G。暂时来说很难全部用起来。如果能够实现类似linux的shm分区的话，那就完美了，把临时的数据全部放到这个内存分区中。最好是免费的，通过一阵折腾搜索，整理如下：</p>
+
+<p>去到官网<a href="http://www.ltr-data.se/opencode.html/#ImDisk">http://www.ltr-data.se/opencode.html/#ImDisk</a>直接下载<code>ImDisk Toolkit</code><a href="http://reboot.pro/files/file/284-imdisk-toolkit/">http://reboot.pro/files/file/284-imdisk-toolkit/</a>，toolkit里面已经集成了ImDisk软件。（新版本的toolkit可以节省很多事情，参考最后的两个链接看看即可）</p>
+
+<p>配置：填写大小<code>5</code>、盘符<code>S</code>、磁盘格式<code>NTFS</code>，然后点击【确定】格式化磁盘，然后就可以使用了。</p>
+
+<p><img src="/images/blogs/ramdisk-config.png" alt="" /></p>
+
+<p>把临时的文件目录指定到ramdisk，重启系统。</p>
+
+<p><img src="/images/blogs/ramdisk-temp.png" alt="" /></p>
+
+<p>上面仅仅是把用户和系统的临时目录移到<strong>内存盘</strong>中。由于rar，java一些软件都是用用户的临时目录，已经可以体验到加速的快感了！！直接拖拽解压rar情况下速度明显快了很多。</p>
+
+<p>还有一个问题，重启后，内存盘的数据会被全部清掉。默认情况下只建立了Temp目录，没有我们指定的Cache目录。Chrome启动的时刻如果发现Cache目录为不可用状态会重建该目录。</p>
+
+<p>在Advanced页签，<strong>Load Content from Image File or Folder</strong>选项可以选择初始化加载的内容。我们只要先把目录结构建立后，然后在初始化后加载该路径一切都解决了。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\home\RamDiskInit&gt;find .
+</span><span class='line'>.
+</span><span class='line'>./Temp
+</span><span class='line'>./Temp/Chrome
+</span><span class='line'>./Temp/Chrome/Cache</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后在<code>RamDisk Config</code>的Advanced页签选择<strong>E:\local\home\RamDiskInit</strong>作为<strong>Load Content</strong>即可。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://zohead.com/archives/rsync-performance-linux-cygwin-msys/">http://zohead.com/archives/rsync-performance-linux-cygwin-msys/</a> 从这里看到ramdisk-imdisk</li>
+<li><a href="http://www.appinn.com/imdisk/">http://www.appinn.com/imdisk/</a> 安装简单使用，以及两篇核心文章的链接</li>
+<li><a href="http://www.ltr-data.se/opencode.html/#ImDisk">http://www.ltr-data.se/opencode.html/#ImDisk</a></li>
+<li><a href="http://www.kenming.idv.tw/super_lighweight_ramdisk_imdisk_setup#more-1995">超小巧效能强悍的穷人版 Ramdisk－ImDisk (设定篇) </a></li>
+<li><a href="http://www.mobile01.com/topicdetail.php?f=300&amp;t=2200352">Win7 x64 下使用 ImDisk 当作RamDisk的小小心得与改良方法</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -553,1344 +1365,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/03/13/hadoop-distcp/">Hadoop Distcp</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2015-03-13T20:38:23+08:00" pubdate data-updated="true">Fri 2015-03-13 20:38</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>HDFS提供的CP是单线程的，对于大数据量的拷贝操作希望能并行的复制。Hadoop Tools提供了DistCp工具，通过调用MapRed来实现并行的拷贝。</p>
-
-<h2>先来了解下hdfs cp的功能：</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Usage: hdfs dfs -cp [-f] [-p | -p[topax]] URI [URI ...] &lt;dest&gt;
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-not-exists
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -mkdir /cp-exists
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-exists
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-not-exists2/
-</span><span class='line'>cp: `/cp-not-exists2/': No such file or directory
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -ls -R /
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-14 19:55 /cp
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 19:55 /cp/README.1.txt
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 19:54 /cp/README.txt
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-exists
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-exists/cp
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-exists/cp/README.1.txt
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-exists/cp/README.txt
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-not-exists
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-not-exists/README.1.txt
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-not-exists/README.txt</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>DistCp(distributed copy)分布式拷贝简单使用方式：</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ bin/hadoop distcp /cp /cp-distcp</span></code></pre></td></tr></table></div></figure>
-
-
-<p>用到分布式一般就说明规模不少，且数据量大，操作时间长。DistCp提供了一些参数来控制程序：</p>
-
-<table>
-<thead>
-<tr>
-<th style="text-align:left;"> DistCpOptionSwitch选项    </th>
-<th style="text-align:center;"> 命令行参数                      </th>
-<th style="text-align:left;"> 描述                                        </th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align:left;"> LOG_PATH                  </td>
-<td style="text-align:center;"> <code>-log &lt;logdir&gt;               </code> </td>
-<td style="text-align:left;"> map结果输出的目录。默认为<code>JobStagingDir/_logs</code>，在DistCp#configureOutputFormat把该路径设置给CopyOutputFormat#setOutputPath。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> SOURCE_FILE_LISTING       </td>
-<td style="text-align:center;"> <code>-f &lt;urilist_uri&gt;            </code> </td>
-<td style="text-align:left;"> 需要拷贝的source-path&hellip;从改文件获取。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> MAX_MAPS                  </td>
-<td style="text-align:center;"> <code>-m &lt;num_maps&gt;               </code> </td>
-<td style="text-align:left;"> 默认20个，创建job时通过<code>JobContext.NUM_MAPS</code>添加到配置。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> ATOMIC_COMMIT             </td>
-<td style="text-align:center;"> <code>-atomic                     </code> </td>
-<td style="text-align:left;"> 原子操作。要么全部拷贝成功，那么失败。与<code>SYNC_FOLDERS</code> &amp; <code>DELETE_MISSING</code>选项不兼容。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> WORK_PATH                 </td>
-<td style="text-align:center;"> <code>-tmp &lt;tmp_dir&gt;              </code> </td>
-<td style="text-align:left;"> 与atomic一起使用，中间过程存储数据目录。成功后在CopyCommitter一次性移动到target-path下。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> SYNC_FOLDERS              </td>
-<td style="text-align:center;"> <code>-update                     </code> </td>
-<td style="text-align:left;"> 新建或更新文件。当文件大小和blockSize（以及crc）一样忽略。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> DELETE_MISSING            </td>
-<td style="text-align:center;"> <code>-delete                     </code> </td>
-<td style="text-align:left;"> 针对target-path目录，清理source-paths目录下没有的文件。常和<code>SYNC_FOLDERS</code>选项一起使用。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> BLOCKING                  </td>
-<td style="text-align:center;"> <code>-async                      </code> </td>
-<td style="text-align:left;"> 异步运行。其实就是job提交后，不打印日志了没有调用<code>job.waitForCompletion(true)</code>罢了。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> BANDWIDTH                 </td>
-<td style="text-align:center;"> <code>-bandwidth num(M)           </code> </td>
-<td style="text-align:left;"> 获取数据的最大速度。结合ThrottledInputStream来进行控制，在RetriableFileCopyCommand中初始化。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> COPY_STRATEGY             </td>
-<td style="text-align:center;"> <code>-strategy dynamic/uniformsize</code> </td>
-<td style="text-align:left;"> 复制的时刻分组策略，即每个Map到底处理写什么数据。后面会讲到，分为静态和动态。</td>
-</tr>
-</tbody>
-</table>
-
-
-<p>还有新增的两个属性skipcrccheck（SKIP_CRC），append（APPEND）。保留Preserve 属性和ssl选项由于暂时没用到，这里不表，以后用到再补充。</p>
-
-<h2>DistCp的源码</h2>
-
-<p>放在<code>hadoop-2.6.0-src\hadoop-tools\hadoop-distcp</code>目录下。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mvn eclipse:eclipse </span></code></pre></td></tr></table></div></figure>
-
-
-<p>网络没问题的话，一般都能成功生成.classpath和.project两个Eclipse需要的项目文件。然后把项目导入eclipse即可。包括4个目录。</p>
-
-<p>还是先说说整个distcp的实现流程，看看distcp怎么跑的。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ export HADOOP_CLIENT_OPTS="-Dhadoop.root.logger=debug,console -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8071"
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop distcp /cp /cp-distcp
-</span><span class='line'>Listening for transport dt_socket at address: 8071</span></code></pre></td></tr></table></div></figure>
-
-
-<p>运行eclipse远程调试，连接服务器的8071端口，在DistCp的run方法打个断点，就可以调试了解其运行方式。修改log4j为debug，可以查看更详细的日志，了解执行的流程。</p>
-
-<p>服务器的jdk版本和本地eclipse的jdk版本最好一致，这样调试的时刻比较顺畅。</p>
-
-<h3>Driver</h3>
-
-<p>首先进到DistCp(Driver)的main方法，DistCp继承Configured实现了Tool接口，</p>
-
-<p>第一步解析参数</p>
-
-<ol>
-<li>使用<code>ToolRunner.run</code>运行会调用GenericOptionsParser解析<code>-D</code>的属性到Configuration实例；</li>
-<li>进到run方法后，通过<code>OptionsParser.parse</code>来解析配置为DistCpOptions实例；功能比较单一，主要涉及到DistCpOptionSwitch和DistCpOptions两个类。</li>
-</ol>
-
-
-<p>第二步准备MapRed的Job实例</p>
-
-<ol>
-<li>创建metaFolderPath（后面的 待拷贝文件seq文件存取的位置：StagingDir/_distcp[RAND]），对应<code>CONF_LABEL_META_FOLDER</code>属性；</li>
-<li>创建Job，设置名称、InputFormat(UniformSizeInputFormat|DynamicInputFormat)、Map类CopyMapper、Map个数（默认20个）、Reduce个数（0个）、OutputKey|ValueClass、MAP_SPECULATIVE（使用RetriableCommand代替）、CopyOutputFormat</li>
-<li>把命令行的配置写入Configuration。</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>metaFolderPath /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp-1344594636</span></code></pre></td></tr></table></div></figure>
-
-
-<p>此处有话题，设置InputFormat时通过<code>DistCpUtils#getStrategy</code>获取，代码中并没有<code>strategy.impl</code>的键加入到configuration。why？此处也是我们可以学习的，这个设置项在distcp-default.xml配置文件中，这种方式可以实现代码的解耦。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  public static Class&lt;? extends InputFormat&gt; getStrategy(Configuration conf,
-</span><span class='line'>                                                                 DistCpOptions options) {
-</span><span class='line'>    String confLabel = "distcp." +
-</span><span class='line'>        options.getCopyStrategy().toLowerCase(Locale.getDefault()) + ".strategy.impl";
-</span><span class='line'>    return conf.getClass(confLabel, UniformSizeInputFormat.class, InputFormat.class);
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>// 配置
-</span><span class='line'>    &lt;property&gt;
-</span><span class='line'>        &lt;name&gt;distcp.dynamic.strategy.impl&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;org.apache.hadoop.tools.mapred.lib.DynamicInputFormat&lt;/value&gt;
-</span><span class='line'>        &lt;description&gt;Implementation of dynamic input format&lt;/description&gt;
-</span><span class='line'>    &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>    &lt;property&gt;
-</span><span class='line'>        &lt;name&gt;distcp.static.strategy.impl&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;org.apache.hadoop.tools.mapred.UniformSizeInputFormat&lt;/value&gt;
-</span><span class='line'>        &lt;description&gt;Implementation of static input format&lt;/description&gt;
-</span><span class='line'>    &lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>配置CopyOutputFormat时，设置了三个路径：</p>
-
-<ul>
-<li>WorkingDirectory（中间临时存储目录，atomic选项时为tmp路径，否则为target-path路径）；</li>
-<li>CommitDirectory（文件拷贝最终目录，即target-path）；</li>
-<li>OutputPath（map write记录输出路径）。</li>
-</ul>
-
-
-<p>关于命令行选项有一个疑问，用eclipse查看<code>Call Hierachy</code>调用关系的时刻，并没有发现调用<code>DistCpOptions#getXXX</code>的方法，那么是通过什么方式把这些配置项设置到Configuration的呢？ 在DistCpOptionSwitch的枚举类中定义了每个选项的confLabel，在<code>DistCpOptions#appendToConf</code>方法中一起把这些属性填充到Configuration中。 [统一配置] ！！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  public void appendToConf(Configuration conf) {
-</span><span class='line'>    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.ATOMIC_COMMIT,
-</span><span class='line'>        String.valueOf(atomicCommit));
-</span><span class='line'>    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.IGNORE_FAILURES,
-</span><span class='line'>        String.valueOf(ignoreFailures));
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<p>第三步整理需要拷贝的文件列表</p>
-
-<p>这个真tmd的独到，提前把要做的事情规划好。需要拷贝的列表数据最终写入<code>[metaFolder]/fileList.seq</code>（key：与source-path的相对路径，value：该文件的CopyListingFileStatus），对应<code>CONF_LABEL_LISTING_FILE_PATH</code>，也就是map的输入（在自定义的InputFormat中处理）。</p>
-
-<p>涉及CopyList的三个实现FileBasedCopyListing（-f）、GlobbedCopyListing、SimpleCopyListing。最终都调用SimpleCopyListing把文件和空目录列表写入到fileList.seq；最后校验否有重复的文件名，如果存在会抛出DuplicateFileException。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>/tmp/hadoop-yarn/staging/hadoop/.staging/_distcp179796572/fileList.seq</span></code></pre></td></tr></table></div></figure>
-
-
-<p>同时计算需要拷贝的个数和大小（Byte），对应<code>CONF_LABEL_TOTAL_BYTES_TO_BE_COPIED</code>和<code>CONF_LABEL_TOTAL_NUMBER_OF_RECORDS</code>。</p>
-
-<p>第四步提交任务，等待等待无尽的等待。</p>
-
-<p>也可以设置async选项，提交成功后直接完成Driver。</p>
-
-<h3>Mapper</h3>
-
-<p>首先，setup从Configuration中获取配置属性：sync(update)/忽略错误(i)/校验码/overWrite/workPath/finalPath</p>
-
-<p>然后，从CONF_LABEL_LISTING_FILE_PATH路径获取准备好的sourcepath->CopyListingFileStatus键值对作为map的输入。</p>
-
-<p>其实CopyListingFileStatus这个对象真正用到的就是原始Path的路径，真心不知道搞这么多属性干嘛！获取原始路径后又重新实例CopyListingFileStatus为sourceCurrStatus。</p>
-
-<ul>
-<li>如果源路径为文件夹，调用createTargetDirsWithRetry（RetriableDirectoryCreateCommand）创建路径，COPY计数加1，return。</li>
-<li>如果源路径为文件，但是checkUpdate（文件大小和块大小一致）为skip，SKIP计数加1，BYTESSKIPPED计数加上sourceCurrStatus的长度，把改条记录写入map输出，return。</li>
-<li>如果源路径为文件，且检查后不是skip则调用copyFileWithRetry（RetriableFileCopyCommand）拷贝文件，BYTESEXPECTED计数加上sourceCurrStatus的长度，BYTESCOPIED计数加上拷贝文件的大小，COPY计数加1，再return。</li>
-<li>如果配置有保留文件/文件夹属性，对目标进行属性修改。</li>
-</ul>
-
-
-<p>从CopyListing获取数据，调用FileSystem-IO接口进行数据的拷贝（在原有IO的基础上封装了ThrottledInputStream来进行限流处理）。于此同时会涉及到source路径是文件夹但是target不是文件夹等的检查；更新还是覆盖；文件属性的保留和Map计数值的更新操作。</p>
-
-<h3>InputFormat</h3>
-
-<p>自定义了InputFormat来UniformSizeInputFormat进行拆分构造FileSplit，对CONF_LABEL_LISTING_FILE_PATH文件的每个键值的文件大小平均分成Map num
-个数小块，根据键值的位置构造Map num个FileSplit对象。执行map时，RecordReader根据FileSplit来获取键值对，然后传递给map。</p>
-
-<p>新版本的增加了DynamicInputFormat，实现能者多难的功能。先通过实际的日志，看看运行效果：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ export HADOOP_CLIENT_OPTS="-Dhadoop.root.logger=debug,console -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8071"
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop distcp "-Dmapreduce.map.java.opts=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090" -strategy dynamic -m 2 /cp /cp-distcp-dynamic
-</span><span class='line'>
-</span><span class='line'># 创建的chunk
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-</span><span class='line'>drwx------   - hadoop supergroup          0 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        198 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00000
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        224 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00001
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        220 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00002
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-</span><span class='line'>
-</span><span class='line'># 分配后的chunk
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-</span><span class='line'>drwx------   - hadoop supergroup          0 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        220 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00002
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        198 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/task_1426773672048_0006_m_000000
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        224 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/task_1426773672048_0006_m_000001
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-</span><span class='line'>
-</span><span class='line'># map获取后
-</span><span class='line'>[hadoop@hadoop-master2 ~]$  ssh -g -L 8090:hadoop-slaver1:8090 hadoop-slaver1
-</span><span class='line'># 每拷贝完一个chunk/最后map结束，会把上一个跑完的chunk文件删除
-</span><span class='line'># job跑完后，临时目录的数据就被清楚了
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-</span><span class='line'>ls: `/tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446': No such file or directory</span></code></pre></td></tr></table></div></figure>
-
-
-<p>由于设置的map num为2，还有一个chunk没有分配出去，等到真正执行的时刻再进行分配。体现了策略的动态性。这个<strong>chunkm_000000分配给map0(其他类似)</strong>，其他没有分配出去的chunk让给map去<strong>抢</strong>。</p>
-
-<p>首先InputFormat创建FileSplit，在此过程中把原来的<code>CONF_LABEL_LISTING_FILE_PATH</code>中的需要处理的文件根据个数等份成chunk。（具体实现看源码，其中numEntriesPerChunk计算一个chunk几个文件比较复杂点）</p>
-
-<p>chunk中的也是sourcepath->CopyListingFileStatus键值对，以seq格式的存储文件中。<code>DynamicInputChunk#acquire(TaskAttemptContext)</code>读取数据的时刻比较有意思，在Driver阶段分配的chunk处理完后，就会动态的取处理余下的chunk，能者多劳。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  public static DynamicInputChunk acquire(TaskAttemptContext taskAttemptContext) throws IOException, InterruptedException {
-</span><span class='line'>    if (!areInvariantsInitialized())
-</span><span class='line'>        initializeChunkInvariants(taskAttemptContext.getConfiguration());
-</span><span class='line'>
-</span><span class='line'>    String taskId = taskAttemptContext.getTaskAttemptID().getTaskID().toString();
-</span><span class='line'>    Path acquiredFilePath = new Path(chunkRootPath, taskId);
-</span><span class='line'>
-</span><span class='line'>    if (fs.exists(acquiredFilePath)) {
-</span><span class='line'>      LOG.info("Acquiring pre-assigned chunk: " + acquiredFilePath);
-</span><span class='line'>      return new DynamicInputChunk(acquiredFilePath, taskAttemptContext);
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    for (FileStatus chunkFile : getListOfChunkFiles()) {
-</span><span class='line'>      if (fs.rename(chunkFile.getPath(), acquiredFilePath)) {
-</span><span class='line'>        LOG.info(taskId + " acquired " + chunkFile.getPath());
-</span><span class='line'>        return new DynamicInputChunk(acquiredFilePath, taskAttemptContext);
-</span><span class='line'>      }
-</span><span class='line'>      else
-</span><span class='line'>        LOG.warn(taskId + " could not acquire " + chunkFile.getPath());
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    return null;
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>OutputFormat &amp; Committer</h3>
-
-<p>自定义的CopyOutputFormat包括了working/commit/output路径的get/set方法，同时指定了自定义的OutputCommitter：CopyCommitter。</p>
-
-<p>正常情况为app-master调用CopyCommitter#commitJob处理善后的事情：保留文件属性的情况下更新文件的属性，atomic情况下把working转到commit路径，delete情况下删除target目录多余的文件。最后清理临时目录。</p>
-
-<p>看完DistCp然后再去看DistCpV1，尽管说功能上类似，但是要和新版本对上仍然要去看distcp的代码。好的代码就是这样吧，让人很自然轻松的理解，而不必反复来回的折腾，甚至于为了免得来回折腾而记住该代码块。（类太大，方法太长，变量定义和使用的位置相隔很远！一个变量作用域太长赋值变更次数太多）</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://hadoop.apache.org/docs/r2.6.0/hadoop-project-dist/hadoop-common/FileSystemShell.html#cp">FileSystemShell cp</a></li>
-<li><a href="http://hadoop.apache.org/docs/r2.6.0/hadoop-mapreduce-client/hadoop-mapreduce-client-core/DistCp.html">DistCp官方文档</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/03/09/windows-build-hadoop-2-dot-6/">Windows Build hadoop-2.6</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2015-03-09T12:01:55+08:00" pubdate data-updated="true">Mon 2015-03-09 12:01</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>环境</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>C:\Users\winse&gt;java -version
-</span><span class='line'>java version "1.7.0_02"
-</span><span class='line'>Java(TM) SE Runtime Environment (build 1.7.0_02-b13)
-</span><span class='line'>Java HotSpot(TM) Client VM (build 22.0-b10, mixed mode, sharing)
-</span><span class='line'>
-</span><span class='line'>C:\Users\winse&gt;protoc --version
-</span><span class='line'>libprotoc 2.5.0
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC ~
-</span><span class='line'>$ cygcheck -c cygwin
-</span><span class='line'>Cygwin Package Information
-</span><span class='line'>Package              Version        Status
-</span><span class='line'>cygwin               1.7.33-1       OK</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>具体步骤</h2>
-
-<p>在windows下，hadoop-2.6还不能直接编译java-x86的dll。需要自己处理/打patch<a href="https://issues.apache.org/jira/browse/HADOOP-9922">HADOOP-9922</a>，但是官网jira-patch给出来的和2.6.0-src对不上。自己动手丰衣足食，把x64的全部改成Win32即可，附编译成功的patch<a href="http://yunpan.cn/cJaZzSu6DIibg">下载hadoop-2.6.0-common-native-win32-diff.patch（提取码：08fd）</a>。</p>
-
-<ul>
-<li>用visual studio2010的x86命令行进入：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Visual Studio 命令提示(2010)
-</span><span class='line'>
-</span><span class='line'>Setting environment for using Microsoft Visual Studio 2010 x86 tools.</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>切换到hadoop源码目录，打补丁和编译。同时protobuf目录和cygwin\bin目录加入PATH：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>cd hadoop-2.6.0-src
-</span><span class='line'>cd hadoop-common-project\hadoop-common
-</span><span class='line'>patch -p0 &lt; hadoop-2.6.0-common-native-win32-diff.patch
-</span><span class='line'>
-</span><span class='line'>set PATH=%PATH%;E:\local\home\Administrator\bin;c:\cygwin\bin
-</span><span class='line'>
-</span><span class='line'>mvn package -Pdist,native-win -DskipTests -Dtar -Dmaven.javadoc.skip=true</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>编译完成后，直接把<code>hadoop-common\target\bin</code>目录下的内容拷贝到程序的bin目录下。</li>
-</ul>
-
-
-<p>在windows下，执行java程序java.library.path默认到PATH路径找。这也是需要定义<strong>环境变量HADOOP_HOME</strong>，以及把<code>%HADOOP_HOME%\bin</code>加入到PATH的原因！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>HADOOP_HOME=E:\local\libs\big\hadoop-2.2.0 
-</span><span class='line'>PATH=%HADOOP_HOME%\bin;%PATH%</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>配置坑：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@Lenovo-PC /cygdrive/e/local/opt/bigdata/hadoop-2.6.0
-</span><span class='line'>$ find . -name "*-default.xml" | xargs -I{} grep "hadoop.tmp.dir" {}
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/local&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/system&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/staging&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/temp&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/history/recoverystore&lt;/value&gt;
-</span><span class='line'>  &lt;name&gt;hadoop.tmp.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/io/local&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/s3&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/s3a&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/name&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/data&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/namesecondary&lt;/value&gt;
-</span><span class='line'>    &lt;value&gt;${hadoop.tmp.dir}/yarn/system/rmstore&lt;/value&gt;
-</span><span class='line'>    &lt;value&gt;${hadoop.tmp.dir}/nm-local-dir&lt;/value&gt;
-</span><span class='line'>    &lt;value&gt;${hadoop.tmp.dir}/yarn-nm-recovery&lt;/value&gt;
-</span><span class='line'>    &lt;value&gt;${hadoop.tmp.dir}/yarn/timeline&lt;/value&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>就dfs的在前面加了<code>file://</code>前缀！</p>
-
-<p>所以，在windows下如果你只配置hadoop.tmp.dir（<code>file:///e:/tmp/hadoop</code>）的话还得同时配置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.namenode.name.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/dfs/name&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/dfs/data&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.namenode.checkpoint.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/dfs/namesecondary&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>接下来格式化，启动都和同时一样。</p>
-
-<h2>其他</h2>
-
-<p>调试，下载maven源码等</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>set HADOOP_NAMENODE_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090"
-</span><span class='line'>
-</span><span class='line'>mvn dependency:resolve -Dclassifier=sources
-</span><span class='line'>
-</span><span class='line'>mvn eclipse:eclipse -DdownloadSources -DdownloadJavadocs 
-</span><span class='line'>
-</span><span class='line'>mvn dependency:sources 
-</span><span class='line'>mvn dependency:resolve -Dclassifier=javadoc
-</span><span class='line'>
-</span><span class='line'>/* 操作HDFS */
-</span><span class='line'>set HADOOP_ROOT_LOGGER=DEBUG,console</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/03/08/vmware-build-hadoop2-dot-6/">VMware-Centos6 Build hadoop-2.6</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2015-03-08T08:22:14+08:00" pubdate data-updated="true">Sun 2015-03-08 08:22</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>每次编译hadoop（-common）都是惊心动魄，没一次顺顺当当的！由于作者的偷懒(vmware共享windows目录)，引发的又一起血案~~~</p>
-
-<p>同时，有时生产环境不是自己能选择的，需要适应各种环境来编译相应的hadoop，此时在已有的linux开发环境使用docker搭建各种linux及其方便的事情。这里在centos6上搭建docker-centos5实例来编译hadoop。</p>
-
-<h2>环境说明</h2>
-
-<ul>
-<li>操作系统</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# uname -a
-</span><span class='line'>Linux localhost.localdomain 2.6.32-431.el6.x86_64 #1 SMP Fri Nov 22 03:15:09 UTC 2013 x86_64 x86_64 x86_64 GNU/Linux
-</span><span class='line'>[root@localhost ~]# cat /etc/redhat-release 
-</span><span class='line'>CentOS release 6.5 (Final)</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>使用VMware的<strong>Shared Folders</strong>建立了maven和hadoop-2.6.0-src到宿主机器的映射：(不要直接在源码映射的目录下编译，先拷贝到linux的硬盘下！！)</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# ll -a hadoop-2.6.0-src maven
-</span><span class='line'>lrwxrwxrwx. 1 root root 26 Mar  7 22:47 hadoop-2.6.0-src -&gt; /mnt/hgfs/hadoop-2.6.0-src
-</span><span class='line'>lrwxrwxrwx. 1 root root 15 Mar  7 22:47 maven -&gt; /mnt/hgfs/maven</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>具体操作</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 安装maven，jdk
-</span><span class='line'>cat apache-maven-3.2.3-bin.tar.gz | ssh root@192.168.154.130 "cat - | tar zxv "
-</span><span class='line'>
-</span><span class='line'>tar zxvf jdk-7u60-linux-x64.gz -C ~/
-</span><span class='line'>vi .bash_profile 
-</span><span class='line'>
-</span><span class='line'># 开发环境
-</span><span class='line'>yum install gcc glibc-headers gcc-c++ zlib-devel
-</span><span class='line'>yum install openssl-devel
-</span><span class='line'>
-</span><span class='line'># 安装protobuf
-</span><span class='line'>tar zxvf protobuf-2.5.0.tar.gz 
-</span><span class='line'>cd protobuf-2.5.0
-</span><span class='line'>./configure 
-</span><span class='line'>make && make install
-</span><span class='line'>
-</span><span class='line'>## 编译hadoop-common
-</span><span class='line'># 从映射文件中拷贝hadoop-common到linux文件系统，然后在编译hadoop-common
-</span><span class='line'>cd hadoop-2.6.0-src/hadoop-common-project/hadoop-common/
-</span><span class='line'>cd ..
-</span><span class='line'>cp -r  hadoop-common ~/  #Q:为啥要拷贝一份，【遇到的问题】中有进行解析
-</span><span class='line'>cd ~/hadoop-common
-</span><span class='line'>mvn install
-</span><span class='line'>mvn -X clean package -Pdist,native -Dmaven.test.skip=true -Dmaven.javadoc.skip=true
-</span><span class='line'>
-</span><span class='line'>## 编译全部，耗时比较久，可以先去吃个饭^v^
-</span><span class='line'>cp -r /mnt/hgfs/hadoop-2.6.0-src ~/
-</span><span class='line'>mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true #Q:这里为啥不能用maven.test.skip?</span></code></pre></td></tr></table></div></figure>
-
-
-<p>$$TAG centos5 20160402</p>
-
-<ul>
-<li>docker build hadoop-2.6.3(比自己搞个虚拟机更快)</li>
-</ul>
-
-
-<p>实际生产需要使用centos5，这里在centos5编译。其他下载<a href="https://github.com/CentOS/sig-cloud-instance-images">Centos</a>特定版本，步骤是一样的。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 ~]$ cat /etc/redhat-release 
-</span><span class='line'>CentOS release 6.6 (Final)
-</span><span class='line'>
-</span><span class='line'>[root@cu2 shm]# unzip sig-cloud-instance-images-centos-5.zip 
-</span><span class='line'>[root@cu2 shm]# cd sig-cloud-instance-images-c8d1a81b0516bca0f20434be8d0fac4f7d58a04a/docker/
-</span><span class='line'>[root@cu2 docker]# cat centos-5-20150304_1234-docker.tar.xz | docker import - centos:centos5
-</span><span class='line'>[root@cu2 ~]# docker images
-</span><span class='line'>REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-</span><span class='line'>centos              centos5             a3f6a632c5ec        27 seconds ago      284.1 MB
-</span><span class='line'>
-</span><span class='line'># 把本机原有资源利用起来，如：maven/repo/jdk/hadoop等
-</span><span class='line'>[root@cu2 ~]# docker run -ti -v /home/hadoop:/home/hadoop -v /opt:/opt -v /data:/data centos:centos5 /bin/bash
-</span><span class='line'>
-</span><span class='line'>export JAVA_HOME=/opt/jdk1.7.0_17
-</span><span class='line'>export MAVEN_HOME=/opt/apache-maven-3.3.9
-</span><span class='line'>export PATH=$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH
-</span><span class='line'>
-</span><span class='line'>yum install lrzsz zlib-devel make which gcc gcc-c++ cmake openssl openssl-devel -y
-</span><span class='line'>
-</span><span class='line'>cd protobuf-2.5.0
-</span><span class='line'>./configure 
-</span><span class='line'>make && make install
-</span><span class='line'>which protoc
-</span><span class='line'>
-</span><span class='line'>cd hadoop-2.6.3-src/
-</span><span class='line'>mvn clean package -Dmaven.javadoc.skip=true -DskipTests -Pdist,native 
-</span><span class='line'>
-</span><span class='line'>cd hadoop-dist/target/hadoop-2.6.3/lib/native/
-</span><span class='line'>cd ..
-</span><span class='line'>tar zcvf native-hadoop2.6.3-centos5.tar.gz native
-</span><span class='line'>
-</span><span class='line'>----
-</span><span class='line'>
-</span><span class='line'>在centos5编译snappy-1.1.3死都过不去，**Makefile.am:4: Libtool library used but `LIBTOOL' is undefined** 
-</span><span class='line'>网上资料都差了，最后直接用centos6编译好的snappy可以。哎，有的用就好。
-</span><span class='line'>
-</span><span class='line'>[root@8fb11f6b3ced hadoop-2.6.3-src]# mvn package -Dmaven.javadoc.skip=true -DskipTests -Pdist,native  -Drequire.snappy=true  -Dsnappy.prefix=/home/hadoop/snappy
-</span><span class='line'>[root@8fb11f6b3ced hadoop-2.6.3-src]# cd hadoop-dist/target/hadoop-2.6.3/
-</span><span class='line'>[root@8fb11f6b3ced hadoop-2.6.3]# pwd
-</span><span class='line'>/home/hadoop/sources/hadoop-2.6.3-src/hadoop-dist/target/hadoop-2.6.3
-</span><span class='line'>[root@8fb11f6b3ced hadoop-2.6.3]# cd lib/native/
-</span><span class='line'>[root@8fb11f6b3ced native]# tar zxvf /home/hadoop/snappy/snappy-libs.tar.gz 
-</span><span class='line'>
-</span><span class='line'>[root@8fb11f6b3ced native]# cd /home/hadoop/sources/hadoop-2.6.3-src/hadoop-dist/target/hadoop-2.6.3
-</span><span class='line'>[root@8fb11f6b3ced hadoop-2.6.3]# bin/hadoop checknative -a
-</span><span class='line'>
-</span><span class='line'># 打包到正式环境
-</span><span class='line'>[root@8fb11f6b3ced hadoop-2.6.3]# cd lib/
-</span><span class='line'>[root@8fb11f6b3ced lib]# tar zcvf native-hadoop2.6.3-centos5-with-snappy.tar.gz native</span></code></pre></td></tr></table></div></figure>
-
-
-<p>$$END TAG centos5 20160402</p>
-
-<h2>遇到的问题</h2>
-
-<ul>
-<li><p>第一个问题肯定是没有<strong>c</strong>的编译环境，安装gcc即可。</p></li>
-<li><p><code>configure: error: C++ preprocessor "/lib/cpp" fails sanity check</code>，安装c++。</p></li>
-</ul>
-
-
-<p>-> <a href="http://www.cnblogs.com/niocai/archive/2011/11/04/2236458.html">configure: error: C++ preprocessor &ldquo;/lib/cpp&rdquo; fails sanity check</a></p>
-
-<ul>
-<li><code>Unknown lifecycle phase "c"</code>，点击错误提示最后的链接查看解决方法，即执行<code>mvn install</code>。</li>
-</ul>
-
-
-<p>-> <a href="http://blog.csdn.net/kamemo/article/details/6523992">执行第一maven用例出错：Unknown lifecycle phase &ldquo;complile&rdquo;.</a>
--> <a href="https://cwiki.apache.org/confluence/display/MAVEN/LifecyclePhaseNotFoundException">LifecyclePhaseNotFoundException</a></p>
-
-<ul>
-<li><code>CMake Error at /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:108 (message): Could NOT find ZLIB (missing: ZLIB_INCLUDE_DIR)</code>， 缺少zlib-devel。</li>
-</ul>
-
-
-<p>-> <a href="http://ask.csdn.net/questions/62307">Cmake时报错：Could NOT find ImageMagick</a></p>
-
-<ul>
-<li><code>cmake_symlink_library: System Error: Operation not supported</code>， 共享的windows目录下不能创建linux的软链接。</li>
-</ul>
-
-
-<p>-> <a href="http://bbs.chinaunix.net/forum.php?mod=viewthread&amp;tid=3595245&amp;fromuid=26971268">参见9楼回复</a></p>
-
-<blockquote><p>创建链接不成功，要确认当前帐户下是否有权限在编译的目录中有创建链接的权限</p>
-
-<p>比如，你如果是在一个WINDOWS机器上的共享目录中编译，就没法创建链接，就会失败。把源码复制到本地的目录中再编译就不会有这问题。</p></blockquote>
-
-<ul>
-<li>全部编译时仅能用skipTests，不能maven.test.skip。</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>main:
-</span><span class='line'>     [echo] Running test_libhdfs_threaded
-</span><span class='line'>     [exec] nmdCreate: NativeMiniDfsCluster#Builder#Builder error:
-</span><span class='line'>     [exec] java.lang.NoClassDefFoundError: org/apache/hadoop/hdfs/MiniDFSCluster$Builder
-</span><span class='line'>     [exec] Caused by: java.lang.ClassNotFoundException: org.apache.hadoop.hdfs.MiniDFSCluster$Builder
-</span><span class='line'>     [exec]     at java.net.URLClassLoader$1.run(URLClassLoader.java:366)
-</span><span class='line'>     [exec]     at java.net.URLClassLoader$1.run(URLClassLoader.java:355)
-</span><span class='line'>     [exec]     at java.security.AccessController.doPrivileged(Native Method)
-</span><span class='line'>     [exec]     at java.net.URLClassLoader.findClass(URLClassLoader.java:354)
-</span><span class='line'>     [exec]     at java.lang.ClassLoader.loadClass(ClassLoader.java:425)
-</span><span class='line'>     [exec]     at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:308)
-</span><span class='line'>     [exec]     at java.lang.ClassLoader.loadClass(ClassLoader.java:358)
-</span><span class='line'>     [exec] TEST_ERROR: failed on /root/hadoop-2.6.0-src/hadoop-hdfs-project/hadoop-hdfs/src/main/native/libhdfs/test_libhdfs_threaded.c:326 (errno: 2): got NULL from tlhCluster</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li><code>Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the</code>，安装openssl-devel。</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>main:
-</span><span class='line'>    [mkdir] Created dir: /root/hadoop-2.6.0-src/hadoop-tools/hadoop-pipes/target/native
-</span><span class='line'>     [exec] -- The C compiler identification is GNU 4.4.7
-</span><span class='line'>     [exec] -- The CXX compiler identification is GNU 4.4.7
-</span><span class='line'>     [exec] -- Check for working C compiler: /usr/bin/cc
-</span><span class='line'>     [exec] -- Check for working C compiler: /usr/bin/cc -- works
-</span><span class='line'>     [exec] -- Detecting C compiler ABI info
-</span><span class='line'>     [exec] -- Detecting C compiler ABI info - done
-</span><span class='line'>     [exec] -- Check for working CXX compiler: /usr/bin/c++
-</span><span class='line'>     [exec] -- Check for working CXX compiler: /usr/bin/c++ -- works
-</span><span class='line'>     [exec] -- Detecting CXX compiler ABI info
-</span><span class='line'>     [exec] -- Detecting CXX compiler ABI info - done
-</span><span class='line'>     [exec] -- Configuring incomplete, errors occurred!
-</span><span class='line'>     [exec] See also "/root/hadoop-2.6.0-src/hadoop-tools/hadoop-pipes/target/native/CMakeFiles/CMakeOutput.log".
-</span><span class='line'>     [exec] CMake Error at /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:108 (message):
-</span><span class='line'>     [exec]   Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the
-</span><span class='line'>     [exec]   system variable OPENSSL_ROOT_DIR (missing: OPENSSL_LIBRARIES
-</span><span class='line'>     [exec]   OPENSSL_INCLUDE_DIR)
-</span><span class='line'>     [exec] Call Stack (most recent call first):
-</span><span class='line'>     [exec]   /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:315 (_FPHSA_FAILURE_MESSAGE)
-</span><span class='line'>     [exec]   /usr/share/cmake/Modules/FindOpenSSL.cmake:313 (find_package_handle_standard_args)
-</span><span class='line'>     [exec]   CMakeLists.txt:20 (find_package)
-</span><span class='line'>     [exec] 
-</span><span class='line'>     [exec] </span></code></pre></td></tr></table></div></figure>
-
-
-<h2>成功</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[INFO] Executed tasks
-</span><span class='line'>[INFO] 
-</span><span class='line'>[INFO] --- maven-javadoc-plugin:2.8.1:jar (module-javadocs) @ hadoop-dist ---
-</span><span class='line'>[INFO] Skipping javadoc generation
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] Reactor Summary:
-</span><span class='line'>[INFO] 
-</span><span class='line'>[INFO] Apache Hadoop Main ................................. SUCCESS [ 43.005 s]
-</span><span class='line'>[INFO] Apache Hadoop Project POM .......................... SUCCESS [ 25.511 s]
-</span><span class='line'>[INFO] Apache Hadoop Annotations .......................... SUCCESS [ 21.177 s]
-</span><span class='line'>[INFO] Apache Hadoop Assemblies ........................... SUCCESS [ 11.728 s]
-</span><span class='line'>[INFO] Apache Hadoop Project Dist POM ..................... SUCCESS [ 51.274 s]
-</span><span class='line'>[INFO] Apache Hadoop Maven Plugins ........................ SUCCESS [ 35.625 s]
-</span><span class='line'>[INFO] Apache Hadoop MiniKDC .............................. SUCCESS [ 21.936 s]
-</span><span class='line'>[INFO] Apache Hadoop Auth ................................. SUCCESS [ 24.665 s]
-</span><span class='line'>[INFO] Apache Hadoop Auth Examples ........................ SUCCESS [ 17.058 s]
-</span><span class='line'>[INFO] Apache Hadoop Common ............................... SUCCESS [06:07 min]
-</span><span class='line'>[INFO] Apache Hadoop NFS .................................. SUCCESS [ 41.279 s]
-</span><span class='line'>[INFO] Apache Hadoop KMS .................................. SUCCESS [ 59.186 s]
-</span><span class='line'>[INFO] Apache Hadoop Common Project ....................... SUCCESS [  7.216 s]
-</span><span class='line'>[INFO] Apache Hadoop HDFS ................................. SUCCESS [04:29 min]
-</span><span class='line'>[INFO] Apache Hadoop HttpFS ............................... SUCCESS [ 52.883 s]
-</span><span class='line'>[INFO] Apache Hadoop HDFS BookKeeper Journal .............. SUCCESS [ 28.972 s]
-</span><span class='line'>[INFO] Apache Hadoop HDFS-NFS ............................. SUCCESS [ 24.901 s]
-</span><span class='line'>[INFO] Apache Hadoop HDFS Project ......................... SUCCESS [  7.486 s]
-</span><span class='line'>[INFO] hadoop-yarn ........................................ SUCCESS [  7.466 s]
-</span><span class='line'>[INFO] hadoop-yarn-api .................................... SUCCESS [ 32.970 s]
-</span><span class='line'>[INFO] hadoop-yarn-common ................................. SUCCESS [ 25.549 s]
-</span><span class='line'>[INFO] hadoop-yarn-server ................................. SUCCESS [  6.709 s]
-</span><span class='line'>[INFO] hadoop-yarn-server-common .......................... SUCCESS [ 25.292 s]
-</span><span class='line'>[INFO] hadoop-yarn-server-nodemanager ..................... SUCCESS [ 29.555 s]
-</span><span class='line'>[INFO] hadoop-yarn-server-web-proxy ....................... SUCCESS [ 12.800 s]
-</span><span class='line'>[INFO] hadoop-yarn-server-applicationhistoryservice ....... SUCCESS [ 14.025 s]
-</span><span class='line'>[INFO] hadoop-yarn-server-resourcemanager ................. SUCCESS [ 21.121 s]
-</span><span class='line'>[INFO] hadoop-yarn-server-tests ........................... SUCCESS [ 24.019 s]
-</span><span class='line'>[INFO] hadoop-yarn-client ................................. SUCCESS [ 18.949 s]
-</span><span class='line'>[INFO] hadoop-yarn-applications ........................... SUCCESS [  7.586 s]
-</span><span class='line'>[INFO] hadoop-yarn-applications-distributedshell .......... SUCCESS [  8.428 s]
-</span><span class='line'>[INFO] hadoop-yarn-applications-unmanaged-am-launcher ..... SUCCESS [ 12.671 s]
-</span><span class='line'>[INFO] hadoop-yarn-site ................................... SUCCESS [  7.518 s]
-</span><span class='line'>[INFO] hadoop-yarn-registry ............................... SUCCESS [ 18.518 s]
-</span><span class='line'>[INFO] hadoop-yarn-project ................................ SUCCESS [ 38.781 s]
-</span><span class='line'>[INFO] hadoop-mapreduce-client ............................ SUCCESS [ 13.133 s]
-</span><span class='line'>[INFO] hadoop-mapreduce-client-core ....................... SUCCESS [ 23.772 s]
-</span><span class='line'>[INFO] hadoop-mapreduce-client-common ..................... SUCCESS [ 22.815 s]
-</span><span class='line'>[INFO] hadoop-mapreduce-client-shuffle .................... SUCCESS [ 16.810 s]
-</span><span class='line'>[INFO] hadoop-mapreduce-client-app ........................ SUCCESS [ 14.404 s]
-</span><span class='line'>[INFO] hadoop-mapreduce-client-hs ......................... SUCCESS [ 18.157 s]
-</span><span class='line'>[INFO] hadoop-mapreduce-client-jobclient .................. SUCCESS [ 14.637 s]
-</span><span class='line'>[INFO] hadoop-mapreduce-client-hs-plugins ................. SUCCESS [  9.190 s]
-</span><span class='line'>[INFO] Apache Hadoop MapReduce Examples ................... SUCCESS [  9.037 s]
-</span><span class='line'>[INFO] hadoop-mapreduce ................................... SUCCESS [ 59.280 s]
-</span><span class='line'>[INFO] Apache Hadoop MapReduce Streaming .................. SUCCESS [ 26.724 s]
-</span><span class='line'>[INFO] Apache Hadoop Distributed Copy ..................... SUCCESS [ 31.503 s]
-</span><span class='line'>[INFO] Apache Hadoop Archives ............................. SUCCESS [ 19.867 s]
-</span><span class='line'>[INFO] Apache Hadoop Rumen ................................ SUCCESS [ 27.401 s]
-</span><span class='line'>[INFO] Apache Hadoop Gridmix .............................. SUCCESS [ 20.102 s]
-</span><span class='line'>[INFO] Apache Hadoop Data Join ............................ SUCCESS [ 20.382 s]
-</span><span class='line'>[INFO] Apache Hadoop Ant Tasks ............................ SUCCESS [ 12.207 s]
-</span><span class='line'>[INFO] Apache Hadoop Extras ............................... SUCCESS [ 24.069 s]
-</span><span class='line'>[INFO] Apache Hadoop Pipes ................................ SUCCESS [ 31.975 s]
-</span><span class='line'>[INFO] Apache Hadoop OpenStack support .................... SUCCESS [ 32.225 s]
-</span><span class='line'>[INFO] Apache Hadoop Amazon Web Services support .......... SUCCESS [02:45 min]
-</span><span class='line'>[INFO] Apache Hadoop Client ............................... SUCCESS [01:38 min]
-</span><span class='line'>[INFO] Apache Hadoop Mini-Cluster ......................... SUCCESS [ 15.450 s]
-</span><span class='line'>[INFO] Apache Hadoop Scheduler Load Simulator ............. SUCCESS [ 46.489 s]
-</span><span class='line'>[INFO] Apache Hadoop Tools Dist ........................... SUCCESS [01:31 min]
-</span><span class='line'>[INFO] Apache Hadoop Tools ................................ SUCCESS [  7.603 s]
-</span><span class='line'>[INFO] Apache Hadoop Distribution ......................... SUCCESS [ 32.967 s]
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] BUILD SUCCESS
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] Total time: 39:30 min
-</span><span class='line'>[INFO] Finished at: 2015-03-08T10:55:47+08:00
-</span><span class='line'>[INFO] Final Memory: 102M/340M
-</span><span class='line'>[INFO] ------------------------------------------------------------------------</span></code></pre></td></tr></table></div></figure>
-
-
-<p>把src编译出来的native下面的文件拷贝到hadoop集群程序目录下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 lib]$ scp -r root@172.17.42.1:~/hadoop-2.6.0-src/hadoop-dist/target/hadoop-2.6.0/lib/native ./
-</span><span class='line'>[hadoop@hadoop-master1 lib]$ cd native/
-</span><span class='line'>[hadoop@hadoop-master1 native]$ ll
-</span><span class='line'>total 4356
-</span><span class='line'>-rw-r--r--. 1 hadoop hadoop 1119518 Mar  8 03:11 libhadoop.a
-</span><span class='line'>-rw-r--r--. 1 hadoop hadoop 1486964 Mar  8 03:11 libhadooppipes.a
-</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop      18 Mar  3 21:08 libhadoop.so -&gt; libhadoop.so.1.0.0
-</span><span class='line'>-rwxr-xr-x. 1 hadoop hadoop  671237 Mar  8 03:11 libhadoop.so.1.0.0
-</span><span class='line'>-rw-r--r--. 1 hadoop hadoop  581944 Mar  8 03:11 libhadooputils.a
-</span><span class='line'>-rw-r--r--. 1 hadoop hadoop  359490 Mar  8 03:11 libhdfs.a
-</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop      16 Mar  3 21:08 libhdfs.so -&gt; libhdfs.so.0.0.0
-</span><span class='line'>-rwxr-xr-x. 1 hadoop hadoop  228451 Mar  8 03:11 libhdfs.so.0.0.0</span></code></pre></td></tr></table></div></figure>
-
-
-<p>添加编译的native包前后对比：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.0]$ hadoop fs -ls /
-</span><span class='line'>15/03/08 03:09:12 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-</span><span class='line'>Found 3 items
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-06 16:49 /README.txt
-</span><span class='line'>drwx------   - hadoop supergroup          0 2015-03-06 16:54 /tmp
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-06 16:54 /user
-</span><span class='line'>
-</span><span class='line'># 编译好后，警告提示没有了
-</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.0]$ hadoop fs -ls /
-</span><span class='line'>Found 3 items
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-06 16:49 /README.txt
-</span><span class='line'>drwx------   - hadoop supergroup          0 2015-03-06 16:54 /tmp
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-06 16:54 /user</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/03/07/vmware-sharefolder/">VMware共享目录</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2015-03-07T22:25:52+08:00" pubdate data-updated="true">Sat 2015-03-07 22:25</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>VMware提供了与主机共享目录的功能，可以在虚拟机访问宿主机器的文件。</p>
-
-<ol>
-<li>选择映射目录
- 选择[Edit virtual machine settings]，在弹出的对话框中选择[Options]页签，选择[Shared Folders]，点击右边的[Add]按钮添加需要映射(maven)的本地目录。</li>
-<li>安装VMware Tools
-
-<ul>
-<li>启动linux虚拟机，选择[VM]菜单，再选择[Install VMware Tools&hellip;]菜单。下载完成后，会自动通过cdrom加载到虚拟机。</li>
-<li>登录linux虚拟机，执行以下命令：</li>
-</ul>
-</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>cd /mnt
-</span><span class='line'>mkdir cdrom
-</span><span class='line'>mount /dev/cdrom cdrom
-</span><span class='line'>cd cdrom/
-</span><span class='line'>mkdir ~/vmware
-</span><span class='line'>tar zxvf VMwareTools-9.2.0-799703.tar.gz -C ~/vmware
-</span><span class='line'>
-</span><span class='line'>cd ~/vmware
-</span><span class='line'>cd vmware-tools-distrib/
-</span><span class='line'>./vmware-install.pl 
-</span><span class='line'>reboot
-</span><span class='line'>
-</span><span class='line'>cd /mnt/hgfs/maven</span></code></pre></td></tr></table></div></figure>
-
-
-<p>当前的maven目录是映射到宿主的机器目录。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost maven]# ll -a
-</span><span class='line'>total 3
-</span><span class='line'>drwxrwxrwx. 1 root root    0 Dec 28  2012 .
-</span><span class='line'>dr-xr-xr-x. 1 root root 4192 Mar  7 22:41 ..
-</span><span class='line'>drwxrwxrwx. 1 root root    0 Dec 28  2012 .m2</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/12">&larr; Older</a>
@@ -1967,6 +1441,18 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/">[读读书]Apache Spark源码剖析-序</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/05/05/hdfs-heterogeneous-storage/">Hdfs异构存储实操</a>
       </li>
     
@@ -1984,18 +1470,6 @@
     
       <li class="post">
         <a href="/blog/2016/04/28/mcollective-quick-start/">MCollective安装配置</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/21/puppetexplorer-setting/">Puppetexplorer设置</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/21/puppetdb-install-and-config/">Puppetdb安装配置</a>
       </li>
     
   </ul>
@@ -2020,7 +1494,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (4) 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2032,7 +1506,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (4) 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2068,7 +1542,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/puppet/'>puppet</a> (7) 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2088,7 +1562,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/spark/'>spark</a> (7) 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2109,7 +1583,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (132)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (136)</li>
 	</ul>
 	
 </section>

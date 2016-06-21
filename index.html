@@ -9,7 +9,9 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.32.7.2）！ 我这里测试环境使用的是 2.6.3 Heterogeneous Storage: Archival Storage, SSD &amp; Memory 配置 &hellip;">
+  <meta name="description" content="前面写过完全纯手工和用yum安装依赖来安装ganglia的文章，最近生产安装了puppet，既然已经手上已有牛杀鸡就不用再取菜刀了。今天记录下前几天使用puppet安装ganglia的经历。 前提（自己操作过） 配置过私有仓库 (createrepo)
+安装好puppet
+编译过自己的rpm ( &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +85,1093 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-06-17T09:30:50+08:00" pubdate data-updated="true">Fri 2016-06-17 09:30</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>前面写过完全纯手工和用yum安装依赖来安装ganglia的文章，最近生产安装了puppet，既然已经手上已有牛杀鸡就不用再取菜刀了。今天记录下前几天使用puppet安装ganglia的经历。</p>
+
+<h2>前提（自己操作过）</h2>
+
+<ul>
+<li>配置过私有仓库 (createrepo)</li>
+<li>安装好puppet</li>
+<li>编译过自己的rpm (rpmbuild)</li>
+</ul>
+
+
+<h2>编译gmetad，gmond，gweb</h2>
+
+<ul>
+<li><a href="/files/ganglia-puppet/gmetad.spec">gmetad.spec</a></li>
+<li><a href="/files/ganglia-puppet/gmond.spec">gmond.spec</a></li>
+<li><a href="/files/ganglia-puppet/gweb.spec">gweb.spec</a></li>
+</ul>
+
+
+<p>内容通过附件下载。</p>
+
+<p>然后编译打包（使用rpmbuild必须保证能正常编译安装ganglia的，rpmbuild包括编译安装！！可以先手动编译）：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>mkdir ganglia-build
+</span><span class='line'>cd ganglia-build
+</span><span class='line'>mkdir BUILD RPMS SOURCES SPECS SRPMS
+</span><span class='line'>
+</span><span class='line'># ganglia-web-3.7.1.tar.gz的makefile、conf_default.php.in修改下，根据等下要配置gmetad的参数进行修改
+</span><span class='line'>
+</span><span class='line'>less ganglia-web-3.7.1/Makefile 
+</span><span class='line'>  # Location where gweb should be installed to (excluding conf, dwoo dirs).
+</span><span class='line'>  GDESTDIR = /var/www/html/ganglia
+</span><span class='line'>
+</span><span class='line'>  # Location where default apache configuration should be installed to.
+</span><span class='line'>  GCONFDIR = /usr/local/ganglia/etc/
+</span><span class='line'>
+</span><span class='line'>  # Gweb statedir (where conf dir and Dwoo templates dir are stored)
+</span><span class='line'>  GWEB_STATEDIR = /var/www/html/ganglia
+</span><span class='line'>
+</span><span class='line'>  # Gmetad rootdir (parent location of rrd folder)
+</span><span class='line'>  GMETAD_ROOTDIR = /data/ganglia
+</span><span class='line'>
+</span><span class='line'>  APACHE_USER = apache
+</span><span class='line'>
+</span><span class='line'># 连外网太慢，下载放到本地
+</span><span class='line'>less ganglia-web-3.7.1/conf_default.php.in 
+</span><span class='line'>  #$conf['cubism_js_path'] = "js/cubism.v1.min.js";
+</span><span class='line'>  $conf['jquery_js_path'] = "js/jquery.min.js";
+</span><span class='line'>  $conf['jquerymobile_js_path'] = "js/jquery.mobile.min.js";
+</span><span class='line'>  $conf['jqueryui_js_path'] = "js/jquery-ui.min.js";
+</span><span class='line'>  $conf['rickshaw_js_path'] = "js/rickshaw.min.js";
+</span><span class='line'>  $conf['cubism_js_path'] = "js/cubism.v1.min.js";
+</span><span class='line'>  $conf['d3_js_path'] = "js/d3.min.js";
+</span><span class='line'>  $conf['protovis_js_path'] = "js/protovis.min.js";
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 把文件放到SOURCES目录下，
+</span><span class='line'>ls SOURCES/
+</span><span class='line'>  ganglia-3.7.2.tar.gz  ganglia-web-3.7.1.tar.gz
+</span><span class='line'>
+</span><span class='line'>rpmbuild -v -ba SPECS/gmetad.spec 
+</span><span class='line'>rpmbuild -v -ba SPECS/gmond.spec 
+</span><span class='line'>rpmbuild -v -ba SPECS/gweb.spec 
+</span><span class='line'>
+</span><span class='line'># 查看内容
+</span><span class='line'>rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>本地仓库</h2>
+
+<p><strong>先安装httpd、createrepo</strong>，然后按照下面的步骤创建本地仓库</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 系统带的可以从光盘拷贝，直接映射到httpd的目录下即可
+</span><span class='line'>[hadoop@hadoop-master1 rhel6.3]$ ls 
+</span><span class='line'>Packages  repodata
+</span><span class='line'>[hadoop@hadoop-master1 html]$ pwd
+</span><span class='line'>/var/www/html
+</span><span class='line'>[hadoop@hadoop-master1 html]$ ll
+</span><span class='line'>lrwxrwxrwx.  1 root root   20 2月  15 2014 rhel6.3 -&gt; /opt/rhel6.3
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mkdir -p /opt/dta/repo
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ cd /opt/dta/repo
+</span><span class='line'>[hadoop@hadoop-master1 repo]$ ls *.rpm
+</span><span class='line'>gmetad-3.7.2-1.el6.x86_64.rpm  gmond-3.7.2-1.el6.x86_64.rpm  gweb-3.7.1-1.el6.x86_64.rpm  libconfuse-2.7-4.el6.x86_64.rpm
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 repo]$ sudo createrepo .
+</span><span class='line'>3/3 - libconfuse-2.7-4.el6.x86_64.rpm                                           
+</span><span class='line'>Saving Primary metadata
+</span><span class='line'>Saving file lists metadata
+</span><span class='line'>Saving other metadata
+</span><span class='line'>
+</span><span class='line'># 映射到httpd目录下
+</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ cd /var/www/html/
+</span><span class='line'>[hadoop@hadoop-master1 html]$ sudo ln -s /opt/dta/repo dta
+</span><span class='line'>
+</span><span class='line'># 加入本地仓库源
+</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ sudo cp puppet.repo dta.repo
+</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ sudo vi dta.repo 
+</span><span class='line'>[dta]
+</span><span class='line'>name=DTA Local
+</span><span class='line'>baseurl=http://hadoop-master1:801/dta
+</span><span class='line'>enabled=1
+</span><span class='line'>gpgcheck=0
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>安装找不到gmond时，可以先清理yum的缓冲： <code>yum clean all</code></p>
+
+<h2>puppet模块</h2>
+
+<p>添加了三个模块，用于主机添加repo配置和sudo配置，以及安装配置gmond。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 modules]# tree $PWD
+</span><span class='line'>/etc/puppetlabs/code/environments/production/modules
+</span><span class='line'>├── dtarepo
+</span><span class='line'>│   ├── manifests
+</span><span class='line'>│   │   └── init.pp
+</span><span class='line'>│   └── templates
+</span><span class='line'>│       └── dta.repo
+</span><span class='line'>├── gmond
+</span><span class='line'>│   ├── manifests
+</span><span class='line'>│   │   └── init.pp
+</span><span class='line'>│   └── templates
+</span><span class='line'>│       └── gmond.conf
+</span><span class='line'>└── sudo
+</span><span class='line'>    ├── manifests
+</span><span class='line'>    │   └── init.pp
+</span><span class='line'>    └── templates
+</span><span class='line'>        └── sudo.erb</span></code></pre></td></tr></table></div></figure>
+
+
+<p>都比较简单，通过init.pp来进行配置，然后加载模板，写入到同步主机本地文件中。</p>
+
+<ul>
+<li>dtarepo</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>./dtarepo/manifests/init.pp
+</span><span class='line'>class dtarepo {
+</span><span class='line'>
+</span><span class='line'>file{'/etc/yum.repos.d/dta.repo':
+</span><span class='line'>  ensure =&gt; file,
+</span><span class='line'>  content =&gt; template('dtarepo/dta.repo'),
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>./dtarepo/templates/dta.repo
+</span><span class='line'>[dta]
+</span><span class='line'>name=DTA Local
+</span><span class='line'>baseurl=http://hadoop-master1:801/dta
+</span><span class='line'>enabled=1
+</span><span class='line'>gpgcheck=0</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>sudo</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>./sudo/manifests/init.pp
+</span><span class='line'>class sudo {
+</span><span class='line'>
+</span><span class='line'>if ( $::hostname =~ /(^cu-omc)/ ) {
+</span><span class='line'>  $user = 'omc'
+</span><span class='line'>} elsif ( $::hostname =~ /(^cu-uc)/ ) {
+</span><span class='line'>  $user = 'uc'
+</span><span class='line'>} elsif ( $::hostname =~ /(^cu-ud)/ ) {
+</span><span class='line'>  $user = 'ud'
+</span><span class='line'>} elsif ( $::hostname =~ /(^cu-db)/ ) {
+</span><span class='line'>  $user = 'mysql'
+</span><span class='line'>} else {
+</span><span class='line'>  $user = 'hadoop'
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>file { "/etc/sudoers.d/10_$user":
+</span><span class='line'>  ensure =&gt; file,
+</span><span class='line'>  mode =&gt; '0440', 
+</span><span class='line'>  content =&gt; template('sudo/sudo.erb'),
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>./sudo/templates/sudo.erb
+</span><span class='line'>&lt;%= scope.lookupvar('sudo::user') %&gt; ALL=(ALL) NOPASSWD: ALL</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>gmond</li>
+</ul>
+
+
+<p>gmond.conf的仅修改两个地方: globals.deaf, cluster.name</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>./gmond/manifests/init.pp
+</span><span class='line'>class gmond {
+</span><span class='line'>
+</span><span class='line'>$deaf = $::hostname ? {
+</span><span class='line'>  'hadoop-master1' =&gt; 'no',
+</span><span class='line'>  'cu-omc1' =&gt; 'no',
+</span><span class='line'>  default =&gt; 'yes',
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>if ( $::hostname =~ /(^cu-)/ ) {
+</span><span class='line'>  $cluster_name = 'CU'
+</span><span class='line'>} else {
+</span><span class='line'>  $cluster_name = 'HADOOP'
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>package { 'gmond':
+</span><span class='line'>  ensure =&gt; present,
+</span><span class='line'>  before =&gt; File['/usr/local/ganglia/etc/gmond.conf'],
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>file { '/usr/local/ganglia/etc/gmond.conf':
+</span><span class='line'>  ensure =&gt; file,
+</span><span class='line'>  content =&gt; template('gmond/gmond.conf'),
+</span><span class='line'>  notify =&gt; Service['gmond'],
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>service { 'gmond':
+</span><span class='line'>  ensure    =&gt; running,
+</span><span class='line'>  enable    =&gt; true,
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>./gmond/templates/gmond.conf
+</span><span class='line'>/* This configuration is as close to 2.5.x default behavior as possible
+</span><span class='line'>   The values closely match ./gmond/metric.h definitions in 2.5.x */
+</span><span class='line'>globals {
+</span><span class='line'>...
+</span><span class='line'>  mute = no
+</span><span class='line'>  deaf = &lt;%= scope.lookupvar('gmond::deaf') %&gt;
+</span><span class='line'>  allow_extra_data = yes
+</span><span class='line'>...
+</span><span class='line'>cluster {
+</span><span class='line'>  name = "&lt;%= scope.lookupvar('gmond::cluster_name') %&gt;"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>参考下逻辑即可（也可以通过hiera配置）。</p>
+
+<p>最后就是加载module：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 modules]# cd ../manifests/
+</span><span class='line'>[root@hadoop-master1 manifests]# cat site.pp 
+</span><span class='line'>file{'/etc/puppetlabs/mcollective/facts.yaml':
+</span><span class='line'>  owner    =&gt; root,
+</span><span class='line'>  group    =&gt; root,
+</span><span class='line'>  mode     =&gt; '400',
+</span><span class='line'>  loglevel =&gt; debug, # reduce noise in Puppet reports
+</span><span class='line'>  content  =&gt; inline_template("&lt;%= scope.to_hash.reject { |k,v| k.to_s =~ /(uptime_seconds|timestamp|free)/ }.to_yaml %&gt;"), # exclude rapidly changing facts
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>include dtarepo
+</span><span class='line'>include gmond
+</span><span class='line'>
+</span><span class='line'># include sudo
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>一键安装</h2>
+
+<p>首先在主机上安装gmetad，gmetad配置由于只有一台机器，配置这里手动弄。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 dtarepo]# mco rpc package install package=gmetad -I cu-omc1
+</span><span class='line'>
+</span><span class='line'># 主机多网卡时可能需要添加route
+</span><span class='line'>[root@cu-omc1 ~]# route add -host 239.2.11.71 dev bond0
+</span><span class='line'>
+</span><span class='line'>[root@cu-omc1 ~]# /etc/ganglia/gmetad.conf 注意!! 这里的rrd_rootdir配置与上面gweb/makefile是对应的！！
+</span><span class='line'>data_source "HADOOP" hadoop-master1
+</span><span class='line'>data_source "CU" cu-omc1
+</span><span class='line'>gridname "CQCU"
+</span><span class='line'>rrd_rootdir "/data/ganglia/rrds"
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在cu-omc2上安装gmond（正则表达式，你想怎么匹配就怎么写）：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 production]# mco shell -I /^cu-omc2/ run -- "/opt/puppetlabs/bin/puppet agent -t"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-05-08T21:41:01+08:00" pubdate data-updated="true">Sun 2016-05-08 21:41</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>本来第二篇应该是与 [第1章 初识Spark] 有关，但是通过 spark-shell 跑个helloworld出结果了，我还是不知道那些脚本干了啥，整个的运行逻辑是什么样的？而且，在开发环境运行shell来启动总觉得怪怪的，哪调试怎么调呢？</p>
+
+<p>所以，我准备把 spark/bin 目录下面的脚本理清楚，然后再去写开发环境的helloworld。<strong> 其实每个大数据的框架，shell脚本都是通用出口，也是研读源码的第一个突破口 </strong>。</p>
+
+<p>官网 <strong> Quick Start </strong> 提供的简短例子都是通过 spark-shell 来运行的。还有另一种，自己打包一个jar通过 spark-submit 提交任务给集群。</p>
+
+<p>spark-shell，spark-submit 就是两个非常重要的脚本，这里就来理一下这些脚本。</p>
+
+<p>1) spark-shell - [3.1 spark-shell]</p>
+
+<p>spark-shell 脚本的内容相对多一些，主要代码如下（其他代码都是为了兼容cygwin弄的，我们这里不关注）：</p>
+
+<pre><code>SPARK_SUBMIT_OPTS="$SPARK_SUBMIT_OPTS -Dscala.usejavacp=true"
+trap onExit INT # 程序终止(interrupt)信号, 在用户键入INTR字符(通常是Ctrl C)时发出 来自: http://man.linuxde.net/trap
+
+export SPARK_SUBMIT_OPTS
+"${SPARK_HOME}"/bin/spark-submit --class org.apache.spark.repl.Main --name "Spark shell" "$@"
+</code></pre>
+
+<p>最终调用 spark-submit 脚本。</p>
+
+<p>提交我们自己helloworld命令如下：</p>
+
+<pre><code>$ YOUR_SPARK_HOME/bin/spark-submit \
+  --class "SimpleApp" \
+  --master local[4] \
+  target/scala-2.10/simple-project_2.10-1.0.jar
+</code></pre>
+
+<p>其实 spark-shell 与我们自己提交程序一样，不过 spark-shell 提交运行的类是spark自带，不需要额外的jar 。</p>
+
+<p>2) spark-submit</p>
+
+<p>submit脚本其实就是在输入参数前面添加 org.apache.spark.deploy.SparkSubmit ，然后传递给 spark-class 。</p>
+
+<pre><code>exec "${SPARK_HOME}"/bin/spark-class org.apache.spark.deploy.SparkSubmit "$@"
+</code></pre>
+
+<p>3) spark-class</p>
+
+<p>spark-shell 调用 spark-submit ， spark-submit 又调用 spark-class 。</p>
+
+<p>spark-class脚本最终启动 java 调用 launcher模块(org.apache.spark.launcher.Main)解析参数计算出 <strong> 最终执行的命令 </strong>，然后通过 exec 来运行。</p>
+
+<p>bin路径下脚本之间调用关系：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>spark-sql
+</span><span class='line'>spark-shell
+</span><span class='line'>  spark-submit
+</span><span class='line'>      spark-class
+</span><span class='line'>          (java)org.apache.spark.launcher.Main</span></code></pre></td></tr></table></div></figure>
+
+
+<p>要讲清楚 spark-shell 相对复杂点，通过 <strong>脚本</strong> 和 <strong>程序</strong> 两部分来分别说明。</p>
+
+<p>3.1 脚本</p>
+
+<p>脚本的主要作用是调用 <strong>Launcher模块</strong> 代码产生最终的执行命令(N行字符串)，然后把输出的字符串数组提供给 exec 执行。</p>
+
+<p>spark-class先加载环境变量配置文件，再获取assembly.jar位置，然后调用 org.apache.spark.launcher.Main ， Main类根据环境变量和传入参数算出真正执行的命令。</p>
+
+<p>这里把核心的脚本内容列出来：</p>
+
+<pre><code>. "${SPARK_HOME}"/bin/load-spark-env.sh # 我这里把它展开
+    . "${user_conf_dir}/spark-env.sh"
+
+    # 通过ASSEMBLY路径来判断SPARK_SCALA_VERSION，通过tar打包不需要这个变量
+    ASSEMBLY_DIR1="${SPARK_HOME}/assembly/target/scala-2.10" 
+    export SPARK_SCALA_VERSION="2.10"
+
+RUNNER="${JAVA_HOME}/bin/java"
+
+SPARK_ASSEMBLY_JAR=
+if [ -f "${SPARK_HOME}/RELEASE" ]; then
+  ASSEMBLY_DIR="${SPARK_HOME}/lib"
+else
+  ASSEMBLY_DIR="${SPARK_HOME}/assembly/target/scala-$SPARK_SCALA_VERSION"
+fi
+ASSEMBLY_JARS="$(ls -1 "$ASSEMBLY_DIR" | grep "^spark-assembly.*hadoop.*\.jar$" || true)"
+SPARK_ASSEMBLY_JAR="${ASSEMBLY_DIR}/${ASSEMBLY_JARS}"
+LAUNCH_CLASSPATH="$SPARK_ASSEMBLY_JAR"
+
+export _SPARK_ASSEMBLY="$SPARK_ASSEMBLY_JAR"
+
+CMD=()
+while IFS= read -d '' -r ARG; do
+  CMD+=("$ARG")
+done &lt; &lt;("$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@")
+exec "${CMD[@]}"
+</code></pre>
+
+<p>前面的脚本内容都是准备环境变量，就最后几行代码比较复杂。我这里debug一下，在脚本 while 循环打印每个输出的值看下 Main类 输出的是什么：</p>
+
+<pre><code># 修改后的效果
+[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ tail bin/spark-class
+CMD=()
+while IFS= read -d '' -r ARG; do
+  echo "[DEBUG] $ARG"
+  CMD+=("$ARG")
+done &lt; &lt;(set -x; "$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@")
+echo "${CMD[@]}"
+exec "${CMD[@]}"
+
+# 启动 spark-shell 查看输出的调试信息
+[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ bin/spark-shell 
+++ /opt/jdk1.8.0/bin/java -cp /home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar org.apache.spark.launcher.Main org.apache.spark.deploy.SparkSubmit --class org.apache.spark.repl.Main --name 'Spark shell'
+[DEBUG] /opt/jdk1.8.0/bin/java
+[DEBUG] -cp
+[DEBUG] /home/hadoop/spark/lib/mysql-connector-java-5.1.34.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/conf/:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-rdbms-3.2.9.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-core-3.2.10.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-api-jdo-3.2.6.jar:/home/hadoop/hadoop/etc/hadoop/
+[DEBUG] -Dscala.usejavacp=true
+[DEBUG] -Xms512m
+[DEBUG] -Xmx512m
+[DEBUG] org.apache.spark.deploy.SparkSubmit
+[DEBUG] --class
+[DEBUG] org.apache.spark.repl.Main
+[DEBUG] --name
+[DEBUG] Spark shell
+[DEBUG] spark-shell
+/opt/jdk1.8.0/bin/java -cp /home/hadoop/spark/lib/mysql-connector-java-5.1.34.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/conf/:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-rdbms-3.2.9.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-core-3.2.10.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-api-jdo-3.2.6.jar:/home/hadoop/hadoop/etc/hadoop/ -Dscala.usejavacp=true -Xms512m -Xmx512m org.apache.spark.deploy.SparkSubmit --class org.apache.spark.repl.Main --name 'Spark shell' spark-shell
+...
+</code></pre>
+
+<p>org.apache.spark.launcher.Main 把环境变量和传入参数整理后重新输出，输出的内容被脚本保存到 CMD[@] 数组中，最后使用exec来执行。</p>
+
+<p>使用上面 spark-shell 最终调用的类和参数其实就可以在idea里面启动了：</p>
+
+<p><img src="/images/blogs/idea-spark-shell.png" alt="" /></p>
+
+<p>3.2 Launcher模块</p>
+
+<p>launcher模块功能其实用shell完全可以全部功能的。如果shell和launcher的代码你都看了的话，会发现 shell 和 java代码 功能逻辑非常类似。如下面获取java路径的代码：</p>
+
+<pre><code>  List&lt;String&gt; buildJavaCommand(String extraClassPath) throws IOException {
+    ...
+    if (javaHome != null) {
+      cmd.add(join(File.separator, javaHome, "bin", "java"));
+    } else if ((envJavaHome = System.getenv("JAVA_HOME")) != null) {
+        cmd.add(join(File.separator, envJavaHome, "bin", "java"));
+    } else {
+        cmd.add(join(File.separator, System.getProperty("java.home"), "bin", "java"));
+    }
+    ...
+  }
+</code></pre>
+
+<p>shell脚本里面是这么写的：</p>
+
+<pre><code># Find the java binary
+if [ -n "${JAVA_HOME}" ]; then
+  RUNNER="${JAVA_HOME}/bin/java"
+else
+  if [ `command -v java` ]; then
+    RUNNER="java"
+  else
+    echo "JAVA_HOME is not set" &gt;&amp;2
+    exit 1
+  fi
+fi
+</code></pre>
+
+<p>对比两者，其实是用脚本更加直观。但是使用java编写的 launcher模块 更便于管理和扩展，稍微调整下就能复用代码：如输出给windows-cmd脚本、还有为了兼容多个操作系统多语言(python，r 等)，所以提取一个公共 launcher模块 出来其实是个挺不错的选择。同时对于不是很熟悉shell的程序员来说也方便一些来了解系统。</p>
+
+<p>按照功能可以分为 CommandBuilder 和 SparkLauncher 两个部分。</p>
+
+<p>3.2.1 CommandBuilder</p>
+
+<p>SparkSubmitCommandBuilder解析用户输入的参数并输出命令给脚本使用，而SparkClassCommandBuilder主要为后台进程产生启动命令（sbin目录下面的脚本）。</p>
+
+<p>主要的类以及参数：</p>
+
+<ul>
+<li>Main ： 统一入口</li>
+<li>AbstractCommandBuilder : 提供构造命令的公共方法
+
+<ul>
+<li>buildJavaCommand
+
+<ul>
+<li>buildClassPath
+
+<ul>
+<li>SPARK_CLASSPATH</li>
+<li>extraClassPath</li>
+<li>getConfDir : 等于环境变量 $SPARK_CONF_DIR 或者 $SPARK_HOME/conf 的值</li>
+<li>classes
+
+<ul>
+<li>SPARK_PREPEND_CLASSES</li>
+<li>SPARK_TESTING</li>
+</ul>
+</li>
+<li>findAssembly : 获取 spark-assembly-1.6.0-hadoop2.6.3.jar 的路径，lib 或者 assembly/target/scala-$SPARK_SCALA_VERSION 路径下
+
+<ul>
+<li>_SPARK_ASSEMBLY</li>
+</ul>
+</li>
+<li>datanucleus-* : 从 lib / lib_managed/jars 目录下获取</li>
+<li>HADOOP_CONF_DIR</li>
+<li>YARN_CONF_DIR</li>
+<li>SPARK_DIST_CLASSPATH</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>getEffectiveConfig : 获取 spark-defaults.conf 的内容</li>
+</ul>
+</li>
+<li>SparkSubmitCommandBuilder
+
+<ul>
+<li>构造函数调用OptionParser解析参数，解析handle有处理specialClasses！</li>
+<li>buildSparkSubmitCommand
+
+<ul>
+<li>getEffectiveConfig</li>
+<li>extraClassPath : spark.driver.extraClassPath</li>
+<li>SPARK_SUBMIT_OPTS</li>
+<li>SPARK_JAVA_OPTS</li>
+<li>client模式下加载配置
+
+<ul>
+<li>spark.driver.memory / SPARK_DRIVER_MEMORY / SPARK_MEM / DEFAULT_MEM(1g)</li>
+<li>DRIVER_EXTRA_JAVA_OPTIONS</li>
+<li>DRIVER_EXTRA_LIBRARY_PATH</li>
+</ul>
+</li>
+<li>buildSparkSubmitArgs ： 把参数键值对存储List，用于输出</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>SparkSubmitCommandBuilder$OptionParser -> SparkSubmitOptionParser(子类需要实现handle方法)
+
+<ul>
+<li><code>bin/spark-submit -h</code> 帮助文档会输出可以<strong>设置的参数</strong></li>
+<li>或者直接查看<a href="http://spark.apache.org/docs/latest/submitting-applications.html">官网文档</a></li>
+</ul>
+</li>
+<li>SparkClassCommandBuilder
+
+<ul>
+<li>org.apache.spark.deploy.master.Master
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_MASTER_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.worker.Worker
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_WORKER_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.history.HistoryServer
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_HISTORY_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.executor.CoarseGrainedExecutorBackend
+
+<ul>
+<li>SPARK_JAVA_OPTS</li>
+<li>SPARK_EXECUTOR_OPTS</li>
+<li>SPARK_EXECUTOR_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.executor.MesosExecutorBackend
+
+<ul>
+<li>SPARK_EXECUTOR_OPTS</li>
+<li>SPARK_EXECUTOR_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.ExternalShuffleService / org.apache.spark.deploy.mesos.MesosExternalShuffleService
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_SHUFFLE_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.tools.
+
+<ul>
+<li>extraClassPath : spark-tools_.*.jar</li>
+<li>SPARK_JAVA_OPTS</li>
+<li>DEFAULT_MEM(1g)</li>
+</ul>
+</li>
+<li>other
+
+<ul>
+<li>SPARK_JAVA_OPTS</li>
+<li>SPARK_DRIVER_MEMORY</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+
+<p>3.2.2 SparkLauncher</p>
+
+<p>SparkLauncher提供了在程序中提交application的方式。通过Driver端的支持获取程序执行动态，为实现后端管理应用提供一种可行的方式。</p>
+
+<p>launcher提交还是使用spark-submit脚本，绕一圈又回到上面的参数解析生成命令然后exec执行。但是launcher中通过启动 LauncherServer(socketserver)，Driver(LauncherBackend)监听这个端口会把程序的最新状态通过socket推给launcher。</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-launcher.jpg" alt="" /></p>
+
+<p>代码包括：</p>
+
+<pre><code>* SparkLauncher
+* LauncherServer
+* LauncherConnection
+* LauncherProtocol
+* ChildProcAppHandle : SparkAppHandle
+</code></pre>
+
+<p>具体调试可以下载 <a href="https://github.com/winse/spark-examples/blob/master/src/main/scala/com/github/winse/spark/HelloWorldLauncher.scala">HelloWorldLauncher.scala</a> 代码，然后本地调试一步步的查看。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/">[读读书]Apache Spark源码剖析-序</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-05-07T23:58:57+08:00" pubdate data-updated="true">Sat 2016-05-07 23:58</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>今天去广州图书馆办了证，借了几本关于大数据的书。老实说，国家提供的便民基础设施应该发挥她的价值，国家建那么多公共设施，还有很多人在后台让这些服务运作起来。借书是一种最高性价比学习的方式，第一：不能乱写乱画必须做笔记或者背下来，把最有价值的东西汇集；第二：有时间限制，好书逼着我们持续的去读；第三：自然是读到烂书也不用花钱，有价值的书必然也是最多人看的，看到翻的很旧的新书你就借了吧。</p>
+
+<p>其中一个《Apache Spark源码剖析-徐鹏》，大致翻了一下，老实说作者很牛逼啊，从那么多的代码里面挑出和主题相关的，不比鸡蛋里面挑石头容易，跟着作者的思路去读应该不错。打算每天读点代码，同时把看书和看代码也记录下来，每天一小结，同时希望对别人有些参考作用。</p>
+
+<p>Spark更新的很快，书本介绍的是 spark-1.0 ，不过书中介绍的主要是思路，我们这里选择比较新的版本 1.6.0 来读（生产用的是1.6）。</p>
+
+<p><strong> 说到思路，如果你对Redis也感兴趣，强烈推荐读读 《Redis设计与实现-黄建宏》 </strong></p>
+
+<h3>使用环境说明</h3>
+
+<p>和作者不同，我选择直接在windows来读/调试代码，为了读个代码还得整一套linux的开发环境挺累的（原来也试过整linux开发环境后来放弃了），Windows 积累的经验已经可以让我自由调试和看代码了。</p>
+
+<p>吐槽下sbt，很讨厌这玩意又慢还用ivy，我X，大数据不都用 maven 嘛，难道我还得为 spark 整一套完全一样的jar本地缓冲？不过还好 spark-1.6 已经是用 maven 来管理了。</p>
+
+<ul>
+<li>win10 + cygwin</li>
+<li>jdk8_x64（内存可以调到大于1G）</li>
+<li>maven3</li>
+<li>scala_2.10</li>
+<li>spark_1.6.0</li>
+<li>hive_1.2.1</li>
+<li>hadoop_2.6.3</li>
+<li>JetBrains idea 看代码确实不错</li>
+</ul>
+
+
+<h3>Spark开发环境搭建 - [附录A Spark源码调试]</h3>
+
+<p>1) 配置 idea-scala</p>
+
+<p>1.1 优化idea启动参数</p>
+
+<p>安装 <strong>最新版idea</strong> (当前最新版本是15.0.5)。在程序安装的 bin 目录下，有x64配置文件 idea64.exe.vmoptions ，在配置文件开头添加jdk8内存配置：</p>
+
+<pre><code>-server
+-Xms1g
+-Xmx2g
+-XX:MetaspaceSize=256m
+-XX:MaxMetaspaceSize=256m
+</code></pre>
+
+<p>由于机器 eclipse 原来使用的 jdk_x86，为了兼容，单独编写 idea64.exe 的启动脚本 <strong> idea.bat </strong>：</p>
+
+<pre><code>set JAVA_HOME=D:\Java\jdk1.8.0_40
+D:
+cd "D:\Program Files\JetBrains\IntelliJ IDEA Community Edition 15.0.5\bin"
+start idea64.exe"
+
+exit
+</code></pre>
+
+<p><strong> 快键：idea可以适配eclipse的快键集，通过 Settings -> Keymap -> Keymaps 设置。 </strong></p>
+
+<p>1.2 安装scala插件</p>
+
+<p>第一种方式，当然最好就是通过plugins的搜索框就能安装，但这在中国得看运气。 第二种方式，首先下载好插件，然后选择从硬盘安装插件。</p>
+
+<ul>
+<li>A 从网络安装</li>
+</ul>
+
+
+<p>打开 plugins 管理页面：（也可以通过 File -> Settings&hellip; -> Plugins 打开）</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-start-configure.png" alt="" /></p>
+
+<p>弹出的 Plugins 对话框显示了当前已经安装的插件：</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-plugins-list.png" alt="" /></p>
+
+<p>在 Plugins 对话框页面选择 <strong> Browse repositories&hellip; </strong> 按钮，再在弹出的对话框中查找 Scala 相关的插件：</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-browse-plugins.png" alt="" /></p>
+
+<p>选择安装 Scala ，当然你也可以同时安装上 SBT 。</p>
+
+<ul>
+<li>B 从硬盘安装</li>
+</ul>
+
+
+<p>运气好就算可以直接从网络安装，但是下载过程其实也挺慢的。我们还可以先自己下载好插件再安装（或者从其他同学获取、迅雷分分钟下完）。</p>
+
+<p>首先需要查看自己 idea 的版本，再在 <a href="https://plugins.jetbrains.com/?idea_ce">https://plugins.jetbrains.com/?idea_ce</a> 查找下载符合自己版本的 <a href="https://plugins.jetbrains.com/plugin/1347?pr=idea_ce">scala 插件</a>，最后通过 <code>Install plugin from disk...</code> 安装，然后重启idea即可。</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-version.png" alt="" />
+<img src="/images/blogs/rrc-spark/download-scala-plugin.png" alt="" />
+<img src="/images/blogs/rrc-spark/idea-scala-from-disk.png" alt="" /></p>
+
+<p>2) 下载 spark 源码，并导入idea</p>
+
+<p>2.1 下载源码，检出 1.6.0 版本</p>
+
+<pre><code>$ git clone https://github.com/apache/spark.git
+$ git checkout v1.6.0
+</code></pre>
+
+<p>如果你只想看 1.6.0 的内容，可以直接在clone命令添加参数指定版本：</p>
+
+<pre><code>$ git clone https://github.com/apache/spark.git -b v1.6.0
+</code></pre>
+
+<p>2.2 导入idea</p>
+
+<p>导入之前先要生成arvo的java类(这里直接package编译一下)：</p>
+
+<pre><code>E:\git\spark\external\flume-sink&gt;mvn package -DskipTests
+</code></pre>
+
+<p>由于我使用 hadoop-2.6.3 ，并且导入的时刻不能修改环境变量，直接修改 pom.xml 里面 hadoop.version 属性的值。</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-hadoop-version.png" alt="" /></p>
+
+<p>启动idea，使用 <strong> Import Project </strong> 导入源代码； 然后选择 E:/git/spark （刚刚下载的源码位置）；然后选择导入maven项目；在 profile 页把必要的都选上（当然也可以后期通过 <code>Maven Projects</code> 面板来修改）：</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-import-profile.png" alt="" /></p>
+
+<p>导入完成后，依赖关系maven已经处理好了，直接就能用了。也可以 Make Projects 再编译一次，并把运行application的make去掉，免得浪费编译时间）。</p>
+
+<p><strong> 注意：mvn idea:idea 其实不咋的，生成的配置不是很兼容最好不要用！！ </strong></p>
+
+<p>2.3 调试/测试</p>
+
+<p>在调试运行之前，先了解和解决 idea maven-provided 的问题：在idea里面直接运行 src/main/java 下面的类会被当做在生产环境运行，所以idea不会把这些 provided的依赖 加入到运行的classpath。</p>
+
+<ul>
+<li><a href="https://youtrack.jetbrains.com/issue/IDEA-54595">https://youtrack.jetbrains.com/issue/IDEA-54595</a></li>
+<li><a href="http://stackoverflow.com/questions/30453269/maven-provided-dependency-will-cause-noclassdeffounderror-in-intellij">http://stackoverflow.com/questions/30453269/maven-provided-dependency-will-cause-noclassdeffounderror-in-intellij</a></li>
+</ul>
+
+
+<p><img src="/images/blogs/rrc-spark/idea-maven-provided.png" alt="" /></p>
+
+<p>idea运行时从 examples/spark-examples_2.10.iml 文件中读取classpath的配置，所以我们直接把 spark-examples_2.10.iml 中的 <code>scope="PROVIDED"</code> 全部删掉（也可以说是替换成空格）。</p>
+
+<pre><code># 一次全部删掉！
+winse@Lenovo-PC ~/git/spark
+$ find . -name "*.iml"  | xargs -I{} sed -i 's/scope="PROVIDED"//' {}
+</code></pre>
+
+<p>首先右键 <strong> Run &lsquo;LogQuery&rsquo; </strong> 运行（由于缺少master的配置会报错的），生成启动的 LogQuery Configuration：</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-logquery-firststart.png" alt="" /></p>
+
+<p>然后选择上图中的 <strong> Edit Configurations&hellip; </strong> 下拉选项，在弹出配置对话框为中为 LogQuery 添加 <strong> VM options </strong> 配置: <code>-Dspark.master=local</code> ，最后就可以打断点Debug调试了。</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-logquery-config.png" alt="" /></p>
+
+<p>运行结果如下：</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-logquery-result.png" alt="" /></p>
+
+<p>遇到idea导入maven依赖有问题的，可以参考下 <a href="http://stackoverflow.com/questions/11454822/import-maven-dependencies-in-intellij-idea">Import Maven dependencies in IntelliJ IDEA</a> 。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -240,7 +1329,7 @@
 
 <h2>测试使用</h2>
 
-<p>通过三个例子对比，简单描述下使用。首先，使用默认的方式主要用于对比，第二个例子写文件是添加参数，第三个设置目录的存储类型（目录/文件会继承父目录的存储类型）</p>
+<p>通过三个例子对比，简单描述下使用。首先，使用默认的方式(主要用于对比)，第二个例子写文件是添加参数，第三个设置目录的存储类型（目录/文件会继承父目录的存储类型）</p>
 
 <p>1 测试1</p>
 
@@ -266,7 +1355,7 @@
 </span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574</span></code></pre></td></tr></table></div></figure>
 
 
-<p>2 写文件是添加 lazy_persist 标识</p>
+<p>2 写文件时添加 lazy_persist 标识</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -917,1791 +2006,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/05/03/hiera-and-facts/">Hiera and Facts</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-05-03T18:30:41+08:00" pubdate data-updated="true">Tue 2016-05-03 18:30</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>为什么用hiera： <a href="https://docs.puppet.com/hiera/3.1/#why-hiera">https://docs.puppet.com/hiera/3.1/#why-hiera</a></p>
-
-<ul>
-<li>hierarchy层级体系。可以设置公共属性，也可以覆写！</li>
-<li>&ldquo;注入&#8221;设置 class 中的属性值。</li>
-<li>hiera_include 通过配置来完成site.pp同样的功能，并且比 <code>node</code> 更加强大灵活（数组对象可以合并）。</li>
-</ul>
-
-
-<p>基本概念：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/configuring.html">hiera.yaml</a> 默认配置文件放在 $codedir/hiera.yaml 。 结合puppet使用时可以通过修改 puppet.conf 的 hiera_config 自定义配置的文件。</li>
-<li><a href="https://docs.puppet.com/hiera/3.1/hierarchy.html">hierarchy</a> hierarchy定义好可以简化很多工作量。如需要根据操作系统 %{::osfamily} 进行适配。</li>
-<li><a href="https://docs.puppet.com/hiera/3.1/data_sources.html#yaml">datasource</a> yaml格式介绍。</li>
-</ul>
-
-
-<h2>windows cygwin命令行环境配置</h2>
-
-<pre><code>winse@Lenovo-PC ~
-$ cat bin/hiera
-#!/bin/sh
-
-# default puppetlabs config in c:\Users\winse\Puppetlabs
-export HOME=/cygdrive/c/Users/winse
-
-name=`basename $0`
-
-# execute
-"C:/Progra~1/Puppet~1/Puppet/bin"/$name.bat "$@"
-
-
-winse@Lenovo-PC ~
-$ cat .bash_profile
-...
-function hiera_look(){
-  code_dir=`puppet config print codedir | sed 's/\r//' `
-  ~/bin/hiera -c "$code_dir/hiera.yaml" --debug "$@" ::environment=production
-}
-</code></pre>
-
-<h2>HelloWorld</h2>
-
-<pre><code>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat /cygdrive/c/Users/winse/.puppetlabs/etc/puppet/puppet.conf
-[main]
-codedir = D:/eshore-shells/puppet/dta/code
-hiera_config = $codedir/hiera.yaml
-
-certname = winse
-
-winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat hiera.yaml
----
-:backends:
-  - yaml
-:hierarchy:
-  - "nodes/%{::trusted.certname}"
-  - common
-
-:yaml:
-  :datadir: "D:/eshore-shells/puppet/dta/code/environments/%{::environment}/hieradata"
-
-
-winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat environments/production/hieradata/common.yaml
-whoami: winse
-
-
-winse@Lenovo-PC ~
-$ hiera_look whoami
-DEBUG: 2016-05-03 11:27:41 +0100: Hiera YAML backend starting
-DEBUG: 2016-05-03 11:27:41 +0100: Looking up whoami in YAML backend
-DEBUG: 2016-05-03 11:27:41 +0100: Looking for data source common
-DEBUG: 2016-05-03 11:27:41 +0100: Found whoami in common
-winse
-</code></pre>
-
-<h2><strong>与Puppet结合使用</strong></h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/puppet.html">https://docs.puppet.com/hiera/3.1/puppet.html</a></li>
-<li><a href="https://docs.puppet.com/hiera/3.1/puppet.html#assigning-classes-to-nodes-with-hiera-hierainclude">https://docs.puppet.com/hiera/3.1/puppet.html#assigning-classes-to-nodes-with-hiera-hierainclude</a></li>
-<li>单值属性重复优先级：就近原则 <a href="https://docs.puppet.com/hiera/3.1/hierarchy.html#example">https://docs.puppet.com/hiera/3.1/hierarchy.html#example</a></li>
-</ul>
-
-
-<h4>参考案例</h4>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/complete_example.html">https://docs.puppet.com/hiera/3.1/complete_example.html</a></li>
-<li><a href="https://kisspuppet.gitbooks.io/puppet/content/puppet_learning_ext1.html">https://kisspuppet.gitbooks.io/puppet/content/puppet_learning_ext1.html</a></li>
-</ul>
-
-
-<h4>主要功能</h4>
-
-<ul>
-<li>hiera获取puppet-facts的属性</li>
-<li>puppet读取hiera中的属性</li>
-<li>hiera注入设置puppet-module的属性：
-  获取到第一个就返回了(类似于hiera)，对于strings, arrays, hashes类型 cannot merge values from multiple hierarchy levels; 需要使用来 hiera_array or hiera_hash 代替。</li>
-<li>hiera_include</li>
-</ul>
-
-
-<h4>动手实践</h4>
-
-<pre><code>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code/environments/production
-$ tree .
-.
-├── hieradata
-│   ├── common.yaml
-│   └── nodes
-│       └── winse.yaml
-├── manifests
-│   └── site.pp
-└── modules
-    └── helloworld
-        └── manifests
-            └── init.pp
-
-$ cat hieradata/common.yaml
-whoami: "%{calling_module} - %{calling_class} - %{calling_class_path} - %{::domain}"
-
-$ cat hieradata/nodes/winse.yaml  | iconv -f gbk -t utf8
----
-classes:
-  - helloworld::hello
-  - helloworld::world
-
-# 文件编码需要要环境匹配，windows要GBK的
-helloworld::hello::hello: 你好
-
-$ cat modules/helloworld/manifests/init.pp
-
-class helloworld::hello ($hello = "hello"){
-
-  notify {$hello :
-  }
-
-}
-
-class helloworld::world {
-
-  notify {hiera('whoami') : # 不推荐在module中使用hiera方法，这里仅为了演示获取calling_module等
-  }
-
-}
-
-$ cat manifests/site.pp
-
-hiera_include('classes')
-
-$ puppet apply environments/production/manifests/site.pp
-Notice: Compiled catalog for winse in environment production in 0.28 seconds
-Notice: 你好
-Notice: /Stage[main]/Helloworld::Hello/Notify[你好]/message: defined 'message' as '你好'
-Notice: helloworld - helloworld::world - helloworld/world - DHCP HOST
-Notice: /Stage[main]/Helloworld::World/Notify[helloworld - helloworld::world - helloworld/world - DHCP HOST]/message: defined 'message' as 'helloworld - helloworld::world - helloworld/world - DHCP HOST'
-Notice: Applied catalog in 0.02 seconds
-
-# 测试获取hiera变量
-$ puppet apply -e "notice(hiera('whoami'))"
-Notice: Scope(Class[main]):  -  -  - DHCP HOST
-Notice: Compiled catalog for winse in environment production in 0.05 seconds
-Notice: Applied catalog in 0.03 seconds
-
-$ puppet apply -e "notice(hiera('classes'))"
-Notice: Scope(Class[main]): [helloworld::hello, helloworld::world]
-Notice: Compiled catalog for winse in environment production in 0.05 seconds
-Notice: Applied catalog in 0.02 seconds
-</code></pre>
-
-<h2>facts</h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/facter/3.1/">https://docs.puppet.com/facter/3.1/</a></li>
-<li>系统自带指标 <a href="https://docs.puppet.com/facter/3.1/core_facts.html">https://docs.puppet.com/facter/3.1/core_facts.html</a></li>
-</ul>
-
-
-<h4>自定义指标</h4>
-
-<ul>
-<li><a href="https://docs.puppet.com/facter/3.1/custom_facts.html">https://docs.puppet.com/facter/3.1/custom_facts.html</a></li>
-<li>Example <a href="https://docs.puppet.com/facter/3.1/fact_overview.html">https://docs.puppet.com/facter/3.1/fact_overview.html</a></li>
-<li>《Learning Puppet4》</li>
-</ul>
-
-
-<p>三种方式：</p>
-
-<ul>
-<li>文件: yaml/json/txt。推荐放置到 modules/[name]/facts.d 目录下</li>
-<li>可执行脚本输出键值对。推荐放置到 modules/[name]/facts.d 目录下，可执行脚本！</li>
-<li>ruby。放置到 modules/[name]/lib/facter 。<a href="https://docs.puppet.com/guides/plugins_in_modules.html">custom facts should go in lib/facter/</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ cat environments/production/modules/helloworld/facts.d/simple_facts.yaml
-</span><span class='line'>---
-</span><span class='line'>my_fact: my_value
-</span><span class='line'>
-</span><span class='line'>$ puppet facts find --debug | grep -iE "my_fact|helloworld"
-</span><span class='line'>Debug: Loading external facts from D:/eshore-shells/puppet/dta/code/environments/production/modules/helloworld/facts.d
-</span><span class='line'>Debug: Facter: searching "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d" for external facts.
-</span><span class='line'>Debug: Facter: resolving facts from YAML file "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d\simple_facts.yaml".
-</span><span class='line'>Debug: Facter: fact "my_fact" has resolved to "my_value".
-</span><span class='line'>Debug: Facter: completed resolving facts from YAML file "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d\simple_facts.yaml".
-</span><span class='line'>    "my_fact": "my_value",
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-</span><span class='line'>$ cat environments/production/modules/helloworld/lib/facter/users.rb
-</span><span class='line'>Facter.add('users') do
-</span><span class='line'>  setcode do
-</span><span class='line'>    ["winse", "winseliu"]
-</span><span class='line'>  end
-</span><span class='line'>end
-</span><span class='line'>
-</span><span class='line'>$ puppet facts | grep -3 users
-</span><span class='line'>    "uptime_days": 0,
-</span><span class='line'>    "uptime_hours": 1,
-</span><span class='line'>    "uptime_seconds": 6980,
-</span><span class='line'>    "users": [
-</span><span class='line'>      "winse",
-</span><span class='line'>      "winseliu"
-</span><span class='line'>    ],
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/04/28/mcollective-plugins/">MCollective Plugins</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-04-28T21:37:51+08:00" pubdate data-updated="true">Thu 2016-04-28 21:37</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>上一篇介绍了mcollective的安装。乘着这股热情把 mco 命令行和插件的安装弄通，记录下来。</p>
-
-<h2>基本命令使用</h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html">https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 ~]# mco help
-</span><span class='line'>The Marionette Collective version 2.8.8
-</span><span class='line'>
-</span><span class='line'>  completion      Helper for shell completion systems
-</span><span class='line'>  describe_filter Display human readable interpretation of filters
-</span><span class='line'>  facts           Reports on usage for a specific fact
-</span><span class='line'>  find            Find hosts using the discovery system matching filter criteria
-</span><span class='line'>  help            Application list and help
-</span><span class='line'>  inventory       General reporting tool for nodes, collectives and subcollectives
-</span><span class='line'>  ping            Ping all nodes
-</span><span class='line'>  plugin          MCollective Plugin Application
-</span><span class='line'>  rpc             Generic RPC agent client application
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>自带的插件只能用来查看环境情况(下面列出来的命令<a href="/blog/2016/04/28/mcollective-quick-start/#cli-simple-usage">上一篇:MCollective安装配置</a>都已记录过)。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mco ping
-</span><span class='line'>mco inventory [server_host]
-</span><span class='line'>mco facts [fact]</span></code></pre></td></tr></table></div></figure>
-
-
-<p>mcollective 的 filter（适配节点）功能很强大，具体查看文档：<a href="https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html#selecting-request-targets-using-filters">Selecting Request Targets Using Filters</a></p>
-
-<h2>插件安装</h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/deploy/standard.html#install-agent-plugins">https://docs.puppet.com/mcollective/deploy/standard.html#install-agent-plugins</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/plugins.html">Installing Plugins</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/plugins.html#example">https://docs.puppet.com/mcollective/deploy/plugins.html#example</a></li>
-</ul>
-
-
-<p>文档中描述了 Use packages 和 Put files directly into the libdir 两种安装插件的方式。但是 Packages 都是放在<a href="http://yum.puppetlabs.com/el/6/products/x86_64/">旧的repo</a>里面，我们这里使用第二种方式把github下载源码放到libdir来安装。</p>
-
-<h4>安装mcollective-puppet-agent</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 使用文档 https://github.com/puppetlabs/mcollective-puppet-agent#readme
-</span><span class='line'># 直接下载release版本 
-</span><span class='line'>[root@hadoop-master2 ~]# cd /usr/libexec/mcollective/
-</span><span class='line'>[root@hadoop-master2 mcollective]# ll
-</span><span class='line'>total 44
-</span><span class='line'>-rw-r--r-- 1 root root 44759 Apr 29 11:53 mcollective-puppet-agent-1.10.0.tar.gz
-</span><span class='line'>[root@hadoop-master2 mcollective]# tar zxf mcollective-puppet-agent-1.10.0.tar.gz  
-</span><span class='line'>[root@hadoop-master2 mcollective]# ll mcollective-puppet-agent-1.10.0
-</span><span class='line'>total 60
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 agent
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 aggregate
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 application
-</span><span class='line'>-rw-rw-r-- 1 root root  3456 Apr 13  2015 CHANGELOG.md
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 data
-</span><span class='line'>drwxrwxr-x 4 root root  4096 Apr 13  2015 ext
-</span><span class='line'>-rw-rw-r-- 1 root root   349 Apr 13  2015 Gemfile
-</span><span class='line'>-rw-rw-r-- 1 root root  3036 Apr 13  2015 Rakefile
-</span><span class='line'>-rw-rw-r-- 1 root root 14739 Apr 13  2015 README.md
-</span><span class='line'>drwxrwxr-x 9 root root  4096 Apr 13  2015 spec
-</span><span class='line'>drwxrwxr-x 3 root root  4096 Apr 13  2015 util
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 validator
-</span><span class='line'># 官网提供example有区分服务端和客户端文件。反正多了没问题，直接全部放就行咯。。。
-</span><span class='line'>[root@hadoop-master2 mcollective]# mv mcollective-puppet-agent-1.10.0 mcollective
-</span><span class='line'>
-</span><span class='line'># 验证
-</span><span class='line'># 多了puppet的命令！
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco help
-</span><span class='line'>The Marionette Collective version 2.8.8
-</span><span class='line'>
-</span><span class='line'>  completion      Helper for shell completion systems
-</span><span class='line'>  describe_filter Display human readable interpretation of filters
-</span><span class='line'>  facts           Reports on usage for a specific fact
-</span><span class='line'>  find            Find hosts using the discovery system matching filter criteria
-</span><span class='line'>  help            Application list and help
-</span><span class='line'>  inventory       General reporting tool for nodes, collectives and subcollectives
-</span><span class='line'>  ping            Ping all nodes
-</span><span class='line'>  plugin          MCollective Plugin Application
-</span><span class='line'>  puppet          Schedule runs, enable, disable and interrogate the Puppet Agent
-</span><span class='line'>  rpc             Generic RPC agent client application
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 同步到mcollective-servers （172.17.0.2对应hadoop-slaver1）
-</span><span class='line'>[root@hadoop-master2 mcollective]# rsync -az /usr/libexec/mcollective 172.17.0.2:/usr/libexec/
-</span><span class='line'>
-</span><span class='line'># mcollective-server添加插件后，重启mcollective服务
-</span><span class='line'># 也可以使用 reload-agents 来重新加载agents： service mcollective reload-agents
-</span><span class='line'>[root@hadoop-slaver1 libexec]# service mcollective restart
-</span><span class='line'>Shutting down mcollective:                                 [  OK  ]
-</span><span class='line'>Starting mcollective:                                      [  OK  ]
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 验证server，已经可以看到新添加的puppet命令了
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco inventory hadoop-slaver1
-</span><span class='line'>Inventory for hadoop-slaver1:
-</span><span class='line'>
-</span><span class='line'>   Server Statistics:
-</span><span class='line'>                      Version: 2.8.8
-</span><span class='line'>                   Start Time: 2016-04-29 12:01:40 +0800
-</span><span class='line'>                  Config File: /etc/puppetlabs/mcollective/server.cfg
-</span><span class='line'>                  Collectives: mcollective
-</span><span class='line'>              Main Collective: mcollective
-</span><span class='line'>                   Process ID: 123
-</span><span class='line'>               Total Messages: 1
-</span><span class='line'>      Messages Passed Filters: 1
-</span><span class='line'>            Messages Filtered: 0
-</span><span class='line'>             Expired Messages: 0
-</span><span class='line'>                 Replies Sent: 0
-</span><span class='line'>         Total Processor Time: 0.67 seconds
-</span><span class='line'>                  System Time: 0.8 seconds
-</span><span class='line'>
-</span><span class='line'>   Agents:
-</span><span class='line'>      discovery       puppet          rpcutil        
-</span><span class='line'>
-</span><span class='line'>   Data Plugins:
-</span><span class='line'>      agent           collective      fact           
-</span><span class='line'>      fstat           puppet          resource       
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco help puppet
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco puppet status    
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>   hadoop-slaver1: Currently stopped; last completed run 10 hours 57 minutes 20 seconds ago
-</span><span class='line'>   hadoop-master1: Currently stopped; last completed run 11 hours 1 minutes 05 seconds ago
-</span><span class='line'>   hadoop-slaver2: Currently stopped; last completed run 10 hours 57 minutes 16 seconds ago
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 配置server.conf
-</span><span class='line'># 注意：真正要执行puppet命令，为了适配puppet4需要添加/修改配置
-</span><span class='line'>-bash-4.1# cat /etc/puppetlabs/mcollective/server.cfg 
-</span><span class='line'>...
-</span><span class='line'>plugin.puppet.command = /opt/puppetlabs/bin/puppet agent
-</span><span class='line'>plugin.puppet.config = /etc/puppetlabs/puppet/puppet.conf
-</span><span class='line'>
-</span><span class='line'># 重启所有mcollective（也可以不重启，重新加载agent即可： 使用 mco shell run service mcollective reload-agents 来重新加载）
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco puppet runall 1
-</span><span class='line'>2016-04-29 16:52:46: Running all nodes with a concurrency of 1
-</span><span class='line'>2016-04-29 16:52:46: Discovering enabled Puppet nodes to manage
-</span><span class='line'>2016-04-29 16:52:49: Found 3 enabled nodes
-</span><span class='line'>2016-04-29 16:52:50: hadoop-slaver1 schedule status: Started a Puppet run using the '/opt/puppetlabs/bin/puppet agent --onetime --no-daemonize --color=false --show_diff --verbose --no-splay' command
-</span><span class='line'>2016-04-29 16:52:55: hadoop-slaver2 schedule status: Started a Puppet run using the '/opt/puppetlabs/bin/puppet agent --onetime --no-daemonize --color=false --show_diff --verbose --no-splay' command
-</span><span class='line'>2016-04-29 16:52:59: hadoop-master1 schedule status: Started a Puppet run using the '/opt/puppetlabs/bin/puppet agent --onetime --no-daemonize --color=false --show_diff --verbose --no-splay' command
-</span><span class='line'>2016-04-29 16:52:59: Iteration complete. Initiated a Puppet run on 3 nodes.
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# mco puppet status
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>   hadoop-master1: Currently stopped; last completed run 10 seconds ago
-</span><span class='line'>   hadoop-slaver1: Currently stopped; last completed run 15 seconds ago
-</span><span class='line'>   hadoop-slaver2: Currently stopped; last completed run 04 seconds ago
-</span><span class='line'>...
-</span><span class='line'># 或者通过 puppetexplorer 查看节点最后的更新时间
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>安装 package / service 插件</h4>
-
-<p>为了更好的管理，再添加 package 和 service 两个插件</p>
-
-<ul>
-<li><a href="https://github.com/puppetlabs/mcollective-package-agent#readme">https://github.com/puppetlabs/mcollective-package-agent#readme</a></li>
-<li><a href="https://github.com/puppetlabs/mcollective-service-agent#readme">https://github.com/puppetlabs/mcollective-service-agent#readme</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># http://stackoverflow.com/questions/8488253/how-to-force-cp-to-overwrite-without-confirmation
-</span><span class='line'>[root@hadoop-master2 mcollective]# unalias cp
-</span><span class='line'>[root@hadoop-master2 mcollective]# cp -rf mcollective-service-agent-3.1.3/* mcollective/   
-</span><span class='line'>[root@hadoop-master2 mcollective]# cp -rf mcollective-package-agent-4.4.0/* mcollective/
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# rsync -az /usr/libexec/mcollective 172.17.0.2:/usr/libexec/
-</span><span class='line'>
-</span><span class='line'># 重启mcollective服务（或者 mco shell run service mcollective reload-agents 重新加载）
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>验证下package的实力：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 mcollective]# mco package lrzsz status
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>   hadoop-slaver1: lrzsz-0.12.20-27.1.el6.x86_64
-</span><span class='line'>   hadoop-master1: -purged.
-</span><span class='line'>   hadoop-slaver2: -purged.
-</span><span class='line'>
-</span><span class='line'>Summary of Arch:
-</span><span class='line'>
-</span><span class='line'>   x86_64 = 1
-</span><span class='line'>
-</span><span class='line'>Summary of Ensure:
-</span><span class='line'>
-</span><span class='line'>             purged = 2
-</span><span class='line'>   0.12.20-27.1.el6 = 1
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>Finished processing 3 / 3 hosts in 1488.41 ms
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco rpc package install package=lrzsz
-</span><span class='line'>Discovering hosts using the mc method for 2 second(s) .... 3
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>hadoop-slaver1                           Unknown Request Status
-</span><span class='line'>   Package is already installed
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>Summary of Ensure:
-</span><span class='line'>
-</span><span class='line'>   0.12.20-27.1.el6 = 3
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>Finished processing 3 / 3 hosts in 14525.03 ms
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco package lrzsz status
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>   hadoop-master1: lrzsz-0.12.20-27.1.el6.x86_64
-</span><span class='line'>   hadoop-slaver2: lrzsz-0.12.20-27.1.el6.x86_64
-</span><span class='line'>   hadoop-slaver1: lrzsz-0.12.20-27.1.el6.x86_64
-</span><span class='line'>
-</span><span class='line'>Summary of Arch:
-</span><span class='line'>
-</span><span class='line'>   x86_64 = 3
-</span><span class='line'>
-</span><span class='line'>Summary of Ensure:
-</span><span class='line'>
-</span><span class='line'>   0.12.20-27.1.el6 = 3
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>Finished processing 3 / 3 hosts in 572.13 ms
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>还有很多的插件：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/plugin_directory/index.html">https://docs.puppet.com/mcollective/plugin_directory/index.html</a></li>
-<li>shell插件也不错，安装的时刻注意一下目录结构！<a href="https://github.com/puppetlabs/mcollective-shell-agent">https://github.com/puppetlabs/mcollective-shell-agent</a></li>
-</ul>
-
-
-<p>添加了 service，package，shell，puppet 插件后，用 mco 来执行管理集群太爽了！！</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/04/28/mcollective-quick-start/">MCollective安装配置</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-04-28T08:39:23+08:00" pubdate data-updated="true">Thu 2016-04-28 08:39</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>puppet agent 通过定时拉取的方式来更新本地系统，但无法满足实时更新的需求。 mcollective 通过 <strong>消息中间件</strong> 的方式，mclient/mservers通过消息的推送/订阅，实现mservers实时执行mclient提交的请求。（添加 m 说明是mcollective的组件！）</p>
-
-<p>最新版的安装除了官网，没有其他可以直接学习的资料（只能参考）。先看官网的资料：</p>
-
-<ul>
-<li>组件功能(必须看看) <a href="https://docs.puppet.com/mcollective/overview_components.html">https://docs.puppet.com/mcollective/overview_components.html</a></li>
-<li>部署 <a href="https://docs.puppet.com/mcollective/deploy/install.html">https://docs.puppet.com/mcollective/deploy/install.html</a></li>
-<li>部署规范/准则 <a href="https://docs.puppet.com/mcollective/deploy/standard.html">https://docs.puppet.com/mcollective/deploy/standard.html</a></li>
-</ul>
-
-
-<p>摘录官网安装描述：[Installing MCollective requires the following steps]</p>
-
-<ul>
-<li>Make sure your middleware is up and running and your firewalls are in order.</li>
-<li>Install the mcollective package on servers, then make sure the mcollective service is running.</li>
-<li>Install the mcollective-client package on admin workstations.</li>
-<li>Most Debian-like and Red Hat-like systems can use the official Puppet Labs packages. Enable the Puppet Labs repos, or import the packages into your own repos.
-
-<ul>
-<li>If you’re on Debian/Ubuntu, mind the missing package dependency.</li>
-</ul>
-</li>
-<li>If your systems can’t use the official packages, check the system requirements and either build your own or run from source.</li>
-</ul>
-
-
-<p>mcollective对于puppet来说是一个锦上添花的组件，没有puppet一样正常运转。部署主要由两个部分组成：</p>
-
-<ul>
-<li>部署消息中间件</li>
-<li>配置mcollective(puppet4.4 agent已经安装该功能，redhat也自带装了Stomp包：<code>/opt/puppetlabs/puppet/lib/ruby/gems/2.1.0/gems/</code> 目录下面)
-
-<ul>
-<li>配置mclient/mserver</li>
-<li>配置Stomp with TLS</li>
-<li>配置security</li>
-</ul>
-</li>
-</ul>
-
-
-<p>本文先简单实现连接远程主机，然后配置安全功能，最后用puppet来重新实现 mcollective 的安装和配置。</p>
-
-<h1>环境说明</h1>
-
-<ul>
-<li>hadoop-master2:
-
-<ul>
-<li>172.17.42.1</li>
-<li>puppetserver, activemq-server, mcollective-client</li>
-</ul>
-</li>
-<li>hadoop-master1/hadoop-slaver1/hadoop-slaver2:
-
-<ul>
-<li>172.17.0.2/&frac34;</li>
-<li>puppet-agent, mcollective-server</li>
-</ul>
-</li>
-</ul>
-
-
-<h1>ActiveMQ部署</h1>
-
-<p>activemq的服务端是一个spring-jetty项目，直接解压运行启动脚本即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># http://activemq.apache.org/download-archives.html
-</span><span class='line'># 直接下载最新的 tar.gz
-</span><span class='line'>
-</span><span class='line'># 解压，启动
-</span><span class='line'>On Unix:
-</span><span class='line'>From a command shell, change to the installation directory and run ActiveMQ as a foregroud process:
-</span><span class='line'>cd [activemq_install_dir]/bin
-</span><span class='line'>./activemq console
-</span><span class='line'>From a command shell, change to the installation directory and run ActiveMQ as a daemon process:
-</span><span class='line'>cd [activemq_install_dir]/bin
-</span><span class='line'>./activemq start
-</span><span class='line'>
-</span><span class='line'># 确认
-</span><span class='line'>URL: http://127.0.0.1:8161/admin/
-</span><span class='line'>Login: admin
-</span><span class='line'>Passwort: admin
-</span><span class='line'># 起了好多端口，随便试一个
-</span><span class='line'>netstat -nl|grep 61616
-</span><span class='line'>netstat -anp|grep PID
-</span><span class='line'>
-</span><span class='line'># 数据/日志目录
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# ll data/
-</span><span class='line'>total 16
-</span><span class='line'>-rw-r--r-- 1 root users 4276 Apr 27 21:36 activemq.log
-</span><span class='line'>-rw-r--r-- 1 root root     5 Apr 27 21:36 activemq.pid
-</span><span class='line'>-rw-r--r-- 1 root root     0 Apr 27 21:36 audit.log
-</span><span class='line'>drwxr-xr-x 2 root root  4096 Apr 27 21:36 kahadb</span></code></pre></td></tr></table></div></figure>
-
-
-<p><img src="/images/blogs/mcollective-activemq.png" alt="" /></p>
-
-<p>查看连接密码：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 conf]# cat credentials.properties
-</span><span class='line'>...
-</span><span class='line'>activemq.username=system
-</span><span class='line'>activemq.password=manager
-</span><span class='line'>guest.password=password[root@hadoop-master2 conf]# 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h1>简单配置(unencrypted Stomp) <a name="cli-simple-usage"></a></h1>
-
-<p>安装puppet4.4后，mcollective已经安装好了！直接修改配置连接到activemq即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 puppetlabs]# chkconfig --list | grep mco
-</span><span class='line'>mcollective     0:off   1:off   2:off   3:off   4:off   5:off   6:off
-</span><span class='line'>
-</span><span class='line'># puppetserver作为mcollective-client
-</span><span class='line'>[root@hadoop-master2 mcollective]# cat client.cfg                    
-</span><span class='line'>...
-</span><span class='line'>connector = activemq
-</span><span class='line'>plugin.activemq.pool.size = 1
-</span><span class='line'>plugin.activemq.pool.1.host = hadoop-master2.example.com
-</span><span class='line'>plugin.activemq.pool.1.port = 61613
-</span><span class='line'>plugin.activemq.pool.1.user = system
-</span><span class='line'>plugin.activemq.pool.1.password = manager
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco ping
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>No responses received
-</span><span class='line'>
-</span><span class='line'># puppet agent作为mcollective-server
-</span><span class='line'>-bash-4.1# cat server.cfg 
-</span><span class='line'>...
-</span><span class='line'>connector = activemq
-</span><span class='line'>plugin.activemq.pool.size = 1
-</span><span class='line'>plugin.activemq.pool.1.host = hadoop-master2.example.com
-</span><span class='line'>plugin.activemq.pool.1.port = 61613
-</span><span class='line'>plugin.activemq.pool.1.user = system
-</span><span class='line'>plugin.activemq.pool.1.password = manager
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>-bash-4.1# service mcollective start
-</span><span class='line'>Starting mcollective:                                      [  OK  ]
-</span><span class='line'>-bash-4.1# service mcollective status
-</span><span class='line'>mcollectived (pid  202) is running...
-</span><span class='line'>
-</span><span class='line'># 其他两台agent机器一样的配置操作
-</span><span class='line'>
-</span><span class='line'># 1. mcollective-client(puppetserver) 测试
-</span><span class='line'>[root@hadoop-master2 ~]# mco find
-</span><span class='line'>hadoop-master1
-</span><span class='line'>hadoop-slaver2
-</span><span class='line'>hadoop-slaver1
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco ping
-</span><span class='line'>hadoop-master1                           time=148.29 ms
-</span><span class='line'>hadoop-slaver2                           time=187.99 ms
-</span><span class='line'>hadoop-slaver1                           time=190.21 ms
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>3 replies max: 190.21 min: 148.29 avg: 175.50 
-</span><span class='line'>
-</span><span class='line'># 2. 先查看/扫描节点状态。（如果配置了facts后，会输出一长串的Facts！）
-</span><span class='line'>[root@hadoop-master2 ssl]# mco inventory hadoop-master1
-</span><span class='line'>Inventory for hadoop-master1:
-</span><span class='line'>
-</span><span class='line'>   Server Statistics:
-</span><span class='line'>                      Version: 2.8.8
-</span><span class='line'>                   Start Time: 2016-04-29 00:21:31 +0800
-</span><span class='line'>                  Config File: /etc/puppetlabs/mcollective/server.cfg
-</span><span class='line'>                  Collectives: mcollective
-</span><span class='line'>              Main Collective: mcollective
-</span><span class='line'>                   Process ID: 155
-</span><span class='line'>               Total Messages: 13
-</span><span class='line'>      Messages Passed Filters: 3
-</span><span class='line'>            Messages Filtered: 0
-</span><span class='line'>             Expired Messages: 0
-</span><span class='line'>                 Replies Sent: 2
-</span><span class='line'>         Total Processor Time: 2.32 seconds
-</span><span class='line'>                  System Time: 0.3 seconds
-</span><span class='line'>
-</span><span class='line'>   Agents:
-</span><span class='line'>      discovery       rpcutil                        
-</span><span class='line'>
-</span><span class='line'>   Data Plugins:
-</span><span class='line'>      agent           collective      fact           
-</span><span class='line'>      fstat                                          
-</span><span class='line'>
-</span><span class='line'>   Configuration Management Classes:
-</span><span class='line'>      No classes applied
-</span><span class='line'>
-</span><span class='line'>   Facts:
-</span><span class='line'>      mcollective =&gt; 1
-</span><span class='line'>
-</span><span class='line'># 3. 获取节点facts，需要配合puppet一起来使用
-</span><span class='line'># puppetserver 配置更新agent facts.yaml信息
-</span><span class='line'>[root@hadoop-master2 manifests]# cat site.pp 
-</span><span class='line'>file{'/etc/puppetlabs/mcollective/facts.yaml':
-</span><span class='line'>  owner    =&gt; root,
-</span><span class='line'>  group    =&gt; root,
-</span><span class='line'>  mode     =&gt; '400',
-</span><span class='line'>  loglevel =&gt; debug, # reduce noise in Puppet reports
-</span><span class='line'>  content  =&gt; inline_template("&lt;%= scope.to_hash.reject { |k,v| k.to_s =~ /(uptime_seconds|timestamp|free)/ }.to_yaml %&gt;"), # exclude rapidly changing facts
-</span><span class='line'>}
-</span><span class='line'># 读取facts
-</span><span class='line'>[root@hadoop-master2 manifests]# mco facts hostname
-</span><span class='line'>Report for fact: hostname
-</span><span class='line'>
-</span><span class='line'>        hadoop-master1                           found 1 times
-</span><span class='line'>        hadoop-slaver1                           found 1 times
-</span><span class='line'>        hadoop-slaver2                           found 1 times
-</span><span class='line'>
-</span><span class='line'>Finished processing 3 / 3 hosts in 579.93 ms
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>自带的插件功能比较少，要真正把 mcollective 用起来需要安装插件：puppet, service, package等等。这篇主要记录安装过程，<a href="/blog/2016/04/28/mcollective-plugins/">插件安装以及使用</a>后面具体实践了再写。</p>
-
-<p>我觉得内网生产环境安装，到这一步已经差不多了！下面的安全配置就当深入学习吧。</p>
-
-<h1>Stomp with TLS 配置</h1>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html">https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html">https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html</a></li>
-</ul>
-
-
-<p><strong>Anonymous TLS</strong> 步骤简单一点，这里就不列出来了，自己去看官网的文档: <a href="https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html#anonymous-tls">Anonymous TLS</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-<span class='line-number'>146</span>
-<span class='line-number'>147</span>
-<span class='line-number'>148</span>
-<span class='line-number'>149</span>
-<span class='line-number'>150</span>
-<span class='line-number'>151</span>
-<span class='line-number'>152</span>
-<span class='line-number'>153</span>
-<span class='line-number'>154</span>
-<span class='line-number'>155</span>
-<span class='line-number'>156</span>
-<span class='line-number'>157</span>
-<span class='line-number'>158</span>
-<span class='line-number'>159</span>
-<span class='line-number'>160</span>
-<span class='line-number'>161</span>
-<span class='line-number'>162</span>
-<span class='line-number'>163</span>
-<span class='line-number'>164</span>
-<span class='line-number'>165</span>
-<span class='line-number'>166</span>
-<span class='line-number'>167</span>
-<span class='line-number'>168</span>
-<span class='line-number'>169</span>
-<span class='line-number'>170</span>
-<span class='line-number'>171</span>
-<span class='line-number'>172</span>
-<span class='line-number'>173</span>
-<span class='line-number'>174</span>
-<span class='line-number'>175</span>
-<span class='line-number'>176</span>
-<span class='line-number'>177</span>
-<span class='line-number'>178</span>
-<span class='line-number'>179</span>
-<span class='line-number'>180</span>
-<span class='line-number'>181</span>
-<span class='line-number'>182</span>
-<span class='line-number'>183</span>
-<span class='line-number'>184</span>
-<span class='line-number'>185</span>
-<span class='line-number'>186</span>
-<span class='line-number'>187</span>
-<span class='line-number'>188</span>
-<span class='line-number'>189</span>
-<span class='line-number'>190</span>
-<span class='line-number'>191</span>
-<span class='line-number'>192</span>
-<span class='line-number'>193</span>
-<span class='line-number'>194</span>
-<span class='line-number'>195</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># CA-Verified TLS
-</span><span class='line'>
-</span><span class='line'># 1 手动配置activemq
-</span><span class='line'>
-</span><span class='line'># 1.1 可以直接用puppet的cert/private-keys，我这里新生成一个activemq的证书
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# puppet master --configprint ssldir
-</span><span class='line'>/etc/puppetlabs/puppet/ssl
-</span><span class='line'># 一个不冲突的名称即可，不需要是hostname/FQDN
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# puppet cert generate activemq
-</span><span class='line'>Notice: activemq has a waiting certificate request
-</span><span class='line'>Notice: Signed certificate request for activemq
-</span><span class='line'>Notice: Removing file Puppet::SSL::CertificateRequest activemq at '/etc/puppetlabs/puppet/ssl/ca/requests/activemq.pem'
-</span><span class='line'>Notice: Removing file Puppet::SSL::CertificateRequest activemq at '/etc/puppetlabs/puppet/ssl/certificate_requests/activemq.pem'
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# tree /etc/puppetlabs/puppet/ssl/
-</span><span class='line'>/etc/puppetlabs/puppet/ssl/
-</span><span class='line'>...
-</span><span class='line'>├── certificate_requests
-</span><span class='line'>├── certs
-</span><span class='line'>│   ├── activemq.pem
-</span><span class='line'>│   ├── ca.pem
-</span><span class='line'>│   └── hadoop-master2.example.com.pem
-</span><span class='line'>├── crl.pem
-</span><span class='line'>├── private
-</span><span class='line'>├── private_keys
-</span><span class='line'>│   ├── activemq.pem
-</span><span class='line'>│   └── hadoop-master2.example.com.pem
-</span><span class='line'>└── public_keys
-</span><span class='line'>    ├── activemq.pem
-</span><span class='line'>    └── hadoop-master2.example.com.pem
-</span><span class='line'>
-</span><span class='line'>9 directories, 22 files
-</span><span class='line'>
-</span><span class='line'># certs/activemq.pem, certs/ca.pem, private_keys/activemq.pem 就是我们需要的。
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 1.2 创建Truststore
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# which keytool
-</span><span class='line'>/opt/jdk1.7.0_60/bin/keytool
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# cd /etc/puppetlabs/puppet/ssl            
-</span><span class='line'>[root@hadoop-master2 ssl]# keytool -import -alias "CU CA" -file certs/ca.pem -keystore truststore.jks
-</span><span class='line'>Enter keystore password:  
-</span><span class='line'>Re-enter new password: 
-</span><span class='line'>Owner: CN=Puppet CA: hadoop-master2.example.com
-</span><span class='line'>Issuer: CN=Puppet CA: hadoop-master2.example.com
-</span><span class='line'>...
-</span><span class='line'>Trust this certificate? [no]:  y
-</span><span class='line'>Certificate was added to keystore
-</span><span class='line'>[root@hadoop-master2 ssl]# ll
-</span><span class='line'>total 32
-</span><span class='line'>drwxr-xr-x 5 puppet puppet 4096 Apr 23 00:01 ca
-</span><span class='line'>drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 certificate_requests
-</span><span class='line'>drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 certs
-</span><span class='line'>-rw-r--r-- 1 puppet puppet  979 Apr 28 10:33 crl.pem
-</span><span class='line'>drwxr-x--- 2 puppet puppet 4096 Apr 22 23:51 private
-</span><span class='line'>drwxr-x--- 2 puppet puppet 4096 Apr 28 19:53 private_keys
-</span><span class='line'>drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 public_keys
-</span><span class='line'>-rw-r--r-- 1 root   root   1496 Apr 28 20:01 truststore.jks
-</span><span class='line'># 验证下指纹fingerprints
-</span><span class='line'>[root@hadoop-master2 ssl]# keytool -list -keystore truststore.jks 
-</span><span class='line'>Enter keystore password:  
-</span><span class='line'>
-</span><span class='line'>Keystore type: JKS
-</span><span class='line'>Keystore provider: SUN
-</span><span class='line'>
-</span><span class='line'>Your keystore contains 1 entry
-</span><span class='line'>
-</span><span class='line'>cu ca, Apr 28, 2016, trustedCertEntry, 
-</span><span class='line'>Certificate fingerprint (SHA1): 40:2C:45:37:6B:C7:9C:92:E7:4D:1E:4F:2B:C4:17:F4:A3:5F:EB:56
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl x509 -in certs/ca.pem -fingerprint -sha1
-</span><span class='line'>SHA1 Fingerprint=40:2C:45:37:6B:C7:9C:92:E7:4D:1E:4F:2B:C4:17:F4:A3:5F:EB:56
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 1.3 创建Keystore
-</span><span class='line'>[root@hadoop-master2 ssl]# cat private_keys/activemq.pem certs/activemq.pem &gt;activemq.pem
-</span><span class='line'># 所有密码都需一致！！ All of these passwords must be the same.
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl pkcs12 -export -in activemq.pem -out activemq.p12 -name activemq      
-</span><span class='line'>Enter Export Password:
-</span><span class='line'>Verifying - Enter Export Password:
-</span><span class='line'>[root@hadoop-master2 ssl]# keytool -importkeystore -destkeystore keystore.jks -srckeystore activemq.p12 \
-</span><span class='line'>&gt; -srcstoretype PKCS12 -alias activemq
-</span><span class='line'>Enter destination keystore password:  XXX
-</span><span class='line'>Re-enter new password: XXX
-</span><span class='line'>Enter source keystore password:  XXX
-</span><span class='line'>[root@hadoop-master2 ssl]# ll -t
-</span><span class='line'>total 52
-</span><span class='line'>-rw-r--r-- 1 root   root   3918 Apr 28 20:12 keystore.jks
-</span><span class='line'>-rw-r--r-- 1 root   root   4230 Apr 28 20:08 activemq.p12
-</span><span class='line'>-rw-r--r-- 1 root   root   5203 Apr 28 20:07 activemq.pem
-</span><span class='line'>-rw-r--r-- 1 root   root   1496 Apr 28 20:01 truststore.jks
-</span><span class='line'>...
-</span><span class='line'># 验证指纹
-</span><span class='line'>[root@hadoop-master2 ssl]# keytool -list -keystore keystore.jks 
-</span><span class='line'>Enter keystore password:  
-</span><span class='line'>
-</span><span class='line'>Keystore type: JKS
-</span><span class='line'>Keystore provider: SUN
-</span><span class='line'>
-</span><span class='line'>Your keystore contains 1 entry
-</span><span class='line'>
-</span><span class='line'>activemq, Apr 28, 2016, PrivateKeyEntry, 
-</span><span class='line'>Certificate fingerprint (SHA1): 4F:DF:DE:64:13:36:0E:74:8B:7F:D3:61:78:29:C4:AA:4F:A4:ED:D8
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl x509 -in certs/activemq.pem -fingerprint -sha1
-</span><span class='line'>SHA1 Fingerprint=4F:DF:DE:64:13:36:0E:74:8B:7F:D3:61:78:29:C4:AA:4F:A4:ED:D8
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 1.4 配置activemq
-</span><span class='line'># http://activemq.apache.org/how-do-i-use-ssl.html
-</span><span class='line'># https://docs.puppet.com/mcollective/deploy/middleware/activemq.html#tls-credentials
-</span><span class='line'># https://docs.puppet.com/mcollective/deploy/middleware/activemq.html#stomp
-</span><span class='line'>[root@hadoop-master2 ssl]# mv keystore.jks truststore.jks /opt/puppetlabs/apache-activemq-5.13.2/conf
-</span><span class='line'>[root@hadoop-master2 ssl]# cd /opt/puppetlabs/apache-activemq-5.13.2/conf/
-</span><span class='line'># 填上面步骤设置的密码
-</span><span class='line'>[root@hadoop-master2 conf]# vi activemq.xml 
-</span><span class='line'>...
-</span><span class='line'>&lt;sslContext&gt;
-</span><span class='line'>  &lt;sslContext keyStore="keystore.jks" keyStorePassword="XXXX"
-</span><span class='line'>              trustStrore="truststore.jks" trustStorePassword="XXXX" /&gt;
-</span><span class='line'>&lt;/sslContext&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;transportConnectors&gt;
-</span><span class='line'>  &lt;!-- DOS protection, limit concurrent connections to 1000 and frame size to 100MB --&gt;
-</span><span class='line'>  &lt;transportConnector name="stomp+nio+ssl" uri="stomp+nio+ssl://0.0.0.0:61614?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600&amp;needClientAuth=true&amp;transport.enabledProtocols=TLSv1,TLSv1.1,TLSv1.2"/&gt;
-</span><span class='line'>&lt;/transportConnectors&gt;
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# chmod 600 conf/activemq.xml 
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# bin/activemq stop
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# bin/activemq start
-</span><span class='line'># 日志查看
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# less data/activemq.log 
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 2 puppetserver(mcollective client)
-</span><span class='line'># https://docs.puppet.com/mcollective/configure/client.html
-</span><span class='line'>[root@hadoop-master2 ~]# cd /etc/puppetlabs/mcollective/
-</span><span class='line'>[root@hadoop-master2 mcollective]# cat client.cfg
-</span><span class='line'>...
-</span><span class='line'>connector = activemq
-</span><span class='line'>plugin.activemq.pool.size = 1
-</span><span class='line'>plugin.activemq.pool.1.host = hadoop-master2.example.com
-</span><span class='line'>plugin.activemq.pool.1.port = 61614
-</span><span class='line'>plugin.activemq.pool.1.user = system
-</span><span class='line'>plugin.activemq.pool.1.password = manager
-</span><span class='line'>plugin.activemq.pool.1.ssl = true
-</span><span class='line'>plugin.activemq.pool.1.ssl.ca = /etc/puppetlabs/puppet/ssl/certs/ca.pem
-</span><span class='line'>plugin.activemq.pool.1.ssl.key = /etc/puppetlabs/puppet/ssl/private_keys/hadoop-master2.example.com.pem
-</span><span class='line'>plugin.activemq.pool.1.ssl.cert = /etc/puppetlabs/puppet/ssl/certs/hadoop-master2.example.com.pem
-</span><span class='line'>...
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco ping -v
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>No responses received
-</span><span class='line'>
-</span><span class='line'># 3 puppet agents(mcollective servers)
-</span><span class='line'># https://docs.puppet.com/mcollective/configure/server.html
-</span><span class='line'>-bash-4.1# puppet agent --configprint confdir
-</span><span class='line'>/etc/puppetlabs/puppet
-</span><span class='line'>-bash-4.1# puppet agent --configprint ssldir
-</span><span class='line'>/etc/puppetlabs/puppet/ssl
-</span><span class='line'>-bash-4.1# puppet agent --configprint hostprivkey
-</span><span class='line'>/etc/puppetlabs/puppet/ssl/private_keys/hadoop-master1.example.com.pem
-</span><span class='line'>-bash-4.1# puppet agent --configprint hostcert
-</span><span class='line'>/etc/puppetlabs/puppet/ssl/certs/hadoop-master1.example.com.pem
-</span><span class='line'>-bash-4.1# puppet agent --configprint localcacert
-</span><span class='line'>/etc/puppetlabs/puppet/ssl/certs/ca.pem
-</span><span class='line'>
-</span><span class='line'>-bash-4.1# cd /etc/puppetlabs/mcollective/
-</span><span class='line'>-bash-4.1# cat server.cfg 
-</span><span class='line'>...
-</span><span class='line'>connector = activemq
-</span><span class='line'>plugin.activemq.pool.size = 1
-</span><span class='line'>plugin.activemq.pool.1.host = hadoop-master2.example.com
-</span><span class='line'>plugin.activemq.pool.1.port = 61614
-</span><span class='line'>plugin.activemq.pool.1.user = system
-</span><span class='line'>plugin.activemq.pool.1.password = manager
-</span><span class='line'>plugin.activemq.pool.1.ssl = true
-</span><span class='line'>plugin.activemq.pool.1.ssl.ca = /etc/puppetlabs/puppet/ssl/certs/ca.pem
-</span><span class='line'>plugin.activemq.pool.1.ssl.key = /etc/puppetlabs/puppet/ssl/private_keys/hadoop-master1.example.com.pem
-</span><span class='line'>plugin.activemq.pool.1.ssl.cert = /etc/puppetlabs/puppet/ssl/certs/hadoop-master1.example.com.pem
-</span><span class='line'>...
-</span><span class='line'>-bash-4.1# service mcollective restart
-</span><span class='line'>Shutting down mcollective: 
-</span><span class='line'>Starting mcollective:                                      [  OK  ]
-</span><span class='line'>
-</span><span class='line'># 其他两台机器一样的操作
-</span><span class='line'>
-</span><span class='line'># 测试
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco ping -v
-</span><span class='line'>hadoop-master1                           time=41.99 ms
-</span><span class='line'>hadoop-slaver2                           time=84.87 ms
-</span><span class='line'>hadoop-slaver1                           time=85.46 ms
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>3 replies max: 85.46 min: 41.99 avg: 70.77 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>更多activemq的设置查看官方文档： <a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq.html">ActiveMQ Config Reference for MCollective Users</a> <a href="https://raw.github.com/puppetlabs/marionette-collective/master/ext/activemq/examples/single-broker/activemq.xml">example activemq.xml</a></p>
-
-<h1>SSL Security plugin</h1>
-
-<p>Stomp with TLS (安全传输层协议)用于加密数据。而 security plugin 主要功能有：</p>
-
-<ul>
-<li>mcollective server要授权才会执行 client 发送的请求。</li>
-<li>create a token that uniquely identify the client - based on the filename of the public key。</li>
-<li>在请求中添加创建时间和TTL保证数据的完整性(不被拦截、篡改以及重复)。</li>
-</ul>
-
-
-<p>参考：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/configure/client.html#security-plugin-settings">https://docs.puppet.com/mcollective/configure/client.html#security-plugin-settings</a></li>
-<li><a href="https://docs.puppet.com/mcollective/security.html">https://docs.puppet.com/mcollective/security.html</a></li>
-<li><a href="https://docs.puppet.com/mcollective/reference/plugins/security_ssl.html">https://docs.puppet.com/mcollective/reference/plugins/security_ssl.html</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 1 生成server秘钥(公钥、私钥)
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# openssl genrsa -out server-private.pem 1024
-</span><span class='line'>...
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# openssl rsa -in server-private.pem -out server-public.pem -outform PEM -pubout  
-</span><span class='line'>writing RSA key
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# ll
-</span><span class='line'>total 12
-</span><span class='line'>-rw-r--r-- 1 root root 7915 Apr 29 00:06 server-private.pem
-</span><span class='line'>-rw-r--r-- 1 root root 1836 Apr 29 00:07 server-public.pem
-</span><span class='line'>
-</span><span class='line'># 把 private/public 复制到所有的mcollective-servers节点
-</span><span class='line'># 把 public 复制到mcollective-clients节点
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# ssh 172.17.0.2 mkdir -p /etc/puppetlabs/mcollective/ssl/clients
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# scp * 172.17.0.2:/etc/puppetlabs/mcollective/ssl/
-</span><span class='line'>server-private.pem   100% 7915     7.7KB/s   00:00    
-</span><span class='line'>server-public.pem    100% 1836     1.8KB/s   00:00    
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# mkdir -p /etc/puppetlabs/mcollective/ssl
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# cp server-public.pem /etc/puppetlabs/mcollective/ssl/
-</span><span class='line'>
-</span><span class='line'># 2 配置mcollective-servers。节点间配置不能同步，TLS配置的证书名称是不一样的！！
-</span><span class='line'>-bash-4.1# vi /etc/puppetlabs/mcollective/server.cfg 
-</span><span class='line'>...
-</span><span class='line'># Plugins
-</span><span class='line'>#securityprovider = psk
-</span><span class='line'>#plugin.psk = unset
-</span><span class='line'>
-</span><span class='line'>securityprovider = ssl
-</span><span class='line'>plugin.ssl_server_private = /etc/puppetlabs/mcollective/ssl/server-private.pem
-</span><span class='line'>plugin.ssl_server_public = /etc/puppetlabs/mcollective/ssl/server-public.pem
-</span><span class='line'>plugin.ssl_client_cert_dir = /etc/puppetlabs/mcollective/ssl/clients/
-</span><span class='line'>plugin.ssl.enfore_ttl = 0
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>-bash-4.1# service mcollective restart
-</span><span class='line'>Shutting down mcollective:                                 [  OK  ]
-</span><span class='line'>Starting mcollective:                                      [  OK  ]
-</span><span class='line'># 可以通过 /var/log/puppetlabs/mcollective.log 查看详细日志
-</span><span class='line'>
-</span><span class='line'># 配置一个节点后，mco ping已经不再显示hadoop-master1了！！
-</span><span class='line'>
-</span><span class='line'># 3 生成client秘钥
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# cd /etc/puppetlabs/mcollective/ssl
-</span><span class='line'>[root@hadoop-master2 ssl]# ll
-</span><span class='line'>total 8
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Apr 29 00:15 clients
-</span><span class='line'>-rw-r--r-- 1 root root 1836 Apr 29 00:15 server-public.pem
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl genrsa -out winse-private.pem 1024    
-</span><span class='line'>...
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl rsa -in winse-private.pem -out winse-public.pem -outform PEM -pubout
-</span><span class='line'>writing RSA key
-</span><span class='line'>[root@hadoop-master2 ssl]# ll
-</span><span class='line'>total 16
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Apr 29 00:15 clients
-</span><span class='line'>-rw-r--r-- 1 root root 1836 Apr 29 00:15 server-public.pem
-</span><span class='line'>-rw-r--r-- 1 root root  887 Apr 29 00:26 winse-private.pem
-</span><span class='line'>-rw-r--r-- 1 root root  272 Apr 29 00:26 winse-public.pem
-</span><span class='line'>
-</span><span class='line'># 把client用户的公钥拷贝到所有mcollective-servers的ssl/clients目录下
-</span><span class='line'>[root@hadoop-master2 ssl]# scp winse-public.pem 172.17.0.2:/etc/puppetlabs/mcollective/ssl/clients
-</span><span class='line'>winse-public.pem 100%  272     0.3KB/s   00:00    
-</span><span class='line'>
-</span><span class='line'># 4 配置clients
-</span><span class='line'>[root@hadoop-master2 ~]# vi /etc/puppetlabs/mcollective/client.cfg 
-</span><span class='line'>...
-</span><span class='line'># Plugins
-</span><span class='line'>#securityprovider = psk
-</span><span class='line'>#plugin.psk = unset
-</span><span class='line'>securityprovider = ssl
-</span><span class='line'>plugin.ssl_server_public = /etc/puppetlabs/mcollective/ssl/server-public.pem
-</span><span class='line'>plugin.ssl_client_private = /etc/puppetlabs/mcollective/ssl/winse-private.pem
-</span><span class='line'>plugin.ssl_client_public = /etc/puppetlabs/mcollective/ssl/winse-public.pem
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'># mcollective-server不需要重启！客户端连接测试
-</span><span class='line'>[root@hadoop-master2 ssl]# mco ping -v
-</span><span class='line'>hadoop-master1                           time=561.29 ms
-</span><span class='line'>hadoop-slaver2                           time=601.91 ms
-</span><span class='line'>hadoop-slaver1                           time=608.31 ms
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>3 replies max: 608.31 min: 561.29 avg: 590.50 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>理解了功能后，再按条理配置其实感觉就不是那么难了。遇到问题先查看日志！！</p>
-
-<h1>最佳实践</h1>
-
-<p>官网推荐使用 站点管理工具 统一来安装管理，如puppet。下面使用puppet来配置mcollective：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/deploy/install.html#example">https://docs.puppet.com/mcollective/deploy/install.html#example</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html#creating-keystores-with-puppet">https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html#creating-keystores-with-puppet</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/standard.html#write-the-server-config-file">https://docs.puppet.com/mcollective/deploy/standard.html#write-the-server-config-file</a></li>
-</ul>
-
-
-<p>TODO</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/2">&larr; Older</a>
@@ -2776,6 +2080,18 @@ Notice: Applied catalog in 0.02 seconds
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/">[读读书]Apache Spark源码剖析-序</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/05/05/hdfs-heterogeneous-storage/">Hdfs异构存储实操</a>
       </li>
     
@@ -2793,18 +2109,6 @@ Notice: Applied catalog in 0.02 seconds
     
       <li class="post">
         <a href="/blog/2016/04/28/mcollective-quick-start/">MCollective安装配置</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/21/puppetexplorer-setting/">Puppetexplorer设置</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/21/puppetdb-install-and-config/">Puppetdb安装配置</a>
       </li>
     
   </ul>
@@ -2829,7 +2133,7 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (4) 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2841,7 +2145,7 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (4) 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2877,7 +2181,7 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/puppet/'>puppet</a> (7) 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2897,7 +2201,7 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/spark/'>spark</a> (7) 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2918,7 +2222,7 @@ Notice: Applied catalog in 0.02 seconds
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (132)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (136)</li>
 	</ul>
 	
 </section>

@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Puppet | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/puppet/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-05-06T11:26:47+08:00</updated>
+  <updated>2016-06-21T09:20:27+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,300 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[使用Puppet安装配置Ganglia]]></title>
+    <link href="http://winseliu.com/blog/2016/06/17/ganglia-install-on-centos-with-puppet/"/>
+    <updated>2016-06-17T09:30:50+08:00</updated>
+    <id>http://winseliu.com/blog/2016/06/17/ganglia-install-on-centos-with-puppet</id>
+    <content type="html"><![CDATA[<p>前面写过完全纯手工和用yum安装依赖来安装ganglia的文章，最近生产安装了puppet，既然已经手上已有牛杀鸡就不用再取菜刀了。今天记录下前几天使用puppet安装ganglia的经历。</p>
+
+<h2>前提（自己操作过）</h2>
+
+<ul>
+<li>配置过私有仓库 (createrepo)</li>
+<li>安装好puppet</li>
+<li>编译过自己的rpm (rpmbuild)</li>
+</ul>
+
+
+<h2>编译gmetad，gmond，gweb</h2>
+
+<ul>
+<li><a href="/files/ganglia-puppet/gmetad.spec">gmetad.spec</a></li>
+<li><a href="/files/ganglia-puppet/gmond.spec">gmond.spec</a></li>
+<li><a href="/files/ganglia-puppet/gweb.spec">gweb.spec</a></li>
+</ul>
+
+
+<p>内容通过附件下载。</p>
+
+<p>然后编译打包（使用rpmbuild必须保证能正常编译安装ganglia的，rpmbuild包括编译安装！！可以先手动编译）：</p>
+
+<pre><code>mkdir ganglia-build
+cd ganglia-build
+mkdir BUILD RPMS SOURCES SPECS SRPMS
+
+# ganglia-web-3.7.1.tar.gz的makefile、conf_default.php.in修改下，根据等下要配置gmetad的参数进行修改
+
+less ganglia-web-3.7.1/Makefile 
+    # Location where gweb should be installed to (excluding conf, dwoo dirs).
+    GDESTDIR = /var/www/html/ganglia
+
+    # Location where default apache configuration should be installed to.
+    GCONFDIR = /usr/local/ganglia/etc/
+
+    # Gweb statedir (where conf dir and Dwoo templates dir are stored)
+    GWEB_STATEDIR = /var/www/html/ganglia
+
+    # Gmetad rootdir (parent location of rrd folder)
+    GMETAD_ROOTDIR = /data/ganglia
+
+    APACHE_USER = apache
+
+# 连外网太慢，下载放到本地
+less ganglia-web-3.7.1/conf_default.php.in 
+    #$conf['cubism_js_path'] = "js/cubism.v1.min.js";
+    $conf['jquery_js_path'] = "js/jquery.min.js";
+    $conf['jquerymobile_js_path'] = "js/jquery.mobile.min.js";
+    $conf['jqueryui_js_path'] = "js/jquery-ui.min.js";
+    $conf['rickshaw_js_path'] = "js/rickshaw.min.js";
+    $conf['cubism_js_path'] = "js/cubism.v1.min.js";
+    $conf['d3_js_path'] = "js/d3.min.js";
+    $conf['protovis_js_path'] = "js/protovis.min.js";
+
+
+# 把文件放到SOURCES目录下，
+ls SOURCES/
+    ganglia-3.7.2.tar.gz  ganglia-web-3.7.1.tar.gz
+
+rpmbuild -v -ba SPECS/gmetad.spec 
+rpmbuild -v -ba SPECS/gmond.spec 
+rpmbuild -v -ba SPECS/gweb.spec 
+
+# 查看内容
+rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm 
+</code></pre>
+
+<h2>本地仓库</h2>
+
+<p><strong>先安装httpd、createrepo</strong>，然后按照下面的步骤创建本地仓库</p>
+
+<pre><code># 系统带的可以从光盘拷贝，直接映射到httpd的目录下即可
+[hadoop@hadoop-master1 rhel6.3]$ ls 
+Packages  repodata
+[hadoop@hadoop-master1 html]$ pwd
+/var/www/html
+[hadoop@hadoop-master1 html]$ ll
+lrwxrwxrwx.  1 root root   20 2月  15 2014 rhel6.3 -&gt; /opt/rhel6.3
+
+[hadoop@hadoop-master1 ~]$ sudo mkdir -p /opt/dta/repo
+[hadoop@hadoop-master1 ~]$ cd /opt/dta/repo
+[hadoop@hadoop-master1 repo]$ ls *.rpm
+gmetad-3.7.2-1.el6.x86_64.rpm  gmond-3.7.2-1.el6.x86_64.rpm  gweb-3.7.1-1.el6.x86_64.rpm  libconfuse-2.7-4.el6.x86_64.rpm
+
+[hadoop@hadoop-master1 repo]$ sudo createrepo .
+3/3 - libconfuse-2.7-4.el6.x86_64.rpm                                           
+Saving Primary metadata
+Saving file lists metadata
+Saving other metadata
+
+# 映射到httpd目录下
+[hadoop@hadoop-master1 yum.repos.d]$ cd /var/www/html/
+[hadoop@hadoop-master1 html]$ sudo ln -s /opt/dta/repo dta
+
+# 加入本地仓库源
+[hadoop@hadoop-master1 yum.repos.d]$ sudo cp puppet.repo dta.repo
+[hadoop@hadoop-master1 yum.repos.d]$ sudo vi dta.repo 
+[dta]
+name=DTA Local
+baseurl=http://hadoop-master1:801/dta
+enabled=1
+gpgcheck=0
+</code></pre>
+
+<p>安装找不到gmond时，可以先清理yum的缓冲： <code>yum clean all</code></p>
+
+<h2>puppet模块</h2>
+
+<p>添加了三个模块，用于主机添加repo配置和sudo配置，以及安装配置gmond。</p>
+
+<pre><code>[root@hadoop-master1 modules]# tree $PWD
+/etc/puppetlabs/code/environments/production/modules
+├── dtarepo
+│   ├── manifests
+│   │   └── init.pp
+│   └── templates
+│       └── dta.repo
+├── gmond
+│   ├── manifests
+│   │   └── init.pp
+│   └── templates
+│       └── gmond.conf
+└── sudo
+    ├── manifests
+    │   └── init.pp
+    └── templates
+        └── sudo.erb
+</code></pre>
+
+<p>都比较简单，通过init.pp来进行配置，然后加载模板，写入到同步主机本地文件中。</p>
+
+<ul>
+<li>dtarepo</li>
+</ul>
+
+
+<pre><code>./dtarepo/manifests/init.pp
+class dtarepo {
+
+file{'/etc/yum.repos.d/dta.repo':
+  ensure =&gt; file,
+  content =&gt; template('dtarepo/dta.repo'),
+}
+
+}
+
+./dtarepo/templates/dta.repo
+[dta]
+name=DTA Local
+baseurl=http://hadoop-master1:801/dta
+enabled=1
+gpgcheck=0
+</code></pre>
+
+<ul>
+<li>sudo</li>
+</ul>
+
+
+<pre><code>./sudo/manifests/init.pp
+class sudo {
+
+if ( $::hostname =~ /(^cu-omc)/ ) {
+  $user = 'omc'
+} elsif ( $::hostname =~ /(^cu-uc)/ ) {
+  $user = 'uc'
+} elsif ( $::hostname =~ /(^cu-ud)/ ) {
+  $user = 'ud'
+} elsif ( $::hostname =~ /(^cu-db)/ ) {
+  $user = 'mysql'
+} else {
+  $user = 'hadoop'
+}
+
+
+file { "/etc/sudoers.d/10_$user":
+  ensure =&gt; file,
+  mode =&gt; '0440', 
+  content =&gt; template('sudo/sudo.erb'),
+}
+
+
+}
+
+./sudo/templates/sudo.erb
+&lt;%= scope.lookupvar('sudo::user') %&gt; ALL=(ALL) NOPASSWD: ALL
+</code></pre>
+
+<ul>
+<li>gmond</li>
+</ul>
+
+
+<p>gmond.conf的仅修改两个地方: globals.deaf, cluster.name</p>
+
+<pre><code>./gmond/manifests/init.pp
+class gmond {
+
+$deaf = $::hostname ? {
+  'hadoop-master1' =&gt; 'no',
+  'cu-omc1' =&gt; 'no',
+  default =&gt; 'yes',
+}
+
+if ( $::hostname =~ /(^cu-)/ ) {
+  $cluster_name = 'CU'
+} else {
+  $cluster_name = 'HADOOP'
+}
+
+package { 'gmond':
+  ensure =&gt; present,
+  before =&gt; File['/usr/local/ganglia/etc/gmond.conf'],
+}
+
+file { '/usr/local/ganglia/etc/gmond.conf':
+  ensure =&gt; file,
+  content =&gt; template('gmond/gmond.conf'),
+  notify =&gt; Service['gmond'],
+}
+
+service { 'gmond':
+  ensure    =&gt; running,
+  enable    =&gt; true,
+}
+
+}
+
+./gmond/templates/gmond.conf
+/* This configuration is as close to 2.5.x default behavior as possible
+   The values closely match ./gmond/metric.h definitions in 2.5.x */
+globals {
+...
+  mute = no
+  deaf = &lt;%= scope.lookupvar('gmond::deaf') %&gt;
+  allow_extra_data = yes
+...
+cluster {
+  name = "&lt;%= scope.lookupvar('gmond::cluster_name') %&gt;"
+</code></pre>
+
+<p>参考下逻辑即可（也可以通过hiera配置）。</p>
+
+<p>最后就是加载module：</p>
+
+<pre><code>[root@hadoop-master1 modules]# cd ../manifests/
+[root@hadoop-master1 manifests]# cat site.pp 
+file{'/etc/puppetlabs/mcollective/facts.yaml':
+  owner    =&gt; root,
+  group    =&gt; root,
+  mode     =&gt; '400',
+  loglevel =&gt; debug, # reduce noise in Puppet reports
+  content  =&gt; inline_template("&lt;%= scope.to_hash.reject { |k,v| k.to_s =~ /(uptime_seconds|timestamp|free)/ }.to_yaml %&gt;"), # exclude rapidly changing facts
+}
+
+
+include dtarepo
+include gmond
+
+# include sudo
+</code></pre>
+
+<h2>一键安装</h2>
+
+<p>首先在主机上安装gmetad，gmetad配置由于只有一台机器，配置这里手动弄。</p>
+
+<pre><code>[root@hadoop-master1 dtarepo]# mco rpc package install package=gmetad -I cu-omc1
+
+# 主机多网卡时可能需要添加route
+[root@cu-omc1 ~]# route add -host 239.2.11.71 dev bond0
+
+[root@cu-omc1 ~]# /etc/ganglia/gmetad.conf 注意!! 这里的rrd_rootdir配置与上面gweb/makefile是对应的！！
+data_source "HADOOP" hadoop-master1
+data_source "CU" cu-omc1
+gridname "CQCU"
+rrd_rootdir "/data/ganglia/rrds"
+</code></pre>
+
+<p>在cu-omc2上安装gmond（正则表达式，你想怎么匹配就怎么写）：</p>
+
+<pre><code>[root@hadoop-master1 production]# mco shell -I /^cu-omc2/ run -- "/opt/puppetlabs/bin/puppet agent -t"
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Puppetboard Install]]></title>
@@ -269,6 +563,18 @@ mco facts [fact]
 
 <p>mcollective 的 filter（适配节点）功能很强大，具体查看文档：<a href="https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html#selecting-request-targets-using-filters">Selecting Request Targets Using Filters</a></p>
 
+<p><strong> 使用filter功能需要结合facts，需要先把节点的信息写入到mcollective/facts.yaml文件 </strong></p>
+
+<pre><code>[hadoop@hadoop-master1 ~]$ sudo mco ping -I /^hadoop/
+[hadoop@hadoop-master1 ~]$ sudo mco puppet runall 8 -I /^hadoop/
+[hadoop@hadoop-master1 ~]$ sudo mco service iptables status -I "/cu-ud.*/"
+
+[root@hadoop-master1 manifests]# mco ping -S "hostname=hadoop-master2"
+[hadoop@hadoop-master1 ~]$ sudo mco ping -S 'hostname=/hadoop.*/'
+
+[hadoop@hadoop-master1 ~]$ sudo mco facts hostname
+</code></pre>
+
 <h2>插件安装</h2>
 
 <ul>
@@ -278,7 +584,7 @@ mco facts [fact]
 </ul>
 
 
-<p>文档中描述了 Use packages 和 Put files directly into the libdir 两种安装插件的方式。但是 Packages 都是放在<a href="http://yum.puppetlabs.com/el/6/products/x86_64/">旧的repo</a>里面，我们这里使用第二种方式把github下载源码放到libdir来安装。</p>
+<p>文档中描述了 <code>Use packages</code> 和 <code>Put files directly into the libdir</code> 两种安装插件的方式。但是 Packages 都是放在 <a href="http://yum.puppetlabs.com/el/6/products/x86_64/">旧的repo</a> 里面，我们这里使用第二种方式把github下载源码放到libdir来安装。</p>
 
 <h4>安装mcollective-puppet-agent</h4>
 
@@ -378,7 +684,7 @@ Inventory for hadoop-slaver1:
 plugin.puppet.command = /opt/puppetlabs/bin/puppet agent
 plugin.puppet.config = /etc/puppetlabs/puppet/puppet.conf
 
-# 重启所有mcollective（也可以不重启，重新加载agent即可： 使用 mco shell run service mcollective reload-agents 来重新加载）
+# 重启所有mcollective（重新加载agent也可以不重启，使用 mco shell run service mcollective reload-agents 来重新加载）
 
 [root@hadoop-master2 mcollective]# mco puppet runall 1
 2016-04-29 16:52:46: Running all nodes with a concurrency of 1
@@ -418,6 +724,72 @@ plugin.puppet.config = /etc/puppetlabs/puppet/puppet.conf
 [root@hadoop-master2 mcollective]# rsync -az /usr/libexec/mcollective 172.17.0.2:/usr/libexec/
 
 # 重启mcollective服务（或者 mco shell run service mcollective reload-agents 重新加载）
+
+# updated 2016-5-11 17:15:08
+# 还是重启比较好，reload-agents Data Plugins 没有重新加载
+[root@hadoop-master1 puppet]# mco inventory hadoop-master2
+Inventory for hadoop-master2:
+
+   Server Statistics:
+                      Version: 2.8.8
+                   Start Time: 2016-05-11 17:12:45 +0800
+                  Config File: /etc/puppetlabs/mcollective/server.cfg
+                  Collectives: mcollective
+              Main Collective: mcollective
+                   Process ID: 39878
+               Total Messages: 1
+      Messages Passed Filters: 1
+            Messages Filtered: 0
+             Expired Messages: 0
+                 Replies Sent: 0
+         Total Processor Time: 1.17 seconds
+                  System Time: 0.1 seconds
+
+   Agents:
+      discovery       package         puppet         
+      rpcutil         service         shell          
+
+   Data Plugins:
+      agent           collective      fact           
+      fstat           puppet          resource       
+      service                                        
+
+   Configuration Management Classes:
+      No classes applied
+
+   Facts:
+      mcollective =&gt; 1
+[root@hadoop-master1 puppet]# mco inventory hadoop-slaver2
+Inventory for hadoop-slaver2:
+
+   Server Statistics:
+                      Version: 2.8.8
+                   Start Time: 2016-05-11 16:56:09 +0800
+                  Config File: /etc/puppetlabs/mcollective/server.cfg
+                  Collectives: mcollective
+              Main Collective: mcollective
+                   Process ID: 14062
+               Total Messages: 9
+      Messages Passed Filters: 7
+            Messages Filtered: 2
+             Expired Messages: 0
+                 Replies Sent: 6
+         Total Processor Time: 1.31 seconds
+                  System Time: 0.23 seconds
+
+   Agents:
+      discovery       package         puppet         
+      rpcutil         service         shell          
+
+   Data Plugins:
+      agent           collective      fact           
+      fstat                                          
+
+   Configuration Management Classes:
+      No classes applied
+
+   Facts:
+      mcollective =&gt; 1
 </code></pre>
 
 <p>验证下package的实力：</p>
@@ -487,6 +859,88 @@ Finished processing 3 / 3 hosts in 572.13 ms
 
 
 <p>添加了 service，package，shell，puppet 插件后，用 mco 来执行管理集群太爽了！！</p>
+
+<h4>后期统一安装</h4>
+
+<pre><code>[root@hadoop-master1 mcollective]# ll
+total 100
+-rw-r--r-- 1 root root 17101 Apr 29 12:15 mcollective-package-agent-4.4.0.tar.gz
+-rw-r--r-- 1 root root 44759 Apr 29 11:53 mcollective-puppet-agent-1.10.0.tar.gz
+-rw-r--r-- 1 root root 12483 Apr 29 12:15 mcollective-service-agent-3.1.3.tar.gz
+-rw-r--r-- 1 root root 17984 Apr 29 19:24 mcollective-shell-agent-0.0.2.tar.gz
+[root@hadoop-master1 mcollective]# ls | xargs -I{} tar zxf {}
+
+# TODO 可以考虑打包成rpm
+[root@hadoop-master1 mcollective]# mkdir mcollective
+[root@hadoop-master1 mcollective]# unalias cp
+[root@hadoop-master1 mcollective]# cp -rf mcollective-package-agent-4.4.0/* mcollective/
+[root@hadoop-master1 mcollective]# cp -rf mcollective-puppet-agent-1.10.0/* mcollective/
+[root@hadoop-master1 mcollective]# cp -rf mcollective-service-agent-3.1.3/* mcollective/
+[root@hadoop-master1 mcollective]# cp -rf mcollective-shell-agent-0.0.2/lib/mcollective/* mcollective/
+[root@hadoop-master1 mcollective]# rm -rf mcollective-*
+
+# 验证
+[root@hadoop-master1 mcollective]# mco help
+The Marionette Collective version 2.8.8
+
+  completion      Helper for shell completion systems
+  describe_filter Display human readable interpretation of filters
+  facts           Reports on usage for a specific fact
+  find            Find hosts using the discovery system matching filter criteria
+  help            Application list and help
+  inventory       General reporting tool for nodes, collectives and subcollectives
+  package         Install, uninstall, update, purge and perform other actions to packages
+  ping            Ping all nodes
+  plugin          MCollective Plugin Application
+  puppet          Schedule runs, enable, disable and interrogate the Puppet Agent
+  rpc             Generic RPC agent client application
+  service         Manages system services
+  shell           Run shell commands
+
+# 同步
+[root@hadoop-master1 mcollective]# cd ..
+[root@hadoop-master1 libexec]# rsync -az mcollective hadoop-master2:/usr/libexec/
+
+# filter
+[root@hadoop-master1 manifests]# mco shell run hostname -S "hostname=hadoop-master2"
+[root@hadoop-master1 manifests]# mco ping -S "not hostname=hadoop-master1"
+[root@hadoop-master1 manifests]# mco ping -S "! hostname=hadoop-master1"
+
+[hadoop@hadoop-master1 ~]$ sudo mco shell --sort -I /cu-ud[1234]{1}$/ run -- ' ls /home/ud/ftpxdr | wc -l  '
+
+# 少配置了
+[root@hadoop-master1 manifests]# mco shell run "echo -e '\n\nplugin.puppet.command = /opt/puppetlabs/bin/puppet agent\nplugin.puppet.config = /etc/puppetlabs/puppet/puppet.conf' &gt;&gt; /etc/puppetlabs/mcollective/server.cfg" 
+
+
+# 重启 mcollective 服务
+[root@hadoop-master1 manifests]# mco shell run "echo service mcollective restart &gt;/tmp/mcollective_restart.sh ; nohup sh /tmp/mcollective_restart.sh "
+
+
+# ---
+[root@hadoop-master1 dtarepo]# mco rpc package install package=lrzsz -I cu-omc1
+[root@hadoop-master1 dtarepo]# mco rpc package install package=gmetad -I cu-omc1
+
+[root@hadoop-master1 gmond]# mco shell -I cu-ud2 run -- "/opt/puppetlabs/bin/puppet agent -t"
+[root@hadoop-master1 production]# mco shell -I /^cu-omc2/ run -- "/opt/puppetlabs/bin/puppet agent -t"
+
+# gmond 多网卡情况确认
+[root@hadoop-master1 production]# route add -host 239.2.11.71 dev bond0
+
+# puppet 基本语法
+# https://docs.puppet.com/puppet/latest/reference/lang_conditional.html#if-statements
+# https://docs.puppet.com/puppet/latest/reference/lang_relationships.html
+
+# puppet使用tag可以更灵活的使用
+# https://docs.puppet.com/puppet/latest/reference/lang_tags.html
+apache::vhost {'docs.puppetlabs.com':
+  port =&gt; 80,
+  tag  =&gt; ['us_mirror1', 'us_mirror2'],
+}
+
+$ sudo puppet agent --test --tags apache,us_mirror1
+</code></pre>
+
+<p>再次强调Filter ： <a href="https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html#selecting-request-targets-using-filters">Selecting Request Targets Using Filters</a></p>
 
 <p>&ndash;END</p>
 ]]></content>
@@ -694,7 +1148,7 @@ Inventory for hadoop-master1:
       mcollective =&gt; 1
 
 # 3. 获取节点facts，需要配合puppet一起来使用
-# puppetserver 配置更新agent facts.yaml信息
+# puppetserver节点 配置更新agent facts.yaml信息
 [root@hadoop-master2 manifests]# cat site.pp 
 file{'/etc/puppetlabs/mcollective/facts.yaml':
   owner    =&gt; root,
@@ -1054,484 +1508,357 @@ hadoop-slaver1                           time=608.31 ms
   </entry>
   
   <entry>
-    <title type="html"><![CDATA[Puppetexplorer设置]]></title>
-    <link href="http://winseliu.com/blog/2016/04/21/puppetexplorer-setting/"/>
-    <updated>2016-04-21T14:28:11+08:00</updated>
-    <id>http://winseliu.com/blog/2016/04/21/puppetexplorer-setting</id>
-    <content type="html"><![CDATA[<p>注意： 使用 <a href="https://github.com/spotify/puppetexplorer/releases">PuppetExplorer</a> 的前提是已经安装 PuppetDB （安装参考：<a href="/blog/2016/04/21/puppetdb-install-and-config/">Puppetdb安装配置</a>）。</p>
+    <title type="html"><![CDATA[Puppet Basic]]></title>
+    <link href="http://winseliu.com/blog/2016/04/22/puppet-basic/"/>
+    <updated>2016-04-22T15:33:59+08:00</updated>
+    <id>http://winseliu.com/blog/2016/04/22/puppet-basic</id>
+    <content type="html"><![CDATA[<h1>简单使用</h1>
 
-<p>PuppetDB 提供的8080界面太过于简单，其实8080主要提供非常多的接口。PuppetExplorer 就是使用这些 restful 查询接口来进行展示。比默认的 PuppetDB-UI 更具体和详细。</p>
-
-<p>配置 PuppetExplorer 有两种方式：</p>
-
-<ul>
-<li>两个服务在 <strong>同一个域</strong> 下面，配置 /api 跳转到 PuppetDB:8080</li>
-<li>两个服务，<strong>配置各自的地址</strong> 。修改config.js，同时处理跨域的问题。</li>
-</ul>
-
-
-<blockquote><p><a href="https://github.com/spotify/puppetexplorer">https://github.com/spotify/puppetexplorer</a></p>
-
-<ul>
-<li>The recommended way to install it is on the same host as your PuppetDB instance. Then proxy /api to port 8080 of your PuppetDB instance (except the /commands endpoint). This avoids the need for any CORS headers.</li>
-<li>It is possible to have it on a separate domain from your PuppetDB though. If you do, make sure you have the correct Access-Control-Allow-Origin header and a Access-Control-Expose-Headers: X-Records header.</li>
-</ul>
-</blockquote>
-
-<h2>适配 PuppetDB4</h2>
-
-<p>官网的版本已经几个月没有更新，新的 API 接口略有不同：</p>
-
-<pre><code># puppetdb-4.0
-/metrics/v1/mbeans/puppetlabs.puppetdb.population:name=num-active-nodes
-
-# puppetexplorer-2.0.0
-/metrics/v1/mbeans/puppetlabs.puppetdb.query.population:type=default,name=num-nodes
-</code></pre>
-
-<p>修改 app.js 拼接链接的字符串即可，删除 <strong>.query.</strong> 和 <strong>type=default</strong> :</p>
-
-<p><img src="/images/blogs/puppetdb4-puppetexplorer.png" alt="" /></p>
-
-<p>配置好后的效果：</p>
-
-<p><img src="/images/blogs/puppetexplorer.png" alt="" /></p>
-
-<h1>同一服务器下访问配置</h1>
-
-<p>使用 nginx 作为html的服务器，同时 proxy_pass 代理跳转到 cu3:8080(PuppetDB服务) :</p>
-
-<pre><code>[hadoop@cu2 puppetexplorer-2.0.0]$ mv config.js.example config.js
-
-[hadoop@cu2 nginx]$ vi conf/nginx.conf
-...
-# 路径最后带上 / ！！
-location /api/ {
-    proxy_pass http://cu3:8080/;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header Host $http_host;
-}
-location /puppetexplorer {
-    alias /opt/puppetlabs/puppetexplorer-2.0.0;
-}
-
-[hadoop@cu2 nginx]$ sbin/nginx -s reload
-</code></pre>
-
-<p>然后打开网页访问 <a href="http://cu2:8888/puppetexplorer">http://cu2:8888/puppetexplorer</a> 即可。</p>
-
-<p>nginx的配置参考： <a href="http://wangwei007.blog.51cto.com/68019/1103734">Nginx配置proxy_pass转发的/路径问题</a>, <a href="http://stackoverflow.com/questions/20730858/how-do-i-configure-nginx-as-proxy-to-jetty">nginx as proxy to jetty</a></p>
-
-<h1>不同服务器，跨域访问</h1>
-
-<p>老实说，完全不推荐这种做法。但是跨域的设置震惊到我了，原来自认为的方式完全不对。例如A javascript访问B，<strong>跨域头设置在B服务</strong>，是要B容许A访问！！</p>
-
-<pre><code>[root@hadoop-master2 puppetexplorer]# vi config.js 
-// List of PuppetDB servers, pairs of name, URL and $http config object
-// The first one will be used as the default server
-PUPPETDB_SERVERS = [
-  ['production', 'http://cu2:8888'],
-  ['testing', 'http://cu2:8888']
-];
-
-# Nginx配置，加上跨域访问源范围控制
-location ~ /(metrics|pdb) {
-add_header "Access-Control-Allow-Origin" "*";
-proxy_pass http://cu3:8080;
-}
-</code></pre>
+<h2>安装</h2>
 
 <p></p>
 
-<h2>参考</h2>
+<h2>quick</h2>
 
 <ul>
-<li><a href="http://www.html5rocks.com/en/tutorials/cors/?redirect_from_locale=zh">http://www.html5rocks.com/en/tutorials/cors/?redirect_from_locale=zh</a></li>
-<li><a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS#Requests_with_credentials">https://developer.mozilla.org/en-US/docs/Web/HTTP/Access_control_CORS#Requests_with_credentials</a></li>
-<li><a href="https://en.wikipedia.org/wiki/Cross-origin_resource_sharing">https://en.wikipedia.org/wiki/Cross-origin_resource_sharing</a></li>
+<li>Puppet的一些概念 <a href="https://docs.puppet.com/puppet/latest/reference/lang_summary.html">https://docs.puppet.com/puppet/latest/reference/lang_summary.html</a></li>
+<li>快速入门 <a href="https://docs.puppet.com/puppet/4.4/reference/quick_start.html">https://docs.puppet.com/puppet/4.4/reference/quick_start.html</a></li>
 </ul>
 
 
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Puppetdb安装配置]]></title>
-    <link href="http://winseliu.com/blog/2016/04/21/puppetdb-install-and-config/"/>
-    <updated>2016-04-21T00:39:11+08:00</updated>
-    <id>http://winseliu.com/blog/2016/04/21/puppetdb-install-and-config</id>
-    <content type="html"><![CDATA[<p>安装 PuppetDB 后，还得修改 PuppetServer 的配置。由于测试环境机器硬件一般般，把 PuppetDB 安装在 cu3。</p>
+<h2>simple example</h2>
+
+<p><a href="https://docs.puppet.com/puppet/4.4/reference/quick_start_user_group.html">https://docs.puppet.com/puppet/4.4/reference/quick_start_user_group.html</a></p>
+
+<pre><code>puppet apply -e "user { 'jargyle': ensure =&gt; present, }"
+puppet apply -e "group { 'web': ensure =&gt; present, }"
+
+puppet resource -e group web
+puppet resource -e user jargyle
+
+cd /etc/puppetlabs/code/environments/production/manifests
+
+[root@cu2 manifests]# vi site.pp
+group { 'web':
+  ensure =&gt; present, # absent, present
+}
+
+user { 'jargyle':
+  ensure =&gt; present,
+  home =&gt; '/home/jargyle',
+  shell =&gt; '/bin/bash',
+  password_max_age =&gt; '99999',
+  password_min_age =&gt; '0',
+  groups =&gt; web,
+}
+
+puppet parser validate site.pp
+</code></pre>
 
 <ul>
-<li>cu2: master server, ca server, postgresql</li>
-<li>cu3: puppetdb, agent</li>
+<li><a href="https://docs.puppet.com/puppet/4.4/reference/type.html">https://docs.puppet.com/puppet/4.4/reference/type.html</a></li>
 </ul>
 
 
-<pre><code>[root@cu3 puppet]# puppetdb -v
-puppetdb version: 4.0.0
+<h2>module helloworld</h2>
 
-[root@cu2 ~]# puppetserver -v
-puppetserver version: 2.3.1
-[root@cu2 ~]# puppet -V
-4.4.1
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.4/reference/quick_start_helloworld.html">https://docs.puppet.com/puppet/4.4/reference/quick_start_helloworld.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/reference/quick_start_adding_classes_nix.html">https://docs.puppet.com/puppet/4.4/reference/quick_start_adding_classes_nix.html</a></li>
+<li><p><a href="https://docs.puppet.com/puppet/4.4/reference/modules_metadata.html">https://docs.puppet.com/puppet/4.4/reference/modules_metadata.html</a></p>
+
+<p>  [root@cu2 modules]# mkdir -p  helloworld/manifests
+  [root@cu2 manifests]# vi init.pp
+  class helloworld {
+    notify { &lsquo;Hello World&rsquo;: }
+  }
+  [root@cu2 manifests]# vi motd.pp
+  class helloworld::motd {</p>
+
+<pre><code>file { '/etc/motd':
+  owner =&gt; 'root',
+  group =&gt; 'root',
+  mode =&gt; '0644',
+  content =&gt; "Hello World!\n",
+}
 </code></pre>
 
-<p>原来老的版本有资源(清单)导出的功能，到了Puppet4后被PuppetDB取代了。见官网文档: <a href="https://docs.puppet.com/guides/inventory_service.html">Inventory Service</a></p>
+<p>  }</p>
 
-<p>同时老版本用ruby写的 puppet-dashboard 也没有必要安装了，前后端分离大势所趋：后端提供接口，前端用ajax来展现。</p>
+<p>  [root@cu2 manifests]# vi ../../../manifests/site.pp
+  node default {
+    class { &lsquo;helloworld&rsquo;: }
+    class { &lsquo;helloworld::motd&rsquo;: }
+  }
+  [root@cu2 manifests]# puppet parser validate ../../../manifests/site.pp</p>
 
-<h1>安装PuppetDB</h1>
+<p>  [root@cu2 manifests]# cat site.pp
+node default {</p>
 
-<p><a href="https://docs.puppetlabs.com/puppetdb/latest/install_from_packages.html">https://docs.puppetlabs.com/puppetdb/latest/install_from_packages.html</a></p>
+<p>file { &lsquo;/etc/cron.hourly&rsquo;:
+  ensure => directory,
+}</p>
 
-<p>由于天朝特殊环境，本地repo的创建参考第一篇文章: <a href="/blog/2016/04/08/puppet-install">puppet4.4.1入门安装</a></p>
+<p>package { [&lsquo;ntp&rsquo;, &lsquo;ntpdate&rsquo;]:
+  ensure => installed,
+}</p></li>
+</ul>
 
-<pre><code>[root@cu3 ~]# yum install puppetdb
-Loaded plugins: fastestmirror
-Setting up Install Process
-Loading mirror speeds from cached hostfile
- * epel: ftp.cuhk.edu.hk
-Resolving Dependencies
---&gt; Running transaction check
----&gt; Package puppetdb.noarch 0:4.0.0-1.el6 will be installed
---&gt; Processing Dependency: java-1.8.0-openjdk-headless for package: puppetdb-4.0.0-1.el6.noarch
---&gt; Running transaction check
----&gt; Package java-1.8.0-openjdk-headless.x86_64 1:1.8.0.77-0.b03.el6_7 will be installed
---&gt; Processing Dependency: tzdata-java &gt;= 2014f-1 for package: 1:java-1.8.0-openjdk-headless-1.8.0.77-0.b03.el6_7.x86_64
---&gt; Processing Dependency: jpackage-utils for package: 1:java-1.8.0-openjdk-headless-1.8.0.77-0.b03.el6_7.x86_64
---&gt; Running transaction check
----&gt; Package jpackage-utils.noarch 0:1.7.5-3.14.el6 will be installed
----&gt; Package tzdata-java.noarch 0:2016c-1.el6 will be installed
---&gt; Finished Dependency Resolution
 
-Dependencies Resolved
+<p>/<em>
+if $fqdn != &lsquo;cu2.eshore.cn&rsquo; {
+  class { &lsquo;ntp&rsquo;:
+    runmode => &lsquo;cron&rsquo;,
+    cron_command => &lsquo;ntpdate cu2&rsquo;,
+    require => [ Package[&lsquo;ntp&rsquo;, &lsquo;ntpdate&rsquo;], File[&lsquo;/etc/cron.hourly&rsquo;] ],
+  }
+}
+</em>/</p>
 
-===========================================================================================================================================================================================
- Package                                                Arch                              Version                                            Repository                               Size
-===========================================================================================================================================================================================
-Installing:
- puppetdb                                               noarch                            4.0.0-1.el6                                        puppet-local                             21 M
-Installing for dependencies:
- java-1.8.0-openjdk-headless                            x86_64                            1:1.8.0.77-0.b03.el6_7                             updates                                  32 M
- jpackage-utils                                         noarch                            1.7.5-3.14.el6                                     base                                     60 k
- tzdata-java                                            noarch                            2016c-1.el6                                        updates                                 179 k
+<p>/<em> 多网卡的时刻需要注意
+class { &lsquo;hosts&rsquo;:
+  dynamic_mode => true,
+  dynamic_ip   => $::ipaddress_bond0
+}
+</em>/
+  if $fqdn =~ /.*.ds.ctyun/  {
+    class { &lsquo;hosts&rsquo;:
+      dynamic_mode => true,
+    }
+  }</p>
 
-Transaction Summary
-===========================================================================================================================================================================================
-Install       4 Package(s)
+<p>  cron {&lsquo;run-puppet&rsquo;:
+    command => &ldquo;source /etc/profile; puppet agent &ndash;test >/tmp/puppet-cron.log 2>&amp;1&rdquo;,
+    minute => inline_template(&lsquo;&lt;%= @hostname.hash.abs % 60 %>&rsquo;),
+  }</p>
 
-Total size: 53 M
-Total download size: 53 M
-Installed size: 126 M
-Is this ok [y/N]: y
-Downloading Packages:
-(1/3): java-1.8.0-openjdk-headless-1.8.0.77-0.b03.el6_7.x86_64.rpm                                                                                                  |  32 MB     00:00     
-(2/3): puppetdb-4.0.0-1.el6.noarch.rpm                                                                                                                              |  21 MB     00:00     
-(3/3): tzdata-java-2016c-1.el6.noarch.rpm                                                                                                                           | 179 kB     00:00     
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Total                                                                                                                                                       32 MB/s |  53 MB     00:01     
-Running rpm_check_debug
-Running Transaction Test
-Transaction Test Succeeded
-Running Transaction
-  Installing : tzdata-java-2016c-1.el6.noarch                                                                                                                                          1/4 
-  Installing : jpackage-utils-1.7.5-3.14.el6.noarch                                                                                                                                    2/4 
-  Installing : 1:java-1.8.0-openjdk-headless-1.8.0.77-0.b03.el6_7.x86_64                                                                                                               3/4 
-  Installing : puppetdb-4.0.0-1.el6.noarch                                                                                                                                             4/4 
-Config archive not found. Not proceeding with migration
-PEM files in /etc/puppetlabs/puppetdb/ssl are missing, we will move them into place for you
-Warning: Unable to find all puppet certificates to copy
+<p>  file{&lsquo;/etc/puppetlabs/mcollective/facts.yaml&rsquo;:
+  owner    => root,
+  group    => root,
+  mode     => &lsquo;400&rsquo;,
+  loglevel => debug, # reduce noise in Puppet reports
+  content  => inline_template(&ldquo;&lt;%= scope.to_hash.reject { |k,v| k.to_s =~ /(uptime_seconds|timestamp|free)/ }.to_yaml %>&rdquo;), # exclude rapidly changing facts
+  }
+}</p>
 
-  This tool requires the following certificates to exist:
+<h2>modules install</h2>
 
-  * /etc/puppetlabs/puppet/ssl/certs/ca.pem
-  * /etc/puppetlabs/puppet/ssl/private_keys/cu3.eshore.cn.pem
-  * /etc/puppetlabs/puppet/ssl/certs/cu3.eshore.cn.pem
+<p><a href="https://docs.puppet.com/puppet/latest/reference/modules_installing.html">https://docs.puppet.com/puppet/latest/reference/modules_installing.html</a></p>
 
-  These files may be missing due to the fact that your host's Puppet
-  certificates may not have been signed yet, probably due to the
-  lack of a complete Puppet agent run. Try running puppet first, for
-  example:
+<blockquote><p>The full name of a Forge module is formatted as username-modulename.</p></blockquote>
 
-      puppet agent --test
+<p><a href="https://docs.puppet.com/puppet/latest/reference/modules_fundamentals.html#writing-modules">https://docs.puppet.com/puppet/latest/reference/modules_fundamentals.html#writing-modules</a></p>
 
-  Afterwards re-run this tool then restart PuppetDB to complete the SSL
-  setup:
+<pre><code>[root@cu2 code]# cd environments/production/modules/
+[root@cu2 modules]# puppet module generate --skip-interview winse-hello
 
-      puppetdb ssl-setup -f
-  Verifying  : jpackage-utils-1.7.5-3.14.el6.noarch                                                                                                                                    1/4 
-  Verifying  : tzdata-java-2016c-1.el6.noarch                                                                                                                                          2/4 
-  Verifying  : puppetdb-4.0.0-1.el6.noarch                                                                                                                                             3/4 
-  Verifying  : 1:java-1.8.0-openjdk-headless-1.8.0.77-0.b03.el6_7.x86_64                                                                                                               4/4 
-
-Installed:
-  puppetdb.noarch 0:4.0.0-1.el6                                                                                                                                                            
-
-Dependency Installed:
-  java-1.8.0-openjdk-headless.x86_64 1:1.8.0.77-0.b03.el6_7                   jpackage-utils.noarch 0:1.7.5-3.14.el6                   tzdata-java.noarch 0:2016c-1.el6                  
-
-Complete!
+[root@cu2 modules]# puppet module install puppetlabs-stdlib
+Notice: Preparing to install into /etc/puppetlabs/code/environments/production/modules ...
+Notice: Downloading from https://forgeapi.puppetlabs.com ...
+Notice: Installing -- do not interrupt ...
+/etc/puppetlabs/code/environments/production/modules
+└── puppetlabs-stdlib (v4.11.0)
+[root@cu2 modules]# puppet module list
+/etc/puppetlabs/code/environments/production/modules
+├── puppetlabs-stdlib (v4.11.0)
+└── winse-hello (v0.1.0)
+/etc/puppetlabs/code/modules (no modules installed)
+/opt/puppetlabs/puppet/modules (no modules installed)
 </code></pre>
 
-<p>PuppetDB 需要与 puppetserver 通信，需要签名证书。如果安装之前本机 Puppet-agent 证书已签名，安装会自动把证书拷贝到 puppetdb/ssl 目录下。我们这里先签名agent再配置 puppetdb-ssl 。</p>
+<p>sudo puppet module install ~/puppetlabs-apache-0.10.0.tar.gz &ndash;ignore-dependencies</p>
 
-<pre><code>[root@cu3 ~]# puppet agent --server cu2.eshore.cn --test
-Info: Creating a new SSL key for cu3.eshore.cn
-Info: Caching certificate for ca
-Info: csr_attributes file loading from /etc/puppetlabs/puppet/csr_attributes.yaml
-Info: Creating a new SSL certificate request for cu3.eshore.cn
-Info: Certificate Request fingerprint (SHA256): 16:CB:A3:6D:21:69:78:D0:0D:37:1F:A7:C1:86:2E:55:7F:B1:60:77:05:EC:F5:37:81:12:28:73:61:1A:4F:20
-Info: Caching certificate for ca
-Exiting; no certificate found and waitforcert is disabled
+<p>Listing Installed Modules
+Use the module tool’s list action to see which modules you have installed (and which directory they’re installed in).</p>
 
-# 服务端签名: puppet cert sign cu3.eshore.cn
+<p>Use the &ndash;tree option to view the modules arranged by dependency instead of by location on disk.</p>
 
-[root@cu3 ~]# puppet agent --server cu2.eshore.cn --test
-Info: Caching certificate for cu3.eshore.cn
-Info: Caching certificate_revocation_list for ca
-Info: Caching certificate for cu3.eshore.cn
+<ul>
+<li><p>hosts</p></li>
+<li><p><a href="https://github.com/example42/puppi/releases">https://github.com/example42/puppi/releases</a></p></li>
+<li><a href="https://github.com/example42/puppet-hosts">https://github.com/example42/puppet-hosts</a></li>
+</ul>
+
+
+<p>puppet4 插件同步选项默认是开启的 pluginsync=true，不需要额外的操作。</p>
+
+<pre><code># https://github.com/example42/puppet-nrpe/issues/1
+[root@cu2 modules]# tar zxvf puppet-hosts-2.0.18.tar.gz  
+[root@cu2 modules]# tar zxvf puppi-2.1.12.tar.gz 
+[root@cu2 modules]# ll
+total 16
+drwxr-xr-x 3 root root 4096 Apr 22 14:37 helloworld
+drwxrwxr-x 6 root root 4096 Aug 10  2015 hosts
+drwxrwxr-x 7 root root 4096 Aug  8  2015 puppi
+drwxr-xr-x 6 root root 4096 Jan 12 19:08 stdlib
+
+[root@cu2 modules]# vi /etc/puppetlabs/code/environments/production/manifests/site.pp 
+node default {
+  class { 'hosts': 
+    dynamic_mode =&gt; true,
+  }
+}
+
+# 效果。好像要活跃的主机才会添加，顺序执行两边 agent -t 就可以把所有的agent全部加到hosts文件
+[root@hadoop-slaver3 ~]# puppet agent -t
 Info: Using configured environment 'production'
 Info: Retrieving pluginfacts
 Info: Retrieving plugin
-Info: Caching catalog for cu3.eshore.cn
-Info: Applying configuration version '1461159906'
-Info: Creating state file /opt/puppetlabs/puppet/cache/state/state.yaml
-Notice: Applied catalog in 0.02 seconds
-[root@cu3 ~]# puppetdb ssl-setup -f
-PEM files in /etc/puppetlabs/puppetdb/ssl are missing, we will move them into place for you
-Copying files: /etc/puppetlabs/puppet/ssl/certs/ca.pem, /etc/puppetlabs/puppet/ssl/private_keys/cu3.eshore.cn.pem and /etc/puppetlabs/puppet/ssl/certs/cu3.eshore.cn.pem to /etc/puppetlabs/puppetdb/ssl
-Backing up /etc/puppetlabs/puppetdb/conf.d/jetty.ini to /etc/puppetlabs/puppetdb/conf.d/jetty.ini.bak.1461159930 before making changes
-Updated default settings from package installation for ssl-host in /etc/puppetlabs/puppetdb/conf.d/jetty.ini.
-Updated default settings from package installation for ssl-port in /etc/puppetlabs/puppetdb/conf.d/jetty.ini.
-Updated default settings from package installation for ssl-key in /etc/puppetlabs/puppetdb/conf.d/jetty.ini.
-Updated default settings from package installation for ssl-cert in /etc/puppetlabs/puppetdb/conf.d/jetty.ini.
-Updated default settings from package installation for ssl-ca-cert in /etc/puppetlabs/puppetdb/conf.d/jetty.ini.
-[root@cu3 ~]# 
+Info: Loading facts
+Info: Caching catalog for hadoop-slaver3.ds.ctyun
+Info: Applying configuration version '1461309849'
+Notice: Applied catalog in 0.06 seconds
+[root@hadoop-slaver3 ~]# cat /etc/hosts
+# HEADER: This file was autogenerated at 2016-04-22 07:23:45 +0000
+# HEADER: by puppet.  While it can still be managed manually, it
+# HEADER: is definitely not recommended.
+172.17.0.5      hadoop-slaver3
+127.0.0.1       localhost
+::1     localhost       ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+
+172.17.42.1     cu2     cu2.eshore.cn
+172.17.0.5      hadoop-slaver3.ds.ctyun hadoop-slaver3
+172.17.0.1      hadoop-master1.ds.ctyun hadoop-master1
+172.17.0.2      hadoop-master2.ds.ctyun hadoop-master2
+172.17.0.3      hadoop-slaver1.ds.ctyun hadoop-slaver1
+172.17.0.4      hadoop-slaver2.ds.ctyun hadoop-slaver2
 </code></pre>
 
-<h1>安装Postgres</h1>
-
-<p>配置好 ssl 后，下一步就是连接数据库。puppet4.4 默认配置里面只有 postgres 数据库。直接用 yum 安装，这里简单列出配置过程。</p>
-
-<p><a href="https://docs.puppetlabs.com/puppetdb/latest/configure.html#using-postgresql">https://docs.puppetlabs.com/puppetdb/latest/configure.html#using-postgresql</a></p>
-
-<pre><code>[root@cu2 ~]# yum localinstall http://yum.postgresql.org/9.4/redhat/rhel-6-x86_64/pgdg-centos94-9.4-1.noarch.rpm
-[root@cu2 ~]# yum install postgresql94-server
-[root@cu2 ~]# yum install postgresql94-contrib
-
-[root@cu2 ~]# service postgresql-9.4 initdb
-Initializing database:                                     [  OK  ]
-[root@cu2 ~]# service postgresql-9.4 status
-postgresql-9.4 is stopped
-[root@cu2 ~]# service postgresql-9.4 start
-Starting postgresql-9.4 service:                           [  OK  ]
+<ul>
+<li>ntp</li>
+</ul>
 
 
-# 先查看 PGDATA 的目录！！
-[root@cu2 data]# grep "PGDATA=" /etc/init.d/postgresql-9.4 
-PGDATA=/usr/local/pgsql/data
-OLDPGDATA=` sed -n 's/^PGDATA=//p' /etc/init.d/postgresql-$PGPREVMAJORVERSION`
-NEWPGDATA=` sed -n 's/^PGDATA=//p' /etc/init.d/postgresql-$PGMAJORVERSION`
+<p>docker不能修改系统时间！！</p>
+
+<p><a href="https://github.com/example42/puppet-ntp">https://github.com/example42/puppet-ntp</a></p>
+
+<pre><code>[root@cu2 ~]# cd /etc/puppetlabs/code/environments/production/modules/
+[root@cu2 modules]# ll
+total 20
+drwxr-xr-x 3 root root 4096 Apr 22 14:37 helloworld
+drwxrwxr-x 6 root root 4096 Aug 10  2015 hosts
+drwxrwxr-x 5 root root 4096 Oct 30 00:24 ntp
+drwxrwxr-x 7 root root 4096 Aug  8  2015 puppi
+drwxr-xr-x 6 root root 4096 Jan 12 19:08 stdlib
+
+[root@cu2 ~]# cat /etc/puppetlabs/code/environments/production/manifests/site.pp 
+node default {
+
+  file { '/etc/cron.hourly':
+    ensure =&gt; directory,
+  }
+
+  package { ['ntp', 'ntpdate']:
+    ensure =&gt; installed,
+  }
+
+  class { 'ntp':
+    runmode =&gt; 'cron',
+    cron_command =&gt; 'ntpdate cu2',
+    require =&gt; [ Package['ntp', 'ntpdate'], File['/etc/cron.hourly'] ],
+  }
+
+  if $fqdn =~ /.*\.ds\.ctyun/  {
+    class { 'hosts':
+      dynamic_mode =&gt; true,
+    }
+  }
+
+}
 
 
-# 切换到 postgres 用户，先验证环境变量 PGDATA 是否正确！！否则自己修改 .bash_profile 文件！！
-[root@cu2 puppet]# su - postgres
--bash-4.1$ echo $PGDATA
-/usr/local/pgsql/data
-
-# 创建用户
--bash-4.1$ createuser -DRSP puppetdb
-Enter password for new role: 
-Enter it again: 
--bash-4.1$ 
--bash-4.1$ createdb -E utf8 -O puppetdb puppetdb
-
--bash-4.1$ psql puppetdb -c 'create extension pg_trgm'
-CREATE EXTENSION
-
-# 配置连接选项（相当于mysql的privilege）
--bash-4.1$ vi $PGDATA/pg_hba.conf 
-host    all             all              0.0.0.0/0               md5
-
-# 重启
-[root@cu2 puppet]# service postgresql-9.4 restart
-Stopping postgresql-9.4 service:                           [  OK  ]
-Starting postgresql-9.4 service:                           [  OK  ]
-
-# 测试 
-[root@cu2 puppet]# psql -h localhost puppetdb puppetdb
-psql (9.4.5)
-Type "help" for help.
-
-puppetdb=&gt; 
-puppetdb=&gt; \q
-</code></pre>
-
-<p>查看 postgres 的端口:</p>
-
-<pre><code>[root@cu2 puppet]# netstat -anp | grep post
-tcp        0      0 0.0.0.0:5432                0.0.0.0:*                   LISTEN      8126/postmaster     
-tcp        0      0 :::5432                     :::*                        LISTEN      8126/postmaster     
-udp        0      0 ::1:39400                   ::1:39400                   ESTABLISHED 8126/postmaster     
-unix  2      [ ACC ]     STREAM     LISTENING     954965338 8126/postmaster     /tmp/.s.PGSQL.5432
-
-# 有客户端连上来后：
-[root@cu2 ~]# netstat -anp | grep post
-tcp        0      0 0.0.0.0:5432                0.0.0.0:*                   LISTEN      8126/postmaster     
-tcp        0      0 192.168.0.214:5432          192.168.0.148:60626         ESTABLISHED 20589/postgres 
+[root@hadoop-master2 puppetlabs]# puppet agent -t
 ...
+[root@hadoop-master2 puppetlabs]# ll /etc/cron.hourly/
+total 4
+-rwxr-xr-x 1 root root 197 Apr 22 08:59 ntpdate
+[root@hadoop-master2 puppetlabs]# cat /etc/cron.hourly/ntpdate 
+#!/bin/bash
+# Managed by Puppet
+export PATH=$PATH:/usr/bin:/usr/sbin:/bin:/sbin
+
+# Wait up to 600 seconds 
+randomsec=$RANDOM
+let "randomsec %= 600"
+sleep $randomsec
+
+ntpdate cu2 &gt;/dev/null
+
+exit 0
 </code></pre>
 
-<h1>启动PuppetDB</h1>
-
-<pre><code>[root@cu3 ~]# vi /etc/puppetlabs/puppetdb/conf.d/database.ini 
-[database]
-classname = org.postgresql.Driver
-subprotocol = postgresql
-
-# The database address, i.e. //HOST:PORT/DATABASE_NAME
-subname = //cu2:5432/puppetdb
-
-# Connect as a specific user
-username = puppetdb
-
-# Use a specific password
-password = puppetdb
-
-# How often (in minutes) to compact the database
-# gc-interval = 60
-# 通过api/name=num-active-nodes查询不到了，但是pgsql数据库中还没有删除。也可以通过 puppet node deactivate 手动执行
-# node-ttl = 30d
-# 默认没有设置，disabled。格式与node-ttl一样
-# node-purge-ttl = 
-# report-ttl = 14d
-
-# Number of seconds before any SQL query is considered 'slow'; offending
-# queries will not be interrupted, but will be logged at the WARN log level.
-log-slow-statements = 10
+<ul>
+<li>sudo</li>
+</ul>
 
 
-# 注意修改，不然web-ui就只能localhost访问了！！
-[root@cu3 ~]# vi /etc/puppetlabs/puppetdb/conf.d/jetty.ini
-...
-host = 0.0.0.0
-
-# JVM 参数修改
-[root@cu3 ~]# less /etc/sysconfig/puppetdb 
-
-[root@cu3 ~]# service puppetdb start
-Starting puppetdb:                                         [  OK  ]
-[root@cu3 ~]# 
-[root@cu3 ~]# service puppetdb status
-puppetdb (pid  8452) is running...
-
-# 8081 为 puppetserver 写数据的https接口。8080 为http web-ui端口
-[root@cu3 ~]# netstat -anp | grep 8081
-tcp        0      0 :::8081                     :::*                        LISTEN      8794/java           
+<pre><code>[root@cu2 modules]# mv saz-sudo-3.1.0 sudo
+[root@cu2 modules]# ll
+total 20
+drwxrwxr-x 6 hadoop root  4096 Aug 10  2015 hosts
+drwxrwxr-x 5 hadoop root  4096 Oct 30  2015 ntp
+drwxrwxr-x 7 hadoop root  4096 Aug  8  2015 puppi
+drwxr-xr-x 6 hadoop root  4096 Jan 12 19:08 stdlib
+drwxr-xr-x 8 hadoop games 4096 Jun  6  2015 sudo
+[root@cu2 modules]# puppet apply -e "include sudo
+&gt; sudo::conf { 'hadoop':
+&gt; content =&gt; 'hadoop ALL=(ALL) NOPASSWD: ALL',
+&gt; }
+&gt; "
+Notice: Compiled catalog for cu2.eshore.cn in environment production in 0.64 seconds
+Notice: /Stage[main]/Sudo/File[/etc/sudoers]/content: content changed '{md5}d31d7fefba87710cfaf3be96d81104d3' to '{md5}dc7c9180ad39e78a8c91291f4743437b'
+Notice: /Stage[main]/Sudo/File[/etc/sudoers.d/]/mode: mode changed '0750' to '0550'
+Notice: /Stage[main]/Main/Sudo::Conf[hadoop]/File[10_hadoop]/ensure: defined content as '{md5}627f25fd210c1351a6ed664c93b5be37'
+Notice: /Stage[main]/Main/Sudo::Conf[hadoop]/Exec[sudo-syntax-check for file /etc/sudoers.d/10_hadoop]: Triggered 'refresh' from 1 events
+Notice: Applied catalog in 0.43 seconds
 </code></pre>
 
-<p>查看 8080 端口通过网页查看集群的状态，现在还什么数据都获取不到，需要配置服务端把数据发送给puppetdb。</p>
+<p>上面简单的列出了 puppet 的简单使用，但是如果有大文件。。。</p>
 
-<h1>服务端配置</h1>
+<h2>文件</h2>
 
-<p><a href="https://docs.puppet.com/puppetdb/latest/connect_puppet_master.html">https://docs.puppet.com/puppetdb/latest/connect_puppet_master.html</a></p>
-
-<pre><code># 安装Plug-in
-# 服务端还要安装 puppetdb-termini ，不然会报错。
-[root@cu2 puppet]# yum install puppetdb-termini
-Loaded plugins: fastestmirror, priorities
-Setting up Install Process
-Loading mirror speeds from cached hostfile
- * epel: mirrors.opencas.cn
-Resolving Dependencies
---&gt; Running transaction check
----&gt; Package puppetdb-termini.noarch 0:3.2.4-1.el6 will be installed
---&gt; Finished Dependency Resolution
-
-Dependencies Resolved
-
-==========================================================================================================================================================================
- Package                                      Arch                               Version                                   Repository                                Size
-==========================================================================================================================================================================
-Installing:
- puppetdb-termini                             noarch                             3.2.4-1.el6                               puppet-local                              25 k
-
-Transaction Summary
-==========================================================================================================================================================================
-Install       1 Package(s)
-
-Total download size: 25 k
-Installed size: 69 k
-Is this ok [y/N]: y
-Downloading Packages:
-puppetdb-termini-3.2.4-1.el6.noarch.rpm                                                                                                            |  25 kB     00:00     
-Running rpm_check_debug
-Running Transaction Test
-Transaction Test Succeeded
-Running Transaction
-  Installing : puppetdb-termini-3.2.4-1.el6.noarch                                                                                                                    1/1 
-  Verifying  : puppetdb-termini-3.2.4-1.el6.noarch                                                                                                                    1/1 
-
-Installed:
-  puppetdb-termini.noarch 0:3.2.4-1.el6                                                                                                                                   
-
-Complete!
+<ul>
+<li><a href="https://docs.puppet.com/guides/file_serving.html">https://docs.puppet.com/guides/file_serving.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/latest/reference/config_file_fileserver.html">https://docs.puppet.com/puppet/latest/reference/config_file_fileserver.html</a></li>
+<li><a href="https://docs.puppet.com/guides/scaling.html">https://docs.puppet.com/guides/scaling.html</a> rsync or NFS</li>
+<li><a href="https://ask.puppet.com/question/14565/can-we-transfer-a-4gb-patch-file-to-agents-using-puppet-fileserver/">https://ask.puppet.com/question/14565/can-we-transfer-a-4gb-patch-file-to-agents-using-puppet-fileserver/</a></li>
+</ul>
 
 
-# 注意这里URL的域名，要与CA中的名称对应！！ 设置成 cu3 是不正确的！！
-[root@cu2 puppet]# vi puppetdb.conf 
-[main]
-server_urls = https://cu3.eshore.cn:8081
+<h2>模板</h2>
 
-[root@cu2 puppet]# vi puppet.conf 
-# This file can be used to override the default puppet settings.
-# See the following links for more details on what settings are available:
-# - https://docs.puppetlabs.com/puppet/latest/reference/config_important_settings.html
-# - https://docs.puppetlabs.com/puppet/latest/reference/config_about_settings.html
-# - https://docs.puppetlabs.com/puppet/latest/reference/config_file_main.html
-# - https://docs.puppetlabs.com/puppet/latest/reference/configuration.html
-[master]
-vardir = /opt/puppetlabs/server/data/puppetserver
-logdir = /var/log/puppetlabs/puppetserver
-rundir = /var/run/puppetlabs/puppetserver
-pidfile = /var/run/puppetlabs/puppetserver/puppetserver.pid
-codedir = /etc/puppetlabs/code
+<ul>
+<li><a href="https://docs.puppet.com/puppet/latest/reference/lang_template.html">https://docs.puppet.com/puppet/latest/reference/lang_template.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/latest/reference/lang_template_epp.html">https://docs.puppet.com/puppet/latest/reference/lang_template_epp.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/latest/reference/lang_template_erb.html">https://docs.puppet.com/puppet/latest/reference/lang_template_erb.html</a>
+<a href="https://docs.puppet.com/puppet/latest/reference/modules_fundamentals.html">https://docs.puppet.com/puppet/latest/reference/modules_fundamentals.html</a></li>
+</ul>
 
-storeconfigs = true
-storeconfigs_backend = puppetdb
-reports = store,puppetdb
 
-[root@cu2 puppet]# puppet master --configprint route_file
-/etc/puppetlabs/puppet/routes.yaml
+<p><a href="https://docs.puppet.com/puppet/latest/reference/lang_relationships.html#ordering-and-notification">https://docs.puppet.com/puppet/latest/reference/lang_relationships.html#ordering-and-notification</a></p>
 
-[root@hadoop-master2 puppet]# cat routes.yaml 
----
-master:
-  facts:
-    terminus: puppetdb
-    cache: yaml
+<h2>节点定义</h2>
 
-[root@cu2 puppet]# service puppetserver restart
-Stopping puppetserver:                                     [  OK  ]
-Starting puppetserver:                                     [  OK  ]
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.4/reference/lang_node_definitions.html">https://docs.puppet.com/puppet/4.4/reference/lang_node_definitions.html</a></li>
+<li><a href="https://docs.puppet.com/guides/external_nodes.html">https://docs.puppet.com/guides/external_nodes.html</a>
+<a href="http://activemq.apache.org/getting-started.html">http://activemq.apache.org/getting-started.html</a></li>
+</ul>
 
-[root@cu2 puppet]# puppet agent --server cu2.eshore.cn --test 
-Info: Using configured environment 'production'
-Info: Retrieving pluginfacts
-Info: Retrieving plugin
-Info: Caching catalog for cu2.eshore.cn
-Info: Applying configuration version '1461162748'
-Notice: Applied catalog in 0.01 seconds
-</code></pre>
 
-<p>如果 puppet-agent 服务没有启动，分别在各台机器上面执行 &ndash;test 连一下 PuppetServer，就可以在8080 puppetdb页面看到主机的数量了。</p>
+<h2>官网文档</h2>
 
-<p><img src="/images/blogs/puppetdb-ui.png" alt="" /></p>
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.4/reference/lang_conditional.html">Conditional Statements and Expressions</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/reference/lang_facts_and_builtin_vars.html">Facts and Built-in Variables</a></li>
+<li></li>
+</ul>
 
-<p>&ndash;END</p>
 ]]></content>
   </entry>
   

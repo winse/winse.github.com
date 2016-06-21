@@ -9,8 +9,9 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="问题： https://www.zhihu.com/question/25498407 问题是hadoop内存的配置，涉及两个方面： namenode/datanode/resourcemanager/nodemanager的HEAPSIZE环境变量
-在配置文件/ &hellip;">
+  <meta name="description" content="经典文章 http://parquet.apache.org/documentation/latest/
+https://blog.twitter.com/2013/dremel-made-simple-with-parquet
+https://cwiki.apache.org/ &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -84,6 +85,1908 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/03/29/parquet-simple-view/">Parquet学习</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-03-29T19:13:53+08:00" pubdate data-updated="true">Tue 2016-03-29 19:13</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>经典文章</h2>
+
+<ul>
+<li><a href="http://parquet.apache.org/documentation/latest/">http://parquet.apache.org/documentation/latest/</a></li>
+<li><a href="https://blog.twitter.com/2013/dremel-made-simple-with-parquet">https://blog.twitter.com/2013/dremel-made-simple-with-parquet</a></li>
+<li><a href="https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL">https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL</a></li>
+</ul>
+
+
+<h2>概念</h2>
+
+<ul>
+<li>Row Group
+
+<ul>
+<li>Column Chunk
+
+<ul>
+<li>Page
+
+<ul>
+<li>Definition Levels: To support nested records we need to store the level for which the field is null. This is what the definition level is for: from 0 at the root of the schema up to the maximum level for this column. When a field is defined then all its parents are defined too, but <strong>when it is null we need to record the level at which it started being null to be able to reconstruct the record</strong>.</li>
+<li>Repetition Levels: To support repeated fields we need to store when new lists are starting in a column of values. This is what repetition level is for: it is the level at which we have to create a new list for the current value. <strong>In other words, the repetition level can be seen as a marker of when to start a new list and at which level</strong>.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>FileMetaData</li>
+</ul>
+
+
+<p>The definition and repetition levels are optional, based on the schema definition. If the column is not nested (i.e. the path to the column has length 1), we do not encode the repetition levels (it would always have the value 1). For data that is required, the definition levels are skipped (if encoded, it will always have the value of the max definition level).</p>
+
+<p>For example, in the case where the column is non-nested and required, the data in the page is only the encoded values.</p>
+
+<p><strong>An optimized read setup would be: 1GB row groups, 1GB HDFS block size, 1 HDFS block per HDFS file.</strong></p>
+
+<h2>texfile转parquet</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ cd apache-hive-1.2.1-bin/
+</span><span class='line'>[hadoop@hadoop-master2 apache-hive-1.2.1-bin]$ bin/hive
+</span><span class='line'>hive&gt; CREATE TABLE `t_ods_access_log2_parquet`(   `houseid` string,    `sourceip` string,    `destinationip` string,    `sourceport` string,    `destinationport` string,    `domain` string,    `url` string,    `accesstime` string,    `logid` string,    `sourceipnum` bigint,    `timedetected` string,    `protocol` string,    `duration` string) ROW FORMAT DELIMITED    FIELDS TERMINATED BY '|'  STORED AS PARQUET LOCATION   '/user/hive/t_ods_access_log2_parquet'</span></code></pre></td></tr></table></div></figure>
+
+
+<p>关键 <strong>STORED AS PARQUET</strong>。</p>
+
+<p>关于压缩，可以通过mapreduce参数设置（ <code>mapreduce.output.fileoutputformat.compress</code> 和 <code>mapreduce.output.fileoutputformat.compress.codec</code> ），但是推荐使用 <code>parquet.compression</code> 属性来指定。</p>
+
+<p>reader/writer都会从 <code>CodecConfig.getCodec()</code> 获取压缩编码。代码中会从parquet属性和mapreduce获取压缩参数。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>alter table t_ods_access_log2_parquet SET TBLPROPERTIES ('parquet.compression' = 'SNAPPY' );
+</span><span class='line'>
+</span><span class='line'>create table t_ods_access_log2_parquet_none like t_ods_access_log2_parquet TBLPROPERTIES ('parquet.compression' = 'UNCOMPRESSED' );
+</span><span class='line'>create table t_ods_access_log2_parquet_gzip like t_ods_access_log2_parquet TBLPROPERTIES ('parquet.compression' = 'GZIP' );</span></code></pre></td></tr></table></div></figure>
+
+
+<p>直接使用hive的insert into语句就可以把原来的textfile的文件转成parquet格式。同时也转成gzip和uncompress比较了一下：</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">文件格式     </th>
+<th style="text-align:left;"> 压缩       </th>
+<th style="text-align:left;"> 大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> snappy     </td>
+<td style="text-align:left;"> 4.1G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> snappy     </td>
+<td style="text-align:left;"> 3.6G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> uncompress </td>
+<td style="text-align:left;"> 7.2G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> gzip       </td>
+<td style="text-align:left;"> 2.2G</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>直接count整个数据表，使用parquet的输入1M不到数据，太环保了！！（文件都是几十M的，一个文件都在一台机器上）。</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">文件格式     </th>
+<th style="text-align:left;"> 运行引擎       </th>
+<th style="text-align:left;"> 大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> tez            </td>
+<td style="text-align:left;"> HDFS_BYTES_READ    4,454,071,542</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> tez            </td>
+<td style="text-align:left;"> HDFS_BYTES_READ    415,870</td>
+</tr>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> sparksql       </td>
+<td style="text-align:left;"> Input  4.1 GB</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> sparksql       </td>
+<td style="text-align:left;"> Input  384.9 KB</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>用sparksql跑textfile尽让更快。果然内存大暴力也很牛啊！！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+<span class='line-number'>100</span>
+<span class='line-number'>101</span>
+<span class='line-number'>102</span>
+<span class='line-number'>103</span>
+<span class='line-number'>104</span>
+<span class='line-number'>105</span>
+<span class='line-number'>106</span>
+<span class='line-number'>107</span>
+<span class='line-number'>108</span>
+<span class='line-number'>109</span>
+<span class='line-number'>110</span>
+<span class='line-number'>111</span>
+<span class='line-number'>112</span>
+<span class='line-number'>113</span>
+<span class='line-number'>114</span>
+<span class='line-number'>115</span>
+<span class='line-number'>116</span>
+<span class='line-number'>117</span>
+<span class='line-number'>118</span>
+<span class='line-number'>119</span>
+<span class='line-number'>120</span>
+<span class='line-number'>121</span>
+<span class='line-number'>122</span>
+<span class='line-number'>123</span>
+<span class='line-number'>124</span>
+<span class='line-number'>125</span>
+<span class='line-number'>126</span>
+<span class='line-number'>127</span>
+<span class='line-number'>128</span>
+<span class='line-number'>129</span>
+<span class='line-number'>130</span>
+<span class='line-number'>131</span>
+<span class='line-number'>132</span>
+<span class='line-number'>133</span>
+<span class='line-number'>134</span>
+<span class='line-number'>135</span>
+<span class='line-number'>136</span>
+<span class='line-number'>137</span>
+<span class='line-number'>138</span>
+<span class='line-number'>139</span>
+<span class='line-number'>140</span>
+<span class='line-number'>141</span>
+<span class='line-number'>142</span>
+<span class='line-number'>143</span>
+<span class='line-number'>144</span>
+<span class='line-number'>145</span>
+<span class='line-number'>146</span>
+<span class='line-number'>147</span>
+<span class='line-number'>148</span>
+<span class='line-number'>149</span>
+<span class='line-number'>150</span>
+<span class='line-number'>151</span>
+<span class='line-number'>152</span>
+<span class='line-number'>153</span>
+<span class='line-number'>154</span>
+<span class='line-number'>155</span>
+<span class='line-number'>156</span>
+<span class='line-number'>157</span>
+<span class='line-number'>158</span>
+<span class='line-number'>159</span>
+<span class='line-number'>160</span>
+<span class='line-number'>161</span>
+<span class='line-number'>162</span>
+<span class='line-number'>163</span>
+<span class='line-number'>164</span>
+<span class='line-number'>165</span>
+<span class='line-number'>166</span>
+<span class='line-number'>167</span>
+<span class='line-number'>168</span>
+<span class='line-number'>169</span>
+<span class='line-number'>170</span>
+<span class='line-number'>171</span>
+<span class='line-number'>172</span>
+<span class='line-number'>173</span>
+<span class='line-number'>174</span>
+<span class='line-number'>175</span>
+<span class='line-number'>176</span>
+<span class='line-number'>177</span>
+<span class='line-number'>178</span>
+<span class='line-number'>179</span>
+<span class='line-number'>180</span>
+<span class='line-number'>181</span>
+<span class='line-number'>182</span>
+<span class='line-number'>183</span>
+<span class='line-number'>184</span>
+<span class='line-number'>185</span>
+<span class='line-number'>186</span>
+<span class='line-number'>187</span>
+<span class='line-number'>188</span>
+<span class='line-number'>189</span>
+<span class='line-number'>190</span>
+<span class='line-number'>191</span>
+<span class='line-number'>192</span>
+<span class='line-number'>193</span>
+<span class='line-number'>194</span>
+<span class='line-number'>195</span>
+<span class='line-number'>196</span>
+<span class='line-number'>197</span>
+<span class='line-number'>198</span>
+<span class='line-number'>199</span>
+<span class='line-number'>200</span>
+<span class='line-number'>201</span>
+<span class='line-number'>202</span>
+<span class='line-number'>203</span>
+<span class='line-number'>204</span>
+<span class='line-number'>205</span>
+<span class='line-number'>206</span>
+<span class='line-number'>207</span>
+<span class='line-number'>208</span>
+<span class='line-number'>209</span>
+<span class='line-number'>210</span>
+<span class='line-number'>211</span>
+<span class='line-number'>212</span>
+<span class='line-number'>213</span>
+<span class='line-number'>214</span>
+<span class='line-number'>215</span>
+<span class='line-number'>216</span>
+<span class='line-number'>217</span>
+<span class='line-number'>218</span>
+<span class='line-number'>219</span>
+<span class='line-number'>220</span>
+<span class='line-number'>221</span>
+<span class='line-number'>222</span>
+<span class='line-number'>223</span>
+<span class='line-number'>224</span>
+<span class='line-number'>225</span>
+<span class='line-number'>226</span>
+<span class='line-number'>227</span>
+<span class='line-number'>228</span>
+<span class='line-number'>229</span>
+<span class='line-number'>230</span>
+<span class='line-number'>231</span>
+<span class='line-number'>232</span>
+<span class='line-number'>233</span>
+<span class='line-number'>234</span>
+<span class='line-number'>235</span>
+<span class='line-number'>236</span>
+<span class='line-number'>237</span>
+<span class='line-number'>238</span>
+<span class='line-number'>239</span>
+<span class='line-number'>240</span>
+<span class='line-number'>241</span>
+<span class='line-number'>242</span>
+<span class='line-number'>243</span>
+<span class='line-number'>244</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hive&gt; insert into t_ods_access_log2_back select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 ;
+</span><span class='line'>Query ID = hadoop_20160329200414_96f1de35-48c5-4b38-977f-05de8554f388
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Status: Running (Executing on YARN cluster with App id application_1458893800770_3955)
+</span><span class='line'>
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Map 1 ..........   SUCCEEDED    152        152        0        0       1       0
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>VERTICES: 01/01  [==========================&gt;&gt;] 100%  ELAPSED TIME: 341.56 s   
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Loading data to table default.t_ods_access_log2_back
+</span><span class='line'>Table default.t_ods_access_log2_back stats: [numFiles=152, numRows=57688987, totalSize=4454071542, rawDataSize=11018516544]
+</span><span class='line'>OK
+</span><span class='line'>Time taken: 347.997 seconds
+</span><span class='line'>hive&gt; insert into t_ods_access_log2_parquet select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 ;
+</span><span class='line'>Query ID = hadoop_20160329212157_57b66595-5dfc-4fc9-9ad1-398e2b8ade6b
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>Tez session was closed. Reopening...
+</span><span class='line'>Session re-established.
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+</span><span class='line'>
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Map 1 ..........   SUCCEEDED    152        152        0        0       0       0
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>VERTICES: 01/01  [==========================&gt;&gt;] 100%  ELAPSED TIME: 237.28 s   
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Loading data to table default.t_ods_access_log2_parquet
+</span><span class='line'>Table default.t_ods_access_log2_parquet stats: [numFiles=0, numRows=1305035789, totalSize=0, rawDataSize=16965465257]
+</span><span class='line'>OK
+</span><span class='line'>Time taken: 260.515 seconds
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_back;
+</span><span class='line'>Query ID = hadoop_20160329212644_da8e7997-5bcc-41ab-8b63-f1a5919c5a2f
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+</span><span class='line'>
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Map 1 ..........   SUCCEEDED    107        107        0        0       0       0
+</span><span class='line'>Reducer 2 ......   SUCCEEDED      1          1        0        0       0       0
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>VERTICES: 02/02  [==========================&gt;&gt;] 100%  ELAPSED TIME: 59.01 s    
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 59.768 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_parquet;
+</span><span class='line'>Query ID = hadoop_20160329212813_2fb8dafa-5c9a-40e8-a904-13e7cf865ec6
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+</span><span class='line'>
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>Map 1 ..........   SUCCEEDED    106        106        0        0       0       0
+</span><span class='line'>Reducer 2 ......   SUCCEEDED      1          1        0        0       0       0
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>VERTICES: 02/02  [==========================&gt;&gt;] 100%  ELAPSED TIME: 45.82 s    
+</span><span class='line'>--------------------------------------------------------------------------------
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 47.275 seconds, Fetched: 1 row(s)
+</span><span class='line'>
+</span><span class='line'>hive&gt; set hive.execution.engine=spark;
+</span><span class='line'>hive&gt; set spark.master=yarn-client;
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_back;
+</span><span class='line'>Query ID = hadoop_20160329214550_a58d1056-9c91-4bbe-be7d-122ec3efdd8d
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 3a03d432-83a4-4d5a-a878-c9e52aa94bed
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[0] stages:
+</span><span class='line'>0
+</span><span class='line'>1
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[0])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 21:46:26,523 Stage-0_0: 0(+114)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:27,535 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:30,563 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:33,582 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:36,606 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:39,624 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:41,637 Stage-0_0: 0(+118)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:42,644 Stage-0_0: 4(+115)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:43,651 Stage-0_0: 110(+41)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:44,658 Stage-0_0: 124(+28)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:45,665 Stage-0_0: 128(+24)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:46,671 Stage-0_0: 138(+14)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:47,677 Stage-0_0: 142(+10)/152 Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:48,684 Stage-0_0: 144(+8)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:49,691 Stage-0_0: 147(+5)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:50,698 Stage-0_0: 148(+4)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:51,705 Stage-0_0: 149(+3)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:52,712 Stage-0_0: 150(+2)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:55,731 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:46:58,750 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:47:01,769 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+</span><span class='line'>2016-03-29 21:47:02,776 Stage-0_0: 152/152 Finished     Stage-1_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:05,793 Stage-0_0: 152/152 Finished     Stage-1_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 70.33 seconds
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 75.211 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_back;
+</span><span class='line'>Query ID = hadoop_20160329214723_9663eaf7-7014-46b1-b2ca-811ba64fc55c
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = f2dbcd55-b23c-4eb3-9439-8f1c825fbac3
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[1] stages:
+</span><span class='line'>2
+</span><span class='line'>3
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[1])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 21:47:24,449 Stage-2_0: 0(+122)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:25,455 Stage-2_0: 96(+56)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:26,462 Stage-2_0: 123(+29)/152 Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:27,469 Stage-2_0: 128(+24)/152 Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:28,476 Stage-2_0: 132(+20)/152 Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:29,483 Stage-2_0: 137(+15)/152 Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:30,489 Stage-2_0: 145(+7)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:31,495 Stage-2_0: 146(+6)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:32,500 Stage-2_0: 150(+2)/152  Stage-3_0: 0/1
+</span><span class='line'>2016-03-29 21:47:33,506 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:36,524 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:39,540 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:42,557 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:45,573 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:48,589 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:47:49,594 Stage-2_0: 152/152 Finished     Stage-3_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 26.15 seconds
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 26.392 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_parquet;
+</span><span class='line'>Query ID = hadoop_20160329214758_25084e25-fdaf-4ef8-9c1a-2573515caca6
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 4360be5c-4188-49c4-a2a7-e5bb80164646
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[2] stages:
+</span><span class='line'>5
+</span><span class='line'>4
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[2])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 21:47:59,472 Stage-4_0: 0(+63)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:00,478 Stage-4_0: 1(+62)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:01,486 Stage-4_0: 49(+14)/65   Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:02,492 Stage-4_0: 51(+14)/65   Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:03,498 Stage-4_0: 57(+8)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:04,505 Stage-4_0: 62(+3)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:05,511 Stage-4_0: 63(+2)/65    Stage-5_0: 0/1
+</span><span class='line'>2016-03-29 21:48:06,518 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:09,537 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:12,556 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:15,574 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:18,592 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:21,608 Stage-4_0: 65/65 Finished       Stage-5_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 23.14 seconds
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 23.376 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2_parquet;
+</span><span class='line'>Query ID = hadoop_20160329214826_173311b1-0083-4e11-9a29-fe13f48bb649
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = c452b02b-c68f-4c68-bc28-cb9748d7dcb2
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[3] stages:
+</span><span class='line'>6
+</span><span class='line'>7
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[3])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 21:48:27,332 Stage-6_0: 3(+60)/65    Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:28,338 Stage-6_0: 53(+10)/65   Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:29,343 Stage-6_0: 60(+3)/65    Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:30,349 Stage-6_0: 61(+4)/65    Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:31,354 Stage-6_0: 63(+2)/65    Stage-7_0: 0/1
+</span><span class='line'>2016-03-29 21:48:32,360 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:35,377 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:38,393 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+</span><span class='line'>2016-03-29 21:48:40,404 Stage-6_0: 65/65 Finished       Stage-7_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 14.08 seconds
+</span><span class='line'>OK
+</span><span class='line'>57688987
+</span><span class='line'>Time taken: 14.306 seconds, Fetched: 1 row(s)
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr 
+</span><span class='line'>         &gt; select count(*) from t_ods_access_log2_parquet;
+</span><span class='line'>57688987
+</span><span class='line'>16/03/29 22:19:51 INFO CliDriver: Time taken: 21.82 seconds, Fetched 1 row(s)
+</span><span class='line'>
+</span><span class='line'>         &gt; select count(*) from t_ods_access_log2_back;
+</span><span class='line'>57688987
+</span><span class='line'>16/03/29 22:20:44 INFO CliDriver: Time taken: 6.634 seconds, Fetched 1 row(s)
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/03/29/limit-on-sparksql-and-hive/">Limit on Sparksql and Hive</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-03-29T15:27:03+08:00" pubdate data-updated="true">Tue 2016-03-29 15:27</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>前一篇提到sparksql查询limit的时刻会提前返回，不需要查询所有的数据。hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。</p>
+
+<p>把日志记录下面：</p>
+
+<h2>hive1.2.1-on-spark1.3.1</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hive&gt; select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 and sourceip='118.112.188.17' limit 10;
+</span><span class='line'>Query ID = hadoop_20160329151420_25fe9497-e223-4f48-980e-e7fe859848ce
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 9036c8d7-62b6-4b9a-b6d3-2d8b5eed6bf9
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[2] stages:
+</span><span class='line'>3
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[2])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-29 15:14:22,053 Stage-3_0: 0(+160)/942
+</span><span class='line'>2016-03-29 15:14:23,059 Stage-3_0: 47(+160)/942
+</span><span class='line'>2016-03-29 15:14:24,064 Stage-3_0: 131(+160)/942
+</span><span class='line'>2016-03-29 15:14:25,069 Stage-3_0: 266(+160)/942
+</span><span class='line'>2016-03-29 15:14:26,075 Stage-3_0: 382(+160)/942
+</span><span class='line'>2016-03-29 15:14:27,080 Stage-3_0: 497(+152)/942
+</span><span class='line'>2016-03-29 15:14:28,085 Stage-3_0: 607(+142)/942
+</span><span class='line'>2016-03-29 15:14:29,090 Stage-3_0: 714(+125)/942
+</span><span class='line'>2016-03-29 15:14:30,094 Stage-3_0: 794(+91)/942
+</span><span class='line'>2016-03-29 15:14:31,099 Stage-3_0: 846(+61)/942
+</span><span class='line'>2016-03-29 15:14:32,103 Stage-3_0: 868(+47)/942
+</span><span class='line'>2016-03-29 15:14:33,107 Stage-3_0: 886(+35)/942
+</span><span class='line'>2016-03-29 15:14:34,112 Stage-3_0: 895(+26)/942
+</span><span class='line'>2016-03-29 15:14:35,116 Stage-3_0: 902(+21)/942
+</span><span class='line'>2016-03-29 15:14:36,120 Stage-3_0: 904(+19)/942
+</span><span class='line'>2016-03-29 15:14:37,124 Stage-3_0: 906(+17)/942
+</span><span class='line'>2016-03-29 15:14:38,128 Stage-3_0: 910(+15)/942
+</span><span class='line'>2016-03-29 15:14:39,132 Stage-3_0: 914(+13)/942
+</span><span class='line'>2016-03-29 15:14:40,137 Stage-3_0: 920(+9)/942
+</span><span class='line'>2016-03-29 15:14:41,141 Stage-3_0: 921(+8)/942
+</span><span class='line'>2016-03-29 15:14:44,155 Stage-3_0: 928(+14)/942
+</span><span class='line'>2016-03-29 15:14:45,159 Stage-3_0: 934(+8)/942
+</span><span class='line'>2016-03-29 15:14:46,164 Stage-3_0: 936(+6)/942
+</span><span class='line'>2016-03-29 15:14:47,169 Stage-3_0: 937(+5)/942
+</span><span class='line'>2016-03-29 15:14:50,180 Stage-3_0: 938(+4)/942
+</span><span class='line'>2016-03-29 15:14:52,188 Stage-3_0: 939(+3)/942
+</span><span class='line'>2016-03-29 15:14:54,196 Stage-3_0: 941(+1)/942
+</span><span class='line'>2016-03-29 15:14:57,206 Stage-3_0: 941(+1)/942
+</span><span class='line'>2016-03-29 15:15:00,215 Stage-3_0: 942/942 Finished
+</span><span class='line'>Status: Finished successfully in 39.17 seconds</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>sparksql1.6.0</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+<span class='line-number'>100</span>
+<span class='line-number'>101</span>
+<span class='line-number'>102</span>
+<span class='line-number'>103</span>
+<span class='line-number'>104</span>
+<span class='line-number'>105</span>
+<span class='line-number'>106</span>
+<span class='line-number'>107</span>
+<span class='line-number'>108</span>
+<span class='line-number'>109</span>
+<span class='line-number'>110</span>
+<span class='line-number'>111</span>
+<span class='line-number'>112</span>
+<span class='line-number'>113</span>
+<span class='line-number'>114</span>
+<span class='line-number'>115</span>
+<span class='line-number'>116</span>
+<span class='line-number'>117</span>
+<span class='line-number'>118</span>
+<span class='line-number'>119</span>
+<span class='line-number'>120</span>
+<span class='line-number'>121</span>
+<span class='line-number'>122</span>
+<span class='line-number'>123</span>
+<span class='line-number'>124</span>
+<span class='line-number'>125</span>
+<span class='line-number'>126</span>
+<span class='line-number'>127</span>
+<span class='line-number'>128</span>
+<span class='line-number'>129</span>
+<span class='line-number'>130</span>
+<span class='line-number'>131</span>
+<span class='line-number'>132</span>
+<span class='line-number'>133</span>
+<span class='line-number'>134</span>
+<span class='line-number'>135</span>
+<span class='line-number'>136</span>
+<span class='line-number'>137</span>
+<span class='line-number'>138</span>
+<span class='line-number'>139</span>
+<span class='line-number'>140</span>
+<span class='line-number'>141</span>
+<span class='line-number'>142</span>
+<span class='line-number'>143</span>
+<span class='line-number'>144</span>
+<span class='line-number'>145</span>
+<span class='line-number'>146</span>
+<span class='line-number'>147</span>
+<span class='line-number'>148</span>
+<span class='line-number'>149</span>
+<span class='line-number'>150</span>
+<span class='line-number'>151</span>
+<span class='line-number'>152</span>
+<span class='line-number'>153</span>
+<span class='line-number'>154</span>
+<span class='line-number'>155</span>
+<span class='line-number'>156</span>
+<span class='line-number'>157</span>
+<span class='line-number'>158</span>
+<span class='line-number'>159</span>
+<span class='line-number'>160</span>
+<span class='line-number'>161</span>
+<span class='line-number'>162</span>
+<span class='line-number'>163</span>
+<span class='line-number'>164</span>
+<span class='line-number'>165</span>
+<span class='line-number'>166</span>
+<span class='line-number'>167</span>
+<span class='line-number'>168</span>
+<span class='line-number'>169</span>
+<span class='line-number'>170</span>
+<span class='line-number'>171</span>
+<span class='line-number'>172</span>
+<span class='line-number'>173</span>
+<span class='line-number'>174</span>
+<span class='line-number'>175</span>
+<span class='line-number'>176</span>
+<span class='line-number'>177</span>
+<span class='line-number'>178</span>
+<span class='line-number'>179</span>
+<span class='line-number'>180</span>
+<span class='line-number'>181</span>
+<span class='line-number'>182</span>
+<span class='line-number'>183</span>
+<span class='line-number'>184</span>
+<span class='line-number'>185</span>
+<span class='line-number'>186</span>
+<span class='line-number'>187</span>
+<span class='line-number'>188</span>
+<span class='line-number'>189</span>
+<span class='line-number'>190</span>
+<span class='line-number'>191</span>
+<span class='line-number'>192</span>
+<span class='line-number'>193</span>
+<span class='line-number'>194</span>
+<span class='line-number'>195</span>
+<span class='line-number'>196</span>
+<span class='line-number'>197</span>
+<span class='line-number'>198</span>
+<span class='line-number'>199</span>
+<span class='line-number'>200</span>
+<span class='line-number'>201</span>
+<span class='line-number'>202</span>
+<span class='line-number'>203</span>
+<span class='line-number'>204</span>
+<span class='line-number'>205</span>
+<span class='line-number'>206</span>
+<span class='line-number'>207</span>
+<span class='line-number'>208</span>
+<span class='line-number'>209</span>
+<span class='line-number'>210</span>
+<span class='line-number'>211</span>
+<span class='line-number'>212</span>
+<span class='line-number'>213</span>
+<span class='line-number'>214</span>
+<span class='line-number'>215</span>
+<span class='line-number'>216</span>
+<span class='line-number'>217</span>
+<span class='line-number'>218</span>
+<span class='line-number'>219</span>
+<span class='line-number'>220</span>
+<span class='line-number'>221</span>
+<span class='line-number'>222</span>
+<span class='line-number'>223</span>
+<span class='line-number'>224</span>
+<span class='line-number'>225</span>
+<span class='line-number'>226</span>
+<span class='line-number'>227</span>
+<span class='line-number'>228</span>
+<span class='line-number'>229</span>
+<span class='line-number'>230</span>
+<span class='line-number'>231</span>
+<span class='line-number'>232</span>
+<span class='line-number'>233</span>
+<span class='line-number'>234</span>
+<span class='line-number'>235</span>
+<span class='line-number'>236</span>
+<span class='line-number'>237</span>
+<span class='line-number'>238</span>
+<span class='line-number'>239</span>
+<span class='line-number'>240</span>
+<span class='line-number'>241</span>
+<span class='line-number'>242</span>
+<span class='line-number'>243</span>
+<span class='line-number'>244</span>
+<span class='line-number'>245</span>
+<span class='line-number'>246</span>
+<span class='line-number'>247</span>
+<span class='line-number'>248</span>
+<span class='line-number'>249</span>
+<span class='line-number'>250</span>
+<span class='line-number'>251</span>
+<span class='line-number'>252</span>
+<span class='line-number'>253</span>
+<span class='line-number'>254</span>
+<span class='line-number'>255</span>
+<span class='line-number'>256</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>spark-sql&gt; select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 and sourceip='118.112.188.17' limit 10;
+</span><span class='line'>16/03/29 15:15:16 INFO parse.ParseDriver: Parsing command: select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 and sourceip='118.112.188.17' limit 10
+</span><span class='line'>16/03/29 15:15:16 INFO parse.ParseDriver: Parse Completed
+</span><span class='line'>16/03/29 15:15:16 INFO metastore.HiveMetaStore: 0: get_table : db=default tbl=t_ods_access_log2
+</span><span class='line'>16/03/29 15:15:16 INFO HiveMetaStore.audit: ugi=hadoop  ip=unknown-ip-addr      cmd=get_table : db=default tbl=t_ods_access_log2
+</span><span class='line'>16/03/29 15:15:17 INFO storage.MemoryStore: Block broadcast_6 stored as values in memory (estimated size 543.3 KB, free 9.7 MB)
+</span><span class='line'>16/03/29 15:15:17 INFO storage.MemoryStore: Block broadcast_6_piece0 stored as bytes in memory (estimated size 44.1 KB, free 9.8 MB)
+</span><span class='line'>16/03/29 15:15:17 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on 192.168.32.12:51590 (size: 44.1 KB, free: 21.3 GB)
+</span><span class='line'>16/03/29 15:15:17 INFO spark.SparkContext: Created broadcast 6 from processCmd at CliDriver.java:376
+</span><span class='line'>16/03/29 15:15:17 INFO metastore.HiveMetaStore: 0: get_partitions : db=default tbl=t_ods_access_log2
+</span><span class='line'>16/03/29 15:15:17 INFO HiveMetaStore.audit: ugi=hadoop  ip=unknown-ip-addr      cmd=get_partitions : db=default tbl=t_ods_access_log2
+</span><span class='line'>16/03/29 15:15:18 INFO mapred.FileInputFormat: Total input paths to process : 942
+</span><span class='line'>16/03/29 15:15:18 INFO spark.SparkContext: Starting job: processCmd at CliDriver.java:376
+</span><span class='line'>16/03/29 15:15:18 INFO scheduler.DAGScheduler: Got job 4 (processCmd at CliDriver.java:376) with 1 output partitions
+</span><span class='line'>16/03/29 15:15:18 INFO scheduler.DAGScheduler: Final stage: ResultStage 5 (processCmd at CliDriver.java:376)
+</span><span class='line'>16/03/29 15:15:18 INFO scheduler.DAGScheduler: Parents of final stage: List()
+</span><span class='line'>16/03/29 15:15:18 INFO scheduler.DAGScheduler: Missing parents: List()
+</span><span class='line'>16/03/29 15:15:18 INFO scheduler.DAGScheduler: Submitting ResultStage 5 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376), which has no missing parents
+</span><span class='line'>16/03/29 15:15:18 INFO storage.MemoryStore: Block broadcast_7 stored as values in memory (estimated size 3.9 MB, free 13.7 MB)
+</span><span class='line'>16/03/29 15:15:18 INFO storage.MemoryStore: Block broadcast_7_piece0 stored as bytes in memory (estimated size 318.8 KB, free 14.0 MB)
+</span><span class='line'>16/03/29 15:15:18 INFO storage.BlockManagerInfo: Added broadcast_7_piece0 in memory on 192.168.32.12:51590 (size: 318.8 KB, free: 21.3 GB)
+</span><span class='line'>16/03/29 15:15:18 INFO spark.SparkContext: Created broadcast 7 from broadcast at DAGScheduler.scala:1006
+</span><span class='line'>16/03/29 15:15:18 INFO scheduler.DAGScheduler: Submitting 1 missing tasks from ResultStage 5 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376)
+</span><span class='line'>16/03/29 15:15:18 INFO cluster.YarnScheduler: Adding task set 5.0 with 1 tasks
+</span><span class='line'>16/03/29 15:15:18 INFO scheduler.TaskSetManager: Starting task 0.0 in stage 5.0 (TID 1260, hadoop-slaver135, partition 0,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:19 INFO storage.BlockManagerInfo: Added broadcast_7_piece0 in memory on hadoop-slaver135:59376 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:20 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver135:59376 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 5.0 (TID 1260) in 3273 ms on hadoop-slaver135 (1/1)
+</span><span class='line'>16/03/29 15:15:21 INFO cluster.YarnScheduler: Removed TaskSet 5.0, whose tasks have all completed, from pool 
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.DAGScheduler: ResultStage 5 (processCmd at CliDriver.java:376) finished in 3.276 s
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.DAGScheduler: Job 4 finished: processCmd at CliDriver.java:376, took 3.475462 s
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener: Finished stage: org.apache.spark.scheduler.StageInfo@57e08525
+</span><span class='line'>16/03/29 15:15:21 INFO spark.SparkContext: Starting job: processCmd at CliDriver.java:376
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener: task runtime:(count: 1, mean: 3273.000000, stdev: 0.000000, max: 3273.000000, min: 3273.000000)
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener:   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.DAGScheduler: Got job 5 (processCmd at CliDriver.java:376) with 2 output partitions
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.DAGScheduler: Final stage: ResultStage 6 (processCmd at CliDriver.java:376)
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.DAGScheduler: Parents of final stage: List()
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener: task result size:(count: 1, mean: 3763.000000, stdev: 0.000000, max: 3763.000000, min: 3763.000000)
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener:   3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.DAGScheduler: Missing parents: List()
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.DAGScheduler: Submitting ResultStage 6 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376), which has no missing parents
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener: executor (non-fetch) time pct: (count: 1, mean: 51.879010, stdev: 0.000000, max: 51.879010, min: 51.879010)
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener:   52 %    52 %    52 %    52 %    52 %    52 %    52 %    52 %    52 %
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener: other time pct: (count: 1, mean: 48.120990, stdev: 0.000000, max: 48.120990, min: 48.120990)
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.StatsReportListener:   48 %    48 %    48 %    48 %    48 %    48 %    48 %    48 %    48 %
+</span><span class='line'>16/03/29 15:15:21 INFO storage.MemoryStore: Block broadcast_8 stored as values in memory (estimated size 3.9 MB, free 17.9 MB)
+</span><span class='line'>16/03/29 15:15:21 INFO storage.MemoryStore: Block broadcast_8_piece0 stored as bytes in memory (estimated size 318.8 KB, free 18.2 MB)
+</span><span class='line'>16/03/29 15:15:21 INFO storage.BlockManagerInfo: Added broadcast_8_piece0 in memory on 192.168.32.12:51590 (size: 318.8 KB, free: 21.3 GB)
+</span><span class='line'>16/03/29 15:15:21 INFO spark.SparkContext: Created broadcast 8 from broadcast at DAGScheduler.scala:1006
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.DAGScheduler: Submitting 2 missing tasks from ResultStage 6 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376)
+</span><span class='line'>16/03/29 15:15:21 INFO cluster.YarnScheduler: Adding task set 6.0 with 2 tasks
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.TaskSetManager: Starting task 0.0 in stage 6.0 (TID 1261, hadoop-slaver67, partition 1,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:21 INFO scheduler.TaskSetManager: Starting task 1.0 in stage 6.0 (TID 1262, hadoop-slaver121, partition 2,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:21 INFO storage.BlockManagerInfo: Added broadcast_8_piece0 in memory on hadoop-slaver67:49600 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:22 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver67:49600 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:22 INFO storage.BlockManagerInfo: Added broadcast_8_piece0 in memory on hadoop-slaver121:57614 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:22 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver121:57614 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:22 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 6.0 (TID 1261) in 930 ms on hadoop-slaver67 (1/2)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.TaskSetManager: Finished task 1.0 in stage 6.0 (TID 1262) in 1207 ms on hadoop-slaver121 (2/2)
+</span><span class='line'>16/03/29 15:15:23 INFO cluster.YarnScheduler: Removed TaskSet 6.0, whose tasks have all completed, from pool 
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.DAGScheduler: ResultStage 6 (processCmd at CliDriver.java:376) finished in 1.210 s
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.DAGScheduler: Job 5 finished: processCmd at CliDriver.java:376, took 1.378783 s
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener: Finished stage: org.apache.spark.scheduler.StageInfo@573e5329
+</span><span class='line'>16/03/29 15:15:23 INFO spark.SparkContext: Starting job: processCmd at CliDriver.java:376
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener: task runtime:(count: 2, mean: 1068.500000, stdev: 138.500000, max: 1207.000000, min: 930.000000)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener:   930.0 ms        930.0 ms        930.0 ms        930.0 ms        1.2 s   1.2 s   1.2 s   1.2 s   1.2 s
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.DAGScheduler: Got job 6 (processCmd at CliDriver.java:376) with 7 output partitions
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.DAGScheduler: Final stage: ResultStage 7 (processCmd at CliDriver.java:376)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.DAGScheduler: Parents of final stage: List()
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener: task result size:(count: 2, mean: 2267.500000, stdev: 0.500000, max: 2268.000000, min: 2267.000000)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener:   2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.DAGScheduler: Missing parents: List()
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener: executor (non-fetch) time pct: (count: 2, mean: 73.649411, stdev: 11.511880, max: 85.161290, min: 62.137531)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener:   62 %    62 %    62 %    62 %    85 %    85 %    85 %    85 %    85 %
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.DAGScheduler: Submitting ResultStage 7 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376), which has no missing parents
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener: other time pct: (count: 2, mean: 26.350589, stdev: 11.511880, max: 37.862469, min: 14.838710)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.StatsReportListener:   15 %    15 %    15 %    15 %    38 %    38 %    38 %    38 %    38 %
+</span><span class='line'>16/03/29 15:15:23 INFO storage.MemoryStore: Block broadcast_9 stored as values in memory (estimated size 3.9 MB, free 22.1 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.MemoryStore: Block broadcast_9_piece0 stored as bytes in memory (estimated size 318.8 KB, free 22.4 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on 192.168.32.12:51590 (size: 318.8 KB, free: 21.3 GB)
+</span><span class='line'>16/03/29 15:15:23 INFO spark.SparkContext: Created broadcast 9 from broadcast at DAGScheduler.scala:1006
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.DAGScheduler: Submitting 7 missing tasks from ResultStage 7 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376)
+</span><span class='line'>16/03/29 15:15:23 INFO cluster.YarnScheduler: Adding task set 7.0 with 7 tasks
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 6.0 in stage 7.0 (TID 1263, hadoop-slaver158, partition 9,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 0.0 in stage 7.0 (TID 1264, hadoop-slaver82, partition 3,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 5.0 in stage 7.0 (TID 1265, hadoop-slaver68, partition 8,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 1.0 in stage 7.0 (TID 1266, hadoop-slaver120, partition 4,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 2.0 in stage 7.0 (TID 1267, hadoop-slaver14, partition 5,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 4.0 in stage 7.0 (TID 1268, hadoop-slaver137, partition 7,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 3.0 in stage 7.0 (TID 1269, hadoop-slaver70, partition 6,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver68:45281 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver70:34080 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver137:45760 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver82:36935 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver158:39852 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver14:40126 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver120:46667 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver68:45281 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver120:46667 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver70:34080 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver82:36935 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver14:40126 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver137:45760 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver158:39852 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 1.0 in stage 7.0 (TID 1266) in 780 ms on hadoop-slaver120 (1/7)
+</span><span class='line'>16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 7.0 (TID 1264) in 943 ms on hadoop-slaver82 (2/7)
+</span><span class='line'>16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 5.0 in stage 7.0 (TID 1265) in 999 ms on hadoop-slaver68 (3/7)
+</span><span class='line'>16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 3.0 in stage 7.0 (TID 1269) in 1047 ms on hadoop-slaver70 (4/7)
+</span><span class='line'>16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 4.0 in stage 7.0 (TID 1268) in 1123 ms on hadoop-slaver137 (5/7)
+</span><span class='line'>16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 2.0 in stage 7.0 (TID 1267) in 1413 ms on hadoop-slaver14 (6/7)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Finished task 6.0 in stage 7.0 (TID 1263) in 2229 ms on hadoop-slaver158 (7/7)
+</span><span class='line'>16/03/29 15:15:25 INFO cluster.YarnScheduler: Removed TaskSet 7.0, whose tasks have all completed, from pool 
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.DAGScheduler: ResultStage 7 (processCmd at CliDriver.java:376) finished in 2.231 s
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.DAGScheduler: Job 6 finished: processCmd at CliDriver.java:376, took 2.399044 s
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener: Finished stage: org.apache.spark.scheduler.StageInfo@5210a024
+</span><span class='line'>16/03/29 15:15:25 INFO spark.SparkContext: Starting job: processCmd at CliDriver.java:376
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener: task runtime:(count: 7, mean: 1219.142857, stdev: 449.417537, max: 2229.000000, min: 780.000000)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener:   780.0 ms        780.0 ms        780.0 ms        943.0 ms        1.0 s   1.4 s   2.2 s   2.2 s   2.2 s
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener: task result size:(count: 7, mean: 2267.428571, stdev: 0.494872, max: 2268.000000, min: 2267.000000)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener:   2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.DAGScheduler: Got job 7 (processCmd at CliDriver.java:376) with 25 output partitions
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.DAGScheduler: Final stage: ResultStage 8 (processCmd at CliDriver.java:376)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.DAGScheduler: Parents of final stage: List()
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener: executor (non-fetch) time pct: (count: 7, mean: 83.082955, stdev: 4.773503, max: 92.418125, min: 77.114871)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener:   77 %    77 %    77 %    78 %    83 %    86 %    92 %    92 %    92 %
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.DAGScheduler: Missing parents: List()
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener: other time pct: (count: 7, mean: 16.917045, stdev: 4.773503, max: 22.885129, min: 7.581875)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.DAGScheduler: Submitting ResultStage 8 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376), which has no missing parents
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.StatsReportListener:    8 %     8 %     8 %    14 %    17 %    22 %    23 %    23 %    23 %
+</span><span class='line'>16/03/29 15:15:25 INFO storage.MemoryStore: Block broadcast_10 stored as values in memory (estimated size 3.9 MB, free 26.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.MemoryStore: Block broadcast_10_piece0 stored as bytes in memory (estimated size 318.8 KB, free 26.6 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on 192.168.32.12:51590 (size: 318.8 KB, free: 21.3 GB)
+</span><span class='line'>16/03/29 15:15:25 INFO spark.SparkContext: Created broadcast 10 from broadcast at DAGScheduler.scala:1006
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.DAGScheduler: Submitting 25 missing tasks from ResultStage 8 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376)
+</span><span class='line'>16/03/29 15:15:25 INFO cluster.YarnScheduler: Adding task set 8.0 with 25 tasks
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 19.0 in stage 8.0 (TID 1270, hadoop-slaver61, partition 29,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 2.0 in stage 8.0 (TID 1271, hadoop-slaver100, partition 12,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 9.0 in stage 8.0 (TID 1272, hadoop-slaver34, partition 19,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 10.0 in stage 8.0 (TID 1273, hadoop-slaver76, partition 20,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 14.0 in stage 8.0 (TID 1274, hadoop-slaver84, partition 24,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 17.0 in stage 8.0 (TID 1275, hadoop-slaver96, partition 27,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 4.0 in stage 8.0 (TID 1276, hadoop-slaver38, partition 14,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 13.0 in stage 8.0 (TID 1277, hadoop-slaver11, partition 23,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 15.0 in stage 8.0 (TID 1278, hadoop-slaver98, partition 25,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 1.0 in stage 8.0 (TID 1279, hadoop-slaver136, partition 11,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 7.0 in stage 8.0 (TID 1280, hadoop-slaver44, partition 17,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 20.0 in stage 8.0 (TID 1281, hadoop-slaver120, partition 30,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 11.0 in stage 8.0 (TID 1282, hadoop-slaver141, partition 21,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 23.0 in stage 8.0 (TID 1283, hadoop-slaver82, partition 33,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 24.0 in stage 8.0 (TID 1284, hadoop-slaver159, partition 34,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 18.0 in stage 8.0 (TID 1285, hadoop-slaver15, partition 28,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 6.0 in stage 8.0 (TID 1286, hadoop-slaver1, partition 16,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 8.0 in stage 8.0 (TID 1287, hadoop-slaver145, partition 18,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 22.0 in stage 8.0 (TID 1288, hadoop-slaver142, partition 32,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 16.0 in stage 8.0 (TID 1289, hadoop-slaver31, partition 26,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 5.0 in stage 8.0 (TID 1290, hadoop-slaver75, partition 15,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 12.0 in stage 8.0 (TID 1291, hadoop-slaver97, partition 22,NODE_LOCAL, 2354 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 21.0 in stage 8.0 (TID 1292, hadoop-slaver149, partition 31,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 0.0 in stage 8.0 (TID 1293, hadoop-slaver163, partition 10,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 3.0 in stage 8.0 (TID 1294, hadoop-slaver91, partition 13,NODE_LOCAL, 2355 bytes)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver34:54432 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver120:46667 (size: 318.8 KB, free: 510.0 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver15:58396 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver82:36935 (size: 318.8 KB, free: 510.0 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver31:37685 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver1:38813 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver100:56851 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver61:37705 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver98:60144 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver38:57228 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver76:40021 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver44:37682 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver149:59628 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver159:40160 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver11:44070 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver91:47206 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver75:50788 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver97:54552 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver34:54432 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver75:50788 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver38:57228 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver100:56851 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver98:60144 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver149:59628 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver44:37682 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver97:54552 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver1:38813 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver91:47206 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver76:40021 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver31:37685 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver159:40160 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver15:58396 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver145:37716 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver61:37705 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver141:60941 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver136:33234 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver96:53017 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver96:53017 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver141:60941 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver163:50662 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver145:37716 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver84:34548 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 20.0 in stage 8.0 (TID 1281) in 762 ms on hadoop-slaver120 (1/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 15.0 in stage 8.0 (TID 1278) in 873 ms on hadoop-slaver98 (2/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 2.0 in stage 8.0 (TID 1271) in 892 ms on hadoop-slaver100 (3/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 12.0 in stage 8.0 (TID 1291) in 911 ms on hadoop-slaver97 (4/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 5.0 in stage 8.0 (TID 1290) in 914 ms on hadoop-slaver75 (5/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 4.0 in stage 8.0 (TID 1276) in 938 ms on hadoop-slaver38 (6/25)
+</span><span class='line'>16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver163:50662 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 7.0 in stage 8.0 (TID 1280) in 955 ms on hadoop-slaver44 (7/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 10.0 in stage 8.0 (TID 1273) in 963 ms on hadoop-slaver76 (8/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 6.0 in stage 8.0 (TID 1286) in 974 ms on hadoop-slaver1 (9/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 9.0 in stage 8.0 (TID 1272) in 1019 ms on hadoop-slaver34 (10/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 11.0 in stage 8.0 (TID 1282) in 1186 ms on hadoop-slaver141 (11/25)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 23.0 in stage 8.0 (TID 1283) in 1187 ms on hadoop-slaver82 (12/25)
+</span><span class='line'>16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver11:44070 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 8.0 in stage 8.0 (TID 1287) in 1260 ms on hadoop-slaver145 (13/25)
+</span><span class='line'>16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 21.0 in stage 8.0 (TID 1292) in 1349 ms on hadoop-slaver149 (14/25)
+</span><span class='line'>16/03/29 15:15:27 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver136:33234 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:27 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver142:59911 (size: 318.8 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 19.0 in stage 8.0 (TID 1270) in 1569 ms on hadoop-slaver61 (15/25)
+</span><span class='line'>16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 8.0 (TID 1293) in 1598 ms on hadoop-slaver163 (16/25)
+</span><span class='line'>16/03/29 15:15:27 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver84:34548 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:27 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver142:59911 (size: 44.1 KB, free: 510.3 MB)
+</span><span class='line'>16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 13.0 in stage 8.0 (TID 1277) in 1958 ms on hadoop-slaver11 (17/25)
+</span><span class='line'>16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 3.0 in stage 8.0 (TID 1294) in 2018 ms on hadoop-slaver91 (18/25)
+</span><span class='line'>16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 14.0 in stage 8.0 (TID 1274) in 2267 ms on hadoop-slaver84 (19/25)
+</span><span class='line'>16/03/29 15:15:28 INFO scheduler.TaskSetManager: Finished task 17.0 in stage 8.0 (TID 1275) in 2717 ms on hadoop-slaver96 (20/25)
+</span><span class='line'>16/03/29 15:15:28 INFO scheduler.TaskSetManager: Finished task 16.0 in stage 8.0 (TID 1289) in 2733 ms on hadoop-slaver31 (21/25)
+</span><span class='line'>16/03/29 15:15:28 INFO scheduler.TaskSetManager: Finished task 18.0 in stage 8.0 (TID 1285) in 2864 ms on hadoop-slaver15 (22/25)
+</span><span class='line'>16/03/29 15:15:28 INFO scheduler.TaskSetManager: Finished task 1.0 in stage 8.0 (TID 1279) in 3129 ms on hadoop-slaver136 (23/25)
+</span><span class='line'>16/03/29 15:15:29 INFO scheduler.TaskSetManager: Finished task 22.0 in stage 8.0 (TID 1288) in 3308 ms on hadoop-slaver142 (24/25)
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.TaskSetManager: Finished task 24.0 in stage 8.0 (TID 1284) in 5445 ms on hadoop-slaver159 (25/25)
+</span><span class='line'>16/03/29 15:15:31 INFO cluster.YarnScheduler: Removed TaskSet 8.0, whose tasks have all completed, from pool 
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.DAGScheduler: ResultStage 8 (processCmd at CliDriver.java:376) finished in 5.448 s
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.DAGScheduler: Job 7 finished: processCmd at CliDriver.java:376, took 5.621305 s
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.StatsReportListener: Finished stage: org.apache.spark.scheduler.StageInfo@1251c1a
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.StatsReportListener: task runtime:(count: 25, mean: 1751.560000, stdev: 1086.831729, max: 5445.000000, min: 762.000000)
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.StatsReportListener:   762.0 ms        873.0 ms        892.0 ms        955.0 ms        1.3 s   2.3 s   3.1 s   3.3 s   5.4 s
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.StatsReportListener: task result size:(count: 25, mean: 2501.840000, stdev: 410.074401, max: 3304.000000, min: 2266.000000)
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
+</span><span class='line'>16/03/29 15:15:31 INFO scheduler.StatsReportListener:   2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.6 KB  3.2 KB  3.2 KB  3.2 KB</span></code></pre></td></tr></table></div></figure>
+
+
+<p>一共弄了4次: <code>1 -&gt; 2 -&gt; 7 -&gt; 25</code></p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2016-03-28T18:20:46+08:00" pubdate data-updated="true">Mon 2016-03-28 18:20</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>先看官网的资源<a href="https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started">Hive on Spark: Getting Started</a> 。文档是值得信任和有保证的，但是有前提：<strong>Spark版本</strong>得是hive/pom.xml中指定的。</p>
+
+<h2>重新编译spark(assembly包中去掉hive、hadoop)</h2>
+
+<p>这里hive-1.2.1用的是spark-1.3.1 !!!</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 spark-1.3.1]$ ./make-distribution.sh --name "hadoop2.6.3-without-hive" --tgz --mvn "$(which mvn)" -Pyarn,hadoop-provided,hadoop-2.6,parquet-provided -Dhadoop.version=2.6.3 -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>拷贝打包好的 spark-1.3.1-bin-hadoop2.6.3-without-hive.tgz 到服务器。解压并做一个软链接到spark(或者指定 <strong>SPARK_HOME</strong> 环境变量 )，Hive不遗余力啊，把所有想的jar通过各种办法拿到 ( <code>sparkHome=$(readlink -f $bin/../../spark)</code> )。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ ln -s spark-1.3.1-bin-hadoop2.6.3-without-hive spark
+</span><span class='line'>
+</span><span class='line'>把压缩包传到hdfs，这样每次启动任务就少传几百M的数据。后面spark.yarn.jar配置会用到
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ cd spark/lib/
+</span><span class='line'>[hadoop@hadoop-master2 lib]$ hadoop fs -put spark-assembly-1.3.1-hadoop2.6.3.jar /spark/
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>做好软链接后效果：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ ll | grep -E "hive|spark"
+</span><span class='line'>drwxrwxr-x   9 hadoop hadoop 4096 1月  14 08:08 apache-hive-1.2.1-bin
+</span><span class='line'>lrwxrwxrwx   1 hadoop hadoop   21 1月  14 08:07 hive -&gt; apache-hive-1.2.1-bin
+</span><span class='line'>lrwxrwxrwx   1 hadoop hadoop   40 3月  28 16:38 spark -&gt; spark-1.3.1-bin-hadoop2.6.3-without-hive
+</span><span class='line'>drwxrwxr-x  10 hadoop hadoop 4096 3月  28 16:31 spark-1.3.1-bin-hadoop2.6.3-without-hive
+</span><span class='line'>drwxrwxr-x  12 hadoop hadoop 4096 3月  25 16:18 spark-1.6.0-bin-2.6.3
+</span><span class='line'>drwxrwxr-x  11 hadoop hadoop 4096 3月  28 11:15 spark-1.6.0-bin-hadoop2-without-hive</span></code></pre></td></tr></table></div></figure>
+
+
+<p>这里的spark-1.6.0是教训啊！记住最好最好用hive/pom.xml中spark的版本！！！</p>
+
+<h2>修改hive配置</h2>
+
+<p>由于spark会加载很多的class，需要把permsize调大。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ less ~/hive/conf/hive-env.sh
+</span><span class='line'>export HADOOP_OPTS="$HADOOP_OPTS -XX:MaxPermSize=256m -Dhive.home=${HIVE_HOME} "</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在conf目录下增加spark-defaults.conf文件，指定spark的配置。动态资源分配查看：<a href="http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation">dynamic-resource-allocation</a>：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 conf]$ cat spark-defaults.conf 
+</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.3.1-hadoop2.6.3.jar
+</span><span class='line'>
+</span><span class='line'>spark.dynamicAllocation.enabled    true
+</span><span class='line'>spark.shuffle.service.enabled      true
+</span><span class='line'>spark.dynamicAllocation.executorIdleTimeout    600
+</span><span class='line'>spark.dynamicAllocation.minExecutors    160 
+</span><span class='line'>spark.dynamicAllocation.maxExecutors    1800
+</span><span class='line'>spark.dynamicAllocation.schedulerBacklogTimeout   5
+</span><span class='line'>
+</span><span class='line'>spark.driver.memory    10g
+</span><span class='line'>spark.driver.maxResultSize   0
+</span><span class='line'>
+</span><span class='line'>spark.eventLog.enabled  true
+</span><span class='line'>spark.eventLog.compress  true
+</span><span class='line'>spark.eventLog.dir    hdfs:///spark-eventlogs
+</span><span class='line'>spark.yarn.historyServer.address hadoop-master2:18080
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>spark.serializer        org.apache.spark.serializer.KryoSerializer
+</span><span class='line'>spark.kryoserializer.buffer.max    512m</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>minExecutors <strong>最好应该是和datanode机器数量差不多，每台一个executor才能本地计算嘛！</strong></li>
+<li>dynamicAllocation需要yarn的配合，具体查看前一篇文章，或者直接看官网的资料。</li>
+<li>eventlog查看历史记录需要，配置好后每个任务的信息会存储到eventlog.dir的路径。通过18080端口可以看到历史记录。</li>
+</ul>
+
+
+<h2>跑起来</h2>
+
+<p><code>spark.master</code> 默认是 <strong>yarn-cluster</strong>， 这里先本地(local)跑一下看下效果。然后再改成yarn-cluster/yarn-client就可以了(推荐使用yarn-client，如果yarn-cluster模式AppMaster同时也是Driver，内存比较难控制，日志看起来也麻烦)。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hive]$ hive --hiveconf hive.execution.engine=spark 
+</span><span class='line'>
+</span><span class='line'>hive&gt; set spark.master=local;
+</span><span class='line'>hive&gt; select count(*) from t_house_info ;
+</span><span class='line'>Query ID = hadoop_20160328163952_93dafddc-c8b1-4bc9-b851-5e51f6d26fa8
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 0
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[0] stages:
+</span><span class='line'>0
+</span><span class='line'>1
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[0])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-28 16:40:02,077 Stage-0_0: 0(+1)/1      Stage-1_0: 0/1
+</span><span class='line'>2016-03-28 16:40:03,078 Stage-0_0: 1/1 Finished Stage-1_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 2.01 seconds
+</span><span class='line'>OK
+</span><span class='line'>1
+</span><span class='line'>Time taken: 10.169 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>再回过头看其实挺简单，和官方文档中的差不多。</p>
+
+<p>注意：hive的日志级别可以通过 <strong>hive-log4j.properties</strong> 来配置。</p>
+
+<p>有一个问题，不管yarn-cluser还是yarn-client（hive1.2.1-on-spark1.3.1），application强制kill掉以后，再查询会失败，应该是application杀了但是session还在！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@file1 ~]$ yarn application -kill application_1460379750886_0012
+</span><span class='line'>16/04/13 08:47:17 INFO client.RMProxy: Connecting to ResourceManager at file1/192.168.102.6:8032
+</span><span class='line'>Killing application application_1460379750886_0012
+</span><span class='line'>16/04/13 08:47:18 INFO impl.YarnClientImpl: Killed application application_1460379750886_0012
+</span><span class='line'>
+</span><span class='line'>    &gt; select count(*) from t_info where edate=20160413;
+</span><span class='line'>Query ID = hadoop_20160413084736_ac8f88bb-5ee1-4941-9745-f4a8a504f2f3
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = eb7e038a-2db0-45d7-9b0d-1e55d354e5e9
+</span><span class='line'>Status: Failed
+</span><span class='line'>FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>坑坑坑</h2>
+
+<p>刚开始弄的时刻，没管spark的版本的。直接上spark-1.6.0，然后完全跑不通，看hive.log的日志，啥都看不出来。最后查看<a href="http://markmail.org/message/reingwn556e7e37y">http://markmail.org/message/reingwn556e7e37y</a>Hive on Spark的老大邮件列表的回复，把 <strong>spark.master=local</strong> 设置成本地跑才看到一点点有用的错误信息。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hive&gt; set hive.execution.engine=spark;
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2 where day=20160327;
+</span><span class='line'>Query ID = hadoop_20160328083028_a9fb9860-38dc-4288-8415-b5b2b88f920a
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Failed to execute spark task, with exception 'org.apache.hadoop.hive.ql.metadata.HiveException(Failed to create spark client.)'
+</span><span class='line'>FAILED: Execution Error, return code 1 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>日志里面&#8217;毛&#8217;有用信息都没有！</p>
+
+<p>把日志级别调成debug（hive-log4j.properties），并把 <code>set spark.master=local;</code> 设置成本地。再跑日志：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-03-28 15:13:52,549 DEBUG internal.PlatformDependent (Slf4JLogger.java:debug(71)) - Javassist: unavailable
+</span><span class='line'>2016-03-28 15:13:52,549 DEBUG internal.PlatformDependent (Slf4JLogger.java:debug(71)) - You don't have Javassist in your class path or you don't have enough permission to load dynamically generated classes.  Please check the configuration for better performance.
+</span><span class='line'>
+</span><span class='line'>2016-03-28 15:14:56,594 DEBUG storage.BlockManager (Logging.scala:logDebug(62)) - Putting block broadcast_0_piece0 without replication took  8 ms
+</span><span class='line'>2016-03-28 15:14:56,597 ERROR util.Utils (Logging.scala:logError(95)) - uncaught error in thread SparkListenerBus, stopping SparkContext
+</span><span class='line'>java.lang.AbstractMethodError
+</span><span class='line'>        at org.apache.spark.scheduler.SparkListenerBus$class.onPostEvent(SparkListenerBus.scala:62)
+</span><span class='line'>        at org.apache.spark.scheduler.LiveListenerBus.onPostEvent(LiveListenerBus.scala:31)
+</span><span class='line'>        at org.apache.spark.scheduler.LiveListenerBus.onPostEvent(LiveListenerBus.scala:31)
+</span><span class='line'>        at org.apache.spark.util.ListenerBus$class.postToAll(ListenerBus.scala:55)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus.postToAll(AsynchronousListenerBus.scala:37)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply$mcV$sp(AsynchronousListenerBus.scala:80)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply(AsynchronousListenerBus.scala:65)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply(AsynchronousListenerBus.scala:65)
+</span><span class='line'>        at scala.util.DynamicVariable.withValue(DynamicVariable.scala:57)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1.apply$mcV$sp(AsynchronousListenerBus.scala:64)
+</span><span class='line'>        at org.apache.spark.util.Utils$.tryOrStopSparkContext(Utils.scala:1180)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1.run(AsynchronousListenerBus.scala:63)</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p><strong>调用抽象方法</strong>的错误。然后查看了hive-1.2.1中 SparkListener实现类JobMetricsListener 确实没有(spark-1.6.0)62行错误的onBlockUpdated方法实现。然后把spark换成1.3.1一切就好了，其他就是文章前面写的。</p>
+
+<p><strong>心得</strong>: 刚刚开始用一个新东西的时刻，还是安装官网指定的版本来用省心。等到自己熟悉后，在玩其他的。</p>
+
+<h2><strong>hive on spark</strong> VS <strong>SparkSQL</strong> VS <strong>hive on tez</strong></h2>
+
+<p>前一篇已经弄好了SparkSQL，SparkSQL也有thriftserver服务，这里说说为啥还选择搞hive-on-spark：</p>
+
+<ul>
+<li>SparkSQL-Thriftserver所有结果全部内存，快是快，但是不能满足查询大量数据的需求。如果查询几千万的数据，SparkSQL是搞不定的。而hive-on-spark除了计算用spark其他逻辑都是hive的，返回的结果会先写hdfs，再慢慢返回给客户端。</li>
+<li>SparkSQL-Thriftserver代码的是全部用scala重写的，和已有hive业务不一定兼容！！</li>
+<li>SparkSQL-Thriftserver有一个最大的优势就是整个server相当于hive-on-spark的一个session，网页监控漂亮清晰。而hive-on-spark不同的session那就相当于不同的application！！（2016-4-13 20:57:23）用了动态分配，没感觉SparkSQLThriftserver快很多。</li>
+<li>SparkSQL由于基于内存，再一些调度方面做了优化。如[limit]: hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。</li>
+</ul>
+
+
+<p>hive和sparksql的理念不同，hive的存储是HDFS，而sparksql只是把HDFS作为持久化工具，它的数据基本都放内存。</p>
+
+<p>查看hive的日志，可以看到返回结果后有写HDFS的动作体现，会有类似日志：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-03-28 19:39:25,687 INFO  exec.FileSinkOperator (Utilities.java:mvFileToFinalPath(1882))
+</span><span class='line'> - Moving tmp dir: hdfs://zfcluster/hive/scratchdir/hadoop/de2b263e-9601-4df7-bc38-ba932ae83f42/hive_2016-03-28_19-38-08_834_7914607982986605890-1/-mr-10000/.hive-staging_hive_2016-03-28_19-38-08_834_7914607982986605890-1/_tmp.-ext-10001 
+</span><span class='line'> to: hdfs://zfcluster/hive/scratchdir/hadoop/de2b263e-9601-4df7-bc38-ba932ae83f42/hive_2016-03-28_19-38-08_834_7914607982986605890-1/-mr-10000/.hive-staging_hive_2016-03-28_19-38-08_834_7914607982986605890-1/-ext-10001
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>tez的优势spark都有，并且tez其实缓冲优势并不大。而spark的缓冲效果更明显，而且可以快速返回。例如：你查3万条数据，tez是要全部查询然后再返回的，而sparksql取到3万条其他就不算了（效果看起来是这样子，具体没看源码实现；md hive-on-spark还是会全部跑）。</li>
+<li>tez任务缓冲不能共享，spark更加细化，可以有process级别缓冲（就是用上次计算过的结果，加载过的缓冲）！例如，你查数据记录同时又要返回count，这时有些操作是prcess_local级别的，这个tez是不能比的！</li>
+<li>spark的日志UI看起来更便捷，呵呵</li>
+</ul>
+
+
+<p>单就从用的角度，spark全面取胜啊。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started">https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started</a></li>
+<li><a href="http://spark.apache.org/docs/1.3.1/configuration.html">http://spark.apache.org/docs/1.3.1/configuration.html</a></li>
+<li><a href="http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation">http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation</a></li>
+<li>cloudera-hos优化: <a href="http://www.cloudera.com/documentation/enterprise/latest/topics/admin_hos_tuning.html">http://www.cloudera.com/documentation/enterprise/latest/topics/admin_hos_tuning.html</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn/">SparkSQL-on-YARN的Executors池(动态)配置</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-03-25T15:14:53+08:00" pubdate data-updated="true">Fri 2016-03-25 15:14</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>官网配置资料</h2>
+
+<ul>
+<li><a href="http://spark.apache.org/docs/latest/running-on-yarn.html">http://spark.apache.org/docs/latest/running-on-yarn.html</a></li>
+<li><a href="http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup">http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup</a></li>
+<li><a href="http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
+</ul>
+
+
+<h2>实战</h2>
+
+<h4>修改YARN配置，添加spark-yarn-shuffle.jar，同步配置和jar到nodemanager节点并重启。</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ vi etc/hadoop/yarn-site.xml 
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;mapreduce_shuffle,spark_shuffle&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.mapreduce.shuffle.class&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.hadoop.mapred.ShuffleHandler&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.spark_shuffle.class&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.spark.network.yarn.YarnShuffleService&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ cp ~/spark-1.6.0-bin-2.6.3/lib/spark-1.6.0-yarn-shuffle.jar share/hadoop/yarn/
+</span><span class='line'>
+</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az share $h:~/hadoop-2.6.3/ ; done 
+</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az etc $h:~/hadoop-2.6.3/ ; done 
+</span><span class='line'>
+</span><span class='line'>rsync -vaz etc hadoop-master2:~/hadoop-2.6.3/
+</span><span class='line'>rsync -vaz share hadoop-master2:~/hadoop-2.6.3/
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-yarn.sh </span></code></pre></td></tr></table></div></figure>
+
+
+<h4>原来已经部署了Hive-1.2.1（和spark-1.6.0的hive是匹配的），直接把hive-site.xml做一个软链到spark/conf下面：</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ cd conf/
+</span><span class='line'>[hadoop@hadoop-master1 conf]$ ln -s ~/hive/conf/hive-site.xml 
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ ll conf/hive-site.xml 
+</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop 36 3月  25 11:30 conf/hive-site.xml -&gt; /home/hadoop/hive/conf/hive-site.xml</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：如果原来配置了tez，把hive-site.xml的 <strong>hive.execution.engine</strong> 配置注释掉。或者启动的时刻换引擎： <code>bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr</code></p>
+
+<h4>修改spark配置</h4>
+
+<p>spark-defaults.conf</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-defaults.conf 
+</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar
+</span><span class='line'>
+</span><span class='line'>spark.dynamicAllocation.enabled    true
+</span><span class='line'>spark.shuffle.service.enabled      true
+</span><span class='line'>spark.dynamicAllocation.executorIdleTimeout    600s
+</span><span class='line'>spark.dynamicAllocation.minExecutors    160
+</span><span class='line'>spark.dynamicAllocation.maxExecutors    1800
+</span><span class='line'>spark.dynamicAllocation.schedulerBacklogTimeout   5s
+</span><span class='line'>
+</span><span class='line'>spark.driver.maxResultSize   0
+</span><span class='line'>
+</span><span class='line'>spark.eventLog.enabled  true
+</span><span class='line'>spark.eventLog.compress  true
+</span><span class='line'>spark.eventLog.dir    hdfs:///spark-eventlogs
+</span><span class='line'>spark.yarn.historyServer.address hadoop-master2:18080
+</span><span class='line'>
+</span><span class='line'>spark.serializer        org.apache.spark.serializer.KryoSerializer
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>spark.yarn.jar 配置后，spark启动后直接使用该文件作为executor的main-jar，不需要每次都上传一次spark.jar（每次都搞一下180M也不少资源了）</li>
+<li>enabled 启用动态两个都配置必须设置为true</li>
+<li>executorIdleTimeout 关闭不用executors需要等待的时间</li>
+<li>schedulerBacklogTimeout 增加积压的任务时间来判断是否增加executors</li>
+<li>minExecutors 至少存活的executors个数</li>
+</ul>
+
+
+<p>spark-env.sh环境变量</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-env.sh 
+</span><span class='line'>SPARK_CLASSPATH=/home/hadoop/hive/lib/mysql-connector-java-5.1.21-bin.jar:$SPARK_CLASSPATH
+</span><span class='line'>HADOOP_CONF_DIR=/home/hadoop/hadoop/etc/hadoop
+</span><span class='line'>SPARK_DRIVER_MEMORY=30g
+</span><span class='line'>SPARK_PID_DIR=/home/hadoop/tmp/pids</span></code></pre></td></tr></table></div></figure>
+
+
+<h4>启动</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ sbin/start-thriftserver.sh --master yarn-client
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ sbin/start-history-server.sh hdfs:///spark-eventlogs</span></code></pre></td></tr></table></div></figure>
+
+
+<p>收工。</p>
+
+<p>整个过程就是：添加spark-shuffle到yarn，然后配置spark参数，最后就是重启任务（yarn/hiveserver）。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -389,960 +2292,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/03/11/install-and-config-openvpn/">安装配置OpenVPN</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-03-11T09:46:49+08:00" pubdate data-updated="true">Fri 2016-03-11 09:46</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>由于测试环境搭建不在同一个网络，平时查看hadoop集群状态、提交任务都可以通过hadoop-master的外网来操作。但是要读写kafka，需要直接连通所有的节点，全部映射端口太麻烦。一开始想到了VLAN(虚拟局域网），远远超出能力范围。最后通过搭架VPN来实现与测试环境的透明访问。</p>
-
-<h2>使用集成版本</h2>
-
-<p>参考 <a href="https://linux.cn/article-4733-1.html">https://linux.cn/article-4733-1.html</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># download https://openvpn.net/index.php/access-server/download-openvpn-as-sw.html
-</span><span class='line'>
-</span><span class='line'># 安装
-</span><span class='line'>[root@cu2 ~]# rpm -ivh openvpn-as-2.0.25-CentOS6.x86_64.rpm 
-</span><span class='line'>Preparing...                ########################################### [100%]
-</span><span class='line'>   1:openvpn-as             ########################################### [100%]
-</span><span class='line'>The Access Server has been successfully installed in /usr/local/openvpn_as
-</span><span class='line'>Configuration log file has been written to /usr/local/openvpn_as/init.log
-</span><span class='line'>Please enter "passwd openvpn" to set the initial
-</span><span class='line'>administrative password, then login as "openvpn" to continue
-</span><span class='line'>configuration here: https://192.168.0.214:943/admin
-</span><span class='line'>To reconfigure manually, use the /usr/local/openvpn_as/bin/ovpn-init tool.
-</span><span class='line'>
-</span><span class='line'>Access Server web UIs are available here:
-</span><span class='line'>Admin  UI: https://192.168.0.214:943/admin
-</span><span class='line'>Client UI: https://192.168.0.214:943/
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# passwd openvpn
-</span><span class='line'>
-</span><span class='line'>然后通过web admin进行配置。如主机的信息、hostname以及监听绑定的IP</span></code></pre></td></tr></table></div></figure>
-
-
-<p>配置好以后，本地通过网页下载client程序安装。连接配置后：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>C:\Users\winse&gt;tracert  cu3
-</span><span class='line'>
-</span><span class='line'>通过最多 30 个跃点跟踪
-</span><span class='line'>到 cu3 [192.168.0.148] 的路由:
-</span><span class='line'>
-</span><span class='line'>  1     2 ms     2 ms     2 ms  172.27.232.1
-</span><span class='line'>  2     2 ms     2 ms     2 ms  cu3 [192.168.0.148]
-</span><span class='line'>
-</span><span class='line'>跟踪完成。
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>C:\Users\winse&gt;route print
-</span><span class='line'>===========================================================================
-</span><span class='line'>IPv4 路由表
-</span><span class='line'>===========================================================================
-</span><span class='line'>活动路由:
-</span><span class='line'>网络目标        网络掩码          网关       接口   跃点数
-</span><span class='line'>          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.102     20
-</span><span class='line'>          0.0.0.0        128.0.0.0     172.27.232.1     172.27.232.2     20
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<p><a href="http://designmylife.blog.163.com/blog/static/2067142542013527101659960/">http://designmylife.blog.163.com/blog/static/2067142542013527101659960/</a></p>
-
-<p>路由匹配按最大(最亲)方式匹配。上面路由会先匹配mask为 <code>128.0.0.0</code> 的路由。最终把所有的流量经由VPN出去。</p>
-
-<p>通过 <strong>Access Server</strong> 安装简单，配置通过网页来弄，和网上资料的都匹配不上，还有用户数量的限制，囧。</p>
-
-<h2>编译源码安装</h2>
-
-<ul>
-<li>服务端安装配置</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 openvpn-2.3.10]# yum install libpam*
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# yum install pam-devel.x86_64
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# rz
-</span><span class='line'>rz waiting to receive.
-</span><span class='line'>Starting zmodem transfer.  Press Ctrl+C to cancel.
-</span><span class='line'>Transferring lzo-2.06.tar.gz...
-</span><span class='line'>  100%     569 KB     569 KB/sec    00:00:01       0 Errors  
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# tar zxvf lzo-2.06.tar.gz 
-</span><span class='line'>[root@cu2 ~]# cd lzo-2.06
-</span><span class='line'>[root@cu2 lzo-2.06]# ./configure 
-</span><span class='line'>[root@cu2 lzo-2.06]# make &&  make install
-</span><span class='line'>
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# ./configure --prefix=/usr/local/openvpn 
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# make && make install
-</span><span class='line'>
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# /usr/local/openvpn/sbin/openvpn --version
-</span><span class='line'>OpenVPN 2.3.10 x86_64-unknown-linux-gnu [SSL (OpenSSL)] [EPOLL] [MH] [IPv6] built on Mar  9 2016
-</span><span class='line'>
-</span><span class='line'>https://github.com/OpenVPN/easy-rsa/releases
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa  help
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa init-pki
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]#  ./easyrsa build-ca
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa gen-req openvpn nopass
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa sign client openvpn
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa gen-req eshore-cu nopass
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# ./easyrsa sign server eshore-cu
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# tree pki/
-</span><span class='line'>pki/
-</span><span class='line'>├── ca.crt
-</span><span class='line'>├── certs_by_serial
-</span><span class='line'>│   ├── 01.pem
-</span><span class='line'>│   └── 02.pem
-</span><span class='line'>├── index.txt
-</span><span class='line'>├── index.txt.attr
-</span><span class='line'>├── index.txt.attr.old
-</span><span class='line'>├── index.txt.old
-</span><span class='line'>├── issued
-</span><span class='line'>│   ├── eshore-cu.crt
-</span><span class='line'>│   └── openvpn.crt
-</span><span class='line'>├── private
-</span><span class='line'>│   ├── ca.key
-</span><span class='line'>│   ├── eshore-cu.key
-</span><span class='line'>│   └── openvpn.key
-</span><span class='line'>├── reqs
-</span><span class='line'>│   ├── eshore-cu.req
-</span><span class='line'>│   └── openvpn.req
-</span><span class='line'>├── serial
-</span><span class='line'>└── serial.old
-</span><span class='line'>
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]#  ./easyrsa gen-dh
-</span><span class='line'>[root@cu2 EasyRSA-3.0.1]# cd pki
-</span><span class='line'>[root@cu2 pki]# cp ca.crt dh.pem issued/eshore-cu.crt private/eshore-cu.key /etc/openvpn/ 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 openvpn-2.3.10]# cp sample/sample-config-files/server.conf /etc/openvpn/
-</span><span class='line'>
-</span><span class='line'>  proto tcp
-</span><span class='line'>  cert eshore-cu.crt
-</span><span class='line'>  key eshore-cu.key 
-</span><span class='line'>  dh dh.pem
-</span><span class='line'>  # 在客户端额外添加这条路由到VPN
-</span><span class='line'>  push "route 192.168.0.0 255.255.255.0"
-</span><span class='line'>  # 和AS一样，会添加0.0.0.0到VPN的路由。默认走VPN
-</span><span class='line'>  ;push "redirect-gateway def1 bypass-dhcp"
-</span><span class='line'>  user nobody
-</span><span class='line'>  group nobody
-</span><span class='line'>
-</span><span class='line'>[root@cu2 pki]# cd /etc/openvpn/
-</span><span class='line'>[root@cu2 openvpn]# /usr/local/openvpn/sbin/openvpn --config /etc/openvpn/server.conf 
-</span><span class='line'>[root@cu2 openvpn]# /usr/local/openvpn/sbin/openvpn --daemon --config server.conf </span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>安装客户端：</li>
-</ul>
-
-
-<p><a href="https://openvpn.net/index.php/open-source/downloads.html">https://openvpn.net/index.php/open-source/downloads.html</a> 下载安装对应的版本。</p>
-
-<p>拷贝sample-config/client.ovpn和服务端的ca.crt、openvpn.crt、openvpn.key到config目录下面。</p>
-
-<p>修改client.ovpn:</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>proto tcp
-</span><span class='line'>remote webcu2 1194
-</span><span class='line'>cert openvpn.crt
-</span><span class='line'>key openvpn.key</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后启动 <strong>OpenVPN GUI</strong> ，右键connect就行了。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ route print
-</span><span class='line'>...
-</span><span class='line'>IPv4 路由表
-</span><span class='line'>===========================================================================
-</span><span class='line'>活动路由:
-</span><span class='line'>网络目标        网络掩码          网关       接口   跃点数
-</span><span class='line'>          0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.102     20
-</span><span class='line'>         10.8.0.1  255.255.255.255         10.8.0.5         10.8.0.6     20
-</span><span class='line'>         10.8.0.4  255.255.255.252            在链路上          10.8.0.6    276
-</span><span class='line'>         10.8.0.6  255.255.255.255            在链路上          10.8.0.6    276
-</span><span class='line'>         10.8.0.7  255.255.255.255            在链路上          10.8.0.6    276
-</span><span class='line'>      192.168.0.0    255.255.255.0         10.8.0.5         10.8.0.6     20
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>问题</h2>
-
-<ul>
-<li>连接到VPN服务端的机器是没有问题，但是不能访问该机器的应用（端口不同）</li>
-</ul>
-
-
-<p>被防火墙限制了，在服务端把10.8.0.0/24加入到防火墙允许。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>iptables -A INPUT -s 10.8.0.0/24 -j ACCEPT </span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>不能访问服务端其他机器</li>
-</ul>
-
-
-<p>在iptables上增加转发</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o eth0 -j MASQUERADE</span></code></pre></td></tr></table></div></figure>
-
-
-<p>查看iptables规则：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>iptables -nL -t nat</span></code></pre></td></tr></table></div></figure>
-
-
-<p>测试下:</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ ping cu3
-</span><span class='line'>
-</span><span class='line'>正在 Ping cu3 [192.168.0.148] 具有 32 字节的数据:
-</span><span class='line'>来自 192.168.0.148 的回复: 字节=32 时间=5ms TTL=63
-</span><span class='line'>来自 192.168.0.148 的回复: 字节=32 时间=5ms TTL=63</span></code></pre></td></tr></table></div></figure>
-
-
-<p>其他（参数，未实践，记录下来）</p>
-
-<blockquote><p>必须在服务器端的内网网关上将到10.8.0.0/24网段的路由指向到openvpn服务器，不然从服务器端内网其他机器根本找不到去往10.8.0.0/24网段的路由。这里又分两种情况，一种是服务端有内网网关设备的（按如上说法即可）；一种是服务端内网没有网关设备，即服务器通过交换机相连，相互通讯靠广播的情况。我的就是这种情况。需要在想访问的server上增加到10.8.0.0/24的路由，如下</p>
-
-<p>route add -net 10.8.0.0/24 gw 192.168.1.211    #1.211为openvpn服务器的内网IP</p>
-
-<p>Make sure that you&rsquo;ve enabled IP and TUN/TAP forwarding on the OpenVPN server machine.
-确定开启了转发功能，然后在openvpn服务器Iptables添加如下两条规则</p>
-
-<p>iptables -A FORWARD -i tun0 -s 10.8.0.0/24 -j ACCEPT    #简单说，允许数据从客户端到后端server
-iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端server到客户端</p></blockquote>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://openvpn.net/index.php/open-source/documentation/howto.html">https://openvpn.net/index.php/open-source/documentation/howto.html</a></li>
-<li><a href="http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html">http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html</a></li>
-<li><a href="http://www.linuxquestions.org/questions/linux-networking-3/openvpn-conencts-but-can%27t-ping-servers-on-the-other-network-660610/">http://www.linuxquestions.org/questions/linux-networking-3/openvpn-conencts-but-can%27t-ping-servers-on-the-other-network-660610/</a></li>
-<li><a href="http://www.ilanni.com/?p=9877">http://www.ilanni.com/?p=9877</a></li>
-<li><a href="http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html">http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html</a></li>
-<li><a href="http://kaifly.blog.51cto.com/3209616/1367591">http://kaifly.blog.51cto.com/3209616/1367591</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/03/07/rsync-vs-scp/">Rsync与scp优势</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-03-07T17:05:45+08:00" pubdate data-updated="true">Mon 2016-03-07 17:05</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>今天在做flume写kafka数据时，数据从其他目录cp拷贝过来，flume采集程序报错 <strong>程序采集的时刻文件发生了改变</strong>。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>07 Mar 2016 16:46:05,535 ERROR [pool-3-thread-1] (org.apache.flume.source.SpoolDirectorySource$SpoolDirectoryRunnable.run:256)  - FATAL: Spool Directory source s1: { spoolDir: /home/hadoop/flume/data/ }: Uncaught exception in SpoolDirectorySource thread. Restart or reconfigure Flume to continue processing.
-</span><span class='line'>java.lang.IllegalStateException: File has changed size since being read: /home/hadoop/flume/data/hbase-hadoop-master-cu2.log
-</span><span class='line'>        at org.apache.flume.client.avro.ReliableSpoolingFileEventReader.retireCurrentFile(ReliableSpoolingFileEventReader.java:326)
-</span><span class='line'>        at org.apache.flume.client.avro.ReliableSpoolingFileEventReader.readEvents(ReliableSpoolingFileEventReader.java:259)</span></code></pre></td></tr></table></div></figure>
-
-
-<p>联想到scp和rsync，好像rsync是有重命名这样的步骤的。网上也有很多对比这个两个工具的资料。</p>
-
-<ul>
-<li><a href="http://stackoverflow.com/questions/20244585/how-does-scp-differ-from-rsync">http://stackoverflow.com/questions/20244585/how-does-scp-differ-from-rsync</a></li>
-<li><p><a href="http://superuser.com/questions/193952/why-is-rsync-avz-faster-than-scp-r">http://superuser.com/questions/193952/why-is-rsync-avz-faster-than-scp-r</a></p></li>
-<li><p>rsync可以增量复制，并且只复制内容不同的部分</p></li>
-<li>rsync可以压缩，通过有断点续传 <code>-P</code></li>
-<li>rsync有各种参数： exclude等</li>
-<li>SCP也可以增加压缩参数： <code>scp -C -o 'CompressionLevel 9' -o 'IPQoS throughput'  -c arcfour machine:file .</code></li>
-<li>rsync会先写临时文件，复制完成后再重命名！</li>
-</ul>
-
-
-<p>这里只关注最后一点，对于按照名称来采集的程序非常关键！下面使用inotify监控目录的操作，在进行scp和rsync时发生的操作：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 test]$ scp -r source target/
-</span><span class='line'>[hadoop@cu2 test]$ rm target/source/1234
-</span><span class='line'>[hadoop@cu2 test]$ rsync -vaz source target/
-</span><span class='line'>sending incremental file list
-</span><span class='line'>source/
-</span><span class='line'>source/1234
-</span><span class='line'>
-</span><span class='line'>sent 141 bytes  received 35 bytes  352.00 bytes/sec
-</span><span class='line'>total size is 34  speedup is 0.19</span></code></pre></td></tr></table></div></figure>
-
-
-<p>对应的inotify的输出为：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 test]$ inotifywait -m target/source/
-</span><span class='line'>Setting up watches.
-</span><span class='line'>Watches established.
-</span><span class='line'>target/source/ CREATE 1234
-</span><span class='line'>target/source/ OPEN 1234
-</span><span class='line'>target/source/ MODIFY 1234
-</span><span class='line'>target/source/ CLOSE_WRITE,CLOSE 1234
-</span><span class='line'>
-</span><span class='line'>target/source/ DELETE 1234
-</span><span class='line'>
-</span><span class='line'>target/source/ ATTRIB,ISDIR 
-</span><span class='line'>target/source/ CREATE .1234.ARUg56
-</span><span class='line'>target/source/ OPEN .1234.ARUg56
-</span><span class='line'>target/source/ ATTRIB .1234.ARUg56
-</span><span class='line'>target/source/ MODIFY .1234.ARUg56
-</span><span class='line'>target/source/ CLOSE_WRITE,CLOSE .1234.ARUg56
-</span><span class='line'>target/source/ ATTRIB .1234.ARUg56
-</span><span class='line'>target/source/ MOVED_FROM .1234.ARUg56
-</span><span class='line'>target/source/ MOVED_TO 1234
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>rsync会先写把内容复制到一个临时文件，复制完成后，再重命名为正式的名称。</p>
-
-<p><strong>在生产环境尽量使用rsync来进行文件(夹)的复制/同步操作，即快键有安全。</strong></p>
-
-<p>当然还有奇葩的快速删除海量文件夹的方式也用的是rsync：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>rsync --delete-before -d /data/blank/ /var/spool/clientmqueue/ 
-</span><span class='line'>
-</span><span class='line'>rsync --delete-before -a -H -v --progress --stats /tmp/test/ log/</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li><a href="http://logo32.iteye.com/blog/1564727">http://logo32.iteye.com/blog/1564727</a></li>
-<li><a href="http://www.ha97.com/4107.html">http://www.ha97.com/4107.html</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/02/25/ganglia-web-ui-views/">Ganglia页自定义视图</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-02-25T20:29:11+08:00" pubdate data-updated="true">Thu 2016-02-25 20:29</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>官网自带的页面指标太拥挤，同一个组各指标的顺序不能指定(默认好像是按名称排序的)不便于观察。通过页面的Views页签可以查看自定的图标。</p>
-
-<p>在conf文件夹(由conf_default.php中views_dir指定)下面建立文件名以 <strong>view</strong> 开头的json文件。通过Views还可以聚合多个指标，在一个图中查看整体的变化趋势。配置聚合视图前可以先在 <strong>Aggregate Graphs</strong> 弄出来先瞧一瞧。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# cd /var/www/html/ganglia/
-</span><span class='line'># 查看view放置的位置
-</span><span class='line'>[root@cu2 ganglia]# grep views_dir conf_default.php 
-</span><span class='line'>$conf['views_dir'] = $conf['gweb_confdir'] . '/conf';
-</span><span class='line'>
-</span><span class='line'># view配置目录
-</span><span class='line'>[root@cu2 conf]$ ll
-</span><span class='line'>......
-</span><span class='line'>-rw-rw-r-- 1 apache apache    58 Oct  2 04:38 view_default.json
-</span><span class='line'>-rw-r--r-- 1 root   root    2344 Feb 25 20:12 view_qbevery.json
-</span><span class='line'>-rw-r--r-- 1 root   root     241 Feb 25 18:59 view_qb.json
-</span><span class='line'>
-</span><span class='line'>[root@cu2 conf]# cat view_qb.json 
-</span><span class='line'>{
-</span><span class='line'>"default_size" : "xlarge",
-</span><span class='line'>"view_name": "qb",
-</span><span class='line'>"items": [
-</span><span class='line'>{
-</span><span class='line'>"aggregate_graph": "true",
-</span><span class='line'>"graph_type": "stack", 
-</span><span class='line'>"host_regex":  [ { "regex" : "cu2" } ], 
-</span><span class='line'>"metric_regex": [ { "regex":  "qb_.*" } ],
-</span><span class='line'>"title": "qb"
-</span><span class='line'>}
-</span><span class='line'>],
-</span><span class='line'>"view_type": "standard"
-</span><span class='line'>}
-</span><span class='line'>[root@cu2 conf]# cat view_qbevery.json 
-</span><span class='line'>{
-</span><span class='line'>"default_size" : "medium",
-</span><span class='line'>"view_name": "qbevery",
-</span><span class='line'>"items": [
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_520k_53d_9.82_120807"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_500k_98d_7.81_116763"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_400k_91d_7.67_116762"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_350k_42d_9.08_120802"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_350k_83d_7.40_116761"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_300k_78d_7.12_116760"}
-</span><span class='line'>],
-</span><span class='line'>"view_type": "standard"
-</span><span class='line'>}
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://github.com/ganglia/ganglia-web/wiki#Views">https://github.com/ganglia/ganglia-web/wiki#Views</a></li>
-<li><a href="https://gist.github.com/mnikhil-git/4708591">https://gist.github.com/mnikhil-git/4708591</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/02/01/ganglia-python-extension/">Ganglia扩展-Python</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-02-01T18:23:43+08:00" pubdate data-updated="true">Mon 2016-02-01 18:23</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>最简单的添加metric的方式使用 <code>gmetric</code> ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>/usr/local/ganglia/bin/gmetric -n "TITLE" -v VALUE -t int16 -g GROUP</span></code></pre></td></tr></table></div></figure>
-
-
-<p>有时指标计算复杂，通过简单的shell不能满足功能需要。我们可以使用python模块来定制。</p>
-
-<h2>安装</h2>
-
-<p>默认安装会检查Python环境，符合条件会自动的安装Python模块。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia-3.7.2]# yum install -y python-devel
-</span><span class='line'>[root@cu2 ganglia-3.7.2]# ./configure --with-gmetad --enable-gexec --enable-status --prefix=/usr/local/ganglia
-</span><span class='line'>...
-</span><span class='line'>Checking for python
-</span><span class='line'>checking for python... /usr/bin/python
-</span><span class='line'>checking Python version... 2.6
-</span><span class='line'>checking Python support... yes
-</span><span class='line'>checking Perl support... no
-</span><span class='line'>checking for pkg-config... /usr/bin/pkg-config
-</span><span class='line'>checking pkg-config is at least version 0.9.0... yes
-</span><span class='line'>...
-</span><span class='line'>[root@cu2 ganglia-3.7.2]# make && make install</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>安装成功</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia]# pwd
-</span><span class='line'>/usr/local/ganglia
-</span><span class='line'>[root@cu2 ganglia]# ll lib64/ganglia/
-</span><span class='line'>total 704
-</span><span class='line'>-rwxr-xr-x 1 root root 87344 Feb  1 16:52 modcpu.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84566 Feb  1 16:52 moddisk.so
-</span><span class='line'>-rwxr-xr-x 1 root root 17896 Feb  1 16:52 modgstatus.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84526 Feb  1 16:52 modload.so
-</span><span class='line'>-rwxr-xr-x 1 root root 86280 Feb  1 16:52 modmem.so
-</span><span class='line'>-rwxr-xr-x 1 root root 31695 Feb  1 16:52 modmulticpu.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84928 Feb  1 16:52 modnet.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84246 Feb  1 16:52 modproc.so
-</span><span class='line'>-rwxr-xr-x 1 root root 53994 Feb  1 16:52 modpython.so
-</span><span class='line'>-rwxr-xr-x 1 root root 85584 Feb  1 16:52 modsys.so
-</span><span class='line'>[root@cu2 ganglia]# ll etc/conf.d/
-</span><span class='line'>total 4
-</span><span class='line'>-rw-r--r-- 1 root root 408 Feb  1 16:52 modpython.conf
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia]# vi etc/gmetad.conf
-</span><span class='line'> rrdtool_dir
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia]# cat etc/conf.d/modpython.conf 
-</span><span class='line'>/*
-</span><span class='line'>  params - path to the directory where mod_python
-</span><span class='line'>           should look for python metric modules
-</span><span class='line'>
-</span><span class='line'>  the "pyconf" files in the include directory below
-</span><span class='line'>  will be scanned for configurations for those modules
-</span><span class='line'>*/
-</span><span class='line'>modules {
-</span><span class='line'>  module {
-</span><span class='line'>    name = "python_module"
-</span><span class='line'>    path = "modpython.so"
-</span><span class='line'>    params = "/usr/local/ganglia/lib64/ganglia/python_modules"
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>include ("/usr/local/ganglia/etc/conf.d/*.pyconf")
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>Hello World</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia]# cd lib64/ganglia/
-</span><span class='line'>[root@cu2 ganglia]# mkdir python_modules
-</span><span class='line'>[root@cu2 ganglia]# cd python_modules/
-</span><span class='line'>
-</span><span class='line'>[root@cu2 python_modules]# cp ~/ganglia-3.7.2/gmond/python_modules/example/example.py ./
-</span><span class='line'>[root@cu2 python_modules]# 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 python_modules]# cd /usr/local/ganglia/etc/conf.d/
-</span><span class='line'>[root@cu2 conf.d]# vi example.pyconf
-</span><span class='line'>modules {
-</span><span class='line'>  module {
-</span><span class='line'>    name = "example"
-</span><span class='line'>    language = "python"
-</span><span class='line'>    param RandomMax {
-</span><span class='line'>      value = 600
-</span><span class='line'>    }
-</span><span class='line'>    param ConstantValue {
-</span><span class='line'>      value = 112
-</span><span class='line'>    }
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>collection_group {
-</span><span class='line'>  collect_every = 10
-</span><span class='line'>  time_threshold = 50
-</span><span class='line'>  metric {
-</span><span class='line'>    name = "PyRandom_Numbers"
-</span><span class='line'>    title = "Random"
-</span><span class='line'>    value_threshold = 70
-</span><span class='line'>  }
-</span><span class='line'>  metric {
-</span><span class='line'>    name = "PyConstant_Number"
-</span><span class='line'>    title = "Constant"
-</span><span class='line'>    value_threshold = 70
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>[root@cu2 conf.d]# service gmond restart
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><strong>example.py</strong> 初始化函数 <code>metric_init</code> 从 <strong>example.pyconf</strong> 文件获取配置、返回可用指标对象（ <code>call_back</code> 关联执行的handler; <code>groups</code> 数据的分组）。</p>
-
-<p>模块中必须包含的三个方法是：</p>
-
-<ul>
-<li>def metric_init(params):</li>
-<li>def metric_cleanup():</li>
-<li>def metric_handler(name):</li>
-</ul>
-
-
-<p>前面两个方法的名字必须是一定的，而最后一个 metric_handler与 <code>metric_init</code> 返回对象的callback对应。<code>__main__</code> 函数用于debug，可以单独调试该模块，以检测是否有错。
-更详细的内容看官网的文档<a href="https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules">Ganglia-GMond-Python-Modules</a></p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules">https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules</a></li>
-<li><a href="http://www.cnblogs.com/marysam/archive/2012/01/03/2311187.html">http://www.cnblogs.com/marysam/archive/2012/01/03/2311187.html</a></li>
-<li><a href="http://blog.csdn.net/cloudeep/article/details/5669295">http://blog.csdn.net/cloudeep/article/details/5669295</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/6">&larr; Older</a>
@@ -1419,6 +2368,18 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/">[读读书]Apache Spark源码剖析-序</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/05/05/hdfs-heterogeneous-storage/">Hdfs异构存储实操</a>
       </li>
     
@@ -1436,18 +2397,6 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
     
       <li class="post">
         <a href="/blog/2016/04/28/mcollective-quick-start/">MCollective安装配置</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/21/puppetexplorer-setting/">Puppetexplorer设置</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/21/puppetdb-install-and-config/">Puppetdb安装配置</a>
       </li>
     
   </ul>
@@ -1472,7 +2421,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (4) 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1484,7 +2433,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (4) 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1520,7 +2469,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/puppet/'>puppet</a> (7) 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1540,7 +2489,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/spark/'>spark</a> (7) 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1561,7 +2510,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (132)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (136)</li>
 	</ul>
 	
 </section>
