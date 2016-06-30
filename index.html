@@ -9,9 +9,8 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="前面写过完全纯手工和用yum安装依赖来安装ganglia的文章，最近生产安装了puppet，既然已经手上已有牛杀鸡就不用再取菜刀了。今天记录下前几天使用puppet安装ganglia的经历。 前提（自己操作过） 配置过私有仓库 (createrepo)
-安装好puppet
-编译过自己的rpm ( &hellip;">
+  <meta name="description" content="flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。 flume-1.6.0
+kafka_2.11-0.9.0.1( &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -91,6 +90,343 @@
       
   <header>
     
+      <h1 class="entry-title"><a href="/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/">使用 Flume+kafka+elasticsearch 处理数据</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-06-28T09:50:05+08:00" pubdate data-updated="true">Tue 2016-06-28 09:50</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。</p>
+
+<ul>
+<li>flume-1.6.0</li>
+<li>kafka_2.11-0.9.0.1(可以与0.8.2客户端通信, flume-kafka-channel-1.6.0不改)</li>
+<li>elasticsearch-2.2.0</li>
+</ul>
+
+
+<p>由于版本的差异，需要替换/添加以下jar到 <code>flume/lib</code> 下：</p>
+
+<p>使用 <code>mvn dependecy:copy-dependencies</code> 导出所需依赖的包</p>
+
+<p>jackson一堆，hppc-0.7.1.jar，t-digest-3.0.jar，jsr166e-1.1.0.jar，guava-18.0.jar，lucene一堆，elasticsearch-2.2.0.jar。</p>
+
+<p>远程调试配置：</p>
+
+<p>source由于项目上的一些特殊规则，需要自己编写。通过远程DEBUG来打断点来排查BUG。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flume]$ vi conf/flume-env.sh
+</span><span class='line'>export JAVA_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8092"</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实战1</h2>
+
+<p>channel使用kafka是考虑其他功能可能也需要用到这些数据，先用 netcat 作为输入，把整个流程跑通：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flumebin]$ cat dta.flume 
+</span><span class='line'>dta.sources=s1
+</span><span class='line'>dta.channels=c1
+</span><span class='line'>dta.sinks=k1
+</span><span class='line'>
+</span><span class='line'>dta.channels.c1.type=org.apache.flume.channel.kafka.KafkaChannel
+</span><span class='line'>dta.channels.c1.capacity=10000
+</span><span class='line'>dta.channels.c1.transactionCapacity=1000
+</span><span class='line'>dta.channels.c1.brokerList=cu5:9093
+</span><span class='line'>dta.channels.c1.topic=flume_cmdid_1234
+</span><span class='line'>dta.channels.c1.groupId=flume_dta
+</span><span class='line'>dta.channels.c1.zookeeperConnect=cu3:2181/kafka_0_9
+</span><span class='line'>dta.channels.c1.parseAsFlumeEvent=false
+</span><span class='line'>
+</span><span class='line'>dta.sources.s1.channels=c1
+</span><span class='line'>dta.sources.s1.type=netcat
+</span><span class='line'>dta.sources.s1.bind=0.0.0.0
+</span><span class='line'>dta.sources.s1.port=6666
+</span><span class='line'>dta.sources.s1.max-line-length=88888888
+</span><span class='line'>
+</span><span class='line'>dta.sinks.k1.channel=c1
+</span><span class='line'>dta.sinks.k1.type=elasticsearch
+</span><span class='line'>dta.sinks.k1.hostNames=cu2:9300
+</span><span class='line'>dta.sinks.k1.indexName=foo_index
+</span><span class='line'>dta.sinks.k1.indexType=idcisp
+</span><span class='line'>dta.sinks.k1.clusterName=eshore-cu
+</span><span class='line'>dta.sinks.k1.batchSize=500
+</span><span class='line'>dta.sinks.k1.ttl=5d
+</span><span class='line'>dta.sinks.k1.serializer=com.eshore.zhfx.collector.InfoSecurityLogIndexRequestBuilderFactory
+</span><span class='line'>dta.sinks.k1.serializer.idcispUrlBase64=true
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 flumebin]$ bin/flume-ng agent --classpath flume-dta-source-2.1.jar  -n dta -c conf -f dta.flume
+</span><span class='line'>
+</span><span class='line'># 新开一个窗口
+</span><span class='line'>[hadoop@cu2 ~]$ nc localhost 6666
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>kafka的主题、ES的索引不需要手动建，为了更好的控制ES索引创建可以添加template。</p>
+
+<p>InfoSecurityLogIndexRequestBuilderFactory 实现 ElasticSearchIndexRequestBuilderFactory 把原始记录转换成 ES 的JSON对象。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private Counter allRecordMetric = MetricManager.getInstance().counter("all_infosecurity");
+</span><span class='line'>  private Counter errorRecordMetric = MetricManager.getInstance().counter("error_infosecurity");
+</span><span class='line'>  
+</span><span class='line'>  public IndexRequestBuilder createIndexRequest(Client client, String indexPrefix, String indexType, Event event)
+</span><span class='line'>      throws IOException {
+</span><span class='line'>    allRecordMetric.inc();
+</span><span class='line'>
+</span><span class='line'>    String record = new String(event.getBody(), outputCharset);
+</span><span class='line'>
+</span><span class='line'>    context.put(ElasticSearchSinkConstants.INDEX_NAME, indexPrefix);
+</span><span class='line'>    indexNameBuilder.configure(context);
+</span><span class='line'>    IndexRequestBuilder indexRequestBuilder = client.prepareIndex(indexNameBuilder.getIndexName(event), indexType);
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      Gson gson = new Gson();
+</span><span class='line'>      IdcIspLog log = parseRecord(record);
+</span><span class='line'>      BytesArray data = new BytesArray(gson.toJson(log));
+</span><span class='line'>
+</span><span class='line'>      indexRequestBuilder.setSource(data);
+</span><span class='line'>      indexRequestBuilder.setRouting(log.commandld);
+</span><span class='line'>    } catch (Exception e) {
+</span><span class='line'>      LOG.error(e.getMessage(), e);
+</span><span class='line'>      errorRecordMetric.inc();
+</span><span class='line'>
+</span><span class='line'>      indexRequestBuilder.setSource(record.getBytes(outputCharset));
+</span><span class='line'>      // 保留错误的数据
+</span><span class='line'>      indexRequestBuilder.setRouting("error");
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    return indexRequestBuilder;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实战2</h2>
+
+<p>跑通流程后，测试自己写的source：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>dta.sources=s1
+</span><span class='line'>dta.channels=c1
+</span><span class='line'>dta.sinks=k1
+</span><span class='line'>
+</span><span class='line'>dta.channels.c1.type=memory
+</span><span class='line'>dta.channels.c1.capacity=1000000
+</span><span class='line'>dta.channels.c1.transactionCapacity=1000000
+</span><span class='line'>dta.channels.c1.byteCapacity=7000000000
+</span><span class='line'>
+</span><span class='line'>dta.sources.s1.channels=c1
+</span><span class='line'>dta.sources.s1.type=com.eshore.zhfx.collector.CollectSource
+</span><span class='line'>dta.sources.s1.spoolDir=/home/hadoop/flume/data/
+</span><span class='line'>dta.sources.s1.trackerDir=/tmp/dtaspool
+</span><span class='line'>
+</span><span class='line'>dta.sinks.k1.channel=c1
+</span><span class='line'>dta.sinks.k1.type=logger</span></code></pre></td></tr></table></div></figure>
+
+
+<p>CollectSource实现PollableSource继承AbstractSource类。参考Flume开发文档: <a href="http://flume.apache.org/FlumeDeveloperGuide.html#source">http://flume.apache.org/FlumeDeveloperGuide.html#source</a> ， 参考 <code>org.apache.flume.source.SequenceGeneratorSource</code> 类。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public Status process() throws EventDeliveryException {
+</span><span class='line'>    Status status = Status.READY;
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      List&lt;Event&gt; events = readEvent(batchSize);
+</span><span class='line'>      if (!events.isEmpty()) {
+</span><span class='line'>        sourceCounter.addToEventReceivedCount(events.size());
+</span><span class='line'>        sourceCounter.incrementAppendBatchReceivedCount();
+</span><span class='line'>
+</span><span class='line'>        getChannelProcessor().processEventBatch(events);
+</span><span class='line'>        // 记录文件已经处理的位置
+</span><span class='line'>        commit();
+</span><span class='line'>
+</span><span class='line'>        sourceCounter.addToEventAcceptedCount(events.size());
+</span><span class='line'>        sourceCounter.incrementAppendBatchAcceptedCount();
+</span><span class='line'>      }
+</span><span class='line'>    } catch (ChannelException | IOException e) {
+</span><span class='line'>      status = Status.BACKOFF;
+</span><span class='line'>      Throwables.propagate(e);
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    return status;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实例：Flume+Kafka+ES</h2>
+
+<p>把两个实例整合起来。</p>
+
+<h2>附-kafka基本操作</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-server-start.sh config/server1.properties 
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ cat config/server1.properties 
+</span><span class='line'>listeners=PLAINTEXT://:9093
+</span><span class='line'>log.dirs=/tmp/kafka-logs1
+</span><span class='line'>num.partitions=1
+</span><span class='line'>zookeeper.connect=cu3,cu4,cu5/kafka_0_9
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --create --zookeeper cu3:2181/kafka_0_9 --replication 1 --partitions 1 --topic flume
+</span><span class='line'>Created topic "flume".
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --list --zookeeper cu3:2181/kafka_0_9
+</span><span class='line'>flume
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-producer.sh --broker-list cu5:9093 --topic flume
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-consumer.sh --zookeeper cu3:2181/kafka_0_9 --topic flume --from-beginning
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
       <h1 class="entry-title"><a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a></h1>
     
     
@@ -127,6 +463,8 @@
 
 <h2>编译gmetad，gmond，gweb</h2>
 
+<p>点击链接下载SPEC：</p>
+
 <ul>
 <li><a href="/files/ganglia-puppet/gmetad.spec">gmetad.spec</a></li>
 <li><a href="/files/ganglia-puppet/gmond.spec">gmond.spec</a></li>
@@ -134,9 +472,9 @@
 </ul>
 
 
-<p>内容通过附件下载。</p>
+<p>然后编译打包：</p>
 
-<p>然后编译打包（使用rpmbuild必须保证能正常编译安装ganglia的，rpmbuild包括编译安装！！可以先手动编译）：</p>
+<p>先手动编译安装 ganglia ，把依赖的问题处理好。然后再使用 rpmbuild 编译生成 rpm ！！</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -181,10 +519,15 @@
 <span class='line-number'>41</span>
 <span class='line-number'>42</span>
 <span class='line-number'>43</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mkdir ganglia-build
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 1&gt; 建立目录结构
+</span><span class='line'>mkdir ganglia-build
 </span><span class='line'>cd ganglia-build
 </span><span class='line'>mkdir BUILD RPMS SOURCES SPECS SRPMS
 </span><span class='line'>
+</span><span class='line'># 2&gt; 修改配置
 </span><span class='line'># ganglia-web-3.7.1.tar.gz的makefile、conf_default.php.in修改下，根据等下要配置gmetad的参数进行修改
 </span><span class='line'>
 </span><span class='line'>less ganglia-web-3.7.1/Makefile 
@@ -213,22 +556,25 @@
 </span><span class='line'>  $conf['d3_js_path'] = "js/d3.min.js";
 </span><span class='line'>  $conf['protovis_js_path'] = "js/protovis.min.js";
 </span><span class='line'>
-</span><span class='line'>
+</span><span class='line'># 3&gt; 源文件
 </span><span class='line'># 把文件放到SOURCES目录下，
 </span><span class='line'>ls SOURCES/
 </span><span class='line'>  ganglia-3.7.2.tar.gz  ganglia-web-3.7.1.tar.gz
 </span><span class='line'>
+</span><span class='line'># 4&gt; 编译生成RPM
 </span><span class='line'>rpmbuild -v -ba SPECS/gmetad.spec 
 </span><span class='line'>rpmbuild -v -ba SPECS/gmond.spec 
 </span><span class='line'>rpmbuild -v -ba SPECS/gweb.spec 
 </span><span class='line'>
-</span><span class='line'># 查看内容
+</span><span class='line'># 5&gt; 查看内容
 </span><span class='line'>rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm </span></code></pre></td></tr></table></div></figure>
 
 
 <h2>本地仓库</h2>
 
-<p><strong>先安装httpd、createrepo</strong>，然后按照下面的步骤创建本地仓库</p>
+<p>这里假设已经把系统光盘做成了本地仓库。</p>
+
+<p><strong>先安装httpd、createrepo</strong>，然后按照下面的步骤创建本地仓库：</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -295,7 +641,7 @@
 </span></code></pre></td></tr></table></div></figure>
 
 
-<p>安装找不到gmond时，可以先清理yum的缓冲： <code>yum clean all</code></p>
+<p>注意： 在安装的时刻找不到gmond，可以先清理yum的缓冲： <code>yum clean all</code></p>
 
 <h2>puppet模块</h2>
 
@@ -444,7 +790,7 @@
 </ul>
 
 
-<p>gmond.conf的仅修改两个地方: globals.deaf, cluster.name</p>
+<p>在默认的gmond.conf基础上修改一下两个配置: globals.deaf, cluster.name</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -538,7 +884,7 @@
 
 <p>参考下逻辑即可（也可以通过hiera配置）。</p>
 
-<p>最后就是加载module：</p>
+<p>最后在 site.pp 引用加载编写的Module：</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -575,7 +921,9 @@
 
 <h2>一键安装</h2>
 
-<p>首先在主机上安装gmetad，gmetad配置由于只有一台机器，配置这里手动弄。</p>
+<p>安装gmetad：</p>
+
+<p>首先在主机上安装gmetad，由于只需要在一台机器安装，配置没有整成模板，这里直接手动弄。</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -589,7 +937,7 @@
 <span class='line-number'>10</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 dtarepo]# mco rpc package install package=gmetad -I cu-omc1
 </span><span class='line'>
-</span><span class='line'># 主机多网卡时可能需要添加route
+</span><span class='line'># 注意：主机多网卡时可能需要添加route
 </span><span class='line'>[root@cu-omc1 ~]# route add -host 239.2.11.71 dev bond0
 </span><span class='line'>
 </span><span class='line'>[root@cu-omc1 ~]# /etc/ganglia/gmetad.conf 注意!! 这里的rrd_rootdir配置与上面gweb/makefile是对应的！！
@@ -600,10 +948,263 @@
 </span></code></pre></td></tr></table></div></figure>
 
 
-<p>在cu-omc2上安装gmond（正则表达式，你想怎么匹配就怎么写）：</p>
+<p>安装gmond：</p>
+
+<p>在cu-omc2上安装gmond（正则表达式，想怎么匹配就怎么写）：</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 production]# mco shell -I /^cu-omc2/ run -- "/opt/puppetlabs/bin/puppet agent -t"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>puppet同步好后，就安装好puppet，以及启动gmond服务。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/06/15/elasticsearch-startguide/">Elasticsearch Startguide</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-06-15T08:40:28+08:00" pubdate data-updated="true">Wed 2016-06-15 08:40</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>如果有Lucene的使用经历，elasticsearch的入门还是比较简单的。直接解压启动命令就安装好了，然后就是添加一些plugins就OK了。</p>
+
+<h2>安装</h2>
+
+<p>从官网下载 <a href="https://www.elastic.co/downloads/elasticsearch">TAR包</a> ，解压后，运行 elasticsearch 脚本启动服务。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># -d 表示 daemonize 后台运行
+</span><span class='line'>[hadoop@cu2 elasticsearch-2.2.0]$ bin/elasticsearch -d</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>插件</h2>
+
+<p>大部分插件都是ajax方式的静态页面，可以通过plugin脚本安装，或者直接解压文件到plugins目录下面。</p>
+
+<p>安装已经下载到本地的插件需要加file协议，不然程序会从官网下载。或者直接解压到plugins目录下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 elasticsearch-2.2.0]$ bin/plugin install file:///home/hadoop/elasticsearch-head-master.zip 
+</span><span class='line'>-&gt; Installing from file:/home/hadoop/elasticsearch-head-master.zip...
+</span><span class='line'>Trying file:/home/hadoop/elasticsearch-head-master.zip ...
+</span><span class='line'>Downloading .........DONE
+</span><span class='line'>Verifying file:/home/hadoop/elasticsearch-head-master.zip checksums if available ...
+</span><span class='line'>NOTE: Unable to verify checksum for downloaded plugin (unable to find .sha1 or .md5 file to verify)
+</span><span class='line'>Installed head into /home/hadoop/elasticsearch-2.2.0/plugins/head
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>windows</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\usr\share\elasticsearch-2.3.3\bin&gt;plugin.bat install file:///D:/SOFTWARE/elasticsearch/elasticsearch-plugin/elasticsearch-head-master.zip</span></code></pre></td></tr></table></div></figure>
+
+
+<p>安装好plugin后，打开浏览器查看索引情况： <a href="http://localhost:9200/_plugin/head/">http://localhost:9200/_plugin/head/</a></p>
+
+<h2>插件高阶</h2>
+
+<p>有些插件版本比较旧需要改一改，需要了解新版本的 elasticsearch-plugin 的规范：</p>
+
+<p><a href="https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/installation.html">https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/installation.html</a></p>
+
+<p>新版本插件主要是需要增加一个描述文件：</p>
+
+<p><a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.3/breaking_20_plugin_and_packaging_changes.html#_plugins_require_descriptor_file">Plugins require descriptor file</a></p>
+
+<p>遇到想安装的旧版本的plugin，描述文件写法可以参考 <a href="https://github.com/mobz/elasticsearch-head">elasticsearch-head</a> 。</p>
+
+<p>可选插件：</p>
+
+<ul>
+<li>paramedic <a href="https://github.com/karmi/elasticsearch-paramedic">https://github.com/karmi/elasticsearch-paramedic</a></li>
+<li>head <a href="https://github.com/mobz/elasticsearch-head">https://github.com/mobz/elasticsearch-head</a></li>
+<li>kopf <a href="https://github.com/lmenezes/elasticsearch-kopf">https://github.com/lmenezes/elasticsearch-kopf</a></li>
+</ul>
+
+
+<h2>常用URL请求</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-create-index.html
+</span><span class='line'># 创建
+</span><span class='line'>$ curl -XPUT 'http://localhost:9200/t_ods_idc_isp_log2/' -d '{
+</span><span class='line'>    "settings" : {
+</span><span class='line'>        "index" : {
+</span><span class='line'>            "number_of_shards" : 3,
+</span><span class='line'>            "number_of_replicas" : 0
+</span><span class='line'>        }
+</span><span class='line'>    }
+</span><span class='line'>}'
+</span><span class='line'>{"acknowledged":true}
+</span><span class='line'>
+</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-put-mapping.html
+</span><span class='line'># 更新
+</span><span class='line'># mapping.json
+</span><span class='line'>{
+</span><span class='line'>  "properties": {
+</span><span class='line'>      "author": {
+</span><span class='line'>          "type": "string"
+</span><span class='line'>      },
+</span><span class='line'>...
+</span><span class='line'>      "year": {
+</span><span class='line'>          "type": "long",
+</span><span class='line'>          "ignore_malformed": false,
+</span><span class='line'>          "index": "analyzed"
+</span><span class='line'>      },
+</span><span class='line'>      "avaiable": {
+</span><span class='line'>          "type": "boolean"
+</span><span class='line'>      }
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>$ curl -XPUT 'localhost:9200/t_ods_idc_isp_log2/_mapping/default' -d @mapping.json
+</span><span class='line'>
+</span><span class='line'>$ curl -XPUT 'localhost:9200/t_ods_idc_isp_log2/_mapping/default' -d '
+</span><span class='line'>{
+</span><span class='line'>  "properties": {
+</span><span class='line'>    "fDIID": {
+</span><span class='line'>      "type": "string"
+</span><span class='line'>    },
+</span><span class='line'>...
+</span><span class='line'>    "gatherTime": {
+</span><span class='line'>      "type": "long"
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>'
+</span><span class='line'>
+</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-templates.html
+</span><span class='line'># 索引
+</span><span class='line'># documents.json
+</span><span class='line'>{ "index": {      "_index": "library",        "_type": "book",        "_id": "1"  } }
+</span><span class='line'>{     "title": "All Quiet on the Western Front",  "otitle": "Im Westen nichts Neues",     "author": "Erich Maria Remarque",   "year": 1929,   "characters": ["Paul Baumer",   "Albert Kropp",     "Haie Westhus",     "Fredrich Muller",  "Stanislaus Katczinsky",    "Tjaden"],  "tags": ["novel"],  "copies": 1,    "available": true,  "section": 3 }
+</span><span class='line'>{     "index": {      "_index": "library",        "_type": "book",        "_id": "2"  } }
+</span><span class='line'>{     "title": "Catch-22",    "author": "Joseph Heller",  "year": 1961,   "characters": ["John Yossarian",    "Captain Aardvark",     "Chaplain Tappman",     "Colonel Cathcart",     "Doctor Daneeka"],  "tags": ["novel"],  "copies": 6,    "available": false,     "section": 1 }
+</span><span class='line'>
+</span><span class='line'>$ curl -s -XPOST localhost:9200/_bulk --data-binary @documents.json
+</span><span class='line'>
+</span><span class='line'># 删除
+</span><span class='line'>$ curl -XDELETE 'http://localhost:9200/t_ods_idc_isp_log2/'
+</span><span class='line'>{"acknowledged":true}
+</span><span class='line'>
+</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-get-mapping.html
+</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-get-field-mapping.html
+</span><span class='line'># 状态查看
+</span><span class='line'>http://localhost:9200/_cat/health?v
+</span><span class='line'>http://localhost:9200/_cat/nodes?v
+</span><span class='line'>http://localhost:9200/_cat/indices?v
+</span><span class='line'>
+</span><span class='line'>curl -XGET 'http://localhost:9200/_all/_mapping/book/field/author'
+</span><span class='line'>curl -XHEAD -i 'http://localhost:9200/twitter/tweet'
+</span><span class='line'>curl localhost:9200/_stats
+</span><span class='line'>curl -XGET 'http://localhost:9200/_all/_mapping/[type]'
+</span></code></pre></td></tr></table></div></figure>
 
 
 <p>&ndash;END</p>
@@ -1173,839 +1774,6 @@ $ find . -name "*.iml"  | xargs -I{} sed -i 's/scope="PROVIDED"//' {}
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/05/05/hdfs-heterogeneous-storage/">Hdfs异构存储实操</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-05-05T21:41:39+08:00" pubdate data-updated="true">Thu 2016-05-05 21:41</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.3<->2.7.2）！</p>
-
-<p>我这里测试环境使用的是 2.6.3 <a href="https://hadoop.apache.org/docs/r2.6.3/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html">Heterogeneous Storage: Archival Storage, SSD &amp; Memory</a></p>
-
-<h2>配置</h2>
-
-<p>直接把内存盘放到 /dev/shm 下，单独挂载一个 tmpfs 的效果也差不多。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/MemoryStorage.html">r2.7.2 Memory Storage Support in HDFS</a> 2.6.3没有这个文档 概念都适应的。</p>
-
-<p>1 调节系统参数</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>vi /etc/security/limits.conf
-</span><span class='line'>
-</span><span class='line'>  hadoop           -       nofile          65535
-</span><span class='line'>  hadoop           -       nproc           65535
-</span><span class='line'>  hadoop           -       memlock         268435456
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>需要调节memlock的大小，否则启动datanode报错。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>2016-05-05 19:22:22,674 FATAL org.apache.hadoop.hdfs.server.datanode.DataNode: Exception in secureMain
-</span><span class='line'>java.lang.RuntimeException: Cannot start datanode because the configured max locked memory size (dfs.datanode.max.locked.memory) of 134217728 bytes is more than the datanode's available RLIMIT_MEMLOCK ulimit of 65536 bytes.
-</span><span class='line'>        at org.apache.hadoop.hdfs.server.datanode.DataNode.startDataNode(DataNode.java:1067)
-</span><span class='line'>        at org.apache.hadoop.hdfs.server.datanode.DataNode.&lt;init&gt;(DataNode.java:417)
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>2 添加RAM_DISK</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>vi hdfs-site.xml
-</span><span class='line'>
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;/data/bigdata/hadoop/dfs/data,[RAM_DISK]/dev/shm/dfs/data&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.datanode.max.locked.memory&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;134217728&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>  </span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意内存盘的写法，<code>[RAM_DISK]</code> 必须这些写，不然datanode不知道指定路径的storage的类型(默认是 DISK )。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html#Storage_Types_and_Storage_Policies">Storage_Types_and_Storage_Policies</a></p>
-
-<blockquote><p>The default storage type of a datanode storage location will be DISK if it does not have a storage type tagged explicitly.</p></blockquote>
-
-<p>3 同步配置并重启dfs</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# scp /etc/security/limits.conf cu3:/etc/security/
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ rsync -vaz etc cu3:~/hadoop-2.6.3/ 
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3] sbin/stop-dfs.sh
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3] sbin/start-dfs.sh</span></code></pre></td></tr></table></div></figure>
-
-
-<p>可以去到datanode查看日志，可以看到 /dev/shm/dfs/data 路径 <strong>StorageType</strong> 为 <strong>RAM_DISK</strong> ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /data/bigdata/hadoop/dfs/data/current
-</span><span class='line'>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /data/bigdata/hadoop/dfs/data/current, StorageType: DISK
-</span><span class='line'>2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /dev/shm/dfs/data/current
-</span><span class='line'>2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /dev/shm/dfs/data/current, StorageType: RAM_DISK</span></code></pre></td></tr></table></div></figure>
-
-
-<p>同时查看 内存盘 的路径内容：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ ssh cu3 tree /dev/shm/dfs
-</span><span class='line'>/dev/shm/dfs
-</span><span class='line'>└── data
-</span><span class='line'>    ├── current
-</span><span class='line'>    │   ├── BP-1108852639-192.168.0.148-1452322889531
-</span><span class='line'>    │   │   ├── current
-</span><span class='line'>    │   │   │   ├── finalized
-</span><span class='line'>    │   │   │   ├── rbw
-</span><span class='line'>    │   │   │   └── VERSION
-</span><span class='line'>    │   │   └── tmp
-</span><span class='line'>    │   └── VERSION
-</span><span class='line'>    └── in_use.lock
-</span><span class='line'>
-</span><span class='line'>7 directories, 3 files</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>测试使用</h2>
-
-<p>通过三个例子对比，简单描述下使用。首先，使用默认的方式(主要用于对比)，第二个例子写文件是添加参数，第三个设置目录的存储类型（目录/文件会继承父目录的存储类型）</p>
-
-<p>1 测试1</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /tmp/
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /tmp/README.txt -files -blocks -locations
-</span><span class='line'>...
-</span><span class='line'>/tmp/README.txt 1366 bytes, 1 block(s):  OK
-</span><span class='line'>0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752574_11776 len=1366 repl=1 [192.168.0.148:50010]
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu3 hadoop-2.6.3]$ find /data/bigdata/hadoop/dfs/data/ /dev/shm/dfs/data/ -name "*1073752574*"
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574_11776.meta
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574</span></code></pre></td></tr></table></div></figure>
-
-
-<p>2 写文件时添加 lazy_persist 标识</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 添加 -l 参数，后台代码会加上 LAZY_PERSIST 标识。
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -help put 
-</span><span class='line'>-put [-f] [-p] [-l] &lt;localsrc&gt; ... &lt;dst&gt; :
-</span><span class='line'>  Copy files from the local file system into fs. Copying fails if the file already
-</span><span class='line'>  exists, unless the -f flag is given.
-</span><span class='line'>  Flags:
-</span><span class='line'>                                                                       
-</span><span class='line'>  -p  Preserves access and modification times, ownership and the mode. 
-</span><span class='line'>  -f  Overwrites the destination if it already exists.                 
-</span><span class='line'>  -l  Allow DataNode to lazily persist the file to disk. Forces        
-</span><span class='line'>         replication factor of 1. This flag will result in reduced
-</span><span class='line'>         durability. Use with care.
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><img src="/images/blogs/storage-lazy.png" alt="" /></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># -l 参数会把 replication 强制设置成数字1 ！
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put -l README.txt /tmp/readme.txt2
-</span><span class='line'>
-</span><span class='line'># 查看namenode的日志，可以看到文件写入到 RAM_DISK 类型的存储
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-cu2.log 
-</span><span class='line'>
-</span><span class='line'>  2016-05-05 20:38:36,465 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /tmp/readme.txt2._COPYING_. BP-1108852639-192.168.0.148-1452322889531 blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-dcb2673f-3297-4bd7-af1c-ac0ee3eebaf9:NORMAL:192.168.0.30:50010|RBW]]}
-</span><span class='line'>  2016-05-05 20:38:36,592 INFO BlockStateChange: BLOCK* addStoredBlock: blockMap updated: 192.168.0.30:50010 is added to blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[RAM_DISK]DS-bf1ab64f-7eb3-41e0-8466-43287de9893d:NORMAL:192.168.0.30:50010|FINALIZED]]} size 0
-</span><span class='line'>  2016-05-05 20:38:36,594 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /tmp/readme.txt2._COPYING_ is closed by DFSClient_NONMAPREDUCE_-1388277364_1
-</span><span class='line'>
-</span><span class='line'># 具体的内容所在位置
-</span><span class='line'>[hadoop@cu4 ~]$ tree /dev/shm/dfs/data/
-</span><span class='line'>/dev/shm/dfs/data/
-</span><span class='line'>├── current
-</span><span class='line'>│   ├── BP-1108852639-192.168.0.148-1452322889531
-</span><span class='line'>│   │   ├── current
-</span><span class='line'>│   │   │   ├── finalized
-</span><span class='line'>│   │   │   │   └── subdir0
-</span><span class='line'>│   │   │   │       └── subdir42
-</span><span class='line'>│   │   │   │           ├── blk_1073752578
-</span><span class='line'>│   │   │   │           └── blk_1073752578_11780.meta
-</span><span class='line'>│   │   │   ├── rbw
-</span><span class='line'>│   │   │   └── VERSION
-</span><span class='line'>│   │   └── tmp
-</span><span class='line'>│   └── VERSION
-</span><span class='line'>└── in_use.lock
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>3 设置目录的存储类型</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -mkdir /ramdisk
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -setStoragePolicy /ramdisk LAZY_PERSIST 
-</span><span class='line'>Set storage policy LAZY_PERSIST on /ramdisk
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /ramdisk
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk
-</span><span class='line'>The storage policy of /ramdisk:
-</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
-</span><span class='line'>
-</span><span class='line'># 不支持通配符
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/*
-</span><span class='line'>getStoragePolicy: File/Directory does not exist: /ramdisk/*
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/README.txt
-</span><span class='line'>The storage policy of /ramdisk/README.txt:
-</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 添加replication参数，再测试多个备份只有一个写ram_disk
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -Ddfs.replication=3 -put README.txt /ramdisk/readme.txt2
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/readme.txt2
-</span><span class='line'>The storage policy of /ramdisk/readme.txt2:
-</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /ramdisk/readme.txt2 -files -blocks -locations
-</span><span class='line'>
-</span><span class='line'>  /ramdisk/readme.txt2 1366 bytes, 1 block(s):  OK
-</span><span class='line'>  0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752580_11782 len=1366 repl=3 [192.168.0.30:50010, 192.168.0.174:50010, 192.168.0.148:50010]
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu3 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
-</span><span class='line'>
-</span><span class='line'># 已经把ram_disk的内容持久化到磁盘了("Lazy_Persist")
-</span><span class='line'>[hadoop@cu4 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580_11782.meta
-</span><span class='line'>/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
-</span><span class='line'>/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>[设想] 对于那些处理完就删除的临时文件，可以把持久化的时间设置的久一点 <code>dfs.datanode.lazywriter.interval.sec</code>。这样就不需要写磁盘了。</p>
-
-<p>不要妄想了，反正都会持久化！就是缓冲的效果，其他没有了！！一次性存储并且不需要持久化的还是用alluxio吧。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl.LazyWriter#saveNextReplica
-</span><span class='line'>  org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskAsyncLazyPersistService#submitLazyPersistTask</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li>挺详细的<a href="http://blog.csdn.net/androidlushangderen/article/details/51105876">HDFS异构存储</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/05/05/puppetboard-install/">Puppetboard Install</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-05-05T10:54:26+08:00" pubdate data-updated="true">Thu 2016-05-05 10:54</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>对于我这样的python小白来说，有网络来安装 puppetboard 还是比较容易的（离线安装依赖处理可能比较麻烦）。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-<span class='line-number'>146</span>
-<span class='line-number'>147</span>
-<span class='line-number'>148</span>
-<span class='line-number'>149</span>
-<span class='line-number'>150</span>
-<span class='line-number'>151</span>
-<span class='line-number'>152</span>
-<span class='line-number'>153</span>
-<span class='line-number'>154</span>
-<span class='line-number'>155</span>
-<span class='line-number'>156</span>
-<span class='line-number'>157</span>
-<span class='line-number'>158</span>
-<span class='line-number'>159</span>
-<span class='line-number'>160</span>
-<span class='line-number'>161</span>
-<span class='line-number'>162</span>
-<span class='line-number'>163</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># https://fedoraproject.org/wiki/EPEL/zh-cn
-</span><span class='line'>[root@cu2 ~]# yum search epel
-</span><span class='line'>[root@cu2 ~]# yum install epel-release
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# yum repolist
-</span><span class='line'>Loaded plugins: fastestmirror, priorities
-</span><span class='line'>Loading mirror speeds from cached hostfile
-</span><span class='line'> * base: mirrors.skyshe.cn
-</span><span class='line'> * centosplus: mirrors.pubyun.com
-</span><span class='line'> * epel: mirror01.idc.hinet.net
-</span><span class='line'> * extras: mirrors.skyshe.cn
-</span><span class='line'> * updates: mirrors.skyshe.cn
-</span><span class='line'>193 packages excluded due to repository priority protections
-</span><span class='line'>repo id                                   repo name                                                                   status
-</span><span class='line'>base                                      CentOS-6 - Base                                                                  6,575
-</span><span class='line'>centosplus                                CentOS-6 - Centosplus                                                             0+76
-</span><span class='line'>epel                                      Extra Packages for Enterprise Linux 6 - x86_64                              12,127+117
-</span><span class='line'>extras                                    CentOS-6 - Extras                                                                   62
-</span><span class='line'>puppet-local                              Puppet Local                                                                         5
-</span><span class='line'>updates                                   CentOS-6 - Updates                                                               1,607
-</span><span class='line'>repolist: 20,376
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# yum install python-pip -y
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# pip install puppetboard
-</span><span class='line'>/usr/lib/python2.6/site-packages/pip/_vendor/requests/packages/urllib3/util/ssl_.py:90: InsecurePlatformWarning: A true SSLContext object is not available. This prevents urllib3 from configuring SSL appropriately and may cause certain SSL connections to fail. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#insecureplatformwarning.
-</span><span class='line'>  InsecurePlatformWarning
-</span><span class='line'>You are using pip version 7.1.0, however version 8.1.1 is available.
-</span><span class='line'>You should consider upgrading via the 'pip install --upgrade pip' command.
-</span><span class='line'>Collecting puppetboard
-</span><span class='line'>/usr/lib/python2.6/site-packages/pip/_vendor/requests/packages/urllib3/util/ssl_.py:90: InsecurePlatformWarning: A true SSLContext object is not available. This prevents urllib3 from configuring SSL appropriately and may cause certain SSL connections to fail. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#insecureplatformwarning.
-</span><span class='line'>  InsecurePlatformWarning
-</span><span class='line'>  Downloading puppetboard-0.1.3.tar.gz (598kB)
-</span><span class='line'>    100% |████████████████████████████████| 602kB 726kB/s 
-</span><span class='line'>Collecting Flask&gt;=0.10.1 (from puppetboard)
-</span><span class='line'>  Downloading Flask-0.10.1.tar.gz (544kB)
-</span><span class='line'>    100% |████████████████████████████████| 544kB 734kB/s 
-</span><span class='line'>Collecting Flask-WTF&lt;=0.9.5,&gt;=0.9.4 (from puppetboard)
-</span><span class='line'>  Downloading Flask-WTF-0.9.5.tar.gz (245kB)
-</span><span class='line'>    100% |████████████████████████████████| 249kB 320kB/s 
-</span><span class='line'>Collecting WTForms&lt;2.0 (from puppetboard)
-</span><span class='line'>  Downloading WTForms-1.0.5.zip (355kB)
-</span><span class='line'>    100% |████████████████████████████████| 356kB 1.3MB/s 
-</span><span class='line'>Collecting pypuppetdb&lt;0.3.0,&gt;=0.2.1 (from puppetboard)
-</span><span class='line'>  Downloading pypuppetdb-0.2.1.tar.gz
-</span><span class='line'>Collecting Werkzeug&gt;=0.7 (from Flask&gt;=0.10.1-&gt;puppetboard)
-</span><span class='line'>  Downloading Werkzeug-0.11.9-py2.py3-none-any.whl (306kB)
-</span><span class='line'>    100% |████████████████████████████████| 307kB 1.5MB/s 
-</span><span class='line'>Collecting Jinja2&gt;=2.4 (from Flask&gt;=0.10.1-&gt;puppetboard)
-</span><span class='line'>  Downloading Jinja2-2.8-py2.py3-none-any.whl (263kB)
-</span><span class='line'>    100% |████████████████████████████████| 266kB 2.3MB/s 
-</span><span class='line'>Collecting itsdangerous&gt;=0.21 (from Flask&gt;=0.10.1-&gt;puppetboard)
-</span><span class='line'>  Downloading itsdangerous-0.24.tar.gz (46kB)
-</span><span class='line'>    100% |████████████████████████████████| 49kB 7.2MB/s 
-</span><span class='line'>Collecting requests&gt;=1.2.3 (from pypuppetdb&lt;0.3.0,&gt;=0.2.1-&gt;puppetboard)
-</span><span class='line'>  Downloading requests-2.10.0-py2.py3-none-any.whl (506kB)
-</span><span class='line'>    100% |████████████████████████████████| 507kB 920kB/s 
-</span><span class='line'>Collecting MarkupSafe (from Jinja2&gt;=2.4-&gt;Flask&gt;=0.10.1-&gt;puppetboard)
-</span><span class='line'>  Downloading MarkupSafe-0.23.tar.gz
-</span><span class='line'>Installing collected packages: Werkzeug, MarkupSafe, Jinja2, itsdangerous, Flask, WTForms, Flask-WTF, requests, pypuppetdb, puppetboard
-</span><span class='line'>  Running setup.py install for MarkupSafe
-</span><span class='line'>  Running setup.py install for itsdangerous
-</span><span class='line'>  Running setup.py install for Flask
-</span><span class='line'>  Running setup.py install for WTForms
-</span><span class='line'>  Running setup.py install for Flask-WTF
-</span><span class='line'>  Running setup.py install for pypuppetdb
-</span><span class='line'>  Running setup.py install for puppetboard
-</span><span class='line'>Successfully installed Flask-0.10.1 Flask-WTF-0.9.5 Jinja2-2.8 MarkupSafe-0.23 WTForms-1.0.5 Werkzeug-0.11.9 itsdangerous-0.24 puppetboard-0.1.3 pypuppetdb-0.2.1 requests-2.10.0
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# pip show puppetboard
-</span><span class='line'>You are using pip version 7.1.0, however version 8.1.1 is available.
-</span><span class='line'>You should consider upgrading via the 'pip install --upgrade pip' command.
-</span><span class='line'>---
-</span><span class='line'>Metadata-Version: 1.0
-</span><span class='line'>Name: puppetboard
-</span><span class='line'>Version: 0.1.3
-</span><span class='line'>Summary: Web frontend for PuppetDB
-</span><span class='line'>Home-page: https://github.com/puppet-community/puppetboard
-</span><span class='line'>Author: Daniele Sluijters
-</span><span class='line'>Author-email: daniele.sluijters+pypi@gmail.com
-</span><span class='line'>License: Apache License 2.0
-</span><span class='line'>Location: /usr/lib/python2.6/site-packages
-</span><span class='line'>Requires: Flask, Flask-WTF, WTForms, pypuppetdb
-</span><span class='line'>[root@cu2 ~]# ll /usr/lib/python2.6/site-packages/puppetboard
-</span><span class='line'>total 100
-</span><span class='line'>-rw-r--r-- 1 root root 31629 May  5 09:12 app.py
-</span><span class='line'>-rw-r--r-- 1 root root 30481 May  5 09:12 app.pyc
-</span><span class='line'>-rw-r--r-- 1 root root  1206 May  5 09:12 default_settings.py
-</span><span class='line'>-rw-r--r-- 1 root root  1477 May  5 09:12 default_settings.pyc
-</span><span class='line'>-rw-r--r-- 1 root root  1025 May  5 09:12 forms.py
-</span><span class='line'>-rw-r--r-- 1 root root  1982 May  5 09:12 forms.pyc
-</span><span class='line'>-rw-r--r-- 1 root root     0 May  5 09:12 __init__.py
-</span><span class='line'>-rw-r--r-- 1 root root   143 May  5 09:12 __init__.pyc
-</span><span class='line'>drwxr-xr-x 9 root root  4096 May  5 09:12 static
-</span><span class='line'>drwxr-xr-x 2 root root  4096 May  5 09:12 templates
-</span><span class='line'>-rw-r--r-- 1 root root  2155 May  5 09:12 utils.py
-</span><span class='line'>-rw-r--r-- 1 root root  3433 May  5 09:12 utils.pyc
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# pip install uwsgi
-</span><span class='line'>You are using pip version 7.1.0, however version 8.1.1 is available.
-</span><span class='line'>You should consider upgrading via the 'pip install --upgrade pip' command.
-</span><span class='line'>Collecting uwsgi
-</span><span class='line'>/usr/lib/python2.6/site-packages/pip/_vendor/requests/packages/urllib3/util/ssl_.py:90: InsecurePlatformWarning: A true SSLContext object is not available. This prevents urllib3 from configuring SSL appropriately and may cause certain SSL connections to fail. For more information, see https://urllib3.readthedocs.org/en/latest/security.html#insecureplatformwarning.
-</span><span class='line'>  InsecurePlatformWarning
-</span><span class='line'>  Downloading uwsgi-2.0.12.tar.gz (784kB)
-</span><span class='line'>    100% |████████████████████████████████| 786kB 143kB/s 
-</span><span class='line'>Installing collected packages: uwsgi
-</span><span class='line'>  Running setup.py install for uwsgi
-</span><span class='line'>Successfully installed uwsgi-2.0.12
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# mkdir -p /var/www/puppetboard
-</span><span class='line'>[root@cu2 ~]# cd /var/www/puppetboard/
-</span><span class='line'>[root@cu2 puppetboard]# cp /usr/lib/python2.6/site-packages/puppetboard/default_settings.py ./settings.py
-</span><span class='line'># 修改配置 
-</span><span class='line'># https://github.com/voxpupuli/puppetboard#settings
-</span><span class='line'>PUPPETDB_HOST = 'cu3'
-</span><span class='line'>PUPPETDB_PORT = 8080
-</span><span class='line'>REPORTS_COUNT = 21
-</span><span class='line'>ENABLE_CATALOG = True
-</span><span class='line'>
-</span><span class='line'>[root@cu2 puppetboard]# vi wsgi.py 
-</span><span class='line'>from __future__ import absolute_import
-</span><span class='line'>import os
-</span><span class='line'>
-</span><span class='line'>os.environ['PUPPETDOARD_SETTINGS'] = '/var/www/puppetboard/settings.py'
-</span><span class='line'>from puppetboard.app import app as application
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># A 直接用uwsgi-http
-</span><span class='line'># http://yongqing.is-programmer.com/posts/43688.html
-</span><span class='line'>[root@cu2 puppetboard]# uwsgi --http :9091 --wsgi-file /var/www/puppetboard/wsgi.py 
-</span><span class='line'>
-</span><span class='line'># 使用 supervisord 管理
-</span><span class='line'>[root@cu2 supervisord.d]# cat uwsgi.ini 
-</span><span class='line'>[program:puppetboard]
-</span><span class='line'>command=uwsgi --http :9091 --wsgi-file /var/www/puppetboard/wsgi.py 
-</span><span class='line'>[root@cu2 supervisord.d]# supervisorctl update
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># B nginx + uwsgi-socket
-</span><span class='line'># 需要对应到 / ，新增一个9091的server
-</span><span class='line'>[root@cu2 puppetboard]# vi /home/hadoop/nginx/conf/nginx.conf
-</span><span class='line'>server {
-</span><span class='line'>  listen 9091;
-</span><span class='line'>
-</span><span class='line'>  location /static {
-</span><span class='line'>    alias /usr/lib/python2.6/site-packages/puppetboard/static;
-</span><span class='line'>  }
-</span><span class='line'>  location / {
-</span><span class='line'>    include uwsgi_params;
-</span><span class='line'>    uwsgi_pass 127.0.0.1:9090;
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>[root@cu2 puppetboard]# uwsgi --socket :9090 --wsgi-file /var/www/puppetboard/wsgi.py 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 puppetboard]# /home/hadoop/nginx/sbin/nginx -s reload
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><img src="/images/blogs/puppetboard-install.png" alt="" /></p>
-
-<p>配置SSL访问需要把ssl_verify设置为false。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 2.7.9+网上说好像就没问题
-</span><span class='line'># http://stackoverflow.com/questions/29099404/ssl-insecureplatform-error-when-using-requests-package
-</span><span class='line'># https://github.com/pypa/pip/issues/2681
-</span><span class='line'>[root@cu2 ~]# yum install -y  libffi-devel libffi 
-</span><span class='line'>[root@cu2 ~]# pip install 'requests[security]'
-</span><span class='line'>
-</span><span class='line'># [重要] 两个链接内容一样的：
-</span><span class='line'># * https://groups.google.com/forum/#!msg/puppet-users/m7Sakf4bQ7Q/y6uAa0AUsZIJ
-</span><span class='line'># * http://grokbase.com/t/gg/puppet-users/1428vjkncr/puppetboard-and-ssl
-</span><span class='line'># You have two choices now, set SSL_VERIFY to False and trust that you're
-</span><span class='line'># always talking to your actual PuppetDB or copy from the Puppet CA
-</span><span class='line'># $vardir/ssl/ca_crt.pem to /etc/puppetboard and set SSL_VERIFY to the path
-</span><span class='line'># of ca_crt.pem. In that case the file SSL_VERIFY points to will be used to
-</span><span class='line'># verify PuppetDB's server certificate instead of the OS truststore.
-</span><span class='line'>[root@cu2 puppetboard]# vi settings.py 
-</span><span class='line'>PUPPETDB_HOST = 'cu3.eshore.cn'
-</span><span class='line'>PUPPETDB_PORT = 8081
-</span><span class='line'>PUPPETDB_SSL_VERIFY = False  # 这里设置为false
-</span><span class='line'>PUPPETDB_KEY = '/etc/puppetlabs/puppet/ssl/private_keys/cu2.eshore.cn.pem'
-</span><span class='line'>PUPPETDB_CERT = '/etc/puppetlabs/puppet/ssl/ca/signed/cu2.eshore.cn.pem'
-</span><span class='line'>
-</span><span class='line'># 重启uwsgi-http服务
-</span><span class='line'>[root@cu2 ~]# supervisorctl restart puppetboard
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>如果 puppetboard 和 puppetdb 安装在同一机器，可以使用 puppetdb/ssl 路径下的ssl文件（puppetdb/ssl也是从puppet/ssl拷贝过来的）：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu3 ~]# puppetdb ssl-setup -f
-</span><span class='line'>PEM files in /etc/puppetlabs/puppetdb/ssl are missing, we will move them into place for you
-</span><span class='line'>Copying files: /etc/puppetlabs/puppet/ssl/certs/ca.pem, /etc/puppetlabs/puppet/ssl/private_keys/cu3.eshore.cn.pem and /etc/puppetlabs/puppet/ssl/certs/cu3.eshore.cn.pem to /etc/puppetlabs/puppetdb/ssl
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>[root@cu3 ~]# tree /etc/puppetlabs/puppetdb/ssl/
-</span><span class='line'>/etc/puppetlabs/puppetdb/ssl/
-</span><span class='line'>├── ca.pem
-</span><span class='line'>├── private.pem
-</span><span class='line'>└── public.pem
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/2">&larr; Older</a>
@@ -2080,7 +1848,15 @@ $ find . -name "*.iml"  | xargs -I{} sed -i 's/scope="PROVIDED"//' {}
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/">使用 Flume+kafka+elasticsearch 处理数据</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/06/15/elasticsearch-startguide/">Elasticsearch Startguide</a>
       </li>
     
       <li class="post">
@@ -2101,14 +1877,6 @@ $ find . -name "*.iml"  | xargs -I{} sed -i 's/scope="PROVIDED"//' {}
     
       <li class="post">
         <a href="/blog/2016/05/03/hiera-and-facts/">Hiera and Facts</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/28/mcollective-plugins/">MCollective Plugins</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/04/28/mcollective-quick-start/">MCollective安装配置</a>
       </li>
     
   </ul>
@@ -2145,6 +1913,14 @@ $ find . -name "*.iml"  | xargs -I{} sed -i 's/scope="PROVIDED"//' {}
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
 		</li>
 		 
@@ -2177,7 +1953,7 @@ $ find . -name "*.iml"  | xargs -I{} sed -i 's/scope="PROVIDED"//' {}
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/kafka/'>kafka</a> (1) 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (2) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2222,7 +1998,7 @@ $ find . -name "*.iml"  | xargs -I{} sed -i 's/scope="PROVIDED"//' {}
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (136)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (138)</li>
 	</ul>
 	
 </section>

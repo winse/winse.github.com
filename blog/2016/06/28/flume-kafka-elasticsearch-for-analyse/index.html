@@ -1,0 +1,786 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>使用 Flume+kafka+elasticsearch 处理数据 - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。 flume-1.6.0
+kafka_2.11-0.9.0.1( &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winseliu.com/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="http://maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="http://cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winseliu.com" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+  <li><a href="https://yunpan.cn/cuYhpFBPgQYgT" >Books[5aee]</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">使用 Flume+kafka+elasticsearch 处理数据</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-06-28T09:50:05+08:00" pubdate data-updated="true">Tue 2016-06-28 09:50</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><p>flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。</p>
+
+<ul>
+<li>flume-1.6.0</li>
+<li>kafka_2.11-0.9.0.1(可以与0.8.2客户端通信, flume-kafka-channel-1.6.0不改)</li>
+<li>elasticsearch-2.2.0</li>
+</ul>
+
+
+<p>由于版本的差异，需要替换/添加以下jar到 <code>flume/lib</code> 下：</p>
+
+<p>使用 <code>mvn dependecy:copy-dependencies</code> 导出所需依赖的包</p>
+
+<p>jackson一堆，hppc-0.7.1.jar，t-digest-3.0.jar，jsr166e-1.1.0.jar，guava-18.0.jar，lucene一堆，elasticsearch-2.2.0.jar。</p>
+
+<p>远程调试配置：</p>
+
+<p>source由于项目上的一些特殊规则，需要自己编写。通过远程DEBUG来打断点来排查BUG。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flume]$ vi conf/flume-env.sh
+</span><span class='line'>export JAVA_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8092"</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实战1</h2>
+
+<p>channel使用kafka是考虑其他功能可能也需要用到这些数据，先用 netcat 作为输入，把整个流程跑通：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flumebin]$ cat dta.flume 
+</span><span class='line'>dta.sources=s1
+</span><span class='line'>dta.channels=c1
+</span><span class='line'>dta.sinks=k1
+</span><span class='line'>
+</span><span class='line'>dta.channels.c1.type=org.apache.flume.channel.kafka.KafkaChannel
+</span><span class='line'>dta.channels.c1.capacity=10000
+</span><span class='line'>dta.channels.c1.transactionCapacity=1000
+</span><span class='line'>dta.channels.c1.brokerList=cu5:9093
+</span><span class='line'>dta.channels.c1.topic=flume_cmdid_1234
+</span><span class='line'>dta.channels.c1.groupId=flume_dta
+</span><span class='line'>dta.channels.c1.zookeeperConnect=cu3:2181/kafka_0_9
+</span><span class='line'>dta.channels.c1.parseAsFlumeEvent=false
+</span><span class='line'>
+</span><span class='line'>dta.sources.s1.channels=c1
+</span><span class='line'>dta.sources.s1.type=netcat
+</span><span class='line'>dta.sources.s1.bind=0.0.0.0
+</span><span class='line'>dta.sources.s1.port=6666
+</span><span class='line'>dta.sources.s1.max-line-length=88888888
+</span><span class='line'>
+</span><span class='line'>dta.sinks.k1.channel=c1
+</span><span class='line'>dta.sinks.k1.type=elasticsearch
+</span><span class='line'>dta.sinks.k1.hostNames=cu2:9300
+</span><span class='line'>dta.sinks.k1.indexName=foo_index
+</span><span class='line'>dta.sinks.k1.indexType=idcisp
+</span><span class='line'>dta.sinks.k1.clusterName=eshore-cu
+</span><span class='line'>dta.sinks.k1.batchSize=500
+</span><span class='line'>dta.sinks.k1.ttl=5d
+</span><span class='line'>dta.sinks.k1.serializer=com.eshore.zhfx.collector.InfoSecurityLogIndexRequestBuilderFactory
+</span><span class='line'>dta.sinks.k1.serializer.idcispUrlBase64=true
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 flumebin]$ bin/flume-ng agent --classpath flume-dta-source-2.1.jar  -n dta -c conf -f dta.flume
+</span><span class='line'>
+</span><span class='line'># 新开一个窗口
+</span><span class='line'>[hadoop@cu2 ~]$ nc localhost 6666
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>kafka的主题、ES的索引不需要手动建，为了更好的控制ES索引创建可以添加template。</p>
+
+<p>InfoSecurityLogIndexRequestBuilderFactory 实现 ElasticSearchIndexRequestBuilderFactory 把原始记录转换成 ES 的JSON对象。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private Counter allRecordMetric = MetricManager.getInstance().counter("all_infosecurity");
+</span><span class='line'>  private Counter errorRecordMetric = MetricManager.getInstance().counter("error_infosecurity");
+</span><span class='line'>  
+</span><span class='line'>  public IndexRequestBuilder createIndexRequest(Client client, String indexPrefix, String indexType, Event event)
+</span><span class='line'>      throws IOException {
+</span><span class='line'>    allRecordMetric.inc();
+</span><span class='line'>
+</span><span class='line'>    String record = new String(event.getBody(), outputCharset);
+</span><span class='line'>
+</span><span class='line'>    context.put(ElasticSearchSinkConstants.INDEX_NAME, indexPrefix);
+</span><span class='line'>    indexNameBuilder.configure(context);
+</span><span class='line'>    IndexRequestBuilder indexRequestBuilder = client.prepareIndex(indexNameBuilder.getIndexName(event), indexType);
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      Gson gson = new Gson();
+</span><span class='line'>      IdcIspLog log = parseRecord(record);
+</span><span class='line'>      BytesArray data = new BytesArray(gson.toJson(log));
+</span><span class='line'>
+</span><span class='line'>      indexRequestBuilder.setSource(data);
+</span><span class='line'>      indexRequestBuilder.setRouting(log.commandld);
+</span><span class='line'>    } catch (Exception e) {
+</span><span class='line'>      LOG.error(e.getMessage(), e);
+</span><span class='line'>      errorRecordMetric.inc();
+</span><span class='line'>
+</span><span class='line'>      indexRequestBuilder.setSource(record.getBytes(outputCharset));
+</span><span class='line'>      // 保留错误的数据
+</span><span class='line'>      indexRequestBuilder.setRouting("error");
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    return indexRequestBuilder;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实战2</h2>
+
+<p>跑通流程后，测试自己写的source：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>dta.sources=s1
+</span><span class='line'>dta.channels=c1
+</span><span class='line'>dta.sinks=k1
+</span><span class='line'>
+</span><span class='line'>dta.channels.c1.type=memory
+</span><span class='line'>dta.channels.c1.capacity=1000000
+</span><span class='line'>dta.channels.c1.transactionCapacity=1000000
+</span><span class='line'>dta.channels.c1.byteCapacity=7000000000
+</span><span class='line'>
+</span><span class='line'>dta.sources.s1.channels=c1
+</span><span class='line'>dta.sources.s1.type=com.eshore.zhfx.collector.CollectSource
+</span><span class='line'>dta.sources.s1.spoolDir=/home/hadoop/flume/data/
+</span><span class='line'>dta.sources.s1.trackerDir=/tmp/dtaspool
+</span><span class='line'>
+</span><span class='line'>dta.sinks.k1.channel=c1
+</span><span class='line'>dta.sinks.k1.type=logger</span></code></pre></td></tr></table></div></figure>
+
+
+<p>CollectSource实现PollableSource继承AbstractSource类。参考Flume开发文档: <a href="http://flume.apache.org/FlumeDeveloperGuide.html#source">http://flume.apache.org/FlumeDeveloperGuide.html#source</a> ， 参考 <code>org.apache.flume.source.SequenceGeneratorSource</code> 类。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public Status process() throws EventDeliveryException {
+</span><span class='line'>    Status status = Status.READY;
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      List&lt;Event&gt; events = readEvent(batchSize);
+</span><span class='line'>      if (!events.isEmpty()) {
+</span><span class='line'>        sourceCounter.addToEventReceivedCount(events.size());
+</span><span class='line'>        sourceCounter.incrementAppendBatchReceivedCount();
+</span><span class='line'>
+</span><span class='line'>        getChannelProcessor().processEventBatch(events);
+</span><span class='line'>        // 记录文件已经处理的位置
+</span><span class='line'>        commit();
+</span><span class='line'>
+</span><span class='line'>        sourceCounter.addToEventAcceptedCount(events.size());
+</span><span class='line'>        sourceCounter.incrementAppendBatchAcceptedCount();
+</span><span class='line'>      }
+</span><span class='line'>    } catch (ChannelException | IOException e) {
+</span><span class='line'>      status = Status.BACKOFF;
+</span><span class='line'>      Throwables.propagate(e);
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    return status;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实例：Flume+Kafka+ES</h2>
+
+<p>把两个实例整合起来。</p>
+
+<h2>附-kafka基本操作</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-server-start.sh config/server1.properties 
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ cat config/server1.properties 
+</span><span class='line'>listeners=PLAINTEXT://:9093
+</span><span class='line'>log.dirs=/tmp/kafka-logs1
+</span><span class='line'>num.partitions=1
+</span><span class='line'>zookeeper.connect=cu3,cu4,cu5/kafka_0_9
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --create --zookeeper cu3:2181/kafka_0_9 --replication 1 --partitions 1 --topic flume
+</span><span class='line'>Created topic "flume".
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --list --zookeeper cu3:2181/kafka_0_9
+</span><span class='line'>flume
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-producer.sh --broker-list cu5:9093 --topic flume
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-consumer.sh --zookeeper cu3:2181/kafka_0_9 --topic flume --from-beginning
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-06-28T09:50:05+08:00" pubdate data-updated="true">Tue 2016-06-28 09:50</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a>, <a class='category' href='/blog/categories/flume/'>flume</a>, <a class='category' href='/blog/categories/kafka/'>kafka</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2016-06-28-flume-kafka-elasticsearch-for-analyse.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/" title="Previous Post: 使用Puppet安装配置Ganglia">&laquo; 使用Puppet安装配置Ganglia</a>
+      
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+    <div id="disqus_thread" aria-live="polite"><noscript>Please enable JavaScript to view the <a href="http://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
+</div>
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/01/23/install-and-config-ganglia-on-redhat-2/">安装配置Ganglia(2)</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/">使用 Flume+kafka+elasticsearch 处理数据</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/06/15/elasticsearch-startguide/">Elasticsearch Startguide</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/">[读读书]Apache Spark源码剖析-序</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/05/hdfs-heterogeneous-storage/">Hdfs异构存储实操</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/05/puppetboard-install/">Puppetboard Install</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/03/hiera-and-facts/">Hiera and Facts</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (42) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (33) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (138)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2016 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+<script type="text/javascript">
+      var disqus_shortname = 'winseliu';
+      
+        
+        // var disqus_developer = 1;
+        var disqus_identifier = 'http://winseliu.com/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/';
+        var disqus_url = 'http://winseliu.com/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/';
+        var disqus_script = 'embed.js';
+      
+    (function () {
+      var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
+      dsq.src = '//' + disqus_shortname + '.disqus.com/' + disqus_script;
+      (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+    }());
+</script>
+
+
+
+
+
+
+
+
+
+
+
+</body>
+</html>

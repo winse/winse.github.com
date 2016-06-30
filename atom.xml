@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winseliu.com/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-06-21T09:20:27+08:00</updated>
+  <updated>2016-06-30T11:48:50+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,316 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[使用 Flume+kafka+elasticsearch 处理数据]]></title>
+    <link href="http://winseliu.com/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/"/>
+    <updated>2016-06-28T09:50:05+08:00</updated>
+    <id>http://winseliu.com/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse</id>
+    <content type="html"><![CDATA[<p>flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。</p>
+
+<ul>
+<li>flume-1.6.0</li>
+<li>kafka_2.11-0.9.0.1(可以与0.8.2客户端通信, flume-kafka-channel-1.6.0不改)</li>
+<li>elasticsearch-2.2.0</li>
+</ul>
+
+
+<p>由于版本的差异，需要替换/添加以下jar到 <code>flume/lib</code> 下：</p>
+
+<p>使用 <code>mvn dependecy:copy-dependencies</code> 导出所需依赖的包</p>
+
+<p>jackson一堆，hppc-0.7.1.jar，t-digest-3.0.jar，jsr166e-1.1.0.jar，guava-18.0.jar，lucene一堆，elasticsearch-2.2.0.jar。</p>
+
+<p>远程调试配置：</p>
+
+<p>source由于项目上的一些特殊规则，需要自己编写。通过远程DEBUG来打断点来排查BUG。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flume]$ vi conf/flume-env.sh
+</span><span class='line'>export JAVA_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8092"</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实战1</h2>
+
+<p>channel使用kafka是考虑其他功能可能也需要用到这些数据，先用 netcat 作为输入，把整个流程跑通：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flumebin]$ cat dta.flume 
+</span><span class='line'>dta.sources=s1
+</span><span class='line'>dta.channels=c1
+</span><span class='line'>dta.sinks=k1
+</span><span class='line'>
+</span><span class='line'>dta.channels.c1.type=org.apache.flume.channel.kafka.KafkaChannel
+</span><span class='line'>dta.channels.c1.capacity=10000
+</span><span class='line'>dta.channels.c1.transactionCapacity=1000
+</span><span class='line'>dta.channels.c1.brokerList=cu5:9093
+</span><span class='line'>dta.channels.c1.topic=flume_cmdid_1234
+</span><span class='line'>dta.channels.c1.groupId=flume_dta
+</span><span class='line'>dta.channels.c1.zookeeperConnect=cu3:2181/kafka_0_9
+</span><span class='line'>dta.channels.c1.parseAsFlumeEvent=false
+</span><span class='line'>
+</span><span class='line'>dta.sources.s1.channels=c1
+</span><span class='line'>dta.sources.s1.type=netcat
+</span><span class='line'>dta.sources.s1.bind=0.0.0.0
+</span><span class='line'>dta.sources.s1.port=6666
+</span><span class='line'>dta.sources.s1.max-line-length=88888888
+</span><span class='line'>
+</span><span class='line'>dta.sinks.k1.channel=c1
+</span><span class='line'>dta.sinks.k1.type=elasticsearch
+</span><span class='line'>dta.sinks.k1.hostNames=cu2:9300
+</span><span class='line'>dta.sinks.k1.indexName=foo_index
+</span><span class='line'>dta.sinks.k1.indexType=idcisp
+</span><span class='line'>dta.sinks.k1.clusterName=eshore-cu
+</span><span class='line'>dta.sinks.k1.batchSize=500
+</span><span class='line'>dta.sinks.k1.ttl=5d
+</span><span class='line'>dta.sinks.k1.serializer=com.eshore.zhfx.collector.InfoSecurityLogIndexRequestBuilderFactory
+</span><span class='line'>dta.sinks.k1.serializer.idcispUrlBase64=true
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 flumebin]$ bin/flume-ng agent --classpath flume-dta-source-2.1.jar  -n dta -c conf -f dta.flume
+</span><span class='line'>
+</span><span class='line'># 新开一个窗口
+</span><span class='line'>[hadoop@cu2 ~]$ nc localhost 6666
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>kafka的主题、ES的索引不需要手动建，为了更好的控制ES索引创建可以添加template。</p>
+
+<p>InfoSecurityLogIndexRequestBuilderFactory 实现 ElasticSearchIndexRequestBuilderFactory 把原始记录转换成 ES 的JSON对象。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private Counter allRecordMetric = MetricManager.getInstance().counter("all_infosecurity");
+</span><span class='line'>  private Counter errorRecordMetric = MetricManager.getInstance().counter("error_infosecurity");
+</span><span class='line'>  
+</span><span class='line'>  public IndexRequestBuilder createIndexRequest(Client client, String indexPrefix, String indexType, Event event)
+</span><span class='line'>      throws IOException {
+</span><span class='line'>    allRecordMetric.inc();
+</span><span class='line'>
+</span><span class='line'>    String record = new String(event.getBody(), outputCharset);
+</span><span class='line'>
+</span><span class='line'>    context.put(ElasticSearchSinkConstants.INDEX_NAME, indexPrefix);
+</span><span class='line'>    indexNameBuilder.configure(context);
+</span><span class='line'>    IndexRequestBuilder indexRequestBuilder = client.prepareIndex(indexNameBuilder.getIndexName(event), indexType);
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      Gson gson = new Gson();
+</span><span class='line'>      IdcIspLog log = parseRecord(record);
+</span><span class='line'>      BytesArray data = new BytesArray(gson.toJson(log));
+</span><span class='line'>
+</span><span class='line'>      indexRequestBuilder.setSource(data);
+</span><span class='line'>      indexRequestBuilder.setRouting(log.commandld);
+</span><span class='line'>    } catch (Exception e) {
+</span><span class='line'>      LOG.error(e.getMessage(), e);
+</span><span class='line'>      errorRecordMetric.inc();
+</span><span class='line'>
+</span><span class='line'>      indexRequestBuilder.setSource(record.getBytes(outputCharset));
+</span><span class='line'>      // 保留错误的数据
+</span><span class='line'>      indexRequestBuilder.setRouting("error");
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    return indexRequestBuilder;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实战2</h2>
+
+<p>跑通流程后，测试自己写的source：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>dta.sources=s1
+</span><span class='line'>dta.channels=c1
+</span><span class='line'>dta.sinks=k1
+</span><span class='line'>
+</span><span class='line'>dta.channels.c1.type=memory
+</span><span class='line'>dta.channels.c1.capacity=1000000
+</span><span class='line'>dta.channels.c1.transactionCapacity=1000000
+</span><span class='line'>dta.channels.c1.byteCapacity=7000000000
+</span><span class='line'>
+</span><span class='line'>dta.sources.s1.channels=c1
+</span><span class='line'>dta.sources.s1.type=com.eshore.zhfx.collector.CollectSource
+</span><span class='line'>dta.sources.s1.spoolDir=/home/hadoop/flume/data/
+</span><span class='line'>dta.sources.s1.trackerDir=/tmp/dtaspool
+</span><span class='line'>
+</span><span class='line'>dta.sinks.k1.channel=c1
+</span><span class='line'>dta.sinks.k1.type=logger</span></code></pre></td></tr></table></div></figure>
+
+
+<p>CollectSource实现PollableSource继承AbstractSource类。参考Flume开发文档: <a href="http://flume.apache.org/FlumeDeveloperGuide.html#source">http://flume.apache.org/FlumeDeveloperGuide.html#source</a> ， 参考 <code>org.apache.flume.source.SequenceGeneratorSource</code> 类。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public Status process() throws EventDeliveryException {
+</span><span class='line'>    Status status = Status.READY;
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      List&lt;Event&gt; events = readEvent(batchSize);
+</span><span class='line'>      if (!events.isEmpty()) {
+</span><span class='line'>        sourceCounter.addToEventReceivedCount(events.size());
+</span><span class='line'>        sourceCounter.incrementAppendBatchReceivedCount();
+</span><span class='line'>
+</span><span class='line'>        getChannelProcessor().processEventBatch(events);
+</span><span class='line'>        // 记录文件已经处理的位置
+</span><span class='line'>        commit();
+</span><span class='line'>
+</span><span class='line'>        sourceCounter.addToEventAcceptedCount(events.size());
+</span><span class='line'>        sourceCounter.incrementAppendBatchAcceptedCount();
+</span><span class='line'>      }
+</span><span class='line'>    } catch (ChannelException | IOException e) {
+</span><span class='line'>      status = Status.BACKOFF;
+</span><span class='line'>      Throwables.propagate(e);
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    return status;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实例：Flume+Kafka+ES</h2>
+
+<p>把两个实例整合起来。</p>
+
+<h2>附-kafka基本操作</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-server-start.sh config/server1.properties 
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ cat config/server1.properties 
+</span><span class='line'>listeners=PLAINTEXT://:9093
+</span><span class='line'>log.dirs=/tmp/kafka-logs1
+</span><span class='line'>num.partitions=1
+</span><span class='line'>zookeeper.connect=cu3,cu4,cu5/kafka_0_9
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --create --zookeeper cu3:2181/kafka_0_9 --replication 1 --partitions 1 --topic flume
+</span><span class='line'>Created topic "flume".
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --list --zookeeper cu3:2181/kafka_0_9
+</span><span class='line'>flume
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-producer.sh --broker-list cu5:9093 --topic flume
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-consumer.sh --zookeeper cu3:2181/kafka_0_9 --topic flume --from-beginning
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[使用Puppet安装配置Ganglia]]></title>
@@ -31,6 +341,8 @@
 
 <h2>编译gmetad，gmond，gweb</h2>
 
+<p>点击链接下载SPEC：</p>
+
 <ul>
 <li><a href="http://winseliu.com/files/ganglia-puppet/gmetad.spec">gmetad.spec</a></li>
 <li><a href="http://winseliu.com/files/ganglia-puppet/gmond.spec">gmond.spec</a></li>
@@ -38,9 +350,9 @@
 </ul>
 
 
-<p>内容通过附件下载。</p>
+<p>然后编译打包：</p>
 
-<p>然后编译打包（使用rpmbuild必须保证能正常编译安装ganglia的，rpmbuild包括编译安装！！可以先手动编译）：</p>
+<p>先手动编译安装 ganglia ，把依赖的问题处理好。然后再使用 rpmbuild 编译生成 rpm ！！</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -85,10 +397,15 @@
 <span class='line-number'>41</span>
 <span class='line-number'>42</span>
 <span class='line-number'>43</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mkdir ganglia-build
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 1&gt; 建立目录结构
+</span><span class='line'>mkdir ganglia-build
 </span><span class='line'>cd ganglia-build
 </span><span class='line'>mkdir BUILD RPMS SOURCES SPECS SRPMS
 </span><span class='line'>
+</span><span class='line'># 2&gt; 修改配置
 </span><span class='line'># ganglia-web-3.7.1.tar.gz的makefile、conf_default.php.in修改下，根据等下要配置gmetad的参数进行修改
 </span><span class='line'>
 </span><span class='line'>less ganglia-web-3.7.1/Makefile 
@@ -117,22 +434,25 @@
 </span><span class='line'>  $conf['d3_js_path'] = "js/d3.min.js";
 </span><span class='line'>  $conf['protovis_js_path'] = "js/protovis.min.js";
 </span><span class='line'>
-</span><span class='line'>
+</span><span class='line'># 3&gt; 源文件
 </span><span class='line'># 把文件放到SOURCES目录下，
 </span><span class='line'>ls SOURCES/
 </span><span class='line'>  ganglia-3.7.2.tar.gz  ganglia-web-3.7.1.tar.gz
 </span><span class='line'>
+</span><span class='line'># 4&gt; 编译生成RPM
 </span><span class='line'>rpmbuild -v -ba SPECS/gmetad.spec 
 </span><span class='line'>rpmbuild -v -ba SPECS/gmond.spec 
 </span><span class='line'>rpmbuild -v -ba SPECS/gweb.spec 
 </span><span class='line'>
-</span><span class='line'># 查看内容
+</span><span class='line'># 5&gt; 查看内容
 </span><span class='line'>rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm </span></code></pre></td></tr></table></div></figure>
 
 
 <h2>本地仓库</h2>
 
-<p><strong>先安装httpd、createrepo</strong>，然后按照下面的步骤创建本地仓库</p>
+<p>这里假设已经把系统光盘做成了本地仓库。</p>
+
+<p><strong>先安装httpd、createrepo</strong>，然后按照下面的步骤创建本地仓库：</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -199,7 +519,7 @@
 </span></code></pre></td></tr></table></div></figure>
 
 
-<p>安装找不到gmond时，可以先清理yum的缓冲： <code>yum clean all</code></p>
+<p>注意： 在安装的时刻找不到gmond，可以先清理yum的缓冲： <code>yum clean all</code></p>
 
 <h2>puppet模块</h2>
 
@@ -348,7 +668,7 @@
 </ul>
 
 
-<p>gmond.conf的仅修改两个地方: globals.deaf, cluster.name</p>
+<p>在默认的gmond.conf基础上修改一下两个配置: globals.deaf, cluster.name</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -442,7 +762,7 @@
 
 <p>参考下逻辑即可（也可以通过hiera配置）。</p>
 
-<p>最后就是加载module：</p>
+<p>最后在 site.pp 引用加载编写的Module：</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -479,7 +799,9 @@
 
 <h2>一键安装</h2>
 
-<p>首先在主机上安装gmetad，gmetad配置由于只有一台机器，配置这里手动弄。</p>
+<p>安装gmetad：</p>
+
+<p>首先在主机上安装gmetad，由于只需要在一台机器安装，配置没有整成模板，这里直接手动弄。</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -493,7 +815,7 @@
 <span class='line-number'>10</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 dtarepo]# mco rpc package install package=gmetad -I cu-omc1
 </span><span class='line'>
-</span><span class='line'># 主机多网卡时可能需要添加route
+</span><span class='line'># 注意：主机多网卡时可能需要添加route
 </span><span class='line'>[root@cu-omc1 ~]# route add -host 239.2.11.71 dev bond0
 </span><span class='line'>
 </span><span class='line'>[root@cu-omc1 ~]# /etc/ganglia/gmetad.conf 注意!! 这里的rrd_rootdir配置与上面gweb/makefile是对应的！！
@@ -504,10 +826,236 @@
 </span></code></pre></td></tr></table></div></figure>
 
 
-<p>在cu-omc2上安装gmond（正则表达式，你想怎么匹配就怎么写）：</p>
+<p>安装gmond：</p>
+
+<p>在cu-omc2上安装gmond（正则表达式，想怎么匹配就怎么写）：</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 production]# mco shell -I /^cu-omc2/ run -- "/opt/puppetlabs/bin/puppet agent -t"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>puppet同步好后，就安装好puppet，以及启动gmond服务。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Elasticsearch Startguide]]></title>
+    <link href="http://winseliu.com/blog/2016/06/15/elasticsearch-startguide/"/>
+    <updated>2016-06-15T08:40:28+08:00</updated>
+    <id>http://winseliu.com/blog/2016/06/15/elasticsearch-startguide</id>
+    <content type="html"><![CDATA[<p>如果有Lucene的使用经历，elasticsearch的入门还是比较简单的。直接解压启动命令就安装好了，然后就是添加一些plugins就OK了。</p>
+
+<h2>安装</h2>
+
+<p>从官网下载 <a href="https://www.elastic.co/downloads/elasticsearch">TAR包</a> ，解压后，运行 elasticsearch 脚本启动服务。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># -d 表示 daemonize 后台运行
+</span><span class='line'>[hadoop@cu2 elasticsearch-2.2.0]$ bin/elasticsearch -d</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>插件</h2>
+
+<p>大部分插件都是ajax方式的静态页面，可以通过plugin脚本安装，或者直接解压文件到plugins目录下面。</p>
+
+<p>安装已经下载到本地的插件需要加file协议，不然程序会从官网下载。或者直接解压到plugins目录下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 elasticsearch-2.2.0]$ bin/plugin install file:///home/hadoop/elasticsearch-head-master.zip 
+</span><span class='line'>-&gt; Installing from file:/home/hadoop/elasticsearch-head-master.zip...
+</span><span class='line'>Trying file:/home/hadoop/elasticsearch-head-master.zip ...
+</span><span class='line'>Downloading .........DONE
+</span><span class='line'>Verifying file:/home/hadoop/elasticsearch-head-master.zip checksums if available ...
+</span><span class='line'>NOTE: Unable to verify checksum for downloaded plugin (unable to find .sha1 or .md5 file to verify)
+</span><span class='line'>Installed head into /home/hadoop/elasticsearch-2.2.0/plugins/head
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>windows</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\usr\share\elasticsearch-2.3.3\bin&gt;plugin.bat install file:///D:/SOFTWARE/elasticsearch/elasticsearch-plugin/elasticsearch-head-master.zip</span></code></pre></td></tr></table></div></figure>
+
+
+<p>安装好plugin后，打开浏览器查看索引情况： <a href="http://localhost:9200/_plugin/head/">http://localhost:9200/_plugin/head/</a></p>
+
+<h2>插件高阶</h2>
+
+<p>有些插件版本比较旧需要改一改，需要了解新版本的 elasticsearch-plugin 的规范：</p>
+
+<p><a href="https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/installation.html">https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/installation.html</a></p>
+
+<p>新版本插件主要是需要增加一个描述文件：</p>
+
+<p><a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.3/breaking_20_plugin_and_packaging_changes.html#_plugins_require_descriptor_file">Plugins require descriptor file</a></p>
+
+<p>遇到想安装的旧版本的plugin，描述文件写法可以参考 <a href="https://github.com/mobz/elasticsearch-head">elasticsearch-head</a> 。</p>
+
+<p>可选插件：</p>
+
+<ul>
+<li>paramedic <a href="https://github.com/karmi/elasticsearch-paramedic">https://github.com/karmi/elasticsearch-paramedic</a></li>
+<li>head <a href="https://github.com/mobz/elasticsearch-head">https://github.com/mobz/elasticsearch-head</a></li>
+<li>kopf <a href="https://github.com/lmenezes/elasticsearch-kopf">https://github.com/lmenezes/elasticsearch-kopf</a></li>
+</ul>
+
+
+<h2>常用URL请求</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-create-index.html
+</span><span class='line'># 创建
+</span><span class='line'>$ curl -XPUT 'http://localhost:9200/t_ods_idc_isp_log2/' -d '{
+</span><span class='line'>    "settings" : {
+</span><span class='line'>        "index" : {
+</span><span class='line'>            "number_of_shards" : 3,
+</span><span class='line'>            "number_of_replicas" : 0
+</span><span class='line'>        }
+</span><span class='line'>    }
+</span><span class='line'>}'
+</span><span class='line'>{"acknowledged":true}
+</span><span class='line'>
+</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-put-mapping.html
+</span><span class='line'># 更新
+</span><span class='line'># mapping.json
+</span><span class='line'>{
+</span><span class='line'>  "properties": {
+</span><span class='line'>      "author": {
+</span><span class='line'>          "type": "string"
+</span><span class='line'>      },
+</span><span class='line'>...
+</span><span class='line'>      "year": {
+</span><span class='line'>          "type": "long",
+</span><span class='line'>          "ignore_malformed": false,
+</span><span class='line'>          "index": "analyzed"
+</span><span class='line'>      },
+</span><span class='line'>      "avaiable": {
+</span><span class='line'>          "type": "boolean"
+</span><span class='line'>      }
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>$ curl -XPUT 'localhost:9200/t_ods_idc_isp_log2/_mapping/default' -d @mapping.json
+</span><span class='line'>
+</span><span class='line'>$ curl -XPUT 'localhost:9200/t_ods_idc_isp_log2/_mapping/default' -d '
+</span><span class='line'>{
+</span><span class='line'>  "properties": {
+</span><span class='line'>    "fDIID": {
+</span><span class='line'>      "type": "string"
+</span><span class='line'>    },
+</span><span class='line'>...
+</span><span class='line'>    "gatherTime": {
+</span><span class='line'>      "type": "long"
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>'
+</span><span class='line'>
+</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-templates.html
+</span><span class='line'># 索引
+</span><span class='line'># documents.json
+</span><span class='line'>{ "index": {      "_index": "library",        "_type": "book",        "_id": "1"  } }
+</span><span class='line'>{     "title": "All Quiet on the Western Front",  "otitle": "Im Westen nichts Neues",     "author": "Erich Maria Remarque",   "year": 1929,   "characters": ["Paul Baumer",   "Albert Kropp",     "Haie Westhus",     "Fredrich Muller",  "Stanislaus Katczinsky",    "Tjaden"],  "tags": ["novel"],  "copies": 1,    "available": true,  "section": 3 }
+</span><span class='line'>{     "index": {      "_index": "library",        "_type": "book",        "_id": "2"  } }
+</span><span class='line'>{     "title": "Catch-22",    "author": "Joseph Heller",  "year": 1961,   "characters": ["John Yossarian",    "Captain Aardvark",     "Chaplain Tappman",     "Colonel Cathcart",     "Doctor Daneeka"],  "tags": ["novel"],  "copies": 6,    "available": false,     "section": 1 }
+</span><span class='line'>
+</span><span class='line'>$ curl -s -XPOST localhost:9200/_bulk --data-binary @documents.json
+</span><span class='line'>
+</span><span class='line'># 删除
+</span><span class='line'>$ curl -XDELETE 'http://localhost:9200/t_ods_idc_isp_log2/'
+</span><span class='line'>{"acknowledged":true}
+</span><span class='line'>
+</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-get-mapping.html
+</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-get-field-mapping.html
+</span><span class='line'># 状态查看
+</span><span class='line'>http://localhost:9200/_cat/health?v
+</span><span class='line'>http://localhost:9200/_cat/nodes?v
+</span><span class='line'>http://localhost:9200/_cat/indices?v
+</span><span class='line'>
+</span><span class='line'>curl -XGET 'http://localhost:9200/_all/_mapping/book/field/author'
+</span><span class='line'>curl -XHEAD -i 'http://localhost:9200/twitter/tweet'
+</span><span class='line'>curl localhost:9200/_stats
+</span><span class='line'>curl -XGET 'http://localhost:9200/_all/_mapping/[type]'
+</span></code></pre></td></tr></table></div></figure>
 
 
 <p>&ndash;END</p>
@@ -9403,588 +9951,6 @@ appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9&#8217; not found 
 <li><p>yum配置与各种使用 <a href="http://www.cnblogs.com/mchina/archive/2013/01/04/2842275.html">http://www.cnblogs.com/mchina/archive/2013/01/04/2842275.html</a></p></li>
 <li><a href="http://kisspuppet.com/2014/01/26/puppet_create_repo/">http://kisspuppet.com/2014/01/26/puppet_create_repo/</a></li>
 </ul>
-
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[DBCP参数在Hive JDBC上的实践]]></title>
-    <link href="http://winseliu.com/blog/2016/04/08/dbcp-parameters/"/>
-    <updated>2016-04-08T19:48:01+08:00</updated>
-    <id>http://winseliu.com/blog/2016/04/08/dbcp-parameters</id>
-    <content type="html"><![CDATA[<p>查询程序一开始只是简单使用dbcp来做连接的限制。在实践的过程中遇到各种问题，本文记录DBCP的参数优化提高程序健壮性的两次过程。</p>
-
-<p>最开始的DBCP的配置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
-</span><span class='line'>  destroy-method="close" 
-</span><span class='line'>  p:driverClassName="${hiveDriverClassName}"
-</span><span class='line'>  p:url="${hiveUrl}" 
-</span><span class='line'>  p:username="${hiveUsername}" 
-</span><span class='line'>  p:password="${hivePassword}"
-</span><span class='line'>  p:maxIdle="${hiveMaxIdle}" 
-</span><span class='line'>  p:maxWait="${hiveMaxWait}" 
-</span><span class='line'>  p:maxActive="${hiveMaxActive}" /&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;bean id="hiveTemplate" class="org.springframework.jdbc.core.JdbcTemplate"&gt;
-</span><span class='line'>  &lt;property name="dataSource"&gt;
-</span><span class='line'>      &lt;ref bean="hiveDataSource" /&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>&lt;/bean&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>第一个遇到的问题，就是每次hiveserver2重启后，这个查询程序也得重启。在实际使用过程中非常的麻烦！！</p>
-
-<h4>重启问题（连接断开后不能重连）</h4>
-
-<p>首先给出学习的链接 <a href="http://elf8848.iteye.com/blog/1931778">http://elf8848.iteye.com/blog/1931778</a> 巨详细，同时问题的场景都一模一样啊！！</p>
-
-<p>添加三个参数：</p>
-
-<ul>
-<li>testOnBorrow = &ldquo;true&rdquo;       借出连接时不要测试，否则很影响性能</li>
-<li>testWhileIdle = &ldquo;true&rdquo;       指明连接是否被空闲连接回收器(如果有)进行检验.如果检测失败,则连接将被从池中去除.</li>
-<li>validationQuery = &ldquo;show databases&rdquo; 验证连接是否可用，使用的SQL语句</li>
-</ul>
-
-
-<p>解释：</p>
-
-<p>testWhileIdle = &ldquo;true&rdquo; 表示每 {timeBetweenEvictionRunsMillis} (默认-1，不执行)秒，取出 {numTestsPerEvictionRun} (默认值3)条连接，使用 {validationQuery} 进行测试 ，测试不成功就销毁连接。销毁连接后，连接数量就少了，如果小于minIdle数量，就新建连接。</p>
-
-<p>testOnBorrow = &ldquo;true&rdquo; 它的默认值是true，如果测试失败会drop掉然后再borrow。false表示每次从连接池中取出连接时，不需要执行 {validationQuery} 中的SQL进行测试。若配置为true,对性能有非常大的影响，性能会下降7-10倍。所在一定要配置为false.</p>
-
-<p>调整参数后hiveserver2重启，查询再连会先报错然后再连。在每次取连接的时刻使用 <code>show databases</code> 测试，如果失败则从pool中删掉这个连接，重新再取，实现了重连的效果。这里不用 <code>select 1</code> hive里面执行很慢， 同时testWhileIdle并没有生效，因为没有配置timeBetweenEvictionRunsMillis参数。</p>
-
-<p>调整后的：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
-</span><span class='line'>destroy-method="close" 
-</span><span class='line'>p:driverClassName="${hiveDriverClassName}"
-</span><span class='line'>p:url="${hiveUrl}" 
-</span><span class='line'>p:username="${hiveUsername}" 
-</span><span class='line'>p:password="${hivePassword}"
-</span><span class='line'>p:testOnBorrow="${hiveTestOnBorrow}"
-</span><span class='line'>p:testWhileIdle="${hiveTestWhileIdle}" 
-</span><span class='line'>p:validationQuery="${hiveValidationQuery}"
-</span><span class='line'>p:maxIdle="${hiveMaxIdle}" 
-</span><span class='line'>p:maxWait="${hiveMaxWait}" 
-</span><span class='line'>p:maxActive="${hiveMaxActive}" 
-</span><span class='line'>/&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>问题又来了，由于测试切换tez和spark才配置了上面的重连。但是切换到spark后，启动的spark会一直保持(连接创建的session不会主动关闭)，直到hiveserver2 session超时(默认6h检查一次，7h idle就关闭)。</p>
-
-<p>注意：有个隐忧，hive-on-spark每个连接都创建一个SESSION，这就退化到MR操作了。不能完全利用SPARK的优势！！例如业务中，即查询count、又获取一页数据，这里就是两个单独的spark程序！！N个session就N个 <strong>hive on spark</strong> 啊！！</p>
-
-<h4>第二个问题，服务端session强制关闭</h4>
-
-<p>问题其实和参考中的: <strong>MySQL8小时问题，Mysql服务器默认连接的“wait_timeout”是8小时，也就是说一个connection空闲超过8个小时，Mysql将自动断开该 connection</strong> 一模一样的。在增加 <strong>minEvictableIdleTimeMillis</strong> 和 <strong>timeBetweenEvictionRunsMillis</strong> 设置检查和回收的时间。</p>
-
-<ul>
-<li>timeBetweenEvictionRunsMillis = &ldquo;1800000&rdquo;  每30分钟运行一次空闲连接回收器，没必要那么频繁。</li>
-<li>minEvictableIdleTimeMillis = &ldquo;3600000&rdquo;  池中的连接空闲1个小时后被回收，如果1个半小时没有操作，这个session就会被客户端关闭。可以通过yarn-8088的scheduler页面查看。</li>
-</ul>
-
-
-<p>设置后的最终效果：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
-</span><span class='line'>destroy-method="close" 
-</span><span class='line'>p:driverClassName="${hiveDriverClassName}"
-</span><span class='line'>p:url="${hiveUrl}" 
-</span><span class='line'>p:username="${hiveUsername}" 
-</span><span class='line'>p:password="${hivePassword}"
-</span><span class='line'>p:testOnBorrow="${hiveTestOnBorrow}"
-</span><span class='line'>p:validationQuery="${hiveValidationQuery}"
-</span><span class='line'>p:maxWait="${hiveMaxWait}" 
-</span><span class='line'>p:maxIdle="${hiveMaxIdle}" 
-</span><span class='line'>p:maxActive="${hiveMaxActive}" 
-</span><span class='line'>p:testWhileIdle="${hiveTestWhileIdle}" 
-</span><span class='line'>p:timeBetweenEvictionRunsMillis="${hiveTimeBetweenEvictionRunsMillis}" 
-</span><span class='line'>p:minEvictableIdleTimeMillis="${hiveMinEvictableIdleTimeMillis}" 
-</span><span class='line'>p:removeAbandoned="true"
-</span><span class='line'>p:logAbandoned="true"
-</span><span class='line'>/&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>很多程序都有很多参数，大部分能通过文档明白，但是一些参数不到实践真的很难真正体会它的含义。参考的文章两次改进我查看了，但是第一次看的时刻根本没去加其他参数，因为对我来说没用，解决当前问题用不到嘛。</p>
-
-<p>hadoop的参数更多，core/hdfs/mapred/yarn需要多用才能发现参数的功能和妙用。<strong>纸上得来终觉浅，绝知此事要躬行</strong> 。</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[RPM打包]]></title>
-    <link href="http://winseliu.com/blog/2016/04/04/rpm-build-your-package/"/>
-    <updated>2016-04-04T16:07:21+08:00</updated>
-    <id>http://winseliu.com/blog/2016/04/04/rpm-build-your-package</id>
-    <content type="html"><![CDATA[<h2>资料</h2>
-
-<ul>
-<li><a href="http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html">http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html</a></li>
-<li><a href="https://fedoraproject.org/wiki/How_to_create_an_RPM_package/zh-cn">https://fedoraproject.org/wiki/How_to_create_an_RPM_package/zh-cn</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part1/index.html">用 RPM 打包软件-打包教程</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part3/index.html">用 RPM 打包软件-高级部分：安装前后控制</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/l-rpm/index.html">RPM 打包技术与典型 SPEC 文件分析-各变量含义</a></li>
-<li><a href="http://hlee.iteye.com/blog/343499">http://hlee.iteye.com/blog/343499</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part1/indent-2.spec">案例</a></li>
-<li><p><a href="https://github.com/apache/zookeeper/tree/release-3.4.8/src/packages">zookeeper打包案例</a></p></li>
-<li><p><a href="http://www.ibm.com/developerworks/cn/linux/l-cn-checkinstall/index.html">http://www.ibm.com/developerworks/cn/linux/l-cn-checkinstall/index.html</a></p></li>
-</ul>
-
-
-<h2>实践</h2>
-
-<ul>
-<li>系统配置准备</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 新建一个docker实例，来测试、学习
-</span><span class='line'>[root@cu1 ~]# docker run -ti centos:centos6 /bin/bash
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# cat /etc/redhat-release 
-</span><span class='line'>CentOS release 6.6 (Final)
-</span><span class='line'>
-</span><span class='line'># 安装编译环境所需的软件
-</span><span class='line'>yum install which tree lrzsz tar gcc rpm-build
-</span><span class='line'># wget编译的依赖
-</span><span class='line'>yum install -y gnutls gnutls-devel</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>步骤</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bdc25400cc63 home]# mkdir mywget 
-</span><span class='line'>[root@bdc25400cc63 home]# cd mywget/
-</span><span class='line'>[root@bdc25400cc63 mywget]# mkdir BUILD RPMS SOURCES SPECS SRPMS
-</span><span class='line'>[root@bdc25400cc63 mywget]# cd SOURCES/
-</span><span class='line'>[root@bdc25400cc63 SOURCES]# mv /home/wget-1.17.tar.gz .
-</span><span class='line'>[root@bdc25400cc63 SOURCES]# ls
-</span><span class='line'>wget-1.17.tar.gz
-</span><span class='line'>[root@bdc25400cc63 SOURCES]# cd ..
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# rpmbuild --showrc
-</span><span class='line'>[test@bdc25400cc63 mywget]$ rpm --eval "%{_topdir}"
-</span><span class='line'>
-</span><span class='line'>[test@bdc25400cc63 mywget]$ grep -i _topdir /usr/lib/rpm/rpmrc /usr/lib/rpm/redhat/rpmrc /usr/lib/rpm/macros /usr/lib/rpm/redhat/macros  | less
-</span><span class='line'>/usr/lib/rpm/macros:%_builddir          %{_topdir}/BUILD
-</span><span class='line'>/usr/lib/rpm/macros:%_rpmdir            %{_topdir}/RPMS
-</span><span class='line'>/usr/lib/rpm/macros:%_sourcedir         %{_topdir}/SOURCES
-</span><span class='line'>/usr/lib/rpm/macros:%_specdir           %{_topdir}/SPECS
-</span><span class='line'>/usr/lib/rpm/macros:%_srcrpmdir         %{_topdir}/SRPMS
-</span><span class='line'>/usr/lib/rpm/macros:%_buildrootdir              %{_topdir}/BUILDROOT
-</span><span class='line'>/usr/lib/rpm/macros:%_topdir            %{getenv:HOME}/rpmbuild
-</span><span class='line'>
-</span><span class='line'>[test@bdc25400cc63 mywget]$ cat ~/.rpmmacros 
-</span><span class='line'>%_topdir /home/mywget/rpm
-</span><span class='line'>
-</span><span class='line'># 2016-5-12 15:28:35
-</span><span class='line'># spec里面有define和global，应该是这个导致的！用global应该即可以了？
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# vi SPECS/wget.spec
-</span><span class='line'>  # this is a sample spec file for wget
-</span><span class='line'>  
-</span><span class='line'>  %define _topdir /home/mywget
-</span><span class='line'>  %define name    wget
-</span><span class='line'>  %define release 2
-</span><span class='line'>  %define version 1.17
-</span><span class='line'>  # 定义 _buildrootdir 不起作用，不知道为啥??? 在 .rpmmacros 定义了 %_topdir，root转到 /home/mywget/rpm/BUILDROOT 了。
-</span><span class='line'>  
-</span><span class='line'>  %define _unpackaged_files_terminate_build 0
-</span><span class='line'>  
-</span><span class='line'>  Summary:   GNU wget
-</span><span class='line'>  License:   GPL
-</span><span class='line'>  Name:      %{name}
-</span><span class='line'>  Version:   %{version}
-</span><span class='line'>  Release:   %{release}
-</span><span class='line'>  Source:    %{name}-%{version}.tar.gz
-</span><span class='line'>  Prefix:    /usr/local/wget
-</span><span class='line'>  Group:     Development/Tools
-</span><span class='line'>  
-</span><span class='line'>  %description
-</span><span class='line'>  The GNU wget program downloads files from the Internet using the command-line.
-</span><span class='line'>  
-</span><span class='line'>  %prep
-</span><span class='line'>  %setup -q
-</span><span class='line'>  
-</span><span class='line'>  %build
-</span><span class='line'>  ./configure
-</span><span class='line'>  make
-</span><span class='line'>  
-</span><span class='line'>  %install
-</span><span class='line'>  make install prefix=$RPM_BUILD_ROOT/usr/local/wget # or use DESTDIR=$RPM_BUILD_ROOT
-</span><span class='line'>  
-</span><span class='line'>  %post
-</span><span class='line'>  echo "hello world"
-</span><span class='line'>  
-</span><span class='line'>  %preun
-</span><span class='line'>  echo "bye"
-</span><span class='line'>  
-</span><span class='line'>  %clean
-</span><span class='line'>  rm -rf $RPM_BUILD_ROOT
-</span><span class='line'>  
-</span><span class='line'>  %files
-</span><span class='line'>  %defattr(-, root, root)
-</span><span class='line'>  /usr/local/wget/bin/wget
-</span><span class='line'>  
-</span><span class='line'>[root@bdc25400cc63 mywget]# rpmbuild -vv -bb --clean SPECS/wget.spec 
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# tree .
-</span><span class='line'>.
-</span><span class='line'>├── BUILD
-</span><span class='line'>├── RPMS
-</span><span class='line'>│   └── x86_64
-</span><span class='line'>│       ├── wget-1.17-2.x86_64.rpm
-</span><span class='line'>│       └── wget-debuginfo-1.17-2.x86_64.rpm
-</span><span class='line'>├── SOURCES
-</span><span class='line'>│   └── wget-1.17.tar.gz
-</span><span class='line'>├── SPECS
-</span><span class='line'>│   └── wget.spec
-</span><span class='line'>└── SRPMS
-</span><span class='line'>
-</span><span class='line'>6 directories, 4 files
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# rpm -qpl RPMS/x86_64/wget-1.17-2.x86_64.rpm  
-</span><span class='line'>/usr/local/wget/bin/wget
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>接下来就可以直接拿到这个包到其他机器上安装了，如果自己建立了本地库，使用createrepo更新下，就可以使用yum安装最新打的包了。</p>
-
-<p>注： <code>%pre</code> , <code>%post</code> 和 <code>%preun</code> , <code>%postun</code> 可以在安装前后执行一些脚本。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia-build]# mkdir BUILD RPMS SOURCES SPECS SRPMS
-</span><span class='line'>[root@cu2 ganglia-build]# cd SOURCES/
-</span><span class='line'>[root@cu2 SOURCES]# ll
-</span><span class='line'>total 1272
-</span><span class='line'>-rw-r--r-- 1 root root 1302320 Jan 20 09:35 ganglia-3.7.2.tar.gz
-</span><span class='line'>[root@cu2 SOURCES]# cd ..
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia-build]# ll
-</span><span class='line'>total 20
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 BUILD
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 RPMS
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SOURCES
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SPECS
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SRPMS
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia-build]# cd SPECS/
-</span><span class='line'>[root@cu2 SPECS]# vi gmetad.spec
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia-build]# rpmbuild --clean -v -ba SPECS/gmetad.spec 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia-build]# rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm </span></code></pre></td></tr></table></div></figure>
-
-
-<h2>重新打包已有rpm</h2>
-
-<p>下载源码包，再修改内容，最后使用rpm-build重新打包。</p>
-
-<p>这里以puppetserver为例，使用jdk7即可但官网打包的依赖是jdk8，这里修改依赖然后重新打包：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 rpmbuild]# rpm -ivh puppetserver-2.3.1-1.el6.src.rpm 
-</span><span class='line'>warning: puppetserver-2.3.1-1.el6.src.rpm: Header V4 RSA/SHA1 Signature, key ID 4bd6ec30: NOKEY
-</span><span class='line'>   1:puppetserver           warning: user mockbuild does not exist - using root
-</span><span class='line'>warning: group mockbuild does not exist - using root
-</span><span class='line'>########################################### [100%]
-</span><span class='line'>warning: user mockbuild does not exist - using root
-</span><span class='line'>warning: group mockbuild does not exist - using root
-</span><span class='line'>[root@cu2 rpmbuild]# ll
-</span><span class='line'>total 32904
-</span><span class='line'>-rw-r--r-- 1 root root 33681889 May 10 17:44 puppetserver-2.3.1-1.el6.src.rpm
-</span><span class='line'>drwxr-xr-x 2 root root     4096 May 10 17:55 SOURCES
-</span><span class='line'>drwxr-xr-x 2 root root     4096 May 10 17:55 SPECS
-</span><span class='line'>
-</span><span class='line'>#-- 注释掉jdk8的部分
-</span><span class='line'>[root@cu2 rpmbuild]# grep -3 jdk SPECS/puppetserver.spec 
-</span><span class='line'>
-</span><span class='line'># java 1.8.0 is available starting in fedora 20 and el 6
-</span><span class='line'>#%if 0%{?fedora} &gt;= 20 || 0%{?rhel} &gt;= 6
-</span><span class='line'>#%global open_jdk          java-1.8.0-openjdk-headless
-</span><span class='line'>#%else
-</span><span class='line'>%global open_jdk          java-1.7.0-openjdk
-</span><span class='line'>#%endif
-</span><span class='line'>
-</span><span class='line'>[root@cu2 rpmbuild]# yum install -y ruby
-</span><span class='line'>[root@cu2 rpmbuild]# rpmbuild -v -bb --clean SPECS/puppetserver.spec 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 rpmbuild]# yum deplist RPMS/noarch/puppetserver-2.3.1-1.el6.noarch.rpm 
-</span><span class='line'>Loaded plugins: fastestmirror, priorities
-</span><span class='line'>Finding dependencies: 
-</span><span class='line'>Loading mirror speeds from cached hostfile
-</span><span class='line'> * base: centos.ustc.edu.cn
-</span><span class='line'> * centosplus: centos.ustc.edu.cn
-</span><span class='line'> * epel: mirror01.idc.hinet.net
-</span><span class='line'> * extras: centos.ustc.edu.cn
-</span><span class='line'> * updates: centos.ustc.edu.cn
-</span><span class='line'>193 packages excluded due to repository priority protections
-</span><span class='line'>package: puppetserver.noarch 2.3.1-1.el6
-</span><span class='line'>  dependency: chkconfig
-</span><span class='line'>   provider: chkconfig.x86_64 1.3.49.3-5.el6
-</span><span class='line'>   provider: chkconfig.x86_64 1.3.49.3-5.el6_7.2
-</span><span class='line'>  dependency: /bin/bash
-</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6
-</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6_7.1
-</span><span class='line'>  dependency: java-1.7.0-openjdk
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.79-2.5.5.4.el6
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.101-2.6.6.1.el6_7
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.85-2.6.1.3.el6_6
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.85-2.6.1.3.el6_7
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.91-2.6.2.2.el6_7
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.95-2.6.4.0.el6_7
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.99-2.6.5.0.el6_7
-</span><span class='line'>  dependency: puppet-agent &gt;= 1.4.0
-</span><span class='line'>   provider: puppet-agent.x86_64 1.4.1-1.el6
-</span><span class='line'>  dependency: net-tools
-</span><span class='line'>   provider: net-tools.x86_64 1.60-110.el6_2
-</span><span class='line'>  dependency: /usr/bin/env
-</span><span class='line'>   provider: coreutils.x86_64 8.4-37.el6
-</span><span class='line'>   provider: coreutils.x86_64 8.4-37.el6_7.3
-</span><span class='line'>  dependency: /bin/sh
-</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6
-</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6_7.1
-</span><span class='line'>  dependency: config(puppetserver) = 2.3.1-1.el6
-</span><span class='line'>   provider: puppetserver.noarch 2.3.1-1.el6 
-</span></code></pre></td></tr></table></div></figure>
 
 
 <p>&ndash;END</p>

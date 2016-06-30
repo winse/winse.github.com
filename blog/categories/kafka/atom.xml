@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Kafka | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/kafka/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-06-21T09:20:27+08:00</updated>
+  <updated>2016-06-30T11:48:50+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,190 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[使用 Flume+kafka+elasticsearch 处理数据]]></title>
+    <link href="http://winseliu.com/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/"/>
+    <updated>2016-06-28T09:50:05+08:00</updated>
+    <id>http://winseliu.com/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse</id>
+    <content type="html"><![CDATA[<p>flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。</p>
+
+<ul>
+<li>flume-1.6.0</li>
+<li>kafka_2.11-0.9.0.1(可以与0.8.2客户端通信, flume-kafka-channel-1.6.0不改)</li>
+<li>elasticsearch-2.2.0</li>
+</ul>
+
+
+<p>由于版本的差异，需要替换/添加以下jar到 <code>flume/lib</code> 下：</p>
+
+<p>使用 <code>mvn dependecy:copy-dependencies</code> 导出所需依赖的包</p>
+
+<p>jackson一堆，hppc-0.7.1.jar，t-digest-3.0.jar，jsr166e-1.1.0.jar，guava-18.0.jar，lucene一堆，elasticsearch-2.2.0.jar。</p>
+
+<p>远程调试配置：</p>
+
+<p>source由于项目上的一些特殊规则，需要自己编写。通过远程DEBUG来打断点来排查BUG。</p>
+
+<pre><code>[hadoop@cu2 flume]$ vi conf/flume-env.sh
+export JAVA_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8092"
+</code></pre>
+
+<h2>实战1</h2>
+
+<p>channel使用kafka是考虑其他功能可能也需要用到这些数据，先用 netcat 作为输入，把整个流程跑通：</p>
+
+<pre><code>[hadoop@cu2 flumebin]$ cat dta.flume 
+dta.sources=s1
+dta.channels=c1
+dta.sinks=k1
+
+dta.channels.c1.type=org.apache.flume.channel.kafka.KafkaChannel
+dta.channels.c1.capacity=10000
+dta.channels.c1.transactionCapacity=1000
+dta.channels.c1.brokerList=cu5:9093
+dta.channels.c1.topic=flume_cmdid_1234
+dta.channels.c1.groupId=flume_dta
+dta.channels.c1.zookeeperConnect=cu3:2181/kafka_0_9
+dta.channels.c1.parseAsFlumeEvent=false
+
+dta.sources.s1.channels=c1
+dta.sources.s1.type=netcat
+dta.sources.s1.bind=0.0.0.0
+dta.sources.s1.port=6666
+dta.sources.s1.max-line-length=88888888
+
+dta.sinks.k1.channel=c1
+dta.sinks.k1.type=elasticsearch
+dta.sinks.k1.hostNames=cu2:9300
+dta.sinks.k1.indexName=foo_index
+dta.sinks.k1.indexType=idcisp
+dta.sinks.k1.clusterName=eshore-cu
+dta.sinks.k1.batchSize=500
+dta.sinks.k1.ttl=5d
+dta.sinks.k1.serializer=com.eshore.zhfx.collector.InfoSecurityLogIndexRequestBuilderFactory
+dta.sinks.k1.serializer.idcispUrlBase64=true
+
+[hadoop@cu2 flumebin]$ bin/flume-ng agent --classpath flume-dta-source-2.1.jar  -n dta -c conf -f dta.flume
+
+# 新开一个窗口
+[hadoop@cu2 ~]$ nc localhost 6666
+</code></pre>
+
+<p>kafka的主题、ES的索引不需要手动建，为了更好的控制ES索引创建可以添加template。</p>
+
+<p>InfoSecurityLogIndexRequestBuilderFactory 实现 ElasticSearchIndexRequestBuilderFactory 把原始记录转换成 ES 的JSON对象。</p>
+
+<pre><code>  private Counter allRecordMetric = MetricManager.getInstance().counter("all_infosecurity");
+  private Counter errorRecordMetric = MetricManager.getInstance().counter("error_infosecurity");
+
+  public IndexRequestBuilder createIndexRequest(Client client, String indexPrefix, String indexType, Event event)
+      throws IOException {
+    allRecordMetric.inc();
+
+    String record = new String(event.getBody(), outputCharset);
+
+    context.put(ElasticSearchSinkConstants.INDEX_NAME, indexPrefix);
+    indexNameBuilder.configure(context);
+    IndexRequestBuilder indexRequestBuilder = client.prepareIndex(indexNameBuilder.getIndexName(event), indexType);
+
+    try {
+      Gson gson = new Gson();
+      IdcIspLog log = parseRecord(record);
+      BytesArray data = new BytesArray(gson.toJson(log));
+
+      indexRequestBuilder.setSource(data);
+      indexRequestBuilder.setRouting(log.commandld);
+    } catch (Exception e) {
+      LOG.error(e.getMessage(), e);
+      errorRecordMetric.inc();
+
+      indexRequestBuilder.setSource(record.getBytes(outputCharset));
+      // 保留错误的数据
+      indexRequestBuilder.setRouting("error");
+    }
+
+    return indexRequestBuilder;
+  }
+</code></pre>
+
+<h2>实战2</h2>
+
+<p>跑通流程后，测试自己写的source：</p>
+
+<pre><code>dta.sources=s1
+dta.channels=c1
+dta.sinks=k1
+
+dta.channels.c1.type=memory
+dta.channels.c1.capacity=1000000
+dta.channels.c1.transactionCapacity=1000000
+dta.channels.c1.byteCapacity=7000000000
+
+dta.sources.s1.channels=c1
+dta.sources.s1.type=com.eshore.zhfx.collector.CollectSource
+dta.sources.s1.spoolDir=/home/hadoop/flume/data/
+dta.sources.s1.trackerDir=/tmp/dtaspool
+
+dta.sinks.k1.channel=c1
+dta.sinks.k1.type=logger
+</code></pre>
+
+<p>CollectSource实现PollableSource继承AbstractSource类。参考Flume开发文档: <a href="http://flume.apache.org/FlumeDeveloperGuide.html#source">http://flume.apache.org/FlumeDeveloperGuide.html#source</a> ， 参考 <code>org.apache.flume.source.SequenceGeneratorSource</code> 类。</p>
+
+<pre><code>  public Status process() throws EventDeliveryException {
+    Status status = Status.READY;
+
+    try {
+      List&lt;Event&gt; events = readEvent(batchSize);
+      if (!events.isEmpty()) {
+        sourceCounter.addToEventReceivedCount(events.size());
+        sourceCounter.incrementAppendBatchReceivedCount();
+
+        getChannelProcessor().processEventBatch(events);
+        // 记录文件已经处理的位置
+        commit();
+
+        sourceCounter.addToEventAcceptedCount(events.size());
+        sourceCounter.incrementAppendBatchAcceptedCount();
+      }
+    } catch (ChannelException | IOException e) {
+      status = Status.BACKOFF;
+      Throwables.propagate(e);
+    }
+
+    return status;
+  }
+</code></pre>
+
+<h2>实例：Flume+Kafka+ES</h2>
+
+<p>把两个实例整合起来。</p>
+
+<h2>附-kafka基本操作</h2>
+
+<pre><code>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-server-start.sh config/server1.properties 
+
+[hadoop@cu5 kafka_2.11-0.9.0.1]$ cat config/server1.properties 
+listeners=PLAINTEXT://:9093
+log.dirs=/tmp/kafka-logs1
+num.partitions=1
+zookeeper.connect=cu3,cu4,cu5/kafka_0_9
+
+[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --create --zookeeper cu3:2181/kafka_0_9 --replication 1 --partitions 1 --topic flume
+Created topic "flume".
+
+[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --list --zookeeper cu3:2181/kafka_0_9
+flume
+
+[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-producer.sh --broker-list cu5:9093 --topic flume
+
+[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-consumer.sh --zookeeper cu3:2181/kafka_0_9 --topic flume --from-beginning
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Kafka快速入门]]></title>
