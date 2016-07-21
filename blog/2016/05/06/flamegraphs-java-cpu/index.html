@@ -1,0 +1,795 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>Flamegraphs Java Cpu - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="在MacTalk的公众号上读到了agentzh关于火焰图介绍(2016年5月6日07:57 动态追踪技术（中） - Dtrace、SystemTap、火焰图)，挺新奇的，并且应该对于查询热线程还是有作用的。 先了解perf和flamegraphs基础知识： https://www.ibm.com/ &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winseliu.com/blog/2016/05/06/flamegraphs-java-cpu">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="http://maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="http://cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winseliu.com" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+  <li><a href="https://yunpan.cn/cuYhpFBPgQYgT" >Books[5aee]</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">Flamegraphs Java Cpu</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-05-06T21:35:03+08:00" pubdate data-updated="true">Fri 2016-05-06 21:35</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><p>在MacTalk的公众号上读到了agentzh关于火焰图介绍(2016年5月6日07:57 动态追踪技术（中） - Dtrace、SystemTap、火焰图)，挺新奇的，并且应该对于查询热线程还是有作用的。</p>
+
+<p>先了解perf和flamegraphs基础知识：</p>
+
+<ul>
+<li><a href="https://www.ibm.com/developerworks/cn/linux/l-cn-perf1/">https://www.ibm.com/developerworks/cn/linux/l-cn-perf1/</a></li>
+<li><a href="http://www.brendangregg.com/perf.html#FlameGraphs">perf Examples</a></li>
+<li><a href="http://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html">CPU Flame Graphs</a></li>
+<li><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">Java in Flames</a></li>
+<li><a href="http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html">Java CPU Flame Graphs</a></li>
+<li>使用方法<a href="https://randomascii.wordpress.com/2013/03/26/summarizing-xperf-cpu-usage-with-flame-graphs/">xperf - windows perf</a></li>
+<li>工具<a href="https://github.com/google/UIforETW/blob/master/bin/xperf_to_collapsedstacks.py">UIforETW</a></li>
+</ul>
+
+
+<p>perf好像有点类似java的btrace，不过perf是操作系统层面的。把操作系统当做服务，客户端通过perf来获取/查询系统的信息。</p>
+
+<h2>安装</h2>
+
+<p>perf包括在linux 2.6.31代码里面，redhat可以通过yum来安装/更新：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 ~]# yum install perf
+</span><span class='line'>...
+</span><span class='line'>Installed:
+</span><span class='line'>  perf.x86_64 0:2.6.32-573.26.1.el6  
+</span><span class='line'>  
+</span><span class='line'>[root@hadoop-master2 ~]# perf stat ls /dev/shm
+</span><span class='line'>
+</span><span class='line'> Performance counter stats for 'ls /dev/shm':
+</span><span class='line'>
+</span><span class='line'>          0.697115 task-clock                #    0.613 CPUs utilized          
+</span><span class='line'>                 0 context-switches          #    0.000 K/sec                  
+</span><span class='line'>                 0 cpu-migrations            #    0.000 K/sec                  
+</span><span class='line'>               236 page-faults               #    0.339 M/sec                  
+</span><span class='line'>   &lt;not supported&gt; cycles                  
+</span><span class='line'>   &lt;not supported&gt; stalled-cycles-frontend 
+</span><span class='line'>   &lt;not supported&gt; stalled-cycles-backend  
+</span><span class='line'>   &lt;not supported&gt; instructions            
+</span><span class='line'>   &lt;not supported&gt; branches                
+</span><span class='line'>   &lt;not supported&gt; branch-misses           
+</span><span class='line'>
+</span><span class='line'>       0.001137015 seconds time elapsed
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>虚拟机可能有一些event不能用，到真正的实体机上面应该是没问题的（网上有同学验证过）。可以通过 <code>perf list</code> 查看支持的event。</p>
+
+<p>补充，实体机效果：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@dacs ~]# perf stat ls /dev/shm
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'> Performance counter stats for 'ls /dev/shm':
+</span><span class='line'>
+</span><span class='line'>          1.793297      task-clock (msec)         #    0.677 CPUs utilized          
+</span><span class='line'>                 1      context-switches          #    0.558 K/sec                  
+</span><span class='line'>                 0      cpu-migrations            #    0.000 K/sec                  
+</span><span class='line'>               255      page-faults               #    0.142 M/sec                  
+</span><span class='line'>           2765454      cycles                    #    1.542 GHz                     [44.66%]
+</span><span class='line'>           1544155      stalled-cycles-frontend   #   55.84% frontend cycles idle    [64.12%]
+</span><span class='line'>           1013635      stalled-cycles-backend    #   36.65% backend  cycles idle   
+</span><span class='line'>           2692743      instructions              #    0.97  insns per cycle        
+</span><span class='line'>                                                  #    0.57  stalled cycles per insn
+</span><span class='line'>            603340      branches                  #  336.442 M/sec                  
+</span><span class='line'>             12499      branch-misses             #    2.07% of all branches         [98.00%]
+</span><span class='line'>
+</span><span class='line'>       0.002650313 seconds time elapsed
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>windows的话直接下载 UIforETW ，运行 UIforETW.exe 就可以用来采样了。把采样产生的etl文件传给xperf_to_collapsedstacks.py，最后用flamegraph.pl画图。</p>
+
+<p>perf的常用命令：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># http://www.brendangregg.com/perf.html
+</span><span class='line'>perf list
+</span><span class='line'>
+</span><span class='line'>perf stat ./t1 
+</span><span class='line'>perf stat -a -A ls
+</span><span class='line'>
+</span><span class='line'>perf top
+</span><span class='line'> 
+</span><span class='line'>perf record – e cpu-clock ./t1 
+</span><span class='line'>perf report</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>画图</h2>
+
+<ul>
+<li><a href="http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html">http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html</a></li>
+<li><a href="https://github.com/coderplay/perfj/releases">https://github.com/coderplay/perfj/releases</a></li>
+<li><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">http://techblog.netflix.com/2015/07/java-in-flames.html</a></li>
+</ul>
+
+
+<h4>系统火焰图</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># http://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html
+</span><span class='line'># https://github.com/brendangregg/FlameGraph
+</span><span class='line'># 真实的机器效果还是挺不错的
+</span><span class='line'>perf record -F 99 -a -g -- sleep 60
+</span><span class='line'>perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
+</span><span class='line'>~/FlameGraph/flamegraph.pl out.perf-folded &gt;perf.svg
+</span><span class='line'>sz perf.svg
+</span><span class='line'>
+</span><span class='line'># --
+</span><span class='line'># perf script | ./stackcollapse-perf.pl &gt; out.perf-folded
+</span><span class='line'># grep -v cpu_idle out.perf-folded | ./flamegraph.pl &gt; nonidle.svg
+</span><span class='line'># grep ext4 out.perf-folded | ./flamegraph.pl &gt; ext4internals.svg
+</span><span class='line'># egrep 'system_call.*sys_(read|write)' out.perf-folded | ./flamegraph.pl &gt; rw.svg
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>安装的虚拟机中操作没采集到有用的。虚拟机和真实机器两个图：</p>
+
+<p><img src="/images/blogs/flames/flames-real.png" alt="" /></p>
+
+<p><img src="/images/blogs/flames/flames-vm.png" alt="" /></p>
+
+<h4>java</h4>
+
+<p>首先需要jdk8_u60+，直接下载最新的jdk就好了。应用启动带上参数 -XX:+PreserveFramePointer ：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 ~]# java -version
+</span><span class='line'>java version "1.8.0_92"
+</span><span class='line'>Java(TM) SE Runtime Environment (build 1.8.0_92-b14)
+</span><span class='line'>Java HotSpot(TM) 64-Bit Server VM (build 25.92-b14, mixed mode)
+</span><span class='line'>[root@hadoop-master2 ~]# cd /home/hadoop/spark-1.6.0-bin-2.6.3/
+</span><span class='line'>[root@hadoop-master2 spark-1.6.0-bin-2.6.3]# export SPARK_SUBMIT_OPTS=-XX:+PreserveFramePointer     
+</span><span class='line'>[root@hadoop-master2 spark-1.6.0-bin-2.6.3]# bin/spark-shell --master local   </span></code></pre></td></tr></table></div></figure>
+
+
+<p>这里java进程使用root启动的，如果是普通用户如hadoop，为了采样需要把hadoop用户加入sudoer，在采样时使用 <code>sudo -u hadoop CMD</code>。</p>
+
+<p><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">http://techblog.netflix.com/2015/07/java-in-flames.html</a></p>
+
+<ul>
+<li>A 使用perfj采样</li>
+</ul>
+
+
+<p><a href="http://greenteajug.cn/2015/07/02/greenteajug%E6%B4%BB%E5%8A%A8-%E7%AC%AC16%E6%9C%9F-%E6%80%A7%E8%83%BD%E8%B0%83%E4%BC%98%E5%88%A9%E5%99%A8-perfj/">性能调优利器——PerfJ</a></p>
+
+<p>直接下载release-1.0的版本，解压后给 bin/perfj 加上执行权限。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 测试的时刻可以把-F 99设置大一点
+</span><span class='line'># java和perfj的用户得一致！！
+</span><span class='line'># https://github.com/coderplay/perfj/wiki/CPU-Flame-Graph
+</span><span class='line'>
+</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
+</span><span class='line'>[root@dacs ~]# wget http://blog.minzhou.info/perfj/leveldb-benchmark.jar
+</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/java -cp leveldb-benchmark.jar -XX:+PreserveFramePointer org.iq80.leveldb.benchmark.DbBenchmark --benchmarks=fillrandom --num=100000000
+</span><span class='line'>
+</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
+</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj record -F 999 -g -p `pgrep -f DbBenchmark` 
+</span><span class='line'>perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
+</span><span class='line'>~/FlameGraph/flamegraph.pl out.perf-folded  --color=java &gt;perf.svg
+</span><span class='line'>sz perf.svg
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p><img src="/images/blogs/flames/flames-java-leveldb.png" alt="" /></p>
+
+<p>还是挺有意思的。</p>
+
+<p><img src="/images/blogs/flames/flames-java-leveldb-vm.png" alt="" /></p>
+
+<p>虚拟机的少了好多信息！一模一样的命令，得出来的东西差好远！！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># https://github.com/coderplay/perfj/wiki/Context-Switch-Analysis
+</span><span class='line'># 在vmware虚拟机里面运行啥都看不到！实体机也看不到作者的那些栈信息
+</span><span class='line'>[root@dacs ~]# wget http://blog.minzhou.info/perfj/leveldb-benchmark.jar
+</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
+</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/javac ContextSwitchTest.java 
+</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/java -XX:+PreserveFramePointer ContextSwitchTest
+</span><span class='line'>
+</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
+</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj record  -e sched:sched_switch -F 999 -g -p `pgrep -f ContextSwitchTest` 
+</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj report --stdio
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>B 使用perf-map-agent</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>git clone https://github.com/jrudolph/perf-map-agent.git
+</span><span class='line'>cd perf-map-agent/
+</span><span class='line'>export JAVA_HOME=/opt/jdk1.8.0_92
+</span><span class='line'>cmake .
+</span><span class='line'>make
+</span><span class='line'>
+</span><span class='line'>perf record -F 99 -g -p 7661 -- sleep 120
+</span><span class='line'>bin/create-java-perf-map.sh 7661
+</span><span class='line'>
+</span><span class='line'>sudo perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
+</span><span class='line'>cat out.perf-folded | ~/FlameGraph/flamegraph.pl --color=java &gt;perf.svg
+</span><span class='line'>sz perf.svg</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-05-06T21:35:03+08:00" pubdate data-updated="true">Fri 2016-05-06 21:35</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/tools/'>tools</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2016-05-06-flamegraphs-java-cpu.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2016/05/05/hdfs-heterogeneous-storage/" title="Previous Post: hdfs异构存储实操">&laquo; hdfs异构存储实操</a>
+      
+      
+        <a class="basic-alignment right" href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/" title="Next Post: [读读书]Apache Spark源码剖析-序">[读读书]Apache Spark源码剖析-序 &raquo;</a>
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+    <div id="disqus_thread" aria-live="polite"><noscript>Please enable JavaScript to view the <a href="http://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
+</div>
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/01/23/install-and-config-ganglia-on-redhat-2/">安装配置Ganglia(2)</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2016/07/19/xss-blocked-by-naxsi/">使用 Naxsi 处理 XSS</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/07/14/codis-guide/">Codis简单使用</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/">使用 Flume+kafka+elasticsearch 处理数据</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/06/15/elasticsearch-startguide/">Elasticsearch Startguide</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/">[读读书]Apache Spark源码剖析-序</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/05/06/flamegraphs-java-cpu/">Flamegraphs Java Cpu</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (42) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (35) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (141)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2016 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+<script type="text/javascript">
+      var disqus_shortname = 'winseliu';
+      
+        
+        // var disqus_developer = 1;
+        var disqus_identifier = 'http://winseliu.com/blog/2016/05/06/flamegraphs-java-cpu/';
+        var disqus_url = 'http://winseliu.com/blog/2016/05/06/flamegraphs-java-cpu/';
+        var disqus_script = 'embed.js';
+      
+    (function () {
+      var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
+      dsq.src = '//' + disqus_shortname + '.disqus.com/' + disqus_script;
+      (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+    }());
+</script>
+
+
+
+
+
+
+
+
+
+
+
+</body>
+</html>
