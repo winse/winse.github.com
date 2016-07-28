@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Redis | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/redis/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-07-21T15:43:29+08:00</updated>
+  <updated>2016-07-28T12:01:09+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,318 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Redis使用优化]]></title>
+    <link href="http://winseliu.com/blog/2016/07/28/redis-optimise/"/>
+    <updated>2016-07-28T08:22:26+08:00</updated>
+    <id>http://winseliu.com/blog/2016/07/28/redis-optimise</id>
+    <content type="html"><![CDATA[<p>最近对生产的Redis做了两个优化：Redis扩展、以及对简单键值对的存储优化（string改成hash形式）</p>
+
+<h2>Redis扩展</h2>
+
+<p>上一篇介绍的Codis安装。但是使用Pipeline操作时间比较长、连接数比较多的情况下，经常出现连接重置的情况。感觉不踏实，go也不懂感觉短时间处理不了这种问题。</p>
+
+<p>寻求它法。前期是把不同业务数据写入不同的redis实例，根据业务来分。对于同一个业务来说，得根据key的hash来写入不同的实例，但是自己写的话得包装一堆东西。</p>
+
+<p>jedis工具包括Shared的功能，根据写入key的hash映射到不同的redis实例。截取了部分Shared的主要代码:</p>
+
+<pre><code>public class Sharded&lt;R, S extends ShardInfo&lt;R&gt;&gt; {
+...
+    private void initialize(List&lt;S&gt; shards) {
+    nodes = new TreeMap&lt;Long, S&gt;();
+
+    for (int i = 0; i != shards.size(); ++i) {
+        final S shardInfo = shards.get(i);
+        if (shardInfo.getName() == null)
+        for (int n = 0; n &lt; 160 * shardInfo.getWeight(); n++) {
+            nodes.put(this.algo.hash("SHARD-" + i + "-NODE-" + n),
+                shardInfo);
+        }
+        else
+        for (int n = 0; n &lt; 160 * shardInfo.getWeight(); n++) {
+            nodes.put(
+                this.algo.hash(shardInfo.getName() + "*"
+                    + shardInfo.getWeight() + n), shardInfo);
+        }
+        resources.put(shardInfo, shardInfo.createResource());
+    }
+    }
+... 
+    public S getShardInfo(byte[] key) {
+    SortedMap&lt;Long, S&gt; tail = nodes.tailMap(algo.hash(key));
+    if (tail.isEmpty()) {
+        return nodes.get(nodes.firstKey());
+    }
+    return tail.get(tail.firstKey());
+    }
+
+    public S getShardInfo(String key) {
+    return getShardInfo(SafeEncoder.encode(getKeyTag(key)));
+    }
+...
+</code></pre>
+
+<p>使用的时刻很简单，通过ShardedJedis来进读写，大部分的操作与Jedis类似。只是有部分整个集群的操作不能用：keys/scan等。</p>
+
+<pre><code>  public List&lt;JedisShardInfo&gt; getShards(String sValue) {
+    String[] servers = sValue.split(",");
+
+    List&lt;JedisShardInfo&gt; shards = new ArrayList&lt;&gt;();
+    for (String server : servers) {
+      Pair&lt;String, Integer&gt; hp = parseServer(server);
+      shards.add(new JedisShardInfo(hp.getLeft(), hp.getRight(), Integer.MAX_VALUE));
+    }
+    return shards;
+  }
+  private ShardedJedisPool createRedisPool(String server) {
+    return new ShardedJedisPool(new GenericObjectPoolConfig(), getShards(server));
+  }
+</code></pre>
+
+<p>如果使用过程中要使用keys，可以通过getAllShards得到所有Jedis实例的键再进行处理：</p>
+
+<pre><code>  public Double zscore(String key, String member) {
+    try (ShardedJedis redis = getRedis()) {
+      return redis.zscore(key, member);
+    }
+  }
+
+  public void expires(List&lt;String&gt; patterns, int seconds) {
+    try (ShardedJedis shardedJedis = getRedis()) {
+      Set&lt;String&gt; keys = new HashSet&lt;&gt;();
+
+      for (Jedis redis : shardedJedis.getAllShards()) {
+        for (String p : patterns) {
+          keys.addAll(redis.keys(p)); // 调用单独实例的keys命令获取匹配的键
+        }
+      }
+
+      ShardedJedisPipeline pipeline = shardedJedis.pipelined();
+      for (String key : keys) {
+        pipeline.expire(key, seconds);
+      }
+      pipeline.sync();
+    }
+  }
+</code></pre>
+
+<p>进行多实例(集群)切分后，效果还是挺明显的。写入高峰期分流效果显著，负载均摊，可使用的内存也翻翻，键也基本平均分布（ <code>--maxmemory-policy volatile-lru</code> ）。生产实际效果：</p>
+
+<pre><code>[hadoop@hadoop-master1 redis]$ sh stat_cluster.sh 
+
+ * [ ============================================================&gt; ] 4 / 4
+
+hadoop-master1:
+# Memory
+used_memory:44287785776
+used_memory_human:41.25G
+used_memory_rss:67458658304
+used_memory_peak:67981990576
+used_memory_peak_human:63.31G
+used_memory_lua:33792
+mem_fragmentation_ratio:1.52
+mem_allocator:jemalloc-3.6.0
+# Keyspace
+db0:keys=72729777,expires=11967,avg_ttl=63510023
+
+hadoop-master2:
+# Memory
+used_memory:50667945344
+used_memory_human:47.19G
+used_memory_rss:66036752384
+used_memory_peak:64424543672
+used_memory_peak_human:60.00G
+used_memory_lua:33792
+mem_fragmentation_ratio:1.30
+mem_allocator:jemalloc-3.6.0
+# Keyspace
+db0:keys=100697581,expires=13426,avg_ttl=63509903
+
+hadoop-master3:
+# Memory
+used_memory:56763389184
+used_memory_human:52.87G
+used_memory_rss:66324045824
+used_memory_peak:64424546136
+used_memory_peak_human:60.00G
+used_memory_lua:33792
+mem_fragmentation_ratio:1.17
+mem_allocator:jemalloc-3.6.0
+# Keyspace
+db0:keys=94363547,expires=13544,avg_ttl=63505693
+
+hadoop-master4:
+# Memory
+used_memory:54513952832
+used_memory_human:50.77G
+used_memory_rss:67257393152
+used_memory_peak:64820124928
+used_memory_peak_human:60.37G
+used_memory_lua:33792
+mem_fragmentation_ratio:1.23
+mem_allocator:jemalloc-3.6.0
+# Keyspace
+db0:keys=83297543,expires=12418,avg_ttl=63507046
+
+
+Finished processing 4 / 4 hosts in 298.89 ms
+</code></pre>
+
+<h2>存储优化</h2>
+
+<p>实际环境中存在会大量的用到简单string键值对，挺耗内存的。其实使用hash（内部存储ziplist）能更有效的利用内存。</p>
+
+<p>注意是ziplist形式的hash才能省内存！！如果是skiplist的hash会浪费内存。</p>
+
+<ul>
+<li><a href="http://webcache.googleusercontent.com/search?q=cache:yr96Qf3F0e4J:heylinux.com/archives/1920.html+&amp;cd=1&amp;hl=zh-CN&amp;ct=clnk&amp;gl=jp">内存优化之Redis数据结构的设计优化实践</a> heylinux.com/archives/1920.html 这篇文章可能访问不了，可以通过google/baidu的快照来查看</li>
+<li><a href="http://redis4you.com/articles.php?id=008&amp;name=Understanding+hash-max-zipmap-entries+and+">Understanding hash-max-zipmap-entries and &ldquo;hash of hashes&rdquo; optimization</a></li>
+<li><a href="http://redis.io/topics/memory-optimization">http://redis.io/topics/memory-optimization</a></li>
+<li><a href="http://redis.io/topics/lru-cache">http://redis.io/topics/lru-cache</a></li>
+<li><a href="https://segmentfault.com/a/1190000004708270">Redis内存优化</a></li>
+</ul>
+
+
+<p>下面引用官网对简单键值对和Hash的一个比较（Redis中key的相关特性不关注）: 对于小数据量的hash进行了优化</p>
+
+<blockquote><p> a few keys use a lot more memory than a single key containing a hash with a few fields.</p>
+
+<p> We use a trick.</p>
+
+<p> But many times hashes contain just a few fields. When hashes are small we can instead just encode them in an O(N) data structure, like a linear array with length-prefixed key value pairs. Since we do this only when N is small</p>
+
+<p> This does not work well just from the point of view of time complexity, but also from the point of view of constant times, since a linear array of key value pairs happens to play very well with the CPU cache (it has a better cache locality than a hash table).</p></blockquote>
+
+<p>优化主要涉及到ziplist的两个参数，是一个cpu/memory之间的均衡关系。entries直接用默认的就好了，value最好不要大于254（ziplist节点entry大于254需要增加4个到5字节，来存储前一个entry的长度）。</p>
+
+<pre><code>hash-max-zipmap-entries 512 (hash-max-ziplist-entries for Redis &gt;= 2.6)
+hash-max-zipmap-value 64  (hash-max-ziplist-value for Redis &gt;= 2.6)
+</code></pre>
+
+<p>简单列几条数据：</p>
+
+<pre><code>3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com  -&gt;  1469584847
+3:co4hk52ia0b1.5buzd.com                                          -&gt;  1468859527
+1:119.84.110.82_39502                                             -&gt;  1469666877
+</code></pre>
+
+<p>原始key内容可以不需要，鉴于包括域名的key太长，直接对数据key取md5。以1亿键值对来进行估算，取md5的前五位作为key，后27位作为hash键值对的key。</p>
+
+<p>扫描原始redis实例，然后把键值对转换后存储到新的实例。转换Scala代码如下：</p>
+
+<pre><code>import java.util.{List =&gt; JList}
+import org.apache.commons.codec.digest.DigestUtils
+import redis.clients.jedis._
+import scala.collection.JavaConversions._
+
+trait RedisUtils {
+
+  def md5(data: String): String = {
+    DigestUtils.md5Hex(data)
+  }
+
+  def Type(redis: Jedis, key: String) = redis.`type`(key)
+
+  def scan(redis: Jedis)(action: JList[String] =&gt; Unit): Unit = {
+    import scala.util.control.Breaks._
+
+    var cursor = "0"
+    breakable {
+      while (true) {
+        val res = redis.scan(cursor)
+
+        action(res.getResult())
+
+        cursor = res.getStringCursor
+        if (cursor.equals("0")) {
+          break
+        }
+      }
+    }
+  }
+
+  def printInfo(redis: Jedis): Unit = {
+    println(redis.info())
+  }
+
+  // 验证：
+  //  打印 **总共** 的键值对数量
+  //  eval "local aks=redis.call('keys', '*'); local res=0; for i,r in ipairs(aks) do res=res+redis.call('hlen', r) end; return res" 0
+  //  打印 **每个** hash包括的键值对个数
+  //  eval "local aks=redis.call('keys', '*'); local res={}; for i,r in ipairs(aks) do res[i]=redis.call('hlen', r) end; return res" 0
+  //
+
+}
+
+Object RedisTransfer extends RedisUtils {
+
+  def handle(key: String, value: String, tp: Pipeline): Unit = {
+    val m5 = md5(key)
+    tp.hset(m5.substring(0, 5), m5.substring(5), value)
+  }
+
+  def main(args: Array[String]) {
+    val Array(sHost, sPort, tHost, tPort) = args
+
+    val timeout = 60 * 1000
+    val source = new Jedis(sHost, sPort.toInt, timeout)
+    val sp = source.pipelined()
+    val target = new Jedis(tHost, tPort.toInt, timeout)
+    val tp = target.pipelined()
+
+    scan(source) { keys =&gt;
+      // 仅处理 string类型 的记录
+      val requests = for (key &lt;- keys) yield Some((key, sp.get(key)))
+      sp.sync()
+
+      for (
+        request &lt;- requests;
+        (key, resp) &lt;- request
+      ) {
+        try {
+          handle(key, resp.get(), tp)
+        } catch {
+          case e: Exception =&gt; println(s"fetch $key with exception, ${e.getMessage}")
+        }
+      }
+    }
+
+    tp.sync()
+
+    printInfo(target)
+
+    target.close()
+    source.close()
+  }
+
+}
+</code></pre>
+
+<p>由于对数据进行了处理，对比不是很清晰，不能直接说省了多少空间。但是添加上面的处理后，原来30G（大概3亿多）的实例变成了15G。</p>
+
+<h2>另一个案例</h2>
+
+<p>另外对域名的实例做了下测试，6.4百万的键值对：707.29M内存：</p>
+
+<p>md5前4个字符作为key，总共产生65536个键值对。每个hash大概包括100个kv。</p>
+
+<ul>
+<li>hash的key使用原来的键
+
+<ul>
+<li>不调ziplist_value的值，实际的转换成hash(skiplist)：939.6M</li>
+<li>ziplist_value修改成1024，转换成hash(ziplist)：513.78M</li>
+</ul>
+</li>
+<li>md5的作为hash的新key：344.7M</li>
+<li>md5的后28位作为hash的新key： 259.09M</li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Codis简单使用]]></title>
