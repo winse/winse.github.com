@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Tools | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/tools/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-07-28T12:01:09+08:00</updated>
+  <updated>2016-08-19T17:31:14+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,218 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Maven压缩js/css功能实践]]></title>
+    <link href="http://winseliu.com/blog/2016/08/19/j2ee-maven-resources-compress/"/>
+    <updated>2016-08-19T16:34:28+08:00</updated>
+    <id>http://winseliu.com/blog/2016/08/19/j2ee-maven-resources-compress</id>
+    <content type="html"><![CDATA[<p>为了节约网络带宽，一般在发布项目时对资源(js/css)文件进行压缩（去掉空行、精简代码等）。但是要做到兼容开发与生产还是的下一番功夫才行。</p>
+
+<pre><code>$ ls -l src/main/webapp/static/assets/js/ | head
+total 3120
+-rwxrwxr--+ 1 winse None  24804 Aug 10 17:40 bootbox.js
+-rwxrwxr--+ 1 winse None  71315 Aug 10 17:40 bootstrap.js
+-rwxrwxr--+ 1 winse None  13905 Aug 10 17:40 bootstrap-colorpicker.js
+-rwxrwxr--+ 1 winse None  49319 Aug 10 17:40 bootstrap-multiselect.js
+...
+
+$ ls -l target/dist/js/ | head
+total 1368
+-rwxrwx---+ 1 winse None   8943 Aug 19 16:53 bootbox-min.js
+-rwxrwx---+ 1 winse None   8057 Aug 19 16:53 bootstrap-colorpicker-min.js
+-rwxrwx---+ 1 winse None  38061 Aug 19 16:53 bootstrap-min.js
+-rwxrwx---+ 1 winse None  18232 Aug 19 16:53 bootstrap-multiselect-min.js
+...
+</code></pre>
+
+<p>项目中原本使用dist(压缩)、assets目录放置js/css等资源，在部署的时刻替换dist为assets，有点麻烦。首先想到的用nginx进行url重写，但是需要增加一个服务有点麻烦，能不能直接用spring来实现呢？</p>
+
+<ul>
+<li>自定义一个handler类</li>
+</ul>
+
+
+<p>查看 <code>mvn:resources</code> 实现，相当于注册了一个 <code>location -&gt; ResourceHttpRequestHandler</code> 的映射。
+我们第一种尝试自动化的方式就是自定义handler类来进行资源的定位。增加 StaticRequestHandler 的处理类，添加配置 location 和 compressLocation，首先去查找压缩文件([NAME]-min.js)，找不到然后再找源文件([NAME].js)位置。</p>
+
+<pre><code>## java
+public class StaticRequestHandler extends ResourceHttpRequestHandler {
+
+    private final static Log logger = LogFactory.getLog(ResourceHttpRequestHandler.class);
+
+    private String location;
+    private String compressLocation;
+
+    private Resource locationResource;
+    private Resource compressLocationResource;
+
+    public void setLocation(String location) {
+        this.location = location;
+    }
+
+    public void setCompressLocation(String compressLocation) {
+        this.compressLocation = compressLocation;
+    }
+
+    @Override
+    public void afterPropertiesSet() throws Exception {
+        super.afterPropertiesSet();
+
+        this.locationResource = getWebApplicationContext().getResource(location);
+        super.setLocations(Collections.singletonList(this.locationResource));
+
+        this.compressLocationResource = getWebApplicationContext().getResource(compressLocation);
+    }
+
+    @Override
+    protected Resource getResource(HttpServletRequest request) {
+        String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
+        if (path == null) {
+            throw new IllegalStateException("Required request attribute '"
+                    + HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE + "' is not set");
+        }
+
+        if (!StringUtils.hasText(path) || isInvalidPath(path)) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Ignoring invalid resource path [" + path + "]");
+            }
+            return null;
+        }
+
+        Resource res = null;
+        if (path.endsWith(".css")) {
+            res = findResource(compressLocationResource, path.substring(0, path.length() - 4) + ".min.css");
+        } else if (path.endsWith(".js")) {
+            res = findResource(compressLocationResource, path.substring(0, path.length() - 3) + ".min.js");
+        }
+
+        if (res == null) {
+            res = findResource(locationResource, path);
+        }
+
+        return res;
+    }
+
+    private Resource findResource(Resource location, String path) {
+        try {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Trying relative path [" + path + "] against base location: " + location);
+            }
+            Resource resource = location.createRelative(path);
+            if (resource.exists() &amp;&amp; resource.isReadable()) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Found matching resource: " + resource);
+                }
+                return resource;
+            } else if (logger.isTraceEnabled()) {
+                logger.trace("Relative resource doesn't exist or isn't readable: " + resource);
+            }
+        } catch (IOException ex) {
+            logger.debug("Failed to create relative resource - trying next resource location", ex);
+        }
+
+        return null;
+    }
+
+}
+
+## config
+    &lt;!-- 静态资源 --&gt;
+    &lt;!-- &lt;mvc:resources mapping="/static/**" location="/static/" /&gt; --&gt;
+
+    &lt;bean class="org.springframework.web.servlet.handler.SimpleUrlHandlerMapping"&gt;
+        &lt;property name="mappings"&gt;
+            &lt;value&gt;
+                /static/assets/**=staticRequestHandler
+            &lt;/value&gt;
+        &lt;/property&gt;
+    &lt;/bean&gt;
+    &lt;bean id="staticRequestHandler" class="com.hotel.servlet.resource.StaticRequestHandler"&gt;
+        &lt;property name="location" value="/static/assets/" /&gt;
+        &lt;property name="compressLocation" value="/static/dist/" /&gt;
+    &lt;/bean&gt;
+</code></pre>
+
+<p>这种方式解决了请求自动定位 <code>min.js</code> 压缩资源的功能，但是压缩还是不能自动化不能实时的更新，并且调试的时刻还是需要手动的修改配置来切换。</p>
+
+<p>有没有更好的自动化的实现开发环境和生产环境分开呢？</p>
+
+<ul>
+<li>Maven打包时压缩然后替换源文件</li>
+</ul>
+
+
+<p>使用 yuicompressor-maven-plugin 插件压缩资源，然后把压缩资源打包放置到assets目录下。</p>
+
+<p>注意： yuicomressor 插件的 nosuffix 配置为 true ! 这样压缩后的文件名和源文件名称才一样。</p>
+
+<pre><code>## spring config
+    &lt;!-- 静态资源 --&gt;
+    &lt;mvc:resources mapping="/static/**" location="/static/" /&gt;
+
+## maven pom.xml
+        &lt;profile&gt;
+            &lt;id&gt;release&lt;/id&gt;
+
+            &lt;build&gt;
+                &lt;plugins&gt;
+                    &lt;!-- http://alchim.sourceforge.net/yuicompressor-maven-plugin/compress-mojo.html --&gt;
+                    &lt;plugin&gt;
+                        &lt;groupId&gt;net.alchim31.maven&lt;/groupId&gt;
+                        &lt;artifactId&gt;yuicompressor-maven-plugin&lt;/artifactId&gt;
+                        &lt;version&gt;1.3.2&lt;/version&gt;
+                        &lt;executions&gt;
+                            &lt;execution&gt;
+                                &lt;id&gt;compress_js_css&lt;/id&gt;
+                                &lt;phase&gt;process-resources&lt;/phase&gt;
+                                &lt;goals&gt;
+                                    &lt;goal&gt;compress&lt;/goal&gt;
+                                &lt;/goals&gt;
+                            &lt;/execution&gt;
+                        &lt;/executions&gt;
+                        &lt;configuration&gt;
+                            &lt;encoding&gt;UTF-8&lt;/encoding&gt;
+                            &lt;nosuffix&gt;true&lt;/nosuffix&gt;
+                            &lt;skip&gt;false&lt;/skip&gt;
+
+                            &lt;jswarn&gt;false&lt;/jswarn&gt;
+                            &lt;nomunge&gt;false&lt;/nomunge&gt;
+                            &lt;preserveAllSemiColons&gt;false&lt;/preserveAllSemiColons&gt;
+
+                            &lt;sourceDirectory&gt;src/main/webapp/static/assets&lt;/sourceDirectory&gt;
+                            &lt;outputDirectory&gt;${project.build.directory}/dist&lt;/outputDirectory&gt;
+                        &lt;/configuration&gt;
+                    &lt;/plugin&gt;
+
+                    &lt;plugin&gt;
+                        &lt;artifactId&gt;maven-war-plugin&lt;/artifactId&gt;
+                        &lt;version&gt;2.6&lt;/version&gt;
+                        &lt;configuration&gt;
+                            &lt;webResources&gt;
+                                &lt;resource&gt;
+                                    &lt;directory&gt;${project.build.directory}/dist&lt;/directory&gt;
+                                    &lt;targetPath&gt;static/assets&lt;/targetPath&gt;
+                                    &lt;filtering&gt;false&lt;/filtering&gt;
+                                &lt;/resource&gt;
+                            &lt;/webResources&gt;
+                        &lt;/configuration&gt;
+                    &lt;/plugin&gt;
+
+                &lt;/plugins&gt;
+            &lt;/build&gt;
+        &lt;/profile&gt;
+</code></pre>
+
+<p>war插件添加了自定义webResources资源，首先把压缩的文件拷贝到对应目录，maven发现文件已经存在，不会再拷贝同名的文件，这样源文件就相当于被替换掉了。</p>
+
+<h2>总结</h2>
+
+<p>使用maven插件压缩打包，完美的解决js/css压缩导致的开发和生产不兼容问题。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[使用 Naxsi 处理 XSS]]></title>
@@ -827,89 +1039,6 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 <li><a href="http://www.ilanni.com/?p=9877">http://www.ilanni.com/?p=9877</a></li>
 <li><a href="http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html">http://blog.sina.com.cn/s/blog_86fbdd650101a0ax.html</a></li>
 <li><a href="http://kaifly.blog.51cto.com/3209616/1367591">http://kaifly.blog.51cto.com/3209616/1367591</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Rsync与scp优势]]></title>
-    <link href="http://winseliu.com/blog/2016/03/07/rsync-vs-scp/"/>
-    <updated>2016-03-07T17:05:45+08:00</updated>
-    <id>http://winseliu.com/blog/2016/03/07/rsync-vs-scp</id>
-    <content type="html"><![CDATA[<p>今天在做flume写kafka数据时，数据从其他目录cp拷贝过来，flume采集程序报错 <strong>程序采集的时刻文件发生了改变</strong>。</p>
-
-<pre><code>07 Mar 2016 16:46:05,535 ERROR [pool-3-thread-1] (org.apache.flume.source.SpoolDirectorySource$SpoolDirectoryRunnable.run:256)  - FATAL: Spool Directory source s1: { spoolDir: /home/hadoop/flume/data/ }: Uncaught exception in SpoolDirectorySource thread. Restart or reconfigure Flume to continue processing.
-java.lang.IllegalStateException: File has changed size since being read: /home/hadoop/flume/data/hbase-hadoop-master-cu2.log
-        at org.apache.flume.client.avro.ReliableSpoolingFileEventReader.retireCurrentFile(ReliableSpoolingFileEventReader.java:326)
-        at org.apache.flume.client.avro.ReliableSpoolingFileEventReader.readEvents(ReliableSpoolingFileEventReader.java:259)
-</code></pre>
-
-<p>联想到scp和rsync，好像rsync是有重命名这样的步骤的。网上也有很多对比这个两个工具的资料。</p>
-
-<ul>
-<li><a href="http://stackoverflow.com/questions/20244585/how-does-scp-differ-from-rsync">http://stackoverflow.com/questions/20244585/how-does-scp-differ-from-rsync</a></li>
-<li><p><a href="http://superuser.com/questions/193952/why-is-rsync-avz-faster-than-scp-r">http://superuser.com/questions/193952/why-is-rsync-avz-faster-than-scp-r</a></p></li>
-<li><p>rsync可以增量复制，并且只复制内容不同的部分</p></li>
-<li>rsync可以压缩，通过有断点续传 <code>-P</code></li>
-<li>rsync有各种参数： exclude等</li>
-<li>SCP也可以增加压缩参数： <code>scp -C -o 'CompressionLevel 9' -o 'IPQoS throughput'  -c arcfour machine:file .</code></li>
-<li>rsync会先写临时文件，复制完成后再重命名！</li>
-</ul>
-
-
-<p>这里只关注最后一点，对于按照名称来采集的程序非常关键！下面使用inotify监控目录的操作，在进行scp和rsync时发生的操作：</p>
-
-<pre><code>[hadoop@cu2 test]$ scp -r source target/
-[hadoop@cu2 test]$ rm target/source/1234
-[hadoop@cu2 test]$ rsync -vaz source target/
-sending incremental file list
-source/
-source/1234
-
-sent 141 bytes  received 35 bytes  352.00 bytes/sec
-total size is 34  speedup is 0.19
-</code></pre>
-
-<p>对应的inotify的输出为：</p>
-
-<pre><code>[hadoop@cu2 test]$ inotifywait -m target/source/
-Setting up watches.
-Watches established.
-target/source/ CREATE 1234
-target/source/ OPEN 1234
-target/source/ MODIFY 1234
-target/source/ CLOSE_WRITE,CLOSE 1234
-
-target/source/ DELETE 1234
-
-target/source/ ATTRIB,ISDIR 
-target/source/ CREATE .1234.ARUg56
-target/source/ OPEN .1234.ARUg56
-target/source/ ATTRIB .1234.ARUg56
-target/source/ MODIFY .1234.ARUg56
-target/source/ CLOSE_WRITE,CLOSE .1234.ARUg56
-target/source/ ATTRIB .1234.ARUg56
-target/source/ MOVED_FROM .1234.ARUg56
-target/source/ MOVED_TO 1234
-</code></pre>
-
-<p>rsync会先写把内容复制到一个临时文件，复制完成后，再重命名为正式的名称。</p>
-
-<p><strong>在生产环境尽量使用rsync来进行文件(夹)的复制/同步操作，即快键有安全。</strong></p>
-
-<p>当然还有奇葩的快速删除海量文件夹的方式也用的是rsync：</p>
-
-<pre><code>rsync --delete-before -d /data/blank/ /var/spool/clientmqueue/ 
-
-rsync --delete-before -a -H -v --progress --stats /tmp/test/ log/
-</code></pre>
-
-<ul>
-<li><a href="http://logo32.iteye.com/blog/1564727">http://logo32.iteye.com/blog/1564727</a></li>
-<li><a href="http://www.ha97.com/4107.html">http://www.ha97.com/4107.html</a></li>
 </ul>
 
 

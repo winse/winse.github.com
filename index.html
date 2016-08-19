@@ -9,7 +9,22 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="最近对生产的Redis做了两个优化：Redis扩展、以及对简单键值对的存储优化（string改成hash形式） Redis扩展 上一篇介绍的Codis安装。但是使用Pipeline操作时间比较长、连接数比较多的情况下，经常出现连接重置的情况。感觉不踏实，go也不懂感觉短时间处理不了这种问题。 &hellip;">
+  <meta name="description" content="为了节约网络带宽，一般在发布项目时对资源(js/css)文件进行压缩（去掉空行、精简代码等）。但是要做到兼容开发与生产还是的下一番功夫才行。 1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+$ ls -l src/main/webapp/static/assets/js &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +98,589 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/08/19/j2ee-maven-resources-compress/">Maven压缩js/css功能实践</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-08-19T16:34:28+08:00" pubdate data-updated="true">Fri 2016-08-19 16:34</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>为了节约网络带宽，一般在发布项目时对资源(js/css)文件进行压缩（去掉空行、精简代码等）。但是要做到兼容开发与生产还是的下一番功夫才行。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ ls -l src/main/webapp/static/assets/js/ | head
+</span><span class='line'>total 3120
+</span><span class='line'>-rwxrwxr--+ 1 winse None  24804 Aug 10 17:40 bootbox.js
+</span><span class='line'>-rwxrwxr--+ 1 winse None  71315 Aug 10 17:40 bootstrap.js
+</span><span class='line'>-rwxrwxr--+ 1 winse None  13905 Aug 10 17:40 bootstrap-colorpicker.js
+</span><span class='line'>-rwxrwxr--+ 1 winse None  49319 Aug 10 17:40 bootstrap-multiselect.js
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'>$ ls -l target/dist/js/ | head
+</span><span class='line'>total 1368
+</span><span class='line'>-rwxrwx---+ 1 winse None   8943 Aug 19 16:53 bootbox-min.js
+</span><span class='line'>-rwxrwx---+ 1 winse None   8057 Aug 19 16:53 bootstrap-colorpicker-min.js
+</span><span class='line'>-rwxrwx---+ 1 winse None  38061 Aug 19 16:53 bootstrap-min.js
+</span><span class='line'>-rwxrwx---+ 1 winse None  18232 Aug 19 16:53 bootstrap-multiselect-min.js
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>项目中原本使用dist(压缩)、assets目录放置js/css等资源，在部署的时刻替换dist为assets，有点麻烦。首先想到的用nginx进行url重写，但是需要增加一个服务有点麻烦，能不能直接用spring来实现呢？</p>
+
+<ul>
+<li>自定义一个handler类</li>
+</ul>
+
+
+<p>查看 <code>mvn:resources</code> 实现，相当于注册了一个 <code>location -&gt; ResourceHttpRequestHandler</code> 的映射。
+我们第一种尝试自动化的方式就是自定义handler类来进行资源的定位。增加 StaticRequestHandler 的处理类，添加配置 location 和 compressLocation，首先去查找压缩文件([NAME]-min.js)，找不到然后再找源文件([NAME].js)位置。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## java
+</span><span class='line'>public class StaticRequestHandler extends ResourceHttpRequestHandler {
+</span><span class='line'>
+</span><span class='line'>  private final static Log logger = LogFactory.getLog(ResourceHttpRequestHandler.class);
+</span><span class='line'>
+</span><span class='line'>  private String location;
+</span><span class='line'>  private String compressLocation;
+</span><span class='line'>
+</span><span class='line'>  private Resource locationResource;
+</span><span class='line'>  private Resource compressLocationResource;
+</span><span class='line'>
+</span><span class='line'>  public void setLocation(String location) {
+</span><span class='line'>      this.location = location;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public void setCompressLocation(String compressLocation) {
+</span><span class='line'>      this.compressLocation = compressLocation;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public void afterPropertiesSet() throws Exception {
+</span><span class='line'>      super.afterPropertiesSet();
+</span><span class='line'>
+</span><span class='line'>      this.locationResource = getWebApplicationContext().getResource(location);
+</span><span class='line'>      super.setLocations(Collections.singletonList(this.locationResource));
+</span><span class='line'>
+</span><span class='line'>      this.compressLocationResource = getWebApplicationContext().getResource(compressLocation);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  protected Resource getResource(HttpServletRequest request) {
+</span><span class='line'>      String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
+</span><span class='line'>      if (path == null) {
+</span><span class='line'>          throw new IllegalStateException("Required request attribute '"
+</span><span class='line'>                  + HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE + "' is not set");
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      if (!StringUtils.hasText(path) || isInvalidPath(path)) {
+</span><span class='line'>          if (logger.isDebugEnabled()) {
+</span><span class='line'>              logger.debug("Ignoring invalid resource path [" + path + "]");
+</span><span class='line'>          }
+</span><span class='line'>          return null;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      Resource res = null;
+</span><span class='line'>      if (path.endsWith(".css")) {
+</span><span class='line'>          res = findResource(compressLocationResource, path.substring(0, path.length() - 4) + ".min.css");
+</span><span class='line'>      } else if (path.endsWith(".js")) {
+</span><span class='line'>          res = findResource(compressLocationResource, path.substring(0, path.length() - 3) + ".min.js");
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      if (res == null) {
+</span><span class='line'>          res = findResource(locationResource, path);
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      return res;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private Resource findResource(Resource location, String path) {
+</span><span class='line'>      try {
+</span><span class='line'>          if (logger.isDebugEnabled()) {
+</span><span class='line'>              logger.debug("Trying relative path [" + path + "] against base location: " + location);
+</span><span class='line'>          }
+</span><span class='line'>          Resource resource = location.createRelative(path);
+</span><span class='line'>          if (resource.exists() && resource.isReadable()) {
+</span><span class='line'>              if (logger.isDebugEnabled()) {
+</span><span class='line'>                  logger.debug("Found matching resource: " + resource);
+</span><span class='line'>              }
+</span><span class='line'>              return resource;
+</span><span class='line'>          } else if (logger.isTraceEnabled()) {
+</span><span class='line'>              logger.trace("Relative resource doesn't exist or isn't readable: " + resource);
+</span><span class='line'>          }
+</span><span class='line'>      } catch (IOException ex) {
+</span><span class='line'>          logger.debug("Failed to create relative resource - trying next resource location", ex);
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      return null;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>## config
+</span><span class='line'>  &lt;!-- 静态资源 --&gt;
+</span><span class='line'>  &lt;!-- &lt;mvc:resources mapping="/static/**" location="/static/" /&gt; --&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;bean class="org.springframework.web.servlet.handler.SimpleUrlHandlerMapping"&gt;
+</span><span class='line'>      &lt;property name="mappings"&gt;
+</span><span class='line'>          &lt;value&gt;
+</span><span class='line'>              /static/assets/**=staticRequestHandler
+</span><span class='line'>          &lt;/value&gt;
+</span><span class='line'>      &lt;/property&gt;
+</span><span class='line'>  &lt;/bean&gt;
+</span><span class='line'>  &lt;bean id="staticRequestHandler" class="com.hotel.servlet.resource.StaticRequestHandler"&gt;
+</span><span class='line'>      &lt;property name="location" value="/static/assets/" /&gt;
+</span><span class='line'>      &lt;property name="compressLocation" value="/static/dist/" /&gt;
+</span><span class='line'>  &lt;/bean&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>这种方式解决了请求自动定位 <code>min.js</code> 压缩资源的功能，但是压缩还是不能自动化不能实时的更新，并且调试的时刻还是需要手动的修改配置来切换。</p>
+
+<p>有没有更好的自动化的实现开发环境和生产环境分开呢？</p>
+
+<ul>
+<li>Maven打包时压缩然后替换源文件</li>
+</ul>
+
+
+<p>使用 yuicompressor-maven-plugin 插件压缩资源，然后把压缩资源打包放置到assets目录下。</p>
+
+<p>注意： yuicomressor 插件的 nosuffix 配置为 true ! 这样压缩后的文件名和源文件名称才一样。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## spring config
+</span><span class='line'>  &lt;!-- 静态资源 --&gt;
+</span><span class='line'>  &lt;mvc:resources mapping="/static/**" location="/static/" /&gt;
+</span><span class='line'>
+</span><span class='line'>## maven pom.xml
+</span><span class='line'>      &lt;profile&gt;
+</span><span class='line'>          &lt;id&gt;release&lt;/id&gt;
+</span><span class='line'>
+</span><span class='line'>          &lt;build&gt;
+</span><span class='line'>              &lt;plugins&gt;
+</span><span class='line'>                  &lt;!-- http://alchim.sourceforge.net/yuicompressor-maven-plugin/compress-mojo.html --&gt;
+</span><span class='line'>                  &lt;plugin&gt;
+</span><span class='line'>                      &lt;groupId&gt;net.alchim31.maven&lt;/groupId&gt;
+</span><span class='line'>                      &lt;artifactId&gt;yuicompressor-maven-plugin&lt;/artifactId&gt;
+</span><span class='line'>                      &lt;version&gt;1.3.2&lt;/version&gt;
+</span><span class='line'>                      &lt;executions&gt;
+</span><span class='line'>                          &lt;execution&gt;
+</span><span class='line'>                              &lt;id&gt;compress_js_css&lt;/id&gt;
+</span><span class='line'>                              &lt;phase&gt;process-resources&lt;/phase&gt;
+</span><span class='line'>                              &lt;goals&gt;
+</span><span class='line'>                                  &lt;goal&gt;compress&lt;/goal&gt;
+</span><span class='line'>                              &lt;/goals&gt;
+</span><span class='line'>                          &lt;/execution&gt;
+</span><span class='line'>                      &lt;/executions&gt;
+</span><span class='line'>                      &lt;configuration&gt;
+</span><span class='line'>                          &lt;encoding&gt;UTF-8&lt;/encoding&gt;
+</span><span class='line'>                          &lt;nosuffix&gt;true&lt;/nosuffix&gt;
+</span><span class='line'>                          &lt;skip&gt;false&lt;/skip&gt;
+</span><span class='line'>
+</span><span class='line'>                          &lt;jswarn&gt;false&lt;/jswarn&gt;
+</span><span class='line'>                          &lt;nomunge&gt;false&lt;/nomunge&gt;
+</span><span class='line'>                          &lt;preserveAllSemiColons&gt;false&lt;/preserveAllSemiColons&gt;
+</span><span class='line'>
+</span><span class='line'>                          &lt;sourceDirectory&gt;src/main/webapp/static/assets&lt;/sourceDirectory&gt;
+</span><span class='line'>                          &lt;outputDirectory&gt;${project.build.directory}/dist&lt;/outputDirectory&gt;
+</span><span class='line'>                      &lt;/configuration&gt;
+</span><span class='line'>                  &lt;/plugin&gt;
+</span><span class='line'>
+</span><span class='line'>                  &lt;plugin&gt;
+</span><span class='line'>                      &lt;artifactId&gt;maven-war-plugin&lt;/artifactId&gt;
+</span><span class='line'>                      &lt;version&gt;2.6&lt;/version&gt;
+</span><span class='line'>                      &lt;configuration&gt;
+</span><span class='line'>                          &lt;webResources&gt;
+</span><span class='line'>                              &lt;resource&gt;
+</span><span class='line'>                                  &lt;directory&gt;${project.build.directory}/dist&lt;/directory&gt;
+</span><span class='line'>                                  &lt;targetPath&gt;static/assets&lt;/targetPath&gt;
+</span><span class='line'>                                  &lt;filtering&gt;false&lt;/filtering&gt;
+</span><span class='line'>                              &lt;/resource&gt;
+</span><span class='line'>                          &lt;/webResources&gt;
+</span><span class='line'>                      &lt;/configuration&gt;
+</span><span class='line'>                  &lt;/plugin&gt;
+</span><span class='line'>                  
+</span><span class='line'>              &lt;/plugins&gt;
+</span><span class='line'>          &lt;/build&gt;
+</span><span class='line'>      &lt;/profile&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>war插件添加了自定义webResources资源，首先把压缩的文件拷贝到对应目录，maven发现文件已经存在，不会再拷贝同名的文件，这样源文件就相当于被替换掉了。</p>
+
+<h2>总结</h2>
+
+<p>使用maven插件压缩打包，完美的解决js/css压缩导致的开发和生产不兼容问题。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/08/17/redis-batch-operate/">Redis批量操作</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-08-17T15:33:47+08:00" pubdate data-updated="true">Wed 2016-08-17 15:33</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>紧接上一篇优化的文章，在生产进行shard分库/分片操作后，部分大量zsort键值对拆散到多个redis实例。原来统计总量的命令现在需要汇总后才行。</p>
+
+<p>今天就来说说Redis里面的批量操作，批量操作其实就是循环，把大部分的工作让机器做了。逻辑比较复杂的用比较实现，功能简单的用脚本即可。</p>
+
+<ul>
+<li>单机用lua脚本</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># redis-cli
+</span><span class='line'>
+</span><span class='line'>eval "local aks=redis.call('keys', '*'); local res=0; for i,r in ipairs(aks) do res=res+redis.call('hlen', r) end; return res" 0</span></code></pre></td></tr></table></div></figure>
+
+
+<p>通过keys获取所有的键（都是hash类型），然后计算出匹配的hash包括的键值对总数。</p>
+
+<p>在<strong>同一个实例</strong>的小数据量的统计，lua脚本优势还是比较明显的：redis自带的还能编程。</p>
+
+<ul>
+<li>shell脚本</li>
+</ul>
+
+
+<p>看官网的文档：<a href="http://redis.io/topics/rediscli">the Redis command line interface</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## shell
+</span><span class='line'>
+</span><span class='line'>cat commands | redis-cli --raw
+</span><span class='line'>
+</span><span class='line'>## redis-cli
+</span><span class='line'>
+</span><span class='line'>127.0.0.1:6379&gt; CONFIG RESETSTAT
+</span><span class='line'>OK
+</span><span class='line'>...
+</span><span class='line'>127.0.0.1:6379&gt; info stats
+</span><span class='line'># Stats
+</span><span class='line'>total_connections_received:2
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：不要用循环然后调用<code>redis-cli COMMAND</code>，这种方式会产生很多的TCP连接，如果要执行的命令太多，可能导致TCP端口不够用。</p>
+
+<p>还有 <code>redis-cli --stat</code>，<code>redis-cli --scan</code>，<code>redis-cli monitor</code> 这些命令挺有意思的。</p>
+
+<ul>
+<li>直接tcp连接管道操作</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## shell
+</span><span class='line'>
+</span><span class='line'>sed 's/$/^M/' commands &gt; test.redis.cmd
+</span><span class='line'>cat test.redis.cmd | nc localhost 6379
+</span><span class='line'>
+</span><span class='line'>## redis-cli
+</span><span class='line'>
+</span><span class='line'>127.0.0.1:6379&gt; info stats
+</span><span class='line'># Stats
+</span><span class='line'>total_connections_received:1
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>通过tcp连接操作，一批次的操作就一个连接。但是，操作的时刻需要主要，linux的换行符是 <code>\n</code>，而redis需要的是 <code>\r\n</code>；还有通过tcp连接返回的结果是redis协议原始数据，没有经过处理，需要稍微看看协议规范<a href="http://redis.io/topics/protocol">Redis Protocol specification</a></p>
+
+<ul>
+<li>pipelining</li>
+</ul>
+
+
+<p>redis自带的管道功能，性能提升相当明显（<a href="http://redis.io/topics/pipelining#some-benchmark">官网数据</a>）。</p>
+
+<p>原来看到过觉得高大上，准备试试。但是，返回的确实一个成功数而已！！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ echo 119.84.100.68 | xargs -I{} echo "1:ips:2016-08-16:{}" | while read cmd ; do echo -e "*2\r\n\$5\r\nzcard\r\n\$${#cmd}\r\n$cmd\r\n" ; done  | redis-cli -p 26379 --pipe
+</span><span class='line'>All data transferred. Waiting for the last reply...
+</span><span class='line'>Last reply received from server.
+</span><span class='line'>errors: 0, replies: 1</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：redis-cli带的pipe就比较坑：最后只返回操作成功失败的统计数量，只适合用来做更新操作<a href="http://redis.io/topics/mass-insert">Redis Mass Insertion</a>！！</p>
+
+<p>要用pipeline来实现查询的话，用java/scala等语言来弄吧。</p>
+
+<p>最后帖一下用shell脚本：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>day=${day:-`date "+%Y-%m-%d"`}
+</span><span class='line'>key="1:ips:$day"
+</span><span class='line'>
+</span><span class='line'>for h in hadoop-master{1..4} ; do 
+</span><span class='line'>  exists=$(redis-cli -h $h -p 6372 exists $key)
+</span><span class='line'>  if [ $exists -gt 0 ] ; then
+</span><span class='line'>    redis-cli -h $h -p 6372 zrange $key 0 -1 &gt; activeresourceip$day.data
+</span><span class='line'>    for h in hadoop-master{1..4} ; do
+</span><span class='line'>      cat activeresourceip$day.data | while read ip ; do echo -e "zcard $key:$ip\r" ; done | redis-cli -h $h -p 6372
+</span><span class='line'>    done
+</span><span class='line'>  fi
+</span><span class='line'>done | awk '{s+=$1} END {print s}' </span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -625,13 +1223,31 @@
 <li>hash的key使用原来的键
 
 <ul>
-<li>不调ziplist_value的值，实际的转换成hash(skiplist)：939.6M</li>
+<li>不调ziplist_value的值，实际的转换成hash(skiplist)：939.6M，</li>
 <li>ziplist_value修改成1024，转换成hash(ziplist)：513.78M</li>
 </ul>
 </li>
 <li>md5的作为hash的新key：344.7M</li>
 <li>md5的后28位作为hash的新key： 259.09M</li>
 </ul>
+
+
+<p>如：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>MD5:
+</span><span class='line'>  3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com
+</span><span class='line'>  1356de078028ddf266c962533760b27c
+</span><span class='line'>
+</span><span class='line'>1356 -&gt; hash( 3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com -&gt; 1469584847 )
+</span><span class='line'>1356 -&gt; hash( 1356de078028ddf266c962533760b27c -&gt; 1469584847 )
+</span><span class='line'>1356 -&gt; hash( de078028ddf266c962533760b27c -&gt; 1469584847 )</span></code></pre></td></tr></table></div></figure>
 
 
 <p>&ndash;END</p>
@@ -1821,915 +2437,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/">使用 Flume+kafka+elasticsearch 处理数据</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-06-28T09:50:05+08:00" pubdate data-updated="true">Tue 2016-06-28 09:50</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。</p>
-
-<ul>
-<li>flume-1.6.0</li>
-<li>kafka_2.11-0.9.0.1(可以与0.8.2客户端通信, flume-kafka-channel-1.6.0不改)</li>
-<li>elasticsearch-2.2.0</li>
-</ul>
-
-
-<p>由于版本的差异，需要替换/添加以下jar到 <code>flume/lib</code> 下：</p>
-
-<p>使用 <code>mvn dependecy:copy-dependencies</code> 导出所需依赖的包</p>
-
-<p>jackson一堆，hppc-0.7.1.jar，t-digest-3.0.jar，jsr166e-1.1.0.jar，guava-18.0.jar，lucene一堆，elasticsearch-2.2.0.jar。</p>
-
-<p>远程调试配置：</p>
-
-<p>source由于项目上的一些特殊规则，需要自己编写。通过远程DEBUG来打断点来排查BUG。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flume]$ vi conf/flume-env.sh
-</span><span class='line'>export JAVA_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8092"</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>实战1</h2>
-
-<p>KafkaChannel：考虑到其他功能也需要用到这些数据。</p>
-
-<p>先写一个配置把flume自带功能跑通，这里用 netcat 作为输入运行：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flumebin]$ cat dta.flume 
-</span><span class='line'>dta.sources=s1
-</span><span class='line'>dta.channels=c1
-</span><span class='line'>dta.sinks=k1
-</span><span class='line'>
-</span><span class='line'>dta.channels.c1.type=org.apache.flume.channel.kafka.KafkaChannel
-</span><span class='line'>dta.channels.c1.capacity=10000
-</span><span class='line'>dta.channels.c1.transactionCapacity=1000
-</span><span class='line'>dta.channels.c1.brokerList=cu5:9093
-</span><span class='line'>dta.channels.c1.topic=flume_cmdid_1234
-</span><span class='line'>dta.channels.c1.groupId=flume_dta
-</span><span class='line'>dta.channels.c1.zookeeperConnect=cu3:2181/kafka_0_9
-</span><span class='line'>dta.channels.c1.parseAsFlumeEvent=false
-</span><span class='line'>
-</span><span class='line'>dta.sources.s1.channels=c1
-</span><span class='line'>dta.sources.s1.type=netcat
-</span><span class='line'>dta.sources.s1.bind=0.0.0.0
-</span><span class='line'>dta.sources.s1.port=6666
-</span><span class='line'>dta.sources.s1.max-line-length=88888888
-</span><span class='line'>
-</span><span class='line'>dta.sinks.k1.channel=c1
-</span><span class='line'>dta.sinks.k1.type=elasticsearch
-</span><span class='line'>dta.sinks.k1.hostNames=cu2:9300
-</span><span class='line'>dta.sinks.k1.indexName=foo_index
-</span><span class='line'>dta.sinks.k1.indexType=idcisp
-</span><span class='line'>dta.sinks.k1.clusterName=eshore-cu
-</span><span class='line'>dta.sinks.k1.batchSize=500
-</span><span class='line'>dta.sinks.k1.ttl=5d
-</span><span class='line'>dta.sinks.k1.serializer=com.eshore.zhfx.collector.InfoSecurityLogIndexRequestBuilderFactory
-</span><span class='line'>dta.sinks.k1.serializer.idcispUrlBase64=true
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 flumebin]$ bin/flume-ng agent --classpath flume-dta-source-2.1.jar  -n dta -c conf -f dta.flume
-</span><span class='line'>
-</span><span class='line'># 新开一个窗口
-</span><span class='line'>[hadoop@cu2 ~]$ nc localhost 6666
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>kafka的主题、ES的索引可以不要手动建，当然为了更好的控制ES索引创建可以添加一个索引名的template。</p>
-
-<p>InfoSecurityLogIndexRequestBuilderFactory 实现 ElasticSearchIndexRequestBuilderFactory 把原始记录转换成 ES 的JSON对象。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  private Counter allRecordMetric = MetricManager.getInstance().counter("all_infosecurity");
-</span><span class='line'>  private Counter errorRecordMetric = MetricManager.getInstance().counter("error_infosecurity");
-</span><span class='line'>  
-</span><span class='line'>  public IndexRequestBuilder createIndexRequest(Client client, String indexPrefix, String indexType, Event event)
-</span><span class='line'>      throws IOException {
-</span><span class='line'>    allRecordMetric.inc();
-</span><span class='line'>
-</span><span class='line'>    String record = new String(event.getBody(), outputCharset);
-</span><span class='line'>
-</span><span class='line'>    context.put(ElasticSearchSinkConstants.INDEX_NAME, indexPrefix);
-</span><span class='line'>    indexNameBuilder.configure(context);
-</span><span class='line'>    IndexRequestBuilder indexRequestBuilder = client.prepareIndex(indexNameBuilder.getIndexName(event), indexType);
-</span><span class='line'>
-</span><span class='line'>    try {
-</span><span class='line'>      Gson gson = new Gson();
-</span><span class='line'>      IdcIspLog log = parseRecord(record);
-</span><span class='line'>      BytesArray data = new BytesArray(gson.toJson(log));
-</span><span class='line'>
-</span><span class='line'>      indexRequestBuilder.setSource(data);
-</span><span class='line'>      indexRequestBuilder.setRouting(log.commandld);
-</span><span class='line'>    } catch (Exception e) {
-</span><span class='line'>      LOG.error(e.getMessage(), e);
-</span><span class='line'>      errorRecordMetric.inc();
-</span><span class='line'>
-</span><span class='line'>      indexRequestBuilder.setSource(record.getBytes(outputCharset));
-</span><span class='line'>      // 保留错误的数据
-</span><span class='line'>      indexRequestBuilder.setRouting("error");
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    return indexRequestBuilder;
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>实战2</h2>
-
-<p>测试自定义的Source：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>dta.sources=s1
-</span><span class='line'>dta.channels=c1
-</span><span class='line'>dta.sinks=k1
-</span><span class='line'>
-</span><span class='line'>dta.channels.c1.type=memory
-</span><span class='line'>dta.channels.c1.capacity=1000000
-</span><span class='line'>dta.channels.c1.transactionCapacity=1000000
-</span><span class='line'>dta.channels.c1.byteCapacity=7000000000
-</span><span class='line'>
-</span><span class='line'>dta.sources.s1.channels=c1
-</span><span class='line'>dta.sources.s1.type=com.eshore.zhfx.collector.CollectSource
-</span><span class='line'>dta.sources.s1.spoolDir=/home/hadoop/flume/data/
-</span><span class='line'>dta.sources.s1.trackerDir=/tmp/dtaspool
-</span><span class='line'>
-</span><span class='line'>dta.sinks.k1.channel=c1
-</span><span class='line'>dta.sinks.k1.type=logger</span></code></pre></td></tr></table></div></figure>
-
-
-<p>CollectSource 实现PollableSource 继承AbstractSource类。参考Flume开发文档: <a href="http://flume.apache.org/FlumeDeveloperGuide.html#source">http://flume.apache.org/FlumeDeveloperGuide.html#source</a>  <code>org.apache.flume.source.SequenceGeneratorSource</code> 类。</p>
-
-<p>方法process主逻辑代码如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  public Status process() throws EventDeliveryException {
-</span><span class='line'>    Status status = Status.READY;
-</span><span class='line'>
-</span><span class='line'>    try {
-</span><span class='line'>      List&lt;Event&gt; events = readEvent(batchSize);
-</span><span class='line'>      if (!events.isEmpty()) {
-</span><span class='line'>        sourceCounter.addToEventReceivedCount(events.size());
-</span><span class='line'>        sourceCounter.incrementAppendBatchReceivedCount();
-</span><span class='line'>
-</span><span class='line'>        getChannelProcessor().processEventBatch(events);
-</span><span class='line'>        // 记录文件已经处理的位置
-</span><span class='line'>        commit();
-</span><span class='line'>
-</span><span class='line'>        sourceCounter.addToEventAcceptedCount(events.size());
-</span><span class='line'>        sourceCounter.incrementAppendBatchAcceptedCount();
-</span><span class='line'>      }
-</span><span class='line'>    } catch (ChannelException | IOException e) {
-</span><span class='line'>      status = Status.BACKOFF;
-</span><span class='line'>      Throwables.propagate(e);
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    return status;
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>实例：Flume+Kafka+ES</h2>
-
-<p>把两个实例整合起来，把实例1的Source替换下即可。</p>
-
-<h2>附-kafka基本操作</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-server-start.sh config/server1.properties 
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ cat config/server1.properties 
-</span><span class='line'>listeners=PLAINTEXT://:9093
-</span><span class='line'>log.dirs=/tmp/kafka-logs1
-</span><span class='line'>num.partitions=1
-</span><span class='line'>zookeeper.connect=cu3,cu4,cu5/kafka_0_9
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --create --zookeeper cu3:2181/kafka_0_9 --replication 1 --partitions 1 --topic flume
-</span><span class='line'>Created topic "flume".
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --list --zookeeper cu3:2181/kafka_0_9
-</span><span class='line'>flume
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-producer.sh --broker-list cu5:9093 --topic flume
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-consumer.sh --zookeeper cu3:2181/kafka_0_9 --topic flume --from-beginning
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>附-Flume操作</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>https://flume.apache.org/FlumeUserGuide.html#fan-out-flow
-</span><span class='line'>
-</span><span class='line'>export FLUME_JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8092"
-</span><span class='line'>bin/flume-ng agent --classpath "flume-dta-libs/*" -Dflume.root.logger=DEBUG,console  -n dta -c conf -f accesslog.flume
-</span><span class='line'>
-</span><span class='line'># with ganglia
-</span><span class='line'>[ud@cu-ud1 apache-flume-1.6.0-bin]$ bin/flume-ng agent --classpath "/home/ud/collector/common-lib/*"  -Dflume.root.logger=Debug,console -Dflume.monitoring.type=ganglia -Dflume.monitoring.hosts=239.2.11.71:8649 -n dta -c conf -f accesslog.flume 
-</span><span class='line'>
-</span><span class='line'># windows
-</span><span class='line'>bin\flume-ng.cmd agent -n agent -c conf -f helloworld.flume -property "flume.root.logger=INFO,console"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-06-17T09:30:50+08:00" pubdate data-updated="true">Fri 2016-06-17 09:30</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>前面写过完全纯手工和用yum安装依赖来安装ganglia的文章，最近生产安装了puppet，既然已经手上已有牛杀鸡就不用再取菜刀了。今天记录下前几天使用puppet安装ganglia的经历。</p>
-
-<h2>前提（自己操作过）</h2>
-
-<ul>
-<li>配置过私有仓库 (createrepo)</li>
-<li>安装好puppet</li>
-<li>编译过自己的rpm (rpmbuild)</li>
-</ul>
-
-
-<h2>编译gmetad，gmond，gweb</h2>
-
-<p>点击链接下载SPEC：</p>
-
-<ul>
-<li><a href="/files/ganglia-puppet/gmetad.spec">gmetad.spec</a></li>
-<li><a href="/files/ganglia-puppet/gmond.spec">gmond.spec</a></li>
-<li><a href="/files/ganglia-puppet/gweb.spec">gweb.spec</a></li>
-</ul>
-
-
-<p>然后编译打包：</p>
-
-<p>先手动编译安装 ganglia ，把依赖的问题处理好。然后再使用 rpmbuild 编译生成 rpm ！！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 1&gt; 建立目录结构
-</span><span class='line'>mkdir ganglia-build
-</span><span class='line'>cd ganglia-build
-</span><span class='line'>mkdir BUILD RPMS SOURCES SPECS SRPMS
-</span><span class='line'>
-</span><span class='line'># 2&gt; 修改配置
-</span><span class='line'># ganglia-web-3.7.1.tar.gz的makefile、conf_default.php.in修改下，根据等下要配置gmetad的参数进行修改
-</span><span class='line'>
-</span><span class='line'>less ganglia-web-3.7.1/Makefile 
-</span><span class='line'>  # Location where gweb should be installed to (excluding conf, dwoo dirs).
-</span><span class='line'>  GDESTDIR = /var/www/html/ganglia
-</span><span class='line'>
-</span><span class='line'>  # Location where default apache configuration should be installed to.
-</span><span class='line'>  GCONFDIR = /usr/local/ganglia/etc/
-</span><span class='line'>
-</span><span class='line'>  # Gweb statedir (where conf dir and Dwoo templates dir are stored)
-</span><span class='line'>  GWEB_STATEDIR = /var/www/html/ganglia
-</span><span class='line'>
-</span><span class='line'>  # Gmetad rootdir (parent location of rrd folder)
-</span><span class='line'>  GMETAD_ROOTDIR = /data/ganglia
-</span><span class='line'>
-</span><span class='line'>  APACHE_USER = apache
-</span><span class='line'>
-</span><span class='line'># 连外网太慢，下载放到本地
-</span><span class='line'>less ganglia-web-3.7.1/conf_default.php.in 
-</span><span class='line'>  #$conf['cubism_js_path'] = "js/cubism.v1.min.js";
-</span><span class='line'>  $conf['jquery_js_path'] = "js/jquery.min.js";
-</span><span class='line'>  $conf['jquerymobile_js_path'] = "js/jquery.mobile.min.js";
-</span><span class='line'>  $conf['jqueryui_js_path'] = "js/jquery-ui.min.js";
-</span><span class='line'>  $conf['rickshaw_js_path'] = "js/rickshaw.min.js";
-</span><span class='line'>  $conf['cubism_js_path'] = "js/cubism.v1.min.js";
-</span><span class='line'>  $conf['d3_js_path'] = "js/d3.min.js";
-</span><span class='line'>  $conf['protovis_js_path'] = "js/protovis.min.js";
-</span><span class='line'>
-</span><span class='line'># 3&gt; 源文件
-</span><span class='line'># 把文件放到SOURCES目录下，
-</span><span class='line'>ls SOURCES/
-</span><span class='line'>  ganglia-3.7.2.tar.gz  ganglia-web-3.7.1.tar.gz
-</span><span class='line'>
-</span><span class='line'># 4&gt; 编译生成RPM
-</span><span class='line'>rpmbuild -v -ba SPECS/gmetad.spec 
-</span><span class='line'>rpmbuild -v -ba SPECS/gmond.spec 
-</span><span class='line'>rpmbuild -v -ba SPECS/gweb.spec 
-</span><span class='line'>
-</span><span class='line'># 5&gt; 查看内容
-</span><span class='line'>rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm </span></code></pre></td></tr></table></div></figure>
-
-
-<h2>本地仓库</h2>
-
-<p>这里假设已经把系统光盘做成了本地仓库。</p>
-
-<p><strong>先安装httpd、php、createrepo</strong>，然后按照下面的步骤创建本地仓库：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 系统带的可以从光盘拷贝，直接映射到httpd的目录下即可
-</span><span class='line'>[hadoop@hadoop-master1 rhel6.3]$ ls 
-</span><span class='line'>Packages  repodata
-</span><span class='line'>[hadoop@hadoop-master1 html]$ pwd
-</span><span class='line'>/var/www/html
-</span><span class='line'>[hadoop@hadoop-master1 html]$ ll
-</span><span class='line'>lrwxrwxrwx.  1 root root   20 2月  15 2014 rhel6.3 -&gt; /opt/rhel6.3
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mkdir -p /opt/dta/repo
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ cd /opt/dta/repo
-</span><span class='line'>[hadoop@hadoop-master1 repo]$ ls *.rpm
-</span><span class='line'>gmetad-3.7.2-1.el6.x86_64.rpm  gmond-3.7.2-1.el6.x86_64.rpm  gweb-3.7.1-1.el6.x86_64.rpm  libconfuse-2.7-4.el6.x86_64.rpm
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 repo]$ sudo createrepo .
-</span><span class='line'>3/3 - libconfuse-2.7-4.el6.x86_64.rpm                                           
-</span><span class='line'>Saving Primary metadata
-</span><span class='line'>Saving file lists metadata
-</span><span class='line'>Saving other metadata
-</span><span class='line'>
-</span><span class='line'># 映射到httpd目录下
-</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ cd /var/www/html/
-</span><span class='line'>[hadoop@hadoop-master1 html]$ sudo ln -s /opt/dta/repo dta
-</span><span class='line'>
-</span><span class='line'># 加入本地仓库源
-</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ sudo cp puppet.repo dta.repo
-</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ sudo vi dta.repo 
-</span><span class='line'>[dta]
-</span><span class='line'>name=DTA Local
-</span><span class='line'>baseurl=http://hadoop-master1:801/dta
-</span><span class='line'>enabled=1
-</span><span class='line'>gpgcheck=0
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意： 在安装的时刻找不到gmond，可以先清理yum的缓冲： <code>yum clean all</code></p>
-
-<h2>puppet模块</h2>
-
-<p>添加了三个模块，用于主机添加repo配置和sudo配置，以及安装配置gmond。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 modules]# tree $PWD
-</span><span class='line'>/etc/puppetlabs/code/environments/production/modules
-</span><span class='line'>├── dtarepo
-</span><span class='line'>│   ├── manifests
-</span><span class='line'>│   │   └── init.pp
-</span><span class='line'>│   └── templates
-</span><span class='line'>│       └── dta.repo
-</span><span class='line'>├── gmond
-</span><span class='line'>│   ├── manifests
-</span><span class='line'>│   │   └── init.pp
-</span><span class='line'>│   └── templates
-</span><span class='line'>│       └── gmond.conf
-</span><span class='line'>└── sudo
-</span><span class='line'>    ├── manifests
-</span><span class='line'>    │   └── init.pp
-</span><span class='line'>    └── templates
-</span><span class='line'>        └── sudo.erb</span></code></pre></td></tr></table></div></figure>
-
-
-<p>都比较简单，通过init.pp来进行配置，然后加载模板，写入到同步主机本地文件中。</p>
-
-<ul>
-<li>dtarepo</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>./dtarepo/manifests/init.pp
-</span><span class='line'>class dtarepo {
-</span><span class='line'>
-</span><span class='line'>file{'/etc/yum.repos.d/dta.repo':
-</span><span class='line'>  ensure =&gt; file,
-</span><span class='line'>  content =&gt; template('dtarepo/dta.repo'),
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>./dtarepo/templates/dta.repo
-</span><span class='line'>[dta]
-</span><span class='line'>name=DTA Local
-</span><span class='line'>baseurl=http://hadoop-master1:801/dta
-</span><span class='line'>enabled=1
-</span><span class='line'>gpgcheck=0</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>sudo</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>./sudo/manifests/init.pp
-</span><span class='line'>class sudo {
-</span><span class='line'>
-</span><span class='line'>if ( $::hostname =~ /(^cu-omc)/ ) {
-</span><span class='line'>  $user = 'omc'
-</span><span class='line'>} elsif ( $::hostname =~ /(^cu-uc)/ ) {
-</span><span class='line'>  $user = 'uc'
-</span><span class='line'>} elsif ( $::hostname =~ /(^cu-ud)/ ) {
-</span><span class='line'>  $user = 'ud'
-</span><span class='line'>} elsif ( $::hostname =~ /(^cu-db)/ ) {
-</span><span class='line'>  $user = 'mysql'
-</span><span class='line'>} else {
-</span><span class='line'>  $user = 'hadoop'
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>file { "/etc/sudoers.d/10_$user":
-</span><span class='line'>  ensure =&gt; file,
-</span><span class='line'>  mode =&gt; '0440', 
-</span><span class='line'>  content =&gt; template('sudo/sudo.erb'),
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>./sudo/templates/sudo.erb
-</span><span class='line'>&lt;%= scope.lookupvar('sudo::user') %&gt; ALL=(ALL) NOPASSWD: ALL</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>gmond</li>
-</ul>
-
-
-<p>在默认的gmond.conf基础上修改一下两个配置: globals.deaf, cluster.name</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>./gmond/manifests/init.pp
-</span><span class='line'>class gmond {
-</span><span class='line'>
-</span><span class='line'>$deaf = $::hostname ? {
-</span><span class='line'>  'hadoop-master1' =&gt; 'no',
-</span><span class='line'>  'cu-omc1' =&gt; 'no',
-</span><span class='line'>  default =&gt; 'yes',
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>if ( $::hostname =~ /(^cu-)/ ) {
-</span><span class='line'>  $cluster_name = 'CU'
-</span><span class='line'>} else {
-</span><span class='line'>  $cluster_name = 'HADOOP'
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>package { 'gmond':
-</span><span class='line'>  ensure =&gt; present,
-</span><span class='line'>  before =&gt; File['/usr/local/ganglia/etc/gmond.conf'],
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>file { '/usr/local/ganglia/etc/gmond.conf':
-</span><span class='line'>  ensure =&gt; file,
-</span><span class='line'>  content =&gt; template('gmond/gmond.conf'),
-</span><span class='line'>  notify =&gt; Service['gmond'],
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>service { 'gmond':
-</span><span class='line'>  ensure    =&gt; running,
-</span><span class='line'>  enable    =&gt; true,
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>./gmond/templates/gmond.conf
-</span><span class='line'>/* This configuration is as close to 2.5.x default behavior as possible
-</span><span class='line'>   The values closely match ./gmond/metric.h definitions in 2.5.x */
-</span><span class='line'>globals {
-</span><span class='line'>...
-</span><span class='line'>  mute = no
-</span><span class='line'>  deaf = &lt;%= scope.lookupvar('gmond::deaf') %&gt;
-</span><span class='line'>  allow_extra_data = yes
-</span><span class='line'>...
-</span><span class='line'>cluster {
-</span><span class='line'>  name = "&lt;%= scope.lookupvar('gmond::cluster_name') %&gt;"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>参考下逻辑即可（也可以通过hiera配置）。</p>
-
-<p>最后在 site.pp 引用加载编写的Module：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 modules]# cd ../manifests/
-</span><span class='line'>[root@hadoop-master1 manifests]# cat site.pp 
-</span><span class='line'>file{'/etc/puppetlabs/mcollective/facts.yaml':
-</span><span class='line'>  owner    =&gt; root,
-</span><span class='line'>  group    =&gt; root,
-</span><span class='line'>  mode     =&gt; '400',
-</span><span class='line'>  loglevel =&gt; debug, # reduce noise in Puppet reports
-</span><span class='line'>  content  =&gt; inline_template("&lt;%= scope.to_hash.reject { |k,v| k.to_s =~ /(uptime_seconds|timestamp|free)/ }.to_yaml %&gt;"), # exclude rapidly changing facts
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>include dtarepo
-</span><span class='line'>include gmond
-</span><span class='line'>
-</span><span class='line'># include sudo
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>一键安装</h2>
-
-<p>安装gmetad：</p>
-
-<p>首先在主机上安装gmetad，由于只需要在一台机器安装，配置没有整成模板，这里直接手动弄。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 dtarepo]# mco rpc package install package=gmetad -I cu-omc1
-</span><span class='line'>
-</span><span class='line'># 注意：主机多网卡时可能需要添加route
-</span><span class='line'>[root@cu-omc1 ~]# route add -host 239.2.11.71 dev bond0
-</span><span class='line'>
-</span><span class='line'>[root@cu-omc1 ~]# /etc/ganglia/gmetad.conf 注意!! 这里的rrd_rootdir配置与上面gweb/makefile是对应的！！
-</span><span class='line'>data_source "HADOOP" hadoop-master1
-</span><span class='line'>data_source "CU" cu-omc1
-</span><span class='line'>gridname "CQCU"
-</span><span class='line'>rrd_rootdir "/data/ganglia/rrds"
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>安装gmond：</p>
-
-<p>在cu-omc2上安装gmond（正则表达式，想怎么匹配就怎么写）：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 production]# mco shell -I /^cu-omc2/ run -- "/opt/puppetlabs/bin/puppet agent -t"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>puppet同步好后，就安装好puppet，以及启动gmond服务。</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/2">&larr; Older</a>
@@ -2804,6 +2511,14 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/08/19/j2ee-maven-resources-compress/">Maven压缩js/css功能实践</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/08/17/redis-batch-operate/">Redis批量操作</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/07/28/redis-optimise/">Redis使用优化</a>
       </li>
     
@@ -2825,14 +2540,6 @@
     
       <li class="post">
         <a href="/blog/2016/06/15/elasticsearch-startguide/">Elasticsearch Startguide</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/">[读读书]Apache Spark源码剖析-序</a>
       </li>
     
   </ul>
@@ -2925,7 +2632,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/redis/'>redis</a> (5) 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2949,7 +2656,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (35) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (36) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2958,7 +2665,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (142)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (144)</li>
 	</ul>
 	
 </section>
