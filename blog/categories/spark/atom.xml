@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Spark | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/spark/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-09-28T19:57:27+08:00</updated>
+  <updated>2016-10-13T19:03:29+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,181 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[SparkSQL查看调试生成代码]]></title>
+    <link href="http://winseliu.com/blog/2016/10/12/sparksql-view-and-debug-generatecode/"/>
+    <updated>2016-10-12T19:48:58+08:00</updated>
+    <id>http://winseliu.com/blog/2016/10/12/sparksql-view-and-debug-generatecode</id>
+    <content type="html"><![CDATA[<p>网站和一些书籍都有介绍SparkSQL（DataFrame）会根据相应的操作生成最终运行的语句。这里从一个简单的、低级的问题入手到最后通过查看生成的代码查找问题的根源，并简单介绍怎么来调试SparkSQL。</p>
+
+<p>问题来源：</p>
+
+<pre><code>case class Access(id:String,url:String,time:String){
+def compute():(String, Int)
+}
+Object Access {
+def apply(row:Row): Option[Access]
+}
+
+# main
+df.map(Access(_)).filter(!_.isEmpty).map(_.get).map(_.compute)
+</code></pre>
+
+<p>运行之后 compute 总是报 NullPointerException 异常。按RDD以及Scala的操作都是没法理解的，怎么就变成 <code>Access(null,null,null)</code> 了呢？后面尽管改成 <code>df.flatMap(Access(_)).map(_.compute)</code> 后运行正常了，但是还是想看看SparkSQL到底干了啥！！！</p>
+
+<h2>SparkSQL干了什么</h2>
+
+<p>Spark RDD是在 RDD#compute 中明确定义好了操作的。而SparkSQL的操作最终转换成了LogicalPlan，看不出它做了什么东东。</p>
+
+<p>其实，与数据库SQL的explain看执行计划类似，SparkSQL也有explain的方法来查看程序的执行计划。（这里代码全部贴出来了，根据情况自己去掉注释啊）</p>
+
+<pre><code>object AccessAnalyser {
+
+  def main(args: Array[String]): Unit = {
+
+    // conf
+
+    // clean
+    new File("target/generated-sources").listFiles().filter(_.isFile()).foreach(_.delete)
+
+    sys.props("org.codehaus.janino.source_debugging.enable") = "true"
+    sys.props("org.codehaus.janino.source_debugging.dir") = "target/generated-sources"
+
+    val input = "r:/match10.dat"
+    val output = "r:/output"
+    def delete(f: File): Unit = {
+      if (f.isDirectory) f.listFiles().foreach(delete)
+      f.delete()
+    }
+    delete(new File(output))
+
+    // program
+
+    val conf = new SparkConf().setAppName("DPI Analyser").setMaster("local[10]")
+    // fix windows path.
+    conf.set(/*SQLConf.WAREHOUSE_PATH*/ "spark.sql.warehouse.dir", "spark-warehouse")
+
+    val sc = new SparkContext(conf)
+    val sqlContext = new SQLContext(sc)
+
+    import sqlContext.implicits._
+    import org.apache.spark.sql.functions._
+
+    val df = sqlContext.read
+      .format("com.databricks.spark.csv")
+      .option("header", "false") // Use first line of all files as header
+      .option("quote", "'")
+      .option("escape", "'")
+      .option("delimiter", ",")
+      .load(input)
+
+    df
+      .flatMap(Access(_))
+      //      .map(Access(_)).filter((t: Option[Access]) =&gt; !t.isEmpty).map(_.get) // sparksql不合适用Option
+      .map(_.compute)
+      .explain(true)
+      //      .toDF("id", "score")
+      //      .groupBy("id").agg(sum("score") as "score")
+      //      .sort("score", "id")
+      //      .repartition(1)
+      //      .write.format("com.databricks.spark.csv").save(output)
+
+    sc.stop()
+  }
+
+}
+</code></pre>
+
+<p>运行上面的代码，在console窗口输出了任务的执行计划：</p>
+
+<pre><code>== Parsed Logical Plan ==
+'SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._1, true) AS _1#20, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._2 AS _2#21]
++- 'MapElements &lt;function1&gt;, obj#19: scala.Tuple2
+   +- 'DeserializeToObject unresolveddeserializer(newInstance(class com.github.winse.spark.access.Access)), obj#18: com.github.winse.spark.access.Access
+      +- SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).id, true) AS id#12, staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).url, true) AS url#13, staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).time, true) AS time#14]
+         +- MapPartitions &lt;function1&gt;, obj#11: com.github.winse.spark.access.Access
+            +- DeserializeToObject createexternalrow(_c0#0.toString, _c1#1.toString, _c2#2.toString, StructField(_c0,StringType,true), StructField(_c1,StringType,true), StructField(_c2,StringType,true)), obj#10: org.apache.spark.sql.Row
+               +- Relation[_c0#0,_c1#1,_c2#2] csv
+
+== Physical Plan ==
+*SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._1, true) AS _1#20, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._2 AS _2#21]
++- *MapElements &lt;function1&gt;, obj#19: scala.Tuple2
+   +- MapPartitions &lt;function1&gt;, obj#11: com.github.winse.spark.access.Access
+      +- DeserializeToObject createexternalrow(_c0#0.toString, _c1#1.toString, _c2#2.toString, StructField(_c0,StringType,true), StructField(_c1,StringType,true), StructField(_c2,StringType,true)), obj#10: org.apache.spark.sql.Row
+         +- *Scan csv [_c0#0,_c1#1,_c2#2] Format: CSV, InputPaths: file:/r:/match10.dat, PushedFilters: [], ReadSchema: struct&lt;_c0:string,_c1:string,_c2:string&gt;
+</code></pre>
+
+<p>OK，看到执行计划了，那生成的代码长什么样呢？以及怎么调试这些生成的代码呢？</p>
+
+<h2>Hack 源码</h2>
+
+<p>在进行调试之前，先改一下代码重新编译下catalyst用于调试，并替换maven下面的spark-catalyst_2.11 ：</p>
+
+<pre><code>winse@Lenovo-PC ~/git/spark/sql/catalyst
+$ git diff .
+diff --git a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala b/sql/catalyst/                                                                                          src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
+index 16fb1f6..56bfbf7 100644
+--- a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
++++ b/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
+@@ -854,7 +854,7 @@ object CodeGenerator extends Logging {
+     val parentClassLoader = new ParentClassLoader(Utils.getContextOrSparkClassLoader)
+     evaluator.setParentClassLoader(parentClassLoader)
+     // Cannot be under package codegen, or fail with java.lang.InstantiationException
+-    evaluator.setClassName("org.apache.spark.sql.catalyst.expressions.GeneratedClass")
+     evaluator.setDefaultImports(Array(
+       classOf[Platform].getName,
+       classOf[InternalRow].getName,
+@@ -875,12 +875,14 @@ object CodeGenerator extends Logging {
+
+     logDebug({
+       // Only add extra debugging info to byte code when we are going to print the source code.
+-      evaluator.setDebuggingInformation(true, true, false)
++      evaluator.setDebuggingInformation(true, true, true)
+       s"\n$formatted"
+     })
+
+     try {
+-      evaluator.cook("generated.java", code.body)
++      evaluator.cook(code.body)
+       recordCompilationStats(evaluator)
+     } catch {
+       case e: Exception =&gt;
+
+E:\git\spark\sql\catalyst&gt;mvn clean package -DskipTests -Dmaven.test.skip=true
+</code></pre>
+
+<p>SparkSQL生成代码用的是janino，官网文档有提供debugging的资料：<a href="http://janino-compiler.github.io/janino/#debugging">http://janino-compiler.github.io/janino/#debugging</a> 。简单说明下三处修改：</p>
+
+<ul>
+<li>查看org.codehaus.janino.Scanner构造方法，如果配置了debugging以及optionalFileName==null就会把源码保存到临时文件。</li>
+<li>一开始没想到要注释掉setClassName的，后面把CodeGenerator#doCompile拷贝出来慢慢和官网提供的例子对，就把setClassName换成setExtendedClass竟然成了弹出了源码页面。又看到下面就setExtendedClass就注释掉setClassName就ok了。</li>
+<li>源代码里面的参数不能查看的，就是编译的时刻把这个选项去掉了。把debugVars设置为true。</li>
+</ul>
+
+
+<p></p>
+
+<h2>运行调试</h2>
+
+<p>先做好调试准备工作：</p>
+
+<ul>
+<li>在compute方法里面打一个断点然后调试运行</li>
+<li>修改log4j日志级别: log4j.logger.org.apache.spark.sql.catalyst.expressions.codegen=DEBUG</li>
+<li>把项目导入eclipse（IDEA弹不出源代码）</li>
+</ul>
+
+
+<p>然后运行。点击Debug视图的GeneratedIterator，在弹出的代码视图点击查找源码按钮，再弹出的添加源代码对话框（Edit Source Lookup Path）添加路径target/generated-sources（注意这里要用绝对路径）！接下来就一步步的调就行了。</p>
+
+<p><img src="/images/blogs/sparksql-debug.png" alt="" /></p>
+
+<p>调试着生成的代码能更好的理解前面explain的执行计划。看到代码就好理解最开始的Access(null,null,null)了：对象到字段反序列化的问题。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[[读读书]Apache Spark源码剖析-Shell]]></title>
@@ -54,7 +229,7 @@ export SPARK_SUBMIT_OPTS
 
 <h2>spark-class</h2>
 
-<p>主要的功能都集中在 bin/spark-class。bin/spark-class脚本最终启动java、调用 <strong>Launcher模块(org.apache.spark.launcher.Main)</strong> 。而 <strong>Launcher模块</strong> 解析输入参数并输出 <strong>最终执行的命令</strong>，然后shell再通过 <strong>exec</strong> 来运行Driver程序。</p>
+<p>主要的功能都集中在 bin/spark-class。bin/spark-class脚本最终启动java、调用 <strong>Launcher模块</strong> 。而 <strong>Launcher模块</strong> 解析输入参数并输出 <strong>最终输出Driver启动的命令</strong>，然后shell再通过 <strong>exec</strong> 来运行Driver程序。</p>
 
 <p>要讲清楚 bin/spark-class 相对复杂点：通过脚本传递参数，调用java处理参数，又输出脚本，最后运行脚本才真正运行了Driver。所以这里通过 <strong>脚本</strong> 和 <strong>程序</strong> 来进行说明。</p>
 
@@ -97,7 +272,7 @@ done &lt; &lt;("$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main 
 exec "${CMD[@]}"
 </code></pre>
 
-<p>大部分内容都是准备环境，就最后几行代码比较复杂。这里设置DEBUG在脚本 <code>while</code> 循环打印每个输出的值看下输出的是什么。</p>
+<p>大部分内容都是准备环境变量，就最后几行代码比较复杂。这里设置DEBUG在脚本 <code>while</code> 循环打印每个输出的值看下输出的是什么。</p>
 
 <pre><code># 修改后的效果
 CMD=()
@@ -140,11 +315,13 @@ exec "${CMD[@]}"
 
 <p>根据上面 bin/spark-class 产生的启动命令可以直接在idea里面运行，效果与直接运行 bin/spark-shell 一样：</p>
 
-<p><img src="/images/blogs/rcc-spark/idea-spark-shell.png" alt="" /></p>
+<p><img src="/images/blogs/rrc-spark/idea-spark-shell.png" alt="" /></p>
+
+<p><strong>注意：</strong> 这里的 spark-shell 是一个特殊的字符串，代码中会对其进行特殊处理不额外加载jar。类似的字符串还有： pyspark-shell, sparkr-shell, spark-internal（参看SparkSubmit），如果调用类就在SPARK_CLASSPATH可以使用它们减少不必要的网络传输。</p>
 
 <h4>Launcher模块</h4>
 
-<p>如果shell和launcher的代码你都看了的话，会发现 shell 和 java代码 功能逻辑非常类似。比如说获取java程序路径的代码：</p>
+<p>发现 shell 和 launcher的java代码 功能逻辑非常类似。比如说获取java程序路径的代码：</p>
 
 <pre><code>List&lt;String&gt; buildJavaCommand(String extraClassPath) throws IOException {
   ...
@@ -463,12 +640,13 @@ exit
 <h4>下载 spark 源码，并导入idea</h4>
 
 <ol>
-<li><p>下载源码，检出 1.6.0 版本</p>
-
-<p> $ git clone <a href="https://github.com/apache/spark.git">https://github.com/apache/spark.git</a>
- $ git checkout v1.6.0</p></li>
+<li>下载源码，检出 1.6.0 版本</li>
 </ol>
 
+
+<pre><code>$ git clone https://github.com/apache/spark.git
+$ git checkout v1.6.0
+</code></pre>
 
 <p>如果你只想看 1.6.0 的内容，可以直接在clone命令添加参数指定版本：</p>
 
@@ -1061,333 +1239,6 @@ CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-Faile
 <h2>小结</h2>
 
 <p>第一，hive的assembly的包太tmd的坑了。第二，以后找java具体加载那个类，可以通过 class.getProtectionDomain 来获取了。第三，又多尝试一个环境部署hadoop。呵呵</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Limit on Sparksql and Hive]]></title>
-    <link href="http://winseliu.com/blog/2016/03/29/limit-on-sparksql-and-hive/"/>
-    <updated>2016-03-29T15:27:03+08:00</updated>
-    <id>http://winseliu.com/blog/2016/03/29/limit-on-sparksql-and-hive</id>
-    <content type="html"><![CDATA[<p>前一篇提到sparksql查询limit的时刻会提前返回，不需要查询所有的数据。hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。</p>
-
-<p>把日志记录下面：</p>
-
-<h2>hive1.2.1-on-spark1.3.1</h2>
-
-<pre><code>hive&gt; select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 and sourceip='118.112.188.17' limit 10;
-Query ID = hadoop_20160329151420_25fe9497-e223-4f48-980e-e7fe859848ce
-Total jobs = 1
-Launching Job 1 out of 1
-In order to change the average load for a reducer (in bytes):
-  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
-In order to limit the maximum number of reducers:
-  set hive.exec.reducers.max=&lt;number&gt;
-In order to set a constant number of reducers:
-  set mapreduce.job.reduces=&lt;number&gt;
-Starting Spark Job = 9036c8d7-62b6-4b9a-b6d3-2d8b5eed6bf9
-
-Query Hive on Spark job[2] stages:
-3
-
-Status: Running (Hive on Spark job[2])
-Job Progress Format
-CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
-2016-03-29 15:14:22,053 Stage-3_0: 0(+160)/942
-2016-03-29 15:14:23,059 Stage-3_0: 47(+160)/942
-2016-03-29 15:14:24,064 Stage-3_0: 131(+160)/942
-2016-03-29 15:14:25,069 Stage-3_0: 266(+160)/942
-2016-03-29 15:14:26,075 Stage-3_0: 382(+160)/942
-2016-03-29 15:14:27,080 Stage-3_0: 497(+152)/942
-2016-03-29 15:14:28,085 Stage-3_0: 607(+142)/942
-2016-03-29 15:14:29,090 Stage-3_0: 714(+125)/942
-2016-03-29 15:14:30,094 Stage-3_0: 794(+91)/942
-2016-03-29 15:14:31,099 Stage-3_0: 846(+61)/942
-2016-03-29 15:14:32,103 Stage-3_0: 868(+47)/942
-2016-03-29 15:14:33,107 Stage-3_0: 886(+35)/942
-2016-03-29 15:14:34,112 Stage-3_0: 895(+26)/942
-2016-03-29 15:14:35,116 Stage-3_0: 902(+21)/942
-2016-03-29 15:14:36,120 Stage-3_0: 904(+19)/942
-2016-03-29 15:14:37,124 Stage-3_0: 906(+17)/942
-2016-03-29 15:14:38,128 Stage-3_0: 910(+15)/942
-2016-03-29 15:14:39,132 Stage-3_0: 914(+13)/942
-2016-03-29 15:14:40,137 Stage-3_0: 920(+9)/942
-2016-03-29 15:14:41,141 Stage-3_0: 921(+8)/942
-2016-03-29 15:14:44,155 Stage-3_0: 928(+14)/942
-2016-03-29 15:14:45,159 Stage-3_0: 934(+8)/942
-2016-03-29 15:14:46,164 Stage-3_0: 936(+6)/942
-2016-03-29 15:14:47,169 Stage-3_0: 937(+5)/942
-2016-03-29 15:14:50,180 Stage-3_0: 938(+4)/942
-2016-03-29 15:14:52,188 Stage-3_0: 939(+3)/942
-2016-03-29 15:14:54,196 Stage-3_0: 941(+1)/942
-2016-03-29 15:14:57,206 Stage-3_0: 941(+1)/942
-2016-03-29 15:15:00,215 Stage-3_0: 942/942 Finished
-Status: Finished successfully in 39.17 seconds
-</code></pre>
-
-<h2>sparksql1.6.0</h2>
-
-<pre><code>spark-sql&gt; select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 and sourceip='118.112.188.17' limit 10;
-16/03/29 15:15:16 INFO parse.ParseDriver: Parsing command: select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 and sourceip='118.112.188.17' limit 10
-16/03/29 15:15:16 INFO parse.ParseDriver: Parse Completed
-16/03/29 15:15:16 INFO metastore.HiveMetaStore: 0: get_table : db=default tbl=t_ods_access_log2
-16/03/29 15:15:16 INFO HiveMetaStore.audit: ugi=hadoop  ip=unknown-ip-addr      cmd=get_table : db=default tbl=t_ods_access_log2
-16/03/29 15:15:17 INFO storage.MemoryStore: Block broadcast_6 stored as values in memory (estimated size 543.3 KB, free 9.7 MB)
-16/03/29 15:15:17 INFO storage.MemoryStore: Block broadcast_6_piece0 stored as bytes in memory (estimated size 44.1 KB, free 9.8 MB)
-16/03/29 15:15:17 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on 192.168.32.12:51590 (size: 44.1 KB, free: 21.3 GB)
-16/03/29 15:15:17 INFO spark.SparkContext: Created broadcast 6 from processCmd at CliDriver.java:376
-16/03/29 15:15:17 INFO metastore.HiveMetaStore: 0: get_partitions : db=default tbl=t_ods_access_log2
-16/03/29 15:15:17 INFO HiveMetaStore.audit: ugi=hadoop  ip=unknown-ip-addr      cmd=get_partitions : db=default tbl=t_ods_access_log2
-16/03/29 15:15:18 INFO mapred.FileInputFormat: Total input paths to process : 942
-16/03/29 15:15:18 INFO spark.SparkContext: Starting job: processCmd at CliDriver.java:376
-16/03/29 15:15:18 INFO scheduler.DAGScheduler: Got job 4 (processCmd at CliDriver.java:376) with 1 output partitions
-16/03/29 15:15:18 INFO scheduler.DAGScheduler: Final stage: ResultStage 5 (processCmd at CliDriver.java:376)
-16/03/29 15:15:18 INFO scheduler.DAGScheduler: Parents of final stage: List()
-16/03/29 15:15:18 INFO scheduler.DAGScheduler: Missing parents: List()
-16/03/29 15:15:18 INFO scheduler.DAGScheduler: Submitting ResultStage 5 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376), which has no missing parents
-16/03/29 15:15:18 INFO storage.MemoryStore: Block broadcast_7 stored as values in memory (estimated size 3.9 MB, free 13.7 MB)
-16/03/29 15:15:18 INFO storage.MemoryStore: Block broadcast_7_piece0 stored as bytes in memory (estimated size 318.8 KB, free 14.0 MB)
-16/03/29 15:15:18 INFO storage.BlockManagerInfo: Added broadcast_7_piece0 in memory on 192.168.32.12:51590 (size: 318.8 KB, free: 21.3 GB)
-16/03/29 15:15:18 INFO spark.SparkContext: Created broadcast 7 from broadcast at DAGScheduler.scala:1006
-16/03/29 15:15:18 INFO scheduler.DAGScheduler: Submitting 1 missing tasks from ResultStage 5 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376)
-16/03/29 15:15:18 INFO cluster.YarnScheduler: Adding task set 5.0 with 1 tasks
-16/03/29 15:15:18 INFO scheduler.TaskSetManager: Starting task 0.0 in stage 5.0 (TID 1260, hadoop-slaver135, partition 0,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:19 INFO storage.BlockManagerInfo: Added broadcast_7_piece0 in memory on hadoop-slaver135:59376 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:20 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver135:59376 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:21 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 5.0 (TID 1260) in 3273 ms on hadoop-slaver135 (1/1)
-16/03/29 15:15:21 INFO cluster.YarnScheduler: Removed TaskSet 5.0, whose tasks have all completed, from pool 
-16/03/29 15:15:21 INFO scheduler.DAGScheduler: ResultStage 5 (processCmd at CliDriver.java:376) finished in 3.276 s
-16/03/29 15:15:21 INFO scheduler.DAGScheduler: Job 4 finished: processCmd at CliDriver.java:376, took 3.475462 s
-16/03/29 15:15:21 INFO scheduler.StatsReportListener: Finished stage: org.apache.spark.scheduler.StageInfo@57e08525
-16/03/29 15:15:21 INFO spark.SparkContext: Starting job: processCmd at CliDriver.java:376
-16/03/29 15:15:21 INFO scheduler.StatsReportListener: task runtime:(count: 1, mean: 3273.000000, stdev: 0.000000, max: 3273.000000, min: 3273.000000)
-16/03/29 15:15:21 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:21 INFO scheduler.StatsReportListener:   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s   3.3 s
-16/03/29 15:15:21 INFO scheduler.DAGScheduler: Got job 5 (processCmd at CliDriver.java:376) with 2 output partitions
-16/03/29 15:15:21 INFO scheduler.DAGScheduler: Final stage: ResultStage 6 (processCmd at CliDriver.java:376)
-16/03/29 15:15:21 INFO scheduler.DAGScheduler: Parents of final stage: List()
-16/03/29 15:15:21 INFO scheduler.StatsReportListener: task result size:(count: 1, mean: 3763.000000, stdev: 0.000000, max: 3763.000000, min: 3763.000000)
-16/03/29 15:15:21 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:21 INFO scheduler.StatsReportListener:   3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB  3.7 KB
-16/03/29 15:15:21 INFO scheduler.DAGScheduler: Missing parents: List()
-16/03/29 15:15:21 INFO scheduler.DAGScheduler: Submitting ResultStage 6 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376), which has no missing parents
-16/03/29 15:15:21 INFO scheduler.StatsReportListener: executor (non-fetch) time pct: (count: 1, mean: 51.879010, stdev: 0.000000, max: 51.879010, min: 51.879010)
-16/03/29 15:15:21 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:21 INFO scheduler.StatsReportListener:   52 %    52 %    52 %    52 %    52 %    52 %    52 %    52 %    52 %
-16/03/29 15:15:21 INFO scheduler.StatsReportListener: other time pct: (count: 1, mean: 48.120990, stdev: 0.000000, max: 48.120990, min: 48.120990)
-16/03/29 15:15:21 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:21 INFO scheduler.StatsReportListener:   48 %    48 %    48 %    48 %    48 %    48 %    48 %    48 %    48 %
-16/03/29 15:15:21 INFO storage.MemoryStore: Block broadcast_8 stored as values in memory (estimated size 3.9 MB, free 17.9 MB)
-16/03/29 15:15:21 INFO storage.MemoryStore: Block broadcast_8_piece0 stored as bytes in memory (estimated size 318.8 KB, free 18.2 MB)
-16/03/29 15:15:21 INFO storage.BlockManagerInfo: Added broadcast_8_piece0 in memory on 192.168.32.12:51590 (size: 318.8 KB, free: 21.3 GB)
-16/03/29 15:15:21 INFO spark.SparkContext: Created broadcast 8 from broadcast at DAGScheduler.scala:1006
-16/03/29 15:15:21 INFO scheduler.DAGScheduler: Submitting 2 missing tasks from ResultStage 6 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376)
-16/03/29 15:15:21 INFO cluster.YarnScheduler: Adding task set 6.0 with 2 tasks
-16/03/29 15:15:21 INFO scheduler.TaskSetManager: Starting task 0.0 in stage 6.0 (TID 1261, hadoop-slaver67, partition 1,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:21 INFO scheduler.TaskSetManager: Starting task 1.0 in stage 6.0 (TID 1262, hadoop-slaver121, partition 2,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:21 INFO storage.BlockManagerInfo: Added broadcast_8_piece0 in memory on hadoop-slaver67:49600 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:22 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver67:49600 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:22 INFO storage.BlockManagerInfo: Added broadcast_8_piece0 in memory on hadoop-slaver121:57614 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:22 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver121:57614 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:22 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 6.0 (TID 1261) in 930 ms on hadoop-slaver67 (1/2)
-16/03/29 15:15:23 INFO scheduler.TaskSetManager: Finished task 1.0 in stage 6.0 (TID 1262) in 1207 ms on hadoop-slaver121 (2/2)
-16/03/29 15:15:23 INFO cluster.YarnScheduler: Removed TaskSet 6.0, whose tasks have all completed, from pool 
-16/03/29 15:15:23 INFO scheduler.DAGScheduler: ResultStage 6 (processCmd at CliDriver.java:376) finished in 1.210 s
-16/03/29 15:15:23 INFO scheduler.DAGScheduler: Job 5 finished: processCmd at CliDriver.java:376, took 1.378783 s
-16/03/29 15:15:23 INFO scheduler.StatsReportListener: Finished stage: org.apache.spark.scheduler.StageInfo@573e5329
-16/03/29 15:15:23 INFO spark.SparkContext: Starting job: processCmd at CliDriver.java:376
-16/03/29 15:15:23 INFO scheduler.StatsReportListener: task runtime:(count: 2, mean: 1068.500000, stdev: 138.500000, max: 1207.000000, min: 930.000000)
-16/03/29 15:15:23 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:23 INFO scheduler.StatsReportListener:   930.0 ms        930.0 ms        930.0 ms        930.0 ms        1.2 s   1.2 s   1.2 s   1.2 s   1.2 s
-16/03/29 15:15:23 INFO scheduler.DAGScheduler: Got job 6 (processCmd at CliDriver.java:376) with 7 output partitions
-16/03/29 15:15:23 INFO scheduler.DAGScheduler: Final stage: ResultStage 7 (processCmd at CliDriver.java:376)
-16/03/29 15:15:23 INFO scheduler.DAGScheduler: Parents of final stage: List()
-16/03/29 15:15:23 INFO scheduler.StatsReportListener: task result size:(count: 2, mean: 2267.500000, stdev: 0.500000, max: 2268.000000, min: 2267.000000)
-16/03/29 15:15:23 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:23 INFO scheduler.StatsReportListener:   2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB
-16/03/29 15:15:23 INFO scheduler.DAGScheduler: Missing parents: List()
-16/03/29 15:15:23 INFO scheduler.StatsReportListener: executor (non-fetch) time pct: (count: 2, mean: 73.649411, stdev: 11.511880, max: 85.161290, min: 62.137531)
-16/03/29 15:15:23 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:23 INFO scheduler.StatsReportListener:   62 %    62 %    62 %    62 %    85 %    85 %    85 %    85 %    85 %
-16/03/29 15:15:23 INFO scheduler.DAGScheduler: Submitting ResultStage 7 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376), which has no missing parents
-16/03/29 15:15:23 INFO scheduler.StatsReportListener: other time pct: (count: 2, mean: 26.350589, stdev: 11.511880, max: 37.862469, min: 14.838710)
-16/03/29 15:15:23 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:23 INFO scheduler.StatsReportListener:   15 %    15 %    15 %    15 %    38 %    38 %    38 %    38 %    38 %
-16/03/29 15:15:23 INFO storage.MemoryStore: Block broadcast_9 stored as values in memory (estimated size 3.9 MB, free 22.1 MB)
-16/03/29 15:15:23 INFO storage.MemoryStore: Block broadcast_9_piece0 stored as bytes in memory (estimated size 318.8 KB, free 22.4 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on 192.168.32.12:51590 (size: 318.8 KB, free: 21.3 GB)
-16/03/29 15:15:23 INFO spark.SparkContext: Created broadcast 9 from broadcast at DAGScheduler.scala:1006
-16/03/29 15:15:23 INFO scheduler.DAGScheduler: Submitting 7 missing tasks from ResultStage 7 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376)
-16/03/29 15:15:23 INFO cluster.YarnScheduler: Adding task set 7.0 with 7 tasks
-16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 6.0 in stage 7.0 (TID 1263, hadoop-slaver158, partition 9,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 0.0 in stage 7.0 (TID 1264, hadoop-slaver82, partition 3,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 5.0 in stage 7.0 (TID 1265, hadoop-slaver68, partition 8,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 1.0 in stage 7.0 (TID 1266, hadoop-slaver120, partition 4,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 2.0 in stage 7.0 (TID 1267, hadoop-slaver14, partition 5,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 4.0 in stage 7.0 (TID 1268, hadoop-slaver137, partition 7,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:23 INFO scheduler.TaskSetManager: Starting task 3.0 in stage 7.0 (TID 1269, hadoop-slaver70, partition 6,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver68:45281 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver70:34080 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver137:45760 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver82:36935 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver158:39852 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver14:40126 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_9_piece0 in memory on hadoop-slaver120:46667 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver68:45281 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver120:46667 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver70:34080 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver82:36935 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver14:40126 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver137:45760 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:23 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver158:39852 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 1.0 in stage 7.0 (TID 1266) in 780 ms on hadoop-slaver120 (1/7)
-16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 7.0 (TID 1264) in 943 ms on hadoop-slaver82 (2/7)
-16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 5.0 in stage 7.0 (TID 1265) in 999 ms on hadoop-slaver68 (3/7)
-16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 3.0 in stage 7.0 (TID 1269) in 1047 ms on hadoop-slaver70 (4/7)
-16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 4.0 in stage 7.0 (TID 1268) in 1123 ms on hadoop-slaver137 (5/7)
-16/03/29 15:15:24 INFO scheduler.TaskSetManager: Finished task 2.0 in stage 7.0 (TID 1267) in 1413 ms on hadoop-slaver14 (6/7)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Finished task 6.0 in stage 7.0 (TID 1263) in 2229 ms on hadoop-slaver158 (7/7)
-16/03/29 15:15:25 INFO cluster.YarnScheduler: Removed TaskSet 7.0, whose tasks have all completed, from pool 
-16/03/29 15:15:25 INFO scheduler.DAGScheduler: ResultStage 7 (processCmd at CliDriver.java:376) finished in 2.231 s
-16/03/29 15:15:25 INFO scheduler.DAGScheduler: Job 6 finished: processCmd at CliDriver.java:376, took 2.399044 s
-16/03/29 15:15:25 INFO scheduler.StatsReportListener: Finished stage: org.apache.spark.scheduler.StageInfo@5210a024
-16/03/29 15:15:25 INFO spark.SparkContext: Starting job: processCmd at CliDriver.java:376
-16/03/29 15:15:25 INFO scheduler.StatsReportListener: task runtime:(count: 7, mean: 1219.142857, stdev: 449.417537, max: 2229.000000, min: 780.000000)
-16/03/29 15:15:25 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:25 INFO scheduler.StatsReportListener:   780.0 ms        780.0 ms        780.0 ms        943.0 ms        1.0 s   1.4 s   2.2 s   2.2 s   2.2 s
-16/03/29 15:15:25 INFO scheduler.StatsReportListener: task result size:(count: 7, mean: 2267.428571, stdev: 0.494872, max: 2268.000000, min: 2267.000000)
-16/03/29 15:15:25 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:25 INFO scheduler.StatsReportListener:   2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB
-16/03/29 15:15:25 INFO scheduler.DAGScheduler: Got job 7 (processCmd at CliDriver.java:376) with 25 output partitions
-16/03/29 15:15:25 INFO scheduler.DAGScheduler: Final stage: ResultStage 8 (processCmd at CliDriver.java:376)
-16/03/29 15:15:25 INFO scheduler.DAGScheduler: Parents of final stage: List()
-16/03/29 15:15:25 INFO scheduler.StatsReportListener: executor (non-fetch) time pct: (count: 7, mean: 83.082955, stdev: 4.773503, max: 92.418125, min: 77.114871)
-16/03/29 15:15:25 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:25 INFO scheduler.StatsReportListener:   77 %    77 %    77 %    78 %    83 %    86 %    92 %    92 %    92 %
-16/03/29 15:15:25 INFO scheduler.DAGScheduler: Missing parents: List()
-16/03/29 15:15:25 INFO scheduler.StatsReportListener: other time pct: (count: 7, mean: 16.917045, stdev: 4.773503, max: 22.885129, min: 7.581875)
-16/03/29 15:15:25 INFO scheduler.DAGScheduler: Submitting ResultStage 8 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376), which has no missing parents
-16/03/29 15:15:25 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:25 INFO scheduler.StatsReportListener:    8 %     8 %     8 %    14 %    17 %    22 %    23 %    23 %    23 %
-16/03/29 15:15:25 INFO storage.MemoryStore: Block broadcast_10 stored as values in memory (estimated size 3.9 MB, free 26.3 MB)
-16/03/29 15:15:25 INFO storage.MemoryStore: Block broadcast_10_piece0 stored as bytes in memory (estimated size 318.8 KB, free 26.6 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on 192.168.32.12:51590 (size: 318.8 KB, free: 21.3 GB)
-16/03/29 15:15:25 INFO spark.SparkContext: Created broadcast 10 from broadcast at DAGScheduler.scala:1006
-16/03/29 15:15:25 INFO scheduler.DAGScheduler: Submitting 25 missing tasks from ResultStage 8 (MapPartitionsRDD[18] at processCmd at CliDriver.java:376)
-16/03/29 15:15:25 INFO cluster.YarnScheduler: Adding task set 8.0 with 25 tasks
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 19.0 in stage 8.0 (TID 1270, hadoop-slaver61, partition 29,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 2.0 in stage 8.0 (TID 1271, hadoop-slaver100, partition 12,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 9.0 in stage 8.0 (TID 1272, hadoop-slaver34, partition 19,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 10.0 in stage 8.0 (TID 1273, hadoop-slaver76, partition 20,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 14.0 in stage 8.0 (TID 1274, hadoop-slaver84, partition 24,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 17.0 in stage 8.0 (TID 1275, hadoop-slaver96, partition 27,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 4.0 in stage 8.0 (TID 1276, hadoop-slaver38, partition 14,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 13.0 in stage 8.0 (TID 1277, hadoop-slaver11, partition 23,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 15.0 in stage 8.0 (TID 1278, hadoop-slaver98, partition 25,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 1.0 in stage 8.0 (TID 1279, hadoop-slaver136, partition 11,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 7.0 in stage 8.0 (TID 1280, hadoop-slaver44, partition 17,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 20.0 in stage 8.0 (TID 1281, hadoop-slaver120, partition 30,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 11.0 in stage 8.0 (TID 1282, hadoop-slaver141, partition 21,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 23.0 in stage 8.0 (TID 1283, hadoop-slaver82, partition 33,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 24.0 in stage 8.0 (TID 1284, hadoop-slaver159, partition 34,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 18.0 in stage 8.0 (TID 1285, hadoop-slaver15, partition 28,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 6.0 in stage 8.0 (TID 1286, hadoop-slaver1, partition 16,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 8.0 in stage 8.0 (TID 1287, hadoop-slaver145, partition 18,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 22.0 in stage 8.0 (TID 1288, hadoop-slaver142, partition 32,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 16.0 in stage 8.0 (TID 1289, hadoop-slaver31, partition 26,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 5.0 in stage 8.0 (TID 1290, hadoop-slaver75, partition 15,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 12.0 in stage 8.0 (TID 1291, hadoop-slaver97, partition 22,NODE_LOCAL, 2354 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 21.0 in stage 8.0 (TID 1292, hadoop-slaver149, partition 31,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 0.0 in stage 8.0 (TID 1293, hadoop-slaver163, partition 10,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO scheduler.TaskSetManager: Starting task 3.0 in stage 8.0 (TID 1294, hadoop-slaver91, partition 13,NODE_LOCAL, 2355 bytes)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver34:54432 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver120:46667 (size: 318.8 KB, free: 510.0 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver15:58396 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver82:36935 (size: 318.8 KB, free: 510.0 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver31:37685 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver1:38813 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver100:56851 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver61:37705 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver98:60144 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver38:57228 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver76:40021 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver44:37682 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver149:59628 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver159:40160 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver11:44070 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver91:47206 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver75:50788 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver97:54552 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver34:54432 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver75:50788 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver38:57228 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver100:56851 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver98:60144 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver149:59628 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver44:37682 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver97:54552 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver1:38813 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver91:47206 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver76:40021 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver31:37685 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver159:40160 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver15:58396 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver145:37716 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver61:37705 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver141:60941 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver136:33234 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:25 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver96:53017 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver96:53017 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver141:60941 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver163:50662 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver145:37716 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver84:34548 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 20.0 in stage 8.0 (TID 1281) in 762 ms on hadoop-slaver120 (1/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 15.0 in stage 8.0 (TID 1278) in 873 ms on hadoop-slaver98 (2/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 2.0 in stage 8.0 (TID 1271) in 892 ms on hadoop-slaver100 (3/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 12.0 in stage 8.0 (TID 1291) in 911 ms on hadoop-slaver97 (4/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 5.0 in stage 8.0 (TID 1290) in 914 ms on hadoop-slaver75 (5/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 4.0 in stage 8.0 (TID 1276) in 938 ms on hadoop-slaver38 (6/25)
-16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver163:50662 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 7.0 in stage 8.0 (TID 1280) in 955 ms on hadoop-slaver44 (7/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 10.0 in stage 8.0 (TID 1273) in 963 ms on hadoop-slaver76 (8/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 6.0 in stage 8.0 (TID 1286) in 974 ms on hadoop-slaver1 (9/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 9.0 in stage 8.0 (TID 1272) in 1019 ms on hadoop-slaver34 (10/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 11.0 in stage 8.0 (TID 1282) in 1186 ms on hadoop-slaver141 (11/25)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 23.0 in stage 8.0 (TID 1283) in 1187 ms on hadoop-slaver82 (12/25)
-16/03/29 15:15:26 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver11:44070 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:26 INFO scheduler.TaskSetManager: Finished task 8.0 in stage 8.0 (TID 1287) in 1260 ms on hadoop-slaver145 (13/25)
-16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 21.0 in stage 8.0 (TID 1292) in 1349 ms on hadoop-slaver149 (14/25)
-16/03/29 15:15:27 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver136:33234 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:27 INFO storage.BlockManagerInfo: Added broadcast_10_piece0 in memory on hadoop-slaver142:59911 (size: 318.8 KB, free: 510.3 MB)
-16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 19.0 in stage 8.0 (TID 1270) in 1569 ms on hadoop-slaver61 (15/25)
-16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 0.0 in stage 8.0 (TID 1293) in 1598 ms on hadoop-slaver163 (16/25)
-16/03/29 15:15:27 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver84:34548 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:27 INFO storage.BlockManagerInfo: Added broadcast_6_piece0 in memory on hadoop-slaver142:59911 (size: 44.1 KB, free: 510.3 MB)
-16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 13.0 in stage 8.0 (TID 1277) in 1958 ms on hadoop-slaver11 (17/25)
-16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 3.0 in stage 8.0 (TID 1294) in 2018 ms on hadoop-slaver91 (18/25)
-16/03/29 15:15:27 INFO scheduler.TaskSetManager: Finished task 14.0 in stage 8.0 (TID 1274) in 2267 ms on hadoop-slaver84 (19/25)
-16/03/29 15:15:28 INFO scheduler.TaskSetManager: Finished task 17.0 in stage 8.0 (TID 1275) in 2717 ms on hadoop-slaver96 (20/25)
-16/03/29 15:15:28 INFO scheduler.TaskSetManager: Finished task 16.0 in stage 8.0 (TID 1289) in 2733 ms on hadoop-slaver31 (21/25)
-16/03/29 15:15:28 INFO scheduler.TaskSetManager: Finished task 18.0 in stage 8.0 (TID 1285) in 2864 ms on hadoop-slaver15 (22/25)
-16/03/29 15:15:28 INFO scheduler.TaskSetManager: Finished task 1.0 in stage 8.0 (TID 1279) in 3129 ms on hadoop-slaver136 (23/25)
-16/03/29 15:15:29 INFO scheduler.TaskSetManager: Finished task 22.0 in stage 8.0 (TID 1288) in 3308 ms on hadoop-slaver142 (24/25)
-16/03/29 15:15:31 INFO scheduler.TaskSetManager: Finished task 24.0 in stage 8.0 (TID 1284) in 5445 ms on hadoop-slaver159 (25/25)
-16/03/29 15:15:31 INFO cluster.YarnScheduler: Removed TaskSet 8.0, whose tasks have all completed, from pool 
-16/03/29 15:15:31 INFO scheduler.DAGScheduler: ResultStage 8 (processCmd at CliDriver.java:376) finished in 5.448 s
-16/03/29 15:15:31 INFO scheduler.DAGScheduler: Job 7 finished: processCmd at CliDriver.java:376, took 5.621305 s
-16/03/29 15:15:31 INFO scheduler.StatsReportListener: Finished stage: org.apache.spark.scheduler.StageInfo@1251c1a
-16/03/29 15:15:31 INFO scheduler.StatsReportListener: task runtime:(count: 25, mean: 1751.560000, stdev: 1086.831729, max: 5445.000000, min: 762.000000)
-16/03/29 15:15:31 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:31 INFO scheduler.StatsReportListener:   762.0 ms        873.0 ms        892.0 ms        955.0 ms        1.3 s   2.3 s   3.1 s   3.3 s   5.4 s
-16/03/29 15:15:31 INFO scheduler.StatsReportListener: task result size:(count: 25, mean: 2501.840000, stdev: 410.074401, max: 3304.000000, min: 2266.000000)
-16/03/29 15:15:31 INFO scheduler.StatsReportListener:   0%      5%      10%     25%     50%     75%     90%     95%     100%
-16/03/29 15:15:31 INFO scheduler.StatsReportListener:   2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.2 KB  2.6 KB  3.2 KB  3.2 KB  3.2 KB
-</code></pre>
-
-<p>一共弄了4次: <code>1 -&gt; 2 -&gt; 7 -&gt; 25</code></p>
 
 <p>&ndash;END</p>
 ]]></content>
