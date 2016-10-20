@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Tools | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/tools/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-10-13T19:03:29+08:00</updated>
+  <updated>2016-10-20T21:12:47+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,232 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[红帽6升级SSH]]></title>
+    <link href="http://winseliu.com/blog/2016/10/20/ssh-upgrade-on-centos6/"/>
+    <updated>2016-10-20T19:29:50+08:00</updated>
+    <id>http://winseliu.com/blog/2016/10/20/ssh-upgrade-on-centos6</id>
+    <content type="html"><![CDATA[<p>安全检查报告SSH版本太低存在漏洞需要进行升级，但是红帽没有现成的高版本打包好SSH的rpm。自己动手丰衣足食，没有网上一些朋友遇到那么多的问题，但是也是这纠结过程。</p>
+
+<p>搞一台身边的机器测试安装，如果远程机器搞不好就连不上了！！先手动编译安装一遍，把编译需要的依赖都安装好，然后再rpmbuild就会比较顺利。</p>
+
+<h2>运维同事编译安装的步骤</h2>
+
+<pre><code>加载光盘的packages
+# mount -o loop disk1.iso /mnt/disk
+# vi /etc/yum.repo.d/local.repo
+
+[root@localhost SOURCES]# ll *.tar.gz
+-rw-r--r--. 1 root   root   1499808 3月  10 2016 openssh-7.2p2.tar.gz
+-rw-r--r--. 1 root   root   5489494 10月 20 16:41 openssl-1.0.2j.tar.gz
+-rw-r--r--. 1 root   root     29229 6月  26 2004 x11-ssh-askpass-1.2.4.1.tar.gz
+
+一、升级 Zlib
+1、下载最新版本 Zlib
+# ./configure --prefix=/usr/local/zlib
+本次遇到GCC未安装
+yum -y install gcc
+./configure --prefix=/usr/local/zlib
+# make
+# make install
+这样，就把 zlib 编译安装在 /usr/local/zilib 中了。
+二、升级 OpenSSL
+1、下载最新版本 OpenSSL
+which openssl    查看到当前是在/usr/bin/openssl
+# ./config --prefix=/usr --shared
+本次遇到系统时间不对的，修改好系统时间后config正常。
+# make
+# make test （这一步很重要哦！是进行 SSL 加密协议的完整测试，如果出现错误就要一定先找出哪里的原因，否则一味继续可能导致最终 SSH 不能使用，后果很严重哦！）
+# make install
+三、升级 OpenSSH
+1、下载最新版本 OpenSSH
+#  ./configure --prefix=/usr --sysconfdir=/etc/ssh --with-pam --with-zlib=/usr/local/zlib --with-ssl-dir=/usr/bin/openssl --with-md5-passwords 
+（注意，如果 configure 时提示 PAM 有错误，那一般是因为系统中没有安装 pam-devel RPM 包，找到安装光盘，安装 pam-devel 就可以解决啦）如果是sshkeygen提示错误，需要make  clean再重新编译
+本次安装过程提示了pam问题,cd /opt/cdrom-mirror/Packages
+rpm -ivh pam-devel-1.1.1-10.el6_2.1.x86_64.rpm
+./configure --prefix=/usr --sysconfdir=/etc/ssh --with-pam --with-zlib=/usr/local/zlib --with-ssl-dir=/usr/bin/openssl --with-md5-passwords 
+# make
+# make install
+ssh -V 
+</code></pre>
+
+<h2>编译RPM包</h2>
+
+<p>机器太多，不太可能一台台的编译安装。首先用rpmbuild打包，然后用createrepo制作本地私有仓库。主要是openssl打包比较纠结！OpenSSH完全依赖OpenSSL的，所以OpenSSL的版本一定要先编译安装好，然后再编译OpenSSH。相应的包下面都有对应的spec文件。</p>
+
+<p>实际操作过程是先打包OpenSSH的：</p>
+
+<pre><code> cd
+ mkdir rpmbuild
+ cd rpmbuild/
+ mkdir -pv {BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+
+ cd SOURCES/
+ cd ../SPECS/
+ cp ~/updatessh/openssh-7.2p2/contrib/redhat/openssh.spec ./
+ cd ..
+ cd SOURCES/
+ vi /etc/resolv.conf
+ wget http://pkgs.fedoraproject.org/repo/pkgs/openssh/x11-ssh-askpass-1.2.4.1.tar.gz/8f2e41f3f7eaa8543a2440454637f3c3/x11-ssh-askpass-1.2.4.1.tar.gz
+ wget http://pkgs.fedoraproject.org/repo/pkgs/openssh/openssh-7.2p2.tar.gz/13009a9156510d8f27e752659075cced/openssh-7.2p2.tar.gz
+ cd ..
+ yum groupinstall "X Window System" "Desktop" "Desktop Platform" "General Purpose Desktop"
+ yum -y install libX11-devel
+ yum install imake
+ yum provides \*/Intrinsic.h
+ yum install libXt-devel
+ yum search gtk
+ yum install gtk2 gtk2-devel
+ vi SPECS/openssh.spec
+ rpmbuild -bb SPECS/openssh.spec
+</code></pre>
+
+<p>然后坑就摆在那里了：重启sshd失败。</p>
+
+<pre><code># 在rpmbuild\RPMS\x86_64目录下面创建createrepo私有仓库
+# /etc/yum.repo.d/local.repo增加节点
+
+# yum install openssh 
+
+# 重启
+[root@localhost ~]# service sshd restart
+然后启动了[失败]（具体错没记下来）
+</code></pre>
+
+<p>感觉是OpenSSL的问题了。然后打包好OpenSSL后安装竟然报错：找不到libssl的动态链接库</p>
+
+<pre><code>Error: Package: wget-1.12-1.4.el6.x86_64 (@anaconda-RedHatEnterpriseLinux-201206132210.x86_64/6.3)
+           Requires: libcrypto.so.10()(64bit)
+           Removing: openssl-1.0.0-20.el6_2.5.x86_64 (@cdrom)
+               libcrypto.so.10()(64bit)
+           Updated By: openssl-1.0.2j-1.x86_64 (upgrade)
+               Not found
+Error: Package: 1:wpa_supplicant-0.7.3-3.el6.x86_64 (@cdrom)
+           Requires: libssl.so.10()(64bit)
+           Removing: openssl-1.0.0-20.el6_2.5.x86_64 (@cdrom)
+               libssl.so.10()(64bit)
+           Updated By: openssl-1.0.2j-1.x86_64 (upgrade)
+               Not found
+</code></pre>
+
+<p>官方的出的spec打包的rpm安装后竟然会少东西。百思不得其解，通过查看cdrom openssl-1.0.0-20.el6_2.5.x86_64.rpm与rpmbuild openssl-1.0.2j-1.x86_64.rpm的确还不同：</p>
+
+<pre><code>[root@localhost ~]# rpm -qlp /opt/cdrom/Packages/openssl-1.0.0-20.el6_2.5.x86_64.rpm | grep libssl
+...
+/usr/lib64/libssl.so.1.0.0
+/usr/lib64/libssl.so.10
+
+[root@localhost ~]# rpm -qlp /opt/cdrom/Packages/openssl-1.0.0-20.el6_2.5.x86_64.rpm | grep libssl
+...
+/usr/lib64/libssl.so.1.0.0
+</code></pre>
+
+<p>在spec里面增加libssl.so.10软链接也没用。rpm并没有提供libssl.so.10的 <strong> provide </strong> 服务（可以通过<a href="http://stackoverflow.com/questions/25638461/how-can-i-make-rpm-tell-what-libraries-are-provided-inside-it">rpm -qip &ndash;provides RPM</a>查看）。</p>
+
+<p>实在想不出办法了，只能先看下官网怎么打包的。最后通过查看 openssl-1.0.0-20.el6_2.5.src.rpm 的打包spec是进行定制了的，把原来编译生成的动态链接库so.$(SHLIB_MAJOR).$(SHLIB_MINOR)文件名改成so.$(SHLIB_SONAMEVER)。主要的两个patch为：</p>
+
+<ul>
+<li>openssl-1.0.0-beta3-soversion.patch</li>
+<li>openssl-1.0.0-beta4-redhat.patch</li>
+</ul>
+
+
+<p>参考修改如下：</p>
+
+<pre><code>修改Makefile
+diff -u openssl-1.0.2j/Makefile.org rpmbuild/SOURCES/openssl-1.0.2j/Makefile.org
+--- openssl-1.0.2j/Makefile.org 2016-09-26 17:49:07.000000000 +0800
++++ rpmbuild/SOURCES/openssl-1.0.2j/Makefile.org        2016-10-20 15:28:32.000000000 +0800
+@@ -10,6 +10,7 @@
+ SHLIB_MAJOR=
+ SHLIB_MINOR=
+ SHLIB_EXT=
++SHLIB_SONAMEVER=10
+ PLATFORM=dist
+ OPTIONS=
+ CONFIGURE_ARGS=
+@@ -342,10 +343,9 @@
+ link-shared:
+        @ set -e; for i in $(SHLIBDIRS); do \
+                $(MAKE) -f $(HERE)/Makefile.shared -e $(BUILDENV) \
+-                       LIBNAME=$$i LIBVERSION=$(SHLIB_MAJOR).$(SHLIB_MINOR) \
++                       LIBNAME=$$i LIBVERSION=$(SHLIB_SONAMEVER) \
+                        LIBCOMPATVERSIONS=";$(SHLIB_VERSION_HISTORY)" \
+                        symlink.$(SHLIB_TARGET); \
+-               libs="$$libs -l$$i"; \
+        done
+
+ build-shared: do_$(SHLIB_TARGET) link-shared
+@@ -356,7 +356,7 @@
+                        libs="$(LIBKRB5) $$libs"; \
+                fi; \
+                $(CLEARENV) &amp;&amp; $(MAKE) -f Makefile.shared -e $(BUILDENV) \
+-                       LIBNAME=$$i LIBVERSION=$(SHLIB_MAJOR).$(SHLIB_MINOR) \
++                       LIBNAME=$$i LIBVERSION=$(SHLIB_SONAMEVER) \
+                        LIBCOMPATVERSIONS=";$(SHLIB_VERSION_HISTORY)" \
+                        LIBDEPS="$$libs $(EX_LIBS)" \
+                        link_a.$(SHLIB_TARGET); \
+
+修改Configure1
+diff -u openssl-1.0.2j/Configure rpmbuild/SOURCES/openssl-1.0.2j/Configure
+--- openssl-1.0.2j/Configure    2016-09-26 17:49:07.000000000 +0800
++++ rpmbuild/SOURCES/openssl-1.0.2j/Configure   2016-10-20 16:40:33.000000000 +0800
+@@ -1781,7 +1781,7 @@
+        elsif ($shared_extension ne "" &amp;&amp; $shared_extension =~ /^\.s([ol])\.[^\.]*\.[^\.]*$/)
+                {
+                my $sotmp = $1;
+-               s/^SHARED_LIBS_LINK_EXTS=.*/SHARED_LIBS_LINK_EXTS=.s$sotmp.\$(SHLIB_MAJOR) .s$sotmp/;
++               s/^SHARED_LIBS_LINK_EXTS=.*/SHARED_LIBS_LINK_EXTS=.s$sotmp.\$(SHLIB_SONAMEVER) .s$sotmp/;
+                }
+        elsif ($shared_extension ne "" &amp;&amp; $shared_extension =~ /^\.[^\.]*\.[^\.]*\.dylib$/)
+                {
+
+修改Configure2
+rpmbuild/SOURCES/openssl-1.0.2j/Configure 文件中 so.\$(SHLIB_MAJOR).\$(SHLIB_MINOR) 替换成 so.\$(SHLIB_SONAMEVER)
+
+修改spec
+[root@localhost ~]# diff openssl-1.0.2j/openssl.spec rpmbuild/SPECS/openssl.spec
+110a111,121
+&gt; version=%{version}
+&gt; soversion=10
+&gt; rename so.${soversion} so.${version} $RPM_BUILD_ROOT%{_libdir}/*.so.${soversion}
+&gt; for lib in $RPM_BUILD_ROOT/usr/lib64/*.so.${version} ; do
+&gt;         chmod 755 ${lib}
+&gt;         ln -s -f `basename ${lib}` $RPM_BUILD_ROOT/usr/lib64/`basename ${lib} .${version}`
+&gt;         ln -s -f `basename ${lib}` $RPM_BUILD_ROOT/usr/lib64/`basename ${lib} .${version}`.${soversion}
+&gt; 
+&gt; done
+&gt; 
+</code></pre>
+
+<p>然后打包OpenSSL，用Yum更新OpenSSL；再打包OpenSSH，最后再用Yum安装OpenSSH。</p>
+
+<h2>配置</h2>
+
+<p>打包好完成后完成大半的任务了，但是重启过程出现了一些问题：</p>
+
+<ol>
+<li>error while loading shared libraries: libcrypto.so.10: cannot enable executable stack as shared object requires: Permission denied</li>
+</ol>
+
+
+<p>运行： <code>execstack -c libcrypto.so.10</code> 解决。 <a href="http://www.linuxquestions.org/questions/linux-kernel-70/longterm-and-grsec-on-slackware-13-0-a-903612/">http://www.linuxquestions.org/questions/linux-kernel-70/longterm-and-grsec-on-slackware-13-0-a-903612/</a></p>
+
+<ol>
+<li>重启后远程密码登录上不，但是机器重启是可以登录的，而且su通过密码也是可以切换的。</li>
+</ol>
+
+
+<p>由于su切换没问题，应该不是加解密的问题。最后经常是selinux的问题： <code>setenforce 0 ; vi /etc/selinux/config</code> 完成配置。</p>
+
+<p>到此纠结的SSH升级告一段落。后面上百台机器通过puppet就可以搞定了。</p>
+
+<p>最后分享一个牛逼到不能再牛逼升级配置的文章： <a href="http://www.tsingfun.com/html/2016/env_0330/1332.html">http://www.tsingfun.com/html/2016/env_0330/1332.html</a> 包括了升级过程中你遇到和没遇到的所有问题了。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Maven创建自己的Archetype]]></title>
@@ -615,246 +841,6 @@ bin/create-java-perf-map.sh 7661
 sudo perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
 cat out.perf-folded | ~/FlameGraph/flamegraph.pl --color=java &gt;perf.svg
 sz perf.svg
-</code></pre>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[RPM打包]]></title>
-    <link href="http://winseliu.com/blog/2016/04/04/rpm-build-your-package/"/>
-    <updated>2016-04-04T16:07:21+08:00</updated>
-    <id>http://winseliu.com/blog/2016/04/04/rpm-build-your-package</id>
-    <content type="html"><![CDATA[<h2>资料</h2>
-
-<ul>
-<li><a href="http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html">http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html</a></li>
-<li><a href="https://fedoraproject.org/wiki/How_to_create_an_RPM_package/zh-cn">https://fedoraproject.org/wiki/How_to_create_an_RPM_package/zh-cn</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part1/index.html">用 RPM 打包软件-打包教程</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part3/index.html">用 RPM 打包软件-高级部分：安装前后控制</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/l-rpm/index.html">RPM 打包技术与典型 SPEC 文件分析-各变量含义</a></li>
-<li><a href="http://hlee.iteye.com/blog/343499">http://hlee.iteye.com/blog/343499</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part1/indent-2.spec">案例</a></li>
-<li><p><a href="https://github.com/apache/zookeeper/tree/release-3.4.8/src/packages">zookeeper打包案例</a></p></li>
-<li><p><a href="http://www.ibm.com/developerworks/cn/linux/l-cn-checkinstall/index.html">http://www.ibm.com/developerworks/cn/linux/l-cn-checkinstall/index.html</a></p></li>
-</ul>
-
-
-<h2>实践</h2>
-
-<ul>
-<li>系统配置准备</li>
-</ul>
-
-
-<pre><code># 新建一个docker实例，来测试、学习
-[root@cu1 ~]# docker run -ti centos:centos6 /bin/bash
-
-[root@bdc25400cc63 mywget]# cat /etc/redhat-release 
-CentOS release 6.6 (Final)
-
-# 安装编译环境所需的软件
-yum install which tree lrzsz tar gcc rpm-build
-# wget编译的依赖
-yum install -y gnutls gnutls-devel
-</code></pre>
-
-<ul>
-<li>步骤</li>
-</ul>
-
-
-<pre><code>[root@bdc25400cc63 home]# mkdir mywget 
-[root@bdc25400cc63 home]# cd mywget/
-[root@bdc25400cc63 mywget]# mkdir BUILD RPMS SOURCES SPECS SRPMS
-[root@bdc25400cc63 mywget]# cd SOURCES/
-[root@bdc25400cc63 SOURCES]# mv /home/wget-1.17.tar.gz .
-[root@bdc25400cc63 SOURCES]# ls
-wget-1.17.tar.gz
-[root@bdc25400cc63 SOURCES]# cd ..
-
-[root@bdc25400cc63 mywget]# rpmbuild --showrc
-[test@bdc25400cc63 mywget]$ rpm --eval "%{_topdir}"
-
-[test@bdc25400cc63 mywget]$ grep -i _topdir /usr/lib/rpm/rpmrc /usr/lib/rpm/redhat/rpmrc /usr/lib/rpm/macros /usr/lib/rpm/redhat/macros  | less
-/usr/lib/rpm/macros:%_builddir          %{_topdir}/BUILD
-/usr/lib/rpm/macros:%_rpmdir            %{_topdir}/RPMS
-/usr/lib/rpm/macros:%_sourcedir         %{_topdir}/SOURCES
-/usr/lib/rpm/macros:%_specdir           %{_topdir}/SPECS
-/usr/lib/rpm/macros:%_srcrpmdir         %{_topdir}/SRPMS
-/usr/lib/rpm/macros:%_buildrootdir              %{_topdir}/BUILDROOT
-/usr/lib/rpm/macros:%_topdir            %{getenv:HOME}/rpmbuild
-
-[test@bdc25400cc63 mywget]$ cat ~/.rpmmacros 
-%_topdir /home/mywget/rpm
-
-# 2016-5-12 15:28:35
-# spec里面有define和global，应该是这个导致的！用global应该即可以了？
-
-[root@bdc25400cc63 mywget]# vi SPECS/wget.spec
-  # this is a sample spec file for wget
-
-  %define _topdir /home/mywget
-  %define name    wget
-  %define release 2
-  %define version 1.17
-  # 定义 _buildrootdir 不起作用，不知道为啥??? 在 .rpmmacros 定义了 %_topdir，root转到 /home/mywget/rpm/BUILDROOT 了。
-
-  %define _unpackaged_files_terminate_build 0
-
-  Summary:   GNU wget
-  License:   GPL
-  Name:      %{name}
-  Version:   %{version}
-  Release:   %{release}
-  Source:    %{name}-%{version}.tar.gz
-  Prefix:    /usr/local/wget
-  Group:     Development/Tools
-
-  %description
-  The GNU wget program downloads files from the Internet using the command-line.
-
-  %prep
-  %setup -q
-
-  %build
-  ./configure
-  make
-
-  %install
-  make install prefix=$RPM_BUILD_ROOT/usr/local/wget # or use DESTDIR=$RPM_BUILD_ROOT
-
-  %post
-  echo "hello world"
-
-  %preun
-  echo "bye"
-
-  %clean
-  rm -rf $RPM_BUILD_ROOT
-
-  %files
-  %defattr(-, root, root)
-  /usr/local/wget/bin/wget
-
-[root@bdc25400cc63 mywget]# rpmbuild -vv -bb --clean SPECS/wget.spec 
-
-[root@bdc25400cc63 mywget]# tree .
-.
-├── BUILD
-├── RPMS
-│   └── x86_64
-│       ├── wget-1.17-2.x86_64.rpm
-│       └── wget-debuginfo-1.17-2.x86_64.rpm
-├── SOURCES
-│   └── wget-1.17.tar.gz
-├── SPECS
-│   └── wget.spec
-└── SRPMS
-
-6 directories, 4 files
-
-[root@bdc25400cc63 mywget]# rpm -qpl RPMS/x86_64/wget-1.17-2.x86_64.rpm  
-/usr/local/wget/bin/wget
-</code></pre>
-
-<p>接下来就可以直接拿到这个包到其他机器上安装了，如果自己建立了本地库，使用createrepo更新下，就可以使用yum安装最新打的包了。</p>
-
-<p>注： <code>%pre</code> , <code>%post</code> 和 <code>%preun</code> , <code>%postun</code> 可以在安装前后执行一些脚本。</p>
-
-<pre><code>[root@cu2 ganglia-build]# mkdir BUILD RPMS SOURCES SPECS SRPMS
-[root@cu2 ganglia-build]# cd SOURCES/
-[root@cu2 SOURCES]# ll
-total 1272
--rw-r--r-- 1 root root 1302320 Jan 20 09:35 ganglia-3.7.2.tar.gz
-[root@cu2 SOURCES]# cd ..
-
-[root@cu2 ganglia-build]# ll
-total 20
-drwxr-xr-x 2 root root 4096 Jun 15 10:25 BUILD
-drwxr-xr-x 2 root root 4096 Jun 15 10:25 RPMS
-drwxr-xr-x 2 root root 4096 Jun 15 10:25 SOURCES
-drwxr-xr-x 2 root root 4096 Jun 15 10:25 SPECS
-drwxr-xr-x 2 root root 4096 Jun 15 10:25 SRPMS
-
-[root@cu2 ganglia-build]# cd SPECS/
-[root@cu2 SPECS]# vi gmetad.spec
-
-[root@cu2 ganglia-build]# rpmbuild --clean -v -ba SPECS/gmetad.spec 
-
-[root@cu2 ganglia-build]# rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm 
-</code></pre>
-
-<h2>重新打包已有rpm</h2>
-
-<p>下载源码包，再修改内容，最后使用rpm-build重新打包。</p>
-
-<p>这里以puppetserver为例，使用jdk7即可但官网打包的依赖是jdk8，这里修改依赖然后重新打包：</p>
-
-<pre><code>[root@cu2 rpmbuild]# rpm -ivh puppetserver-2.3.1-1.el6.src.rpm 
-warning: puppetserver-2.3.1-1.el6.src.rpm: Header V4 RSA/SHA1 Signature, key ID 4bd6ec30: NOKEY
-   1:puppetserver           warning: user mockbuild does not exist - using root
-warning: group mockbuild does not exist - using root
-########################################### [100%]
-warning: user mockbuild does not exist - using root
-warning: group mockbuild does not exist - using root
-[root@cu2 rpmbuild]# ll
-total 32904
--rw-r--r-- 1 root root 33681889 May 10 17:44 puppetserver-2.3.1-1.el6.src.rpm
-drwxr-xr-x 2 root root     4096 May 10 17:55 SOURCES
-drwxr-xr-x 2 root root     4096 May 10 17:55 SPECS
-
-#-- 注释掉jdk8的部分
-[root@cu2 rpmbuild]# grep -3 jdk SPECS/puppetserver.spec 
-
-# java 1.8.0 is available starting in fedora 20 and el 6
-#%if 0%{?fedora} &gt;= 20 || 0%{?rhel} &gt;= 6
-#%global open_jdk          java-1.8.0-openjdk-headless
-#%else
-%global open_jdk          java-1.7.0-openjdk
-#%endif
-
-[root@cu2 rpmbuild]# yum install -y ruby
-[root@cu2 rpmbuild]# rpmbuild -v -bb --clean SPECS/puppetserver.spec 
-
-[root@cu2 rpmbuild]# yum deplist RPMS/noarch/puppetserver-2.3.1-1.el6.noarch.rpm 
-Loaded plugins: fastestmirror, priorities
-Finding dependencies: 
-Loading mirror speeds from cached hostfile
- * base: centos.ustc.edu.cn
- * centosplus: centos.ustc.edu.cn
- * epel: mirror01.idc.hinet.net
- * extras: centos.ustc.edu.cn
- * updates: centos.ustc.edu.cn
-193 packages excluded due to repository priority protections
-package: puppetserver.noarch 2.3.1-1.el6
-  dependency: chkconfig
-   provider: chkconfig.x86_64 1.3.49.3-5.el6
-   provider: chkconfig.x86_64 1.3.49.3-5.el6_7.2
-  dependency: /bin/bash
-   provider: bash.x86_64 4.1.2-33.el6
-   provider: bash.x86_64 4.1.2-33.el6_7.1
-  dependency: java-1.7.0-openjdk
-   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.79-2.5.5.4.el6
-   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.101-2.6.6.1.el6_7
-   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.85-2.6.1.3.el6_6
-   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.85-2.6.1.3.el6_7
-   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.91-2.6.2.2.el6_7
-   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.95-2.6.4.0.el6_7
-   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.99-2.6.5.0.el6_7
-  dependency: puppet-agent &gt;= 1.4.0
-   provider: puppet-agent.x86_64 1.4.1-1.el6
-  dependency: net-tools
-   provider: net-tools.x86_64 1.60-110.el6_2
-  dependency: /usr/bin/env
-   provider: coreutils.x86_64 8.4-37.el6
-   provider: coreutils.x86_64 8.4-37.el6_7.3
-  dependency: /bin/sh
-   provider: bash.x86_64 4.1.2-33.el6
-   provider: bash.x86_64 4.1.2-33.el6_7.1
-  dependency: config(puppetserver) = 2.3.1-1.el6
-   provider: puppetserver.noarch 2.3.1-1.el6 
 </code></pre>
 
 <p>&ndash;END</p>
