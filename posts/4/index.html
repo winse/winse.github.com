@@ -9,10 +9,8 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="如果有Lucene的使用经历，elasticsearch的入门还是比较简单的。直接解压启动命令就安装好了，然后就是添加一些plugins就OK了。 安装 从官网下载 TAR包 ，解压后，运行 elasticsearch 脚本启动服务。 1
-2
-# -d 表示 daemonize 后台运行
-[ &hellip;">
+  <meta name="description" content="flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。 flume-1.6.0
+kafka_2.11-0.9.0.1( &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -86,6 +84,945 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/">使用 Flume+kafka+elasticsearch 处理数据</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-06-28T09:50:05+08:00" pubdate data-updated="true">Tue 2016-06-28 09:50</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。</p>
+
+<ul>
+<li>flume-1.6.0</li>
+<li>kafka_2.11-0.9.0.1(可以与0.8.2客户端通信, flume-kafka-channel-1.6.0不改)</li>
+<li>elasticsearch-2.2.0</li>
+</ul>
+
+
+<p>由于版本的差异，需要替换/添加以下jar到 <code>flume/lib</code> 下：</p>
+
+<p>使用 <code>mvn dependecy:copy-dependencies</code> 导出所需依赖的包</p>
+
+<p>jackson一堆，hppc-0.7.1.jar，t-digest-3.0.jar，jsr166e-1.1.0.jar，guava-18.0.jar，lucene一堆，elasticsearch-2.2.0.jar。</p>
+
+<p>远程调试配置：</p>
+
+<p>source由于项目上的一些特殊规则，需要自己编写。通过远程DEBUG来打断点来排查BUG。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flume]$ vi conf/flume-env.sh
+</span><span class='line'>export JAVA_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8092"</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实战1</h2>
+
+<p>KafkaChannel：考虑到其他功能也需要用到这些数据。</p>
+
+<p>先写一个配置把flume自带功能跑通，这里用 netcat 作为输入运行：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flumebin]$ cat dta.flume 
+</span><span class='line'>dta.sources=s1
+</span><span class='line'>dta.channels=c1
+</span><span class='line'>dta.sinks=k1
+</span><span class='line'>
+</span><span class='line'>dta.channels.c1.type=org.apache.flume.channel.kafka.KafkaChannel
+</span><span class='line'>dta.channels.c1.capacity=10000
+</span><span class='line'>dta.channels.c1.transactionCapacity=1000
+</span><span class='line'>dta.channels.c1.brokerList=cu5:9093
+</span><span class='line'>dta.channels.c1.topic=flume_cmdid_1234
+</span><span class='line'>dta.channels.c1.groupId=flume_dta
+</span><span class='line'>dta.channels.c1.zookeeperConnect=cu3:2181/kafka_0_9
+</span><span class='line'>dta.channels.c1.parseAsFlumeEvent=false
+</span><span class='line'>
+</span><span class='line'>dta.sources.s1.channels=c1
+</span><span class='line'>dta.sources.s1.type=netcat
+</span><span class='line'>dta.sources.s1.bind=0.0.0.0
+</span><span class='line'>dta.sources.s1.port=6666
+</span><span class='line'>dta.sources.s1.max-line-length=88888888
+</span><span class='line'>
+</span><span class='line'>dta.sinks.k1.channel=c1
+</span><span class='line'>dta.sinks.k1.type=elasticsearch
+</span><span class='line'>dta.sinks.k1.hostNames=cu2:9300
+</span><span class='line'>dta.sinks.k1.indexName=foo_index
+</span><span class='line'>dta.sinks.k1.indexType=idcisp
+</span><span class='line'>dta.sinks.k1.clusterName=eshore-cu
+</span><span class='line'>dta.sinks.k1.batchSize=500
+</span><span class='line'>dta.sinks.k1.ttl=5d
+</span><span class='line'>dta.sinks.k1.serializer=com.eshore.zhfx.collector.InfoSecurityLogIndexRequestBuilderFactory
+</span><span class='line'>dta.sinks.k1.serializer.idcispUrlBase64=true
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 flumebin]$ bin/flume-ng agent --classpath flume-dta-source-2.1.jar  -n dta -c conf -f dta.flume
+</span><span class='line'>
+</span><span class='line'># 新开一个窗口
+</span><span class='line'>[hadoop@cu2 ~]$ nc localhost 6666
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>kafka的主题、ES的索引可以不要手动建，当然为了更好的控制ES索引创建可以添加一个索引名的template。</p>
+
+<p>InfoSecurityLogIndexRequestBuilderFactory 实现 ElasticSearchIndexRequestBuilderFactory 把原始记录转换成 ES 的JSON对象。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private Counter allRecordMetric = MetricManager.getInstance().counter("all_infosecurity");
+</span><span class='line'>  private Counter errorRecordMetric = MetricManager.getInstance().counter("error_infosecurity");
+</span><span class='line'>  
+</span><span class='line'>  public IndexRequestBuilder createIndexRequest(Client client, String indexPrefix, String indexType, Event event)
+</span><span class='line'>      throws IOException {
+</span><span class='line'>    allRecordMetric.inc();
+</span><span class='line'>
+</span><span class='line'>    String record = new String(event.getBody(), outputCharset);
+</span><span class='line'>
+</span><span class='line'>    context.put(ElasticSearchSinkConstants.INDEX_NAME, indexPrefix);
+</span><span class='line'>    indexNameBuilder.configure(context);
+</span><span class='line'>    IndexRequestBuilder indexRequestBuilder = client.prepareIndex(indexNameBuilder.getIndexName(event), indexType);
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      Gson gson = new Gson();
+</span><span class='line'>      IdcIspLog log = parseRecord(record);
+</span><span class='line'>      BytesArray data = new BytesArray(gson.toJson(log));
+</span><span class='line'>
+</span><span class='line'>      indexRequestBuilder.setSource(data);
+</span><span class='line'>      indexRequestBuilder.setRouting(log.commandld);
+</span><span class='line'>    } catch (Exception e) {
+</span><span class='line'>      LOG.error(e.getMessage(), e);
+</span><span class='line'>      errorRecordMetric.inc();
+</span><span class='line'>
+</span><span class='line'>      indexRequestBuilder.setSource(record.getBytes(outputCharset));
+</span><span class='line'>      // 保留错误的数据
+</span><span class='line'>      indexRequestBuilder.setRouting("error");
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    return indexRequestBuilder;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实战2</h2>
+
+<p>测试自定义的Source：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>dta.sources=s1
+</span><span class='line'>dta.channels=c1
+</span><span class='line'>dta.sinks=k1
+</span><span class='line'>
+</span><span class='line'>dta.channels.c1.type=memory
+</span><span class='line'>dta.channels.c1.capacity=1000000
+</span><span class='line'>dta.channels.c1.transactionCapacity=1000000
+</span><span class='line'>dta.channels.c1.byteCapacity=7000000000
+</span><span class='line'>
+</span><span class='line'>dta.sources.s1.channels=c1
+</span><span class='line'>dta.sources.s1.type=com.eshore.zhfx.collector.CollectSource
+</span><span class='line'>dta.sources.s1.spoolDir=/home/hadoop/flume/data/
+</span><span class='line'>dta.sources.s1.trackerDir=/tmp/dtaspool
+</span><span class='line'>
+</span><span class='line'>dta.sinks.k1.channel=c1
+</span><span class='line'>dta.sinks.k1.type=logger</span></code></pre></td></tr></table></div></figure>
+
+
+<p>CollectSource 实现PollableSource 继承AbstractSource类。参考Flume开发文档: <a href="http://flume.apache.org/FlumeDeveloperGuide.html#source">http://flume.apache.org/FlumeDeveloperGuide.html#source</a>  <code>org.apache.flume.source.SequenceGeneratorSource</code> 类。</p>
+
+<p>方法process主逻辑代码如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public Status process() throws EventDeliveryException {
+</span><span class='line'>    Status status = Status.READY;
+</span><span class='line'>
+</span><span class='line'>    try {
+</span><span class='line'>      List&lt;Event&gt; events = readEvent(batchSize);
+</span><span class='line'>      if (!events.isEmpty()) {
+</span><span class='line'>        sourceCounter.addToEventReceivedCount(events.size());
+</span><span class='line'>        sourceCounter.incrementAppendBatchReceivedCount();
+</span><span class='line'>
+</span><span class='line'>        getChannelProcessor().processEventBatch(events);
+</span><span class='line'>        // 记录文件已经处理的位置
+</span><span class='line'>        commit();
+</span><span class='line'>
+</span><span class='line'>        sourceCounter.addToEventAcceptedCount(events.size());
+</span><span class='line'>        sourceCounter.incrementAppendBatchAcceptedCount();
+</span><span class='line'>      }
+</span><span class='line'>    } catch (ChannelException | IOException e) {
+</span><span class='line'>      status = Status.BACKOFF;
+</span><span class='line'>      Throwables.propagate(e);
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    return status;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>实例：Flume+Kafka+ES</h2>
+
+<p>把两个实例整合起来，把实例1的Source替换下即可。</p>
+
+<h2>附-kafka基本操作</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-server-start.sh config/server1.properties 
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ cat config/server1.properties 
+</span><span class='line'>listeners=PLAINTEXT://:9093
+</span><span class='line'>log.dirs=/tmp/kafka-logs1
+</span><span class='line'>num.partitions=1
+</span><span class='line'>zookeeper.connect=cu3,cu4,cu5/kafka_0_9
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --create --zookeeper cu3:2181/kafka_0_9 --replication 1 --partitions 1 --topic flume
+</span><span class='line'>Created topic "flume".
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --list --zookeeper cu3:2181/kafka_0_9
+</span><span class='line'>flume
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-producer.sh --broker-list cu5:9093 --topic flume
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-consumer.sh --zookeeper cu3:2181/kafka_0_9 --topic flume --from-beginning
+</span><span class='line'>
+</span><span class='line'>##添加kafka-manager：
+</span><span class='line'>
+</span><span class='line'>启动kafka添加JMX
+</span><span class='line'>export JMX_PORT=19999
+</span><span class='line'>nohup bin/kafka-server-start.sh config/server.properties &
+</span><span class='line'>
+</span><span class='line'># https://github.com/yahoo/kafka-manager/tree/1.3.1.8
+</span><span class='line'>nohup bin/kafka-manager -Dhttp.port=9090 &
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>附-Flume操作</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>https://flume.apache.org/FlumeUserGuide.html#fan-out-flow
+</span><span class='line'>
+</span><span class='line'>#conf/flume-env.sh
+</span><span class='line'>export FLUME_JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8092"
+</span><span class='line'>bin/flume-ng agent --classpath "flume-dta-libs/*" -Dflume.root.logger=DEBUG,console  -n dta -c conf -f accesslog.flume
+</span><span class='line'>
+</span><span class='line'># with ganglia
+</span><span class='line'>[ud@cu-ud1 apache-flume-1.6.0-bin]$ bin/flume-ng agent --classpath "/home/ud/collector/common-lib/*"  -Dflume.root.logger=Debug,console -Dflume.monitoring.type=ganglia -Dflume.monitoring.hosts=239.2.11.71:8649 -n dta -c conf -f accesslog.flume 
+</span><span class='line'>
+</span><span class='line'># windows
+</span><span class='line'>bin\flume-ng.cmd agent -n agent -c conf -f helloworld.flume -property "flume.root.logger=INFO,console"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2016-06-17T09:30:50+08:00" pubdate data-updated="true">Fri 2016-06-17 09:30</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>前面写过完全纯手工和用yum安装依赖来安装ganglia的文章，最近生产安装了puppet，既然已经手上已有牛刀，杀鸡就不用再取菜刀了。今天记录下前几天使用puppet安装ganglia的经历。</p>
+
+<h2>前提（自己操作过熟悉怎么用）</h2>
+
+<ul>
+<li>配置过私有仓库 (createrepo)</li>
+<li>安装好puppet</li>
+<li>编译过自己的rpm (rpmbuild)</li>
+</ul>
+
+
+<h2>编译gmetad，gmond，gweb</h2>
+
+<p>点击链接下载SPEC：</p>
+
+<ul>
+<li><a href="/files/ganglia-puppet/gmetad.spec">gmetad.spec</a></li>
+<li><a href="/files/ganglia-puppet/gmond.spec">gmond.spec</a></li>
+<li><a href="/files/ganglia-puppet/gweb.spec">gweb.spec</a></li>
+</ul>
+
+
+<p>然后编译打包：</p>
+
+<p>先手动编译安装 ganglia ，把依赖的问题处理好。编译安装没问题，然后再使用 rpmbuild 编译生成 rpm 包！！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 1&gt; 建立目录结构
+</span><span class='line'>mkdir ganglia-build
+</span><span class='line'>cd ganglia-build
+</span><span class='line'>mkdir BUILD RPMS SOURCES SPECS SRPMS
+</span><span class='line'>
+</span><span class='line'># 2&gt; 修改配置
+</span><span class='line'># ganglia-web-3.7.1.tar.gz的makefile、conf_default.php.in修改下，根据等下要配置gmetad的参数进行修改
+</span><span class='line'>
+</span><span class='line'>less ganglia-web-3.7.1/Makefile 
+</span><span class='line'>  # Location where gweb should be installed to (excluding conf, dwoo dirs).
+</span><span class='line'>  GDESTDIR = /var/www/html/ganglia
+</span><span class='line'>
+</span><span class='line'>  # Location where default apache configuration should be installed to.
+</span><span class='line'>  GCONFDIR = /usr/local/ganglia/etc/
+</span><span class='line'>
+</span><span class='line'>  # Gweb statedir (where conf dir and Dwoo templates dir are stored)
+</span><span class='line'>  GWEB_STATEDIR = /var/www/html/ganglia
+</span><span class='line'>
+</span><span class='line'>  # Gmetad rootdir (parent location of rrd folder)
+</span><span class='line'>  GMETAD_ROOTDIR = /data/ganglia
+</span><span class='line'>
+</span><span class='line'>  APACHE_USER = apache
+</span><span class='line'>
+</span><span class='line'># 连外网太慢，下载放到本地
+</span><span class='line'>less ganglia-web-3.7.1/conf_default.php.in 
+</span><span class='line'>  #$conf['cubism_js_path'] = "js/cubism.v1.min.js";
+</span><span class='line'>  $conf['jquery_js_path'] = "js/jquery.min.js";
+</span><span class='line'>  $conf['jquerymobile_js_path'] = "js/jquery.mobile.min.js";
+</span><span class='line'>  $conf['jqueryui_js_path'] = "js/jquery-ui.min.js";
+</span><span class='line'>  $conf['rickshaw_js_path'] = "js/rickshaw.min.js";
+</span><span class='line'>  $conf['cubism_js_path'] = "js/cubism.v1.min.js";
+</span><span class='line'>  $conf['d3_js_path'] = "js/d3.min.js";
+</span><span class='line'>  $conf['protovis_js_path'] = "js/protovis.min.js";
+</span><span class='line'>
+</span><span class='line'># 3&gt; 源文件
+</span><span class='line'># 把文件放到SOURCES目录下，
+</span><span class='line'>ls SOURCES/
+</span><span class='line'>  ganglia-3.7.2.tar.gz  ganglia-web-3.7.1.tar.gz
+</span><span class='line'>
+</span><span class='line'># 4&gt; 编译生成RPM
+</span><span class='line'>rpmbuild -v -ba SPECS/gmetad.spec 
+</span><span class='line'>rpmbuild -v -ba SPECS/gmond.spec 
+</span><span class='line'>rpmbuild -v -ba SPECS/gweb.spec 
+</span><span class='line'>
+</span><span class='line'># 5&gt; 查看内容
+</span><span class='line'>rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>本地仓库</h2>
+
+<p>这里假设已经把系统光盘做成了本地仓库。</p>
+
+<p><strong>先安装httpd、php、createrepo</strong>，然后按照下面的步骤创建本地仓库：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 系统带的可以从光盘拷贝，直接映射到httpd的目录下即可
+</span><span class='line'>[hadoop@hadoop-master1 rhel6.3]$ ls 
+</span><span class='line'>Packages  repodata
+</span><span class='line'>[hadoop@hadoop-master1 html]$ pwd
+</span><span class='line'>/var/www/html
+</span><span class='line'>[hadoop@hadoop-master1 html]$ ll
+</span><span class='line'>lrwxrwxrwx.  1 root root   20 2月  15 2014 rhel6.3 -&gt; /opt/rhel6.3
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mkdir -p /opt/dta/repo
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ cd /opt/dta/repo
+</span><span class='line'>[hadoop@hadoop-master1 repo]$ ls *.rpm
+</span><span class='line'>gmetad-3.7.2-1.el6.x86_64.rpm  gmond-3.7.2-1.el6.x86_64.rpm  gweb-3.7.1-1.el6.x86_64.rpm  libconfuse-2.7-4.el6.x86_64.rpm
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 repo]$ sudo createrepo .
+</span><span class='line'>3/3 - libconfuse-2.7-4.el6.x86_64.rpm                                           
+</span><span class='line'>Saving Primary metadata
+</span><span class='line'>Saving file lists metadata
+</span><span class='line'>Saving other metadata
+</span><span class='line'>
+</span><span class='line'># 映射到httpd目录下
+</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ cd /var/www/html/
+</span><span class='line'>[hadoop@hadoop-master1 html]$ sudo ln -s /opt/dta/repo dta
+</span><span class='line'>
+</span><span class='line'># 加入本地仓库源
+</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ sudo cp puppet.repo dta.repo
+</span><span class='line'>[hadoop@hadoop-master1 yum.repos.d]$ sudo vi dta.repo 
+</span><span class='line'>[dta]
+</span><span class='line'>name=DTA Local
+</span><span class='line'>baseurl=http://hadoop-master1:801/dta
+</span><span class='line'>enabled=1
+</span><span class='line'>gpgcheck=0
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意： 在安装的时刻找不到gmond，可以先清理yum的缓冲： <code>yum clean all</code></p>
+
+<h2>puppet模块</h2>
+
+<p>添加了三个模块，用于主机添加repo配置和sudo配置，以及安装配置gmond。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 modules]# tree $PWD
+</span><span class='line'>/etc/puppetlabs/code/environments/production/modules
+</span><span class='line'>├── dtarepo
+</span><span class='line'>│   ├── manifests
+</span><span class='line'>│   │   └── init.pp
+</span><span class='line'>│   └── templates
+</span><span class='line'>│       └── dta.repo
+</span><span class='line'>├── gmond
+</span><span class='line'>│   ├── manifests
+</span><span class='line'>│   │   └── init.pp
+</span><span class='line'>│   └── templates
+</span><span class='line'>│       └── gmond.conf
+</span><span class='line'>└── sudo
+</span><span class='line'>    ├── manifests
+</span><span class='line'>    │   └── init.pp
+</span><span class='line'>    └── templates
+</span><span class='line'>        └── sudo.erb</span></code></pre></td></tr></table></div></figure>
+
+
+<p>都比较简单，通过init.pp来进行配置，然后加载模板，写入到同步主机本地文件中。</p>
+
+<ul>
+<li>dtarepo</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>./dtarepo/manifests/init.pp
+</span><span class='line'>class dtarepo {
+</span><span class='line'>
+</span><span class='line'>file{'/etc/yum.repos.d/dta.repo':
+</span><span class='line'>  ensure =&gt; file,
+</span><span class='line'>  content =&gt; template('dtarepo/dta.repo'),
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>./dtarepo/templates/dta.repo
+</span><span class='line'>[dta]
+</span><span class='line'>name=DTA Local
+</span><span class='line'>baseurl=http://hadoop-master1:801/dta
+</span><span class='line'>enabled=1
+</span><span class='line'>gpgcheck=0</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>sudo</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>./sudo/manifests/init.pp
+</span><span class='line'>class sudo {
+</span><span class='line'>
+</span><span class='line'>if ( $::hostname =~ /(^cu-omc)/ ) {
+</span><span class='line'>  $user = 'omc'
+</span><span class='line'>} elsif ( $::hostname =~ /(^cu-uc)/ ) {
+</span><span class='line'>  $user = 'uc'
+</span><span class='line'>} elsif ( $::hostname =~ /(^cu-ud)/ ) {
+</span><span class='line'>  $user = 'ud'
+</span><span class='line'>} elsif ( $::hostname =~ /(^cu-db)/ ) {
+</span><span class='line'>  $user = 'mysql'
+</span><span class='line'>} else {
+</span><span class='line'>  $user = 'hadoop'
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>file { "/etc/sudoers.d/10_$user":
+</span><span class='line'>  ensure =&gt; file,
+</span><span class='line'>  mode =&gt; '0440', 
+</span><span class='line'>  content =&gt; template('sudo/sudo.erb'),
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>./sudo/templates/sudo.erb
+</span><span class='line'>&lt;%= scope.lookupvar('sudo::user') %&gt; ALL=(ALL) NOPASSWD: ALL</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>gmond</li>
+</ul>
+
+
+<p>在默认的gmond.conf基础上修改一下两个配置: globals.deaf, cluster.name</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>./gmond/manifests/init.pp
+</span><span class='line'>class gmond {
+</span><span class='line'>
+</span><span class='line'>$deaf = $::hostname ? {
+</span><span class='line'>  'hadoop-master1' =&gt; 'no',
+</span><span class='line'>  'cu-omc1' =&gt; 'no',
+</span><span class='line'>  default =&gt; 'yes',
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>if ( $::hostname =~ /(^cu-)/ ) {
+</span><span class='line'>  $cluster_name = 'CU'
+</span><span class='line'>} else {
+</span><span class='line'>  $cluster_name = 'HADOOP'
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>package { 'gmond':
+</span><span class='line'>  ensure =&gt; present,
+</span><span class='line'>  before =&gt; File['/usr/local/ganglia/etc/gmond.conf'],
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>file { '/usr/local/ganglia/etc/gmond.conf':
+</span><span class='line'>  ensure =&gt; file,
+</span><span class='line'>  content =&gt; template('gmond/gmond.conf'),
+</span><span class='line'>  notify =&gt; Service['gmond'],
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>service { 'gmond':
+</span><span class='line'>  ensure    =&gt; running,
+</span><span class='line'>  enable    =&gt; true,
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>./gmond/templates/gmond.conf
+</span><span class='line'>/* This configuration is as close to 2.5.x default behavior as possible
+</span><span class='line'>   The values closely match ./gmond/metric.h definitions in 2.5.x */
+</span><span class='line'>globals {
+</span><span class='line'>...
+</span><span class='line'>  mute = no
+</span><span class='line'>  deaf = &lt;%= scope.lookupvar('gmond::deaf') %&gt;
+</span><span class='line'>  allow_extra_data = yes
+</span><span class='line'>...
+</span><span class='line'>cluster {
+</span><span class='line'>  name = "&lt;%= scope.lookupvar('gmond::cluster_name') %&gt;"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>参考下逻辑即可（也可以通过hiera配置）。</p>
+
+<p>最后在 site.pp 引用加载编写的Module：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 modules]# cd ../manifests/
+</span><span class='line'>[root@hadoop-master1 manifests]# cat site.pp 
+</span><span class='line'>file{'/etc/puppetlabs/mcollective/facts.yaml':
+</span><span class='line'>  owner    =&gt; root,
+</span><span class='line'>  group    =&gt; root,
+</span><span class='line'>  mode     =&gt; '400',
+</span><span class='line'>  loglevel =&gt; debug, # reduce noise in Puppet reports
+</span><span class='line'>  content  =&gt; inline_template("&lt;%= scope.to_hash.reject { |k,v| k.to_s =~ /(uptime_seconds|timestamp|free)/ }.to_yaml %&gt;"), # exclude rapidly changing facts
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>include dtarepo
+</span><span class='line'>include gmond
+</span><span class='line'>
+</span><span class='line'># include sudo
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>一键安装</h2>
+
+<p>安装gmetad：</p>
+
+<p>首先在主机上安装gmetad，由于只需要在一台机器安装，配置没有整成模板，这里直接手动弄。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 dtarepo]# mco rpc package install package=gmetad -I cu-omc1 （或者直接yum install -y gmetad）
+</span><span class='line'>
+</span><span class='line'># 注意：主机多网卡时可能需要添加route
+</span><span class='line'>[root@cu-omc1 ~]# route add -host 239.2.11.71 dev bond0
+</span><span class='line'>
+</span><span class='line'>[root@cu-omc1 ~]# /etc/ganglia/gmetad.conf 注意!! 这里的rrd_rootdir配置与上面gweb/makefile是对应的！！
+</span><span class='line'>data_source "HADOOP" hadoop-master1
+</span><span class='line'>data_source "CU" cu-omc1
+</span><span class='line'>gridname "CQCU"
+</span><span class='line'>rrd_rootdir "/data/ganglia/rrds"
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意： data_source 需要配合 gmond/manifests/init.pp 中的 deaf 属性值。</p>
+
+<p>安装gmond：</p>
+
+<p>在cu-omc2上安装gmond（正则表达式，想怎么匹配就怎么写）：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 production]# mco shell -I /^cu-omc2/ run -- "/opt/puppetlabs/bin/puppet agent -t"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>puppet同步好后，就安装好puppet，以及启动gmond服务。</p>
+
+<p>同时看看web是否已经有图像。没有话可以试着重启gmond:</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 production]# mco shell -I /cu-/ run -- service gmond restart</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1011,735 +1948,6 @@ exit
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/05/06/flamegraphs-java-cpu/">Flamegraphs Java Cpu</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-05-06T21:35:03+08:00" pubdate data-updated="true">Fri 2016-05-06 21:35</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>在MacTalk的公众号上读到了agentzh关于火焰图介绍(2016年5月6日07:57 动态追踪技术（中） - Dtrace、SystemTap、火焰图)，挺新奇的，并且应该对于查询热线程还是有作用的。</p>
-
-<p>先了解perf和flamegraphs基础知识：</p>
-
-<ul>
-<li><a href="https://www.ibm.com/developerworks/cn/linux/l-cn-perf1/">https://www.ibm.com/developerworks/cn/linux/l-cn-perf1/</a></li>
-<li><a href="http://www.brendangregg.com/perf.html#FlameGraphs">perf Examples</a></li>
-<li><a href="http://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html">CPU Flame Graphs</a></li>
-<li><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">Java in Flames</a></li>
-<li><a href="http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html">Java CPU Flame Graphs</a></li>
-<li>使用方法<a href="https://randomascii.wordpress.com/2013/03/26/summarizing-xperf-cpu-usage-with-flame-graphs/">xperf - windows perf</a></li>
-<li>工具<a href="https://github.com/google/UIforETW/blob/master/bin/xperf_to_collapsedstacks.py">UIforETW</a></li>
-</ul>
-
-
-<p>perf好像有点类似java的btrace，不过perf是操作系统层面的。把操作系统当做服务，客户端通过perf来获取/查询系统的信息。</p>
-
-<h2>安装</h2>
-
-<p>perf包括在linux 2.6.31代码里面，redhat可以通过yum来安装/更新：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 ~]# yum install perf
-</span><span class='line'>...
-</span><span class='line'>Installed:
-</span><span class='line'>  perf.x86_64 0:2.6.32-573.26.1.el6  
-</span><span class='line'>  
-</span><span class='line'>[root@hadoop-master2 ~]# perf stat ls /dev/shm
-</span><span class='line'>
-</span><span class='line'> Performance counter stats for 'ls /dev/shm':
-</span><span class='line'>
-</span><span class='line'>          0.697115 task-clock                #    0.613 CPUs utilized          
-</span><span class='line'>                 0 context-switches          #    0.000 K/sec                  
-</span><span class='line'>                 0 cpu-migrations            #    0.000 K/sec                  
-</span><span class='line'>               236 page-faults               #    0.339 M/sec                  
-</span><span class='line'>   &lt;not supported&gt; cycles                  
-</span><span class='line'>   &lt;not supported&gt; stalled-cycles-frontend 
-</span><span class='line'>   &lt;not supported&gt; stalled-cycles-backend  
-</span><span class='line'>   &lt;not supported&gt; instructions            
-</span><span class='line'>   &lt;not supported&gt; branches                
-</span><span class='line'>   &lt;not supported&gt; branch-misses           
-</span><span class='line'>
-</span><span class='line'>       0.001137015 seconds time elapsed
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>虚拟机可能有一些event不能用，到真正的实体机上面应该是没问题的（网上有同学验证过）。可以通过 <code>perf list</code> 查看支持的event。</p>
-
-<p>补充，实体机效果：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@dacs ~]# perf stat ls /dev/shm
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'> Performance counter stats for 'ls /dev/shm':
-</span><span class='line'>
-</span><span class='line'>          1.793297      task-clock (msec)         #    0.677 CPUs utilized          
-</span><span class='line'>                 1      context-switches          #    0.558 K/sec                  
-</span><span class='line'>                 0      cpu-migrations            #    0.000 K/sec                  
-</span><span class='line'>               255      page-faults               #    0.142 M/sec                  
-</span><span class='line'>           2765454      cycles                    #    1.542 GHz                     [44.66%]
-</span><span class='line'>           1544155      stalled-cycles-frontend   #   55.84% frontend cycles idle    [64.12%]
-</span><span class='line'>           1013635      stalled-cycles-backend    #   36.65% backend  cycles idle   
-</span><span class='line'>           2692743      instructions              #    0.97  insns per cycle        
-</span><span class='line'>                                                  #    0.57  stalled cycles per insn
-</span><span class='line'>            603340      branches                  #  336.442 M/sec                  
-</span><span class='line'>             12499      branch-misses             #    2.07% of all branches         [98.00%]
-</span><span class='line'>
-</span><span class='line'>       0.002650313 seconds time elapsed
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>windows的话直接下载 UIforETW ，运行 UIforETW.exe 就可以用来采样了。把采样产生的etl文件传给xperf_to_collapsedstacks.py，最后用flamegraph.pl画图。</p>
-
-<p>perf的常用命令：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># http://www.brendangregg.com/perf.html
-</span><span class='line'>perf list
-</span><span class='line'>
-</span><span class='line'>perf stat ./t1 
-</span><span class='line'>perf stat -a -A ls
-</span><span class='line'>
-</span><span class='line'>perf top
-</span><span class='line'> 
-</span><span class='line'>perf record – e cpu-clock ./t1 
-</span><span class='line'>perf report</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>画图</h2>
-
-<ul>
-<li><a href="http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html">http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html</a></li>
-<li><a href="https://github.com/coderplay/perfj/releases">https://github.com/coderplay/perfj/releases</a></li>
-<li><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">http://techblog.netflix.com/2015/07/java-in-flames.html</a></li>
-</ul>
-
-
-<h4>系统火焰图</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># http://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html
-</span><span class='line'># https://github.com/brendangregg/FlameGraph
-</span><span class='line'># 真实的机器效果还是挺不错的
-</span><span class='line'>perf record -F 99 -a -g -- sleep 60
-</span><span class='line'>perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
-</span><span class='line'>~/FlameGraph/flamegraph.pl out.perf-folded &gt;perf.svg
-</span><span class='line'>sz perf.svg
-</span><span class='line'>
-</span><span class='line'># --
-</span><span class='line'># perf script | ./stackcollapse-perf.pl &gt; out.perf-folded
-</span><span class='line'># grep -v cpu_idle out.perf-folded | ./flamegraph.pl &gt; nonidle.svg
-</span><span class='line'># grep ext4 out.perf-folded | ./flamegraph.pl &gt; ext4internals.svg
-</span><span class='line'># egrep 'system_call.*sys_(read|write)' out.perf-folded | ./flamegraph.pl &gt; rw.svg
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>安装的虚拟机中操作没采集到有用的。虚拟机和真实机器两个图：</p>
-
-<p><img src="/images/blogs/flames/flames-real.png" alt="" /></p>
-
-<p><img src="/images/blogs/flames/flames-vm.png" alt="" /></p>
-
-<h4>java</h4>
-
-<p>首先需要jdk8_u60+，直接下载最新的jdk就好了。应用启动带上参数 -XX:+PreserveFramePointer ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 ~]# java -version
-</span><span class='line'>java version "1.8.0_92"
-</span><span class='line'>Java(TM) SE Runtime Environment (build 1.8.0_92-b14)
-</span><span class='line'>Java HotSpot(TM) 64-Bit Server VM (build 25.92-b14, mixed mode)
-</span><span class='line'>[root@hadoop-master2 ~]# cd /home/hadoop/spark-1.6.0-bin-2.6.3/
-</span><span class='line'>[root@hadoop-master2 spark-1.6.0-bin-2.6.3]# export SPARK_SUBMIT_OPTS=-XX:+PreserveFramePointer     
-</span><span class='line'>[root@hadoop-master2 spark-1.6.0-bin-2.6.3]# bin/spark-shell --master local   </span></code></pre></td></tr></table></div></figure>
-
-
-<p>这里java进程使用root启动的，如果是普通用户如hadoop，为了采样需要把hadoop用户加入sudoer，在采样时使用 <code>sudo -u hadoop CMD</code>。</p>
-
-<p><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">http://techblog.netflix.com/2015/07/java-in-flames.html</a></p>
-
-<ul>
-<li>A 使用perfj采样</li>
-</ul>
-
-
-<p><a href="http://greenteajug.cn/2015/07/02/greenteajug%E6%B4%BB%E5%8A%A8-%E7%AC%AC16%E6%9C%9F-%E6%80%A7%E8%83%BD%E8%B0%83%E4%BC%98%E5%88%A9%E5%99%A8-perfj/">性能调优利器——PerfJ</a></p>
-
-<p>直接下载release-1.0的版本，解压后给 bin/perfj 加上执行权限。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 测试的时刻可以把-F 99设置大一点
-</span><span class='line'># java和perfj的用户得一致！！
-</span><span class='line'># https://github.com/coderplay/perfj/wiki/CPU-Flame-Graph
-</span><span class='line'>
-</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
-</span><span class='line'>[root@dacs ~]# wget http://blog.minzhou.info/perfj/leveldb-benchmark.jar
-</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/java -cp leveldb-benchmark.jar -XX:+PreserveFramePointer org.iq80.leveldb.benchmark.DbBenchmark --benchmarks=fillrandom --num=100000000
-</span><span class='line'>
-</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
-</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj record -F 999 -g -p `pgrep -f DbBenchmark` 
-</span><span class='line'>perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
-</span><span class='line'>~/FlameGraph/flamegraph.pl out.perf-folded  --color=java &gt;perf.svg
-</span><span class='line'>sz perf.svg
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><img src="/images/blogs/flames/flames-java-leveldb.png" alt="" /></p>
-
-<p>还是挺有意思的。</p>
-
-<p><img src="/images/blogs/flames/flames-java-leveldb-vm.png" alt="" /></p>
-
-<p>虚拟机的少了好多信息！一模一样的命令，得出来的东西差好远！！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># https://github.com/coderplay/perfj/wiki/Context-Switch-Analysis
-</span><span class='line'># 在vmware虚拟机里面运行啥都看不到！实体机也看不到作者的那些栈信息
-</span><span class='line'>[root@dacs ~]# wget http://blog.minzhou.info/perfj/leveldb-benchmark.jar
-</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
-</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/javac ContextSwitchTest.java 
-</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/java -XX:+PreserveFramePointer ContextSwitchTest
-</span><span class='line'>
-</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
-</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj record  -e sched:sched_switch -F 999 -g -p `pgrep -f ContextSwitchTest` 
-</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj report --stdio
-</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>B 使用perf-map-agent</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>git clone https://github.com/jrudolph/perf-map-agent.git
-</span><span class='line'>cd perf-map-agent/
-</span><span class='line'>export JAVA_HOME=/opt/jdk1.8.0_92
-</span><span class='line'>cmake .
-</span><span class='line'>make
-</span><span class='line'>
-</span><span class='line'>perf record -F 99 -g -p 7661 -- sleep 120
-</span><span class='line'>bin/create-java-perf-map.sh 7661
-</span><span class='line'>
-</span><span class='line'>sudo perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
-</span><span class='line'>cat out.perf-folded | ~/FlameGraph/flamegraph.pl --color=java &gt;perf.svg
-</span><span class='line'>sz perf.svg</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/05/05/hdfs-heterogeneous-storage/">Hdfs异构存储实操</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-05-05T21:41:39+08:00" pubdate data-updated="true">Thu 2016-05-05 21:41</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.3<->2.7.2）！</p>
-
-<p>我这里测试环境使用的是 2.6.3 <a href="https://hadoop.apache.org/docs/r2.6.3/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html">Heterogeneous Storage: Archival Storage, SSD &amp; Memory</a></p>
-
-<h2>配置</h2>
-
-<p>直接把内存盘放到 /dev/shm 下，单独挂载一个 tmpfs 的效果也差不多。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/MemoryStorage.html">r2.7.2 Memory Storage Support in HDFS</a> 2.6.3没有这个文档 概念都适应的。</p>
-
-<p>1 调节系统参数</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>vi /etc/security/limits.conf
-</span><span class='line'>
-</span><span class='line'>  hadoop           -       nofile          65535
-</span><span class='line'>  hadoop           -       nproc           65535
-</span><span class='line'>  hadoop           -       memlock         268435456
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>需要调节memlock的大小，否则启动datanode报错。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>2016-05-05 19:22:22,674 FATAL org.apache.hadoop.hdfs.server.datanode.DataNode: Exception in secureMain
-</span><span class='line'>java.lang.RuntimeException: Cannot start datanode because the configured max locked memory size (dfs.datanode.max.locked.memory) of 134217728 bytes is more than the datanode's available RLIMIT_MEMLOCK ulimit of 65536 bytes.
-</span><span class='line'>        at org.apache.hadoop.hdfs.server.datanode.DataNode.startDataNode(DataNode.java:1067)
-</span><span class='line'>        at org.apache.hadoop.hdfs.server.datanode.DataNode.&lt;init&gt;(DataNode.java:417)
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>2 添加RAM_DISK</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>vi hdfs-site.xml
-</span><span class='line'>
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;/data/bigdata/hadoop/dfs/data,[RAM_DISK]/dev/shm/dfs/data&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.datanode.max.locked.memory&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;134217728&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>  </span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意内存盘的写法，<code>[RAM_DISK]</code> 必须这些写，不然datanode不知道指定路径的storage的类型(默认是 DISK )。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html#Storage_Types_and_Storage_Policies">Storage_Types_and_Storage_Policies</a></p>
-
-<blockquote><p>The default storage type of a datanode storage location will be DISK if it does not have a storage type tagged explicitly.</p></blockquote>
-
-<p>3 同步配置并重启dfs</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# scp /etc/security/limits.conf cu3:/etc/security/
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ rsync -vaz etc cu3:~/hadoop-2.6.3/ 
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3] sbin/stop-dfs.sh
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3] sbin/start-dfs.sh</span></code></pre></td></tr></table></div></figure>
-
-
-<p>可以去到datanode查看日志，可以看到 /dev/shm/dfs/data 路径 <strong>StorageType</strong> 为 <strong>RAM_DISK</strong> ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /data/bigdata/hadoop/dfs/data/current
-</span><span class='line'>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /data/bigdata/hadoop/dfs/data/current, StorageType: DISK
-</span><span class='line'>2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /dev/shm/dfs/data/current
-</span><span class='line'>2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /dev/shm/dfs/data/current, StorageType: RAM_DISK</span></code></pre></td></tr></table></div></figure>
-
-
-<p>同时查看 内存盘 的路径内容：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ ssh cu3 tree /dev/shm/dfs
-</span><span class='line'>/dev/shm/dfs
-</span><span class='line'>└── data
-</span><span class='line'>    ├── current
-</span><span class='line'>    │   ├── BP-1108852639-192.168.0.148-1452322889531
-</span><span class='line'>    │   │   ├── current
-</span><span class='line'>    │   │   │   ├── finalized
-</span><span class='line'>    │   │   │   ├── rbw
-</span><span class='line'>    │   │   │   └── VERSION
-</span><span class='line'>    │   │   └── tmp
-</span><span class='line'>    │   └── VERSION
-</span><span class='line'>    └── in_use.lock
-</span><span class='line'>
-</span><span class='line'>7 directories, 3 files</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>测试使用</h2>
-
-<p>通过三个例子对比，简单描述下使用。首先，使用默认的方式(主要用于对比)，第二个例子写文件是添加参数，第三个设置目录的存储类型（目录/文件会继承父目录的存储类型）</p>
-
-<p>1 测试1</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /tmp/
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /tmp/README.txt -files -blocks -locations
-</span><span class='line'>...
-</span><span class='line'>/tmp/README.txt 1366 bytes, 1 block(s):  OK
-</span><span class='line'>0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752574_11776 len=1366 repl=1 [192.168.0.148:50010]
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu3 hadoop-2.6.3]$ find /data/bigdata/hadoop/dfs/data/ /dev/shm/dfs/data/ -name "*1073752574*"
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574_11776.meta
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574</span></code></pre></td></tr></table></div></figure>
-
-
-<p>2 写文件时添加 lazy_persist 标识</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 添加 -l 参数，后台代码会加上 LAZY_PERSIST 标识。
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -help put 
-</span><span class='line'>-put [-f] [-p] [-l] &lt;localsrc&gt; ... &lt;dst&gt; :
-</span><span class='line'>  Copy files from the local file system into fs. Copying fails if the file already
-</span><span class='line'>  exists, unless the -f flag is given.
-</span><span class='line'>  Flags:
-</span><span class='line'>                                                                       
-</span><span class='line'>  -p  Preserves access and modification times, ownership and the mode. 
-</span><span class='line'>  -f  Overwrites the destination if it already exists.                 
-</span><span class='line'>  -l  Allow DataNode to lazily persist the file to disk. Forces        
-</span><span class='line'>         replication factor of 1. This flag will result in reduced
-</span><span class='line'>         durability. Use with care.
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><img src="/images/blogs/storage-lazy.png" alt="" /></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># -l 参数会把 replication 强制设置成数字1 ！
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put -l README.txt /tmp/readme.txt2
-</span><span class='line'>
-</span><span class='line'># 查看namenode的日志，可以看到文件写入到 RAM_DISK 类型的存储
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-cu2.log 
-</span><span class='line'>
-</span><span class='line'>  2016-05-05 20:38:36,465 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /tmp/readme.txt2._COPYING_. BP-1108852639-192.168.0.148-1452322889531 blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-dcb2673f-3297-4bd7-af1c-ac0ee3eebaf9:NORMAL:192.168.0.30:50010|RBW]]}
-</span><span class='line'>  2016-05-05 20:38:36,592 INFO BlockStateChange: BLOCK* addStoredBlock: blockMap updated: 192.168.0.30:50010 is added to blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[RAM_DISK]DS-bf1ab64f-7eb3-41e0-8466-43287de9893d:NORMAL:192.168.0.30:50010|FINALIZED]]} size 0
-</span><span class='line'>  2016-05-05 20:38:36,594 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /tmp/readme.txt2._COPYING_ is closed by DFSClient_NONMAPREDUCE_-1388277364_1
-</span><span class='line'>
-</span><span class='line'># 具体的内容所在位置
-</span><span class='line'>[hadoop@cu4 ~]$ tree /dev/shm/dfs/data/
-</span><span class='line'>/dev/shm/dfs/data/
-</span><span class='line'>├── current
-</span><span class='line'>│   ├── BP-1108852639-192.168.0.148-1452322889531
-</span><span class='line'>│   │   ├── current
-</span><span class='line'>│   │   │   ├── finalized
-</span><span class='line'>│   │   │   │   └── subdir0
-</span><span class='line'>│   │   │   │       └── subdir42
-</span><span class='line'>│   │   │   │           ├── blk_1073752578
-</span><span class='line'>│   │   │   │           └── blk_1073752578_11780.meta
-</span><span class='line'>│   │   │   ├── rbw
-</span><span class='line'>│   │   │   └── VERSION
-</span><span class='line'>│   │   └── tmp
-</span><span class='line'>│   └── VERSION
-</span><span class='line'>└── in_use.lock
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>3 设置目录的存储类型</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -mkdir /ramdisk
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -setStoragePolicy /ramdisk LAZY_PERSIST 
-</span><span class='line'>Set storage policy LAZY_PERSIST on /ramdisk
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /ramdisk
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk
-</span><span class='line'>The storage policy of /ramdisk:
-</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
-</span><span class='line'>
-</span><span class='line'># 不支持通配符
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/*
-</span><span class='line'>getStoragePolicy: File/Directory does not exist: /ramdisk/*
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/README.txt
-</span><span class='line'>The storage policy of /ramdisk/README.txt:
-</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 添加replication参数，再测试多个备份只有一个写ram_disk
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -Ddfs.replication=3 -put README.txt /ramdisk/readme.txt2
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/readme.txt2
-</span><span class='line'>The storage policy of /ramdisk/readme.txt2:
-</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /ramdisk/readme.txt2 -files -blocks -locations
-</span><span class='line'>
-</span><span class='line'>  /ramdisk/readme.txt2 1366 bytes, 1 block(s):  OK
-</span><span class='line'>  0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752580_11782 len=1366 repl=3 [192.168.0.30:50010, 192.168.0.174:50010, 192.168.0.148:50010]
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu3 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
-</span><span class='line'>
-</span><span class='line'># 已经把ram_disk的内容持久化到磁盘了("Lazy_Persist")
-</span><span class='line'>[hadoop@cu4 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580_11782.meta
-</span><span class='line'>/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
-</span><span class='line'>/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
-</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>[设想] 对于那些处理完就删除的临时文件，可以把持久化的时间设置的久一点 <code>dfs.datanode.lazywriter.interval.sec</code>。这样就不需要写磁盘了。</p>
-
-<p>不要妄想了，反正都会持久化！就是缓冲的效果，其他没有了！！一次性存储并且不需要持久化的还是用alluxio吧。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl.LazyWriter#saveNextReplica
-</span><span class='line'>  org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskAsyncLazyPersistService#submitLazyPersistTask</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li>挺详细的<a href="http://blog.csdn.net/androidlushangderen/article/details/51105876">HDFS异构存储</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/5">&larr; Older</a>
@@ -1816,6 +2024,14 @@ exit
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2016/12/14/elasticsearch5-head-plugin-config/">elasticsearch5安装Head插件</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2016/12/09/spark2-0-kafka0-10-1-partitions-work-incorrent/">Spark2-0 & Kafka0-10-1订阅多个单只读一个分区</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/12/01/jasperreports-brief-summary/">Jasperreports使用小结</a>
       </li>
     
@@ -1837,14 +2053,6 @@ exit
     
       <li class="post">
         <a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/09/12/zookeeper-switch-node/">Zookeeper节点切换</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/09/06/puppet-modify-password/">Puppet批量修改用户密码</a>
       </li>
     
   </ul>
@@ -1885,7 +2093,7 @@ exit
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (2) 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1925,7 +2133,7 @@ exit
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/kafka/'>kafka</a> (2) 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1953,7 +2161,7 @@ exit
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/spark/'>spark</a> (10) 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (11) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1978,7 +2186,7 @@ exit
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (152)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (154)</li>
 	</ul>
 	
 </section>
