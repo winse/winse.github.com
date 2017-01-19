@@ -9,7 +9,15 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="新版本ES5和原来的有写不同，head等一些插件不能直接安装，需要单独起一个程序然后通过ajax的方式获取数据。 下载 elasticsearch-5.1.1 ，修改配置 network.host: cu-ud1 ，然后启动服务 bin/elasticsearch -d 。 &hellip;">
+  <meta name="description" content="很早前弄过https，当时只是玩玩实际工作中并没有用到。现在业务需要得配置https。欠的债总是要还的，使用puppet的时刻默认全部信任不走证书认证。这里为了安装tomcat的https还是绕不过去。硬着头皮整吧。 编译 1
+2
+3
+4
+5
+6
+7
+8
+[... nginx-1.10.2]$ &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +91,699 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-01-19T15:53:45+08:00" pubdate data-updated="true">Thu 2017-01-19 15:53</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>很早前弄过https，当时只是玩玩实际工作中并没有用到。现在业务需要得配置https。欠的债总是要还的，使用puppet的时刻默认全部信任不走证书认证。这里为了安装tomcat的https还是绕不过去。硬着头皮整吧。</p>
+
+<h2>编译</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[... nginx-1.10.2]$ tar zxvf zlib-1.2.8.tar.gz 
+</span><span class='line'>[... nginx-1.10.2]$ tar zxvf pcre-8.36.tar.gz 
+</span><span class='line'>
+</span><span class='line'>[... nginx-1.10.2]$ mv zlib-1.2.8 src/zlib
+</span><span class='line'>[... nginx-1.10.2]$ mv pcre-8.36 src/pcre
+</span><span class='line'>
+</span><span class='line'>[... nginx-1.10.2]$ ./configure --prefix=/home/hadoop/nginx --with-http_ssl_module --with-pcre=src/pcre --with-zlib=src/zlib
+</span><span class='line'>[... nginx-1.10.2]$ make && make install</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>生成证书</h2>
+
+<p>先整一个能访问的https，再通过本地CA来进行授权（本地浏览器安装这个CA），最后处理chrome sha-1的问题。</p>
+
+<ul>
+<li>自己签发（无CA）</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># RSA密钥
+</span><span class='line'>[hadoop@cu1 conf]$ openssl genrsa -des3 -out server.key 1024
+</span><span class='line'>Generating RSA private key, 1024 bit long modulus
+</span><span class='line'>...........++++++
+</span><span class='line'>................++++++
+</span><span class='line'>e is 65537 (0x10001)
+</span><span class='line'>Enter pass phrase for server.key:
+</span><span class='line'>Verifying - Enter pass phrase for server.key:
+</span><span class='line'># 拷贝一个不需要输入密码的密钥文件
+</span><span class='line'>[hadoop@cu1 conf]$ cp server.key server.key.org
+</span><span class='line'>[hadoop@cu1 conf]$ openssl rsa -in server.key.org -out server.key
+</span><span class='line'>Enter pass phrase for server.key.org:
+</span><span class='line'>writing RSA key
+</span><span class='line'>
+</span><span class='line'># 需要提交给 SSL 认证机构(生成一个证书请求)
+</span><span class='line'>[hadoop@cu1 conf]$ openssl req -new -key server.key -out server.csr
+</span><span class='line'>You are about to be asked to enter information that will be incorporated
+</span><span class='line'>into your certificate request.
+</span><span class='line'>What you are about to enter is what is called a Distinguished Name or a DN.
+</span><span class='line'>There are quite a few fields but you can leave some blank
+</span><span class='line'>For some fields there will be a default value,
+</span><span class='line'>If you enter '.', the field will be left blank.
+</span><span class='line'>-----
+</span><span class='line'>Country Name (2 letter code) [XX]:CN
+</span><span class='line'>State or Province Name (full name) []:GD
+</span><span class='line'>Locality Name (eg, city) [Default City]:GZ
+</span><span class='line'>Organization Name (eg, company) [Default Company Ltd]:Eshore
+</span><span class='line'>Organizational Unit Name (eg, section) []:CU
+</span><span class='line'>Common Name (eg, your name or your server's hostname) []:cu.eshore.cn
+</span><span class='line'>Email Address []:ca@eshore.cn
+</span><span class='line'>
+</span><span class='line'>Please enter the following 'extra' attributes
+</span><span class='line'>to be sent with your certificate request
+</span><span class='line'>A challenge password []:
+</span><span class='line'>An optional company name []:
+</span><span class='line'>
+</span><span class='line'># 认证机构颁发(自己签发证书)
+</span><span class='line'>[hadoop@cu1 conf]$ openssl x509 -req -days 365 -in server.csr -signkey server.key -out server.crt
+</span><span class='line'>Signature ok
+</span><span class='line'>subject=/C=CN/ST=Guangdong/L=Guangzhou/O=Eshore/OU=CU/CN=cu1
+</span><span class='line'>Getting Private key
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>本地CA授权 &amp; SHA2(推荐)</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+<span class='line-number'>100</span>
+<span class='line-number'>101</span>
+<span class='line-number'>102</span>
+<span class='line-number'>103</span>
+<span class='line-number'>104</span>
+<span class='line-number'>105</span>
+<span class='line-number'>106</span>
+<span class='line-number'>107</span>
+<span class='line-number'>108</span>
+<span class='line-number'>109</span>
+<span class='line-number'>110</span>
+<span class='line-number'>111</span>
+<span class='line-number'>112</span>
+<span class='line-number'>113</span>
+<span class='line-number'>114</span>
+<span class='line-number'>115</span>
+<span class='line-number'>116</span>
+<span class='line-number'>117</span>
+<span class='line-number'>118</span>
+<span class='line-number'>119</span>
+<span class='line-number'>120</span>
+<span class='line-number'>121</span>
+<span class='line-number'>122</span>
+<span class='line-number'>123</span>
+<span class='line-number'>124</span>
+<span class='line-number'>125</span>
+<span class='line-number'>126</span>
+<span class='line-number'>127</span>
+<span class='line-number'>128</span>
+<span class='line-number'>129</span>
+<span class='line-number'>130</span>
+<span class='line-number'>131</span>
+<span class='line-number'>132</span>
+<span class='line-number'>133</span>
+<span class='line-number'>134</span>
+<span class='line-number'>135</span>
+<span class='line-number'>136</span>
+<span class='line-number'>137</span>
+<span class='line-number'>138</span>
+<span class='line-number'>139</span>
+<span class='line-number'>140</span>
+<span class='line-number'>141</span>
+<span class='line-number'>142</span>
+<span class='line-number'>143</span>
+<span class='line-number'>144</span>
+<span class='line-number'>145</span>
+<span class='line-number'>146</span>
+<span class='line-number'>147</span>
+<span class='line-number'>148</span>
+<span class='line-number'>149</span>
+<span class='line-number'>150</span>
+<span class='line-number'>151</span>
+<span class='line-number'>152</span>
+<span class='line-number'>153</span>
+<span class='line-number'>154</span>
+<span class='line-number'>155</span>
+<span class='line-number'>156</span>
+<span class='line-number'>157</span>
+<span class='line-number'>158</span>
+<span class='line-number'>159</span>
+<span class='line-number'>160</span>
+<span class='line-number'>161</span>
+<span class='line-number'>162</span>
+<span class='line-number'>163</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu1 apache-tomcat-8.0.38]# ll /etc/pki/CA
+</span><span class='line'>total 16
+</span><span class='line'>drwxr-xr-x. 2 root root 4096 Mar  1  2016 certs 存放CA签署（颁发）过的数字证书（证书备份目录）
+</span><span class='line'>drwxr-xr-x. 2 root root 4096 Mar  1  2016 crl 吊销的证书
+</span><span class='line'>drwxr-xr-x. 2 root root 4096 Mar  1  2016 newcerts
+</span><span class='line'>drwx------. 2 root root 4096 Mar  1  2016 private 用于存放CA的私钥
+</span><span class='line'>[root@cu1 apache-tomcat-8.0.38]# ll /etc/pki/tls/
+</span><span class='line'>total 24
+</span><span class='line'>lrwxrwxrwx  1 root root    19 May 22  2015 cert.pem -&gt; certs/ca-bundle.crt
+</span><span class='line'>drwxr-xr-x. 2 root root  4096 Mar 22  2016 certs
+</span><span class='line'>drwxr-xr-x. 2 root root  4096 Mar 22  2016 misc
+</span><span class='line'>-rw-r--r--  1 root root 10906 Feb 24  2016 openssl.cnf openssl的CA主配置文件
+</span><span class='line'>drwxr-xr-x. 2 root root  4096 Mar  1  2016 private 证书密钥存放目录
+</span><span class='line'>
+</span><span class='line'># 修改配置(一部分为默认值，一部分与sha2有关)
+</span><span class='line'>[root@cu1 pki]# pwd
+</span><span class='line'>/etc/pki
+</span><span class='line'>[root@cu1 pki]# vi tls/openssl.cnf 
+</span><span class='line'>[root@cu1 pki]# diff /home/hadoop/openssl.cnf tls/openssl.cnf 
+</span><span class='line'>50c50
+</span><span class='line'>&lt; certificate   = $dir/cacert.pem       # The CA certificate
+</span><span class='line'>---
+</span><span class='line'>&gt; certificate   = $dir/ca.crt   # The CA certificate
+</span><span class='line'>55c55
+</span><span class='line'>&lt; private_key   = $dir/private/cakey.pem# The private key
+</span><span class='line'>---
+</span><span class='line'>&gt; private_key   = $dir/private/ca.key # The private key
+</span><span class='line'>74c74
+</span><span class='line'>&lt; default_crl_days= 30                  # how long before next CRL
+</span><span class='line'>---
+</span><span class='line'>&gt; default_crl_days= 365                 # how long before next CRL
+</span><span class='line'>86,87c86,87
+</span><span class='line'>&lt; stateOrProvinceName   = match
+</span><span class='line'>&lt; organizationName      = match
+</span><span class='line'>---
+</span><span class='line'>&gt; stateOrProvinceName   = optional
+</span><span class='line'>&gt; organizationName      = optional
+</span><span class='line'>107c107
+</span><span class='line'>&lt; default_md            = sha1
+</span><span class='line'>---
+</span><span class='line'>&gt; default_md            = sha256
+</span><span class='line'>126c126
+</span><span class='line'>&lt; # req_extensions = v3_req # The extensions to add to a certificate request
+</span><span class='line'>---
+</span><span class='line'>&gt; req_extensions = v3_req # The extensions to add to a certificate request
+</span><span class='line'>130c130
+</span><span class='line'>&lt; countryName_default           = XX
+</span><span class='line'>---
+</span><span class='line'>&gt; countryName_default           = CN
+</span><span class='line'>135c135
+</span><span class='line'>&lt; #stateOrProvinceName_default  = Default Province
+</span><span class='line'>---
+</span><span class='line'>&gt; #stateOrProvinceName_default  = GD
+</span><span class='line'>
+</span><span class='line'># CA证书
+</span><span class='line'>清理原来的旧文件
+</span><span class='line'>[root@cu1 pki]# cd CA
+</span><span class='line'>[root@cu1 CA]# rm -rf index.txt* serial*
+</span><span class='line'>[root@cu1 CA]# rm cacert.pem private/cakey.pem 
+</span><span class='line'>初始化
+</span><span class='line'>[root@cu1 CA]# touch index.txt serial
+</span><span class='line'>[root@cu1 CA]# echo 01 &gt; serial 
+</span><span class='line'>
+</span><span class='line'>[root@cu1 CA]# openssl genrsa -out private/ca.key 2048
+</span><span class='line'>Generating RSA private key, 2048 bit long modulus
+</span><span class='line'>.........................................................................+++
+</span><span class='line'>...........................+++
+</span><span class='line'>e is 65537 (0x10001)
+</span><span class='line'>
+</span><span class='line'>[root@cu1 CA]# chmod 600 private/ca.key 
+</span><span class='line'>
+</span><span class='line'>[root@cu1 CA]# openssl req -new -x509 -key private/ca.key -out ca.crt
+</span><span class='line'>You are about to be asked to enter information that will be incorporated
+</span><span class='line'>into your certificate request.
+</span><span class='line'>What you are about to enter is what is called a Distinguished Name or a DN.
+</span><span class='line'>There are quite a few fields but you can leave some blank
+</span><span class='line'>For some fields there will be a default value,
+</span><span class='line'>If you enter '.', the field will be left blank.
+</span><span class='line'>-----
+</span><span class='line'>Country Name (2 letter code) [CN]:CN
+</span><span class='line'>State or Province Name (full name) []:GD
+</span><span class='line'>Locality Name (eg, city) [Default City]:GZ
+</span><span class='line'>Organization Name (eg, company) [Default Company Ltd]:Eshore
+</span><span class='line'>Organizational Unit Name (eg, section) []:CU   
+</span><span class='line'>Common Name (eg, your name or your server's hostname) []:eshore.cn
+</span><span class='line'>Email Address []:ca@eshore.cn
+</span><span class='line'>
+</span><span class='line'># 应用的证书
+</span><span class='line'>[root@cu1 conf]# openssl genrsa -out nginx.key 2048
+</span><span class='line'>Generating RSA private key, 2048 bit long modulus
+</span><span class='line'>...................................................................+++
+</span><span class='line'>.....+++
+</span><span class='line'>e is 65537 (0x10001)
+</span><span class='line'>[root@cu1 conf]# 
+</span><span class='line'>
+</span><span class='line'>[root@cu1 conf]# openssl req -new -key nginx.key -out nginx.csr
+</span><span class='line'>You are about to be asked to enter information that will be incorporated
+</span><span class='line'>into your certificate request.
+</span><span class='line'>What you are about to enter is what is called a Distinguished Name or a DN.
+</span><span class='line'>There are quite a few fields but you can leave some blank
+</span><span class='line'>For some fields there will be a default value,
+</span><span class='line'>If you enter '.', the field will be left blank.
+</span><span class='line'>-----
+</span><span class='line'>Country Name (2 letter code) [CN]:CN
+</span><span class='line'>State or Province Name (full name) []:GD
+</span><span class='line'>Locality Name (eg, city) [Default City]:GZ
+</span><span class='line'>Organization Name (eg, company) [Default Company Ltd]:Eshore
+</span><span class='line'>Organizational Unit Name (eg, section) []:Cu
+</span><span class='line'>Common Name (eg, your name or your server's hostname) []:cu.eshore.cn
+</span><span class='line'>Email Address []:cu@eshore.cn
+</span><span class='line'>
+</span><span class='line'>Please enter the following 'extra' attributes
+</span><span class='line'>to be sent with your certificate request
+</span><span class='line'>A challenge password []:
+</span><span class='line'>An optional company name []:
+</span><span class='line'>
+</span><span class='line'>查看是否为sha-2
+</span><span class='line'>[root@cu1 conf]# openssl req -in nginx.csr -text | grep sha256
+</span><span class='line'>
+</span><span class='line'># 应用证书颁发方式二选一
+</span><span class='line'>* 默认的方式，但不是sha-2。把生成的证书请求csr文件发到CA服务器上，在CA上执行：
+</span><span class='line'>签发过程其实默认使用配置中的ca.crt和ca.key这两个文件.
+</span><span class='line'>[root@cu1 conf]# openssl ca -in nginx.csr -out nginx.crt
+</span><span class='line'>Using configuration from /etc/pki/tls/openssl.cnf
+</span><span class='line'>Check that the request matches the signature
+</span><span class='line'>Signature ok
+</span><span class='line'>Certificate Details:
+</span><span class='line'>        Serial Number: 1 (0x1)
+</span><span class='line'>        Validity
+</span><span class='line'>            Not Before: Jan 19 07:24:24 2017 GMT
+</span><span class='line'>            Not After : Jan 19 07:24:24 2018 GMT
+</span><span class='line'>        Subject:
+</span><span class='line'>            countryName               = CN
+</span><span class='line'>            stateOrProvinceName       = GD
+</span><span class='line'>            organizationName          = Eshore
+</span><span class='line'>            organizationalUnitName    = Cu
+</span><span class='line'>            commonName                = cu.eshore.cn
+</span><span class='line'>            emailAddress              = cu@eshore.cn
+</span><span class='line'>        X509v3 extensions:
+</span><span class='line'>            X509v3 Basic Constraints: 
+</span><span class='line'>                CA:FALSE
+</span><span class='line'>            Netscape Comment: 
+</span><span class='line'>                OpenSSL Generated Certificate
+</span><span class='line'>            X509v3 Subject Key Identifier: 
+</span><span class='line'>                7B:3D:E8:18:D9:77:20:8F:A2:76:7F:6C:F2:01:65:49:3F:92:1A:7F
+</span><span class='line'>            X509v3 Authority Key Identifier: 
+</span><span class='line'>                keyid:5F:8C:1E:3D:F7:A1:86:82:22:F5:88:12:36:16:82:49:B6:9C:84:F1
+</span><span class='line'>
+</span><span class='line'>Certificate is to be certified until Jan 19 07:24:24 2018 GMT (365 days)
+</span><span class='line'>Sign the certificate? [y/n]:y
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>1 out of 1 certificate requests certified, commit? [y/n]y
+</span><span class='line'>Write out database with 1 new entries
+</span><span class='line'>Data Base Updated
+</span><span class='line'>[root@cu1 conf]# 
+</span><span class='line'>
+</span><span class='line'>* sha-2签名算法
+</span><span class='line'>http://www.ibm.com/support/knowledgecenter/zh/SSPMR3_9.0.0/com.ibm.tivoli.tem.doc_9.0/SUA_9.0/com.ibm.license.mgmt.doc/security/t_generate_certificate_CA.html
+</span><span class='line'>[root@cu1 conf]# openssl x509 -req -days 365 -in nginx.csr -CA /etc/pki/CA/ca.crt -CAkey /etc/pki/CA/private/ca.key -CAserial /etc/pki/CA/serial -sha256 -out nginx.crt 
+</span><span class='line'>Signature ok
+</span><span class='line'>subject=/C=CN/ST=GD/L=GZ/O=Eshore/OU=Cu/CN=cu.eshore.cn/emailAddress=cu@eshore.cn
+</span><span class='line'>Getting CA Private Key
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>生成key和csr请求可以一条命令搞定：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>https://www.digicert.com/easy-csr/openssl.htm
+</span><span class='line'>
+</span><span class='line'>openssl req -new -newkey rsa:2048 -nodes -out star_winse_com.csr -keyout star_winse_com.key -subj "/C=CN/ST=GD/L=GZ/O=winse/CN=*.winse.com"</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>nginx配置</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>server {
+</span><span class='line'>    listen       14443 ssl;
+</span><span class='line'>    server_name  cu.eshore.cn;
+</span><span class='line'>
+</span><span class='line'>    ssl on;
+</span><span class='line'>    ssl_certificate      nginx.crt;
+</span><span class='line'>    ssl_certificate_key  nginx.key;
+</span><span class='line'>
+</span><span class='line'>    ssl_session_cache    shared:SSL:1m;
+</span><span class='line'>    ssl_session_timeout  5m;
+</span><span class='line'>
+</span><span class='line'>    ssl_ciphers  HIGH:!aNULL:!MD5;
+</span><span class='line'>    ssl_prefer_server_ciphers  on;
+</span><span class='line'>
+</span><span class='line'>    location / {
+</span><span class='line'>        root   html;
+</span><span class='line'>        index  index.html index.htm;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    location /omc {
+</span><span class='line'>        proxy_set_header        X-Real-IP $remote_addr;
+</span><span class='line'>        proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+</span><span class='line'>        proxy_set_header        Host $http_host;
+</span><span class='line'>
+</span><span class='line'>        proxy_pass http://localhost:9000;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>MAKR</p>
+
+<blockquote><p>同时，为了统一，你可以把这三个文件都移动到 /etc/ssl/private/ 目录。
+然后可以修改 Nginx 配置文件
+server { <br/>
+    listen 80;
+    listen [::]:80 ssl ipv6only=on;<br/>
+    listen 443 ssl;
+    listen [::]:443 ssl ipv6only=on;
+    server_name example.com;
+    ssl on;
+    ssl_certificate /etc/ssl/private/example_com.crt;
+    ssl_certificate_key /etc/ssl/private/example_com.key;
+}</p>
+
+<p>server_names barretlee.com *.barretlee.com
+ssl on;
+ssl_certificate /etc/nginx/ssl/barretlee.com.crt;
+ssl_certificate_key /etc/nginx/ssl/barretlee.com.key;
+ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+ssl_ciphers &ldquo;EECDH+ECDSA+AESGCM EECDH+aRSA+AESGCM EECDH+ECDSA+SHA384EECDH+ECDSA+SHA256 EECDH+aRSA+SHA384 EECDH+aRSA+SHA256 EECDH+aRSA+RC4EECDH EDH+aRSA RC4 !aNULL !eNULL !LOW !3DES !MD5 !EXP !PSK !SRP !DSS !MEDIUM&rdquo;;</p>
+
+<h1>Add perfect forward secrecy</h1>
+
+<p>ssl_prefer_server_ciphers on;
+add_header Strict-Transport-Security &ldquo;max-age=31536000; includeSubdomains&rdquo;;</p>
+
+<p>同时，如果是全站 HTTPS 并且不考虑 HTTP 的话，可以加入 HSTS 告诉你的浏览器本
+网站全站加密，并且强制用 HTTPS 访问
+        add_header Strict-Transport-Security max-age=63072000;
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+同时也可以单独开一个 Nginx 配置，把 HTTP 的访问请求都用 301 跳转到 HTTPS</p>
+
+<p>浏览器访问HTTP的请求重定向到HTTPS
+If they come here using HTTP, bounce them to the correct scheme
+error_page 497 <a href="https://$host:$server_port$request_uri;">https://$host:$server_port$request_uri;</a></p></blockquote>
+
+<p>curl访问(把CA证书内容加入到ca-bundle.crt)：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 nginx]# curl https://www.winse.com
+</span><span class='line'>curl: (60) Peer certificate cannot be authenticated with known CA certificates
+</span><span class='line'>More details here: http://curl.haxx.se/docs/sslcerts.html
+</span><span class='line'>
+</span><span class='line'>curl performs SSL certificate verification by default, using a "bundle"
+</span><span class='line'> of Certificate Authority (CA) public keys (CA certs). If the default
+</span><span class='line'> bundle file isn't adequate, you can specify an alternate file
+</span><span class='line'> using the --cacert option.
+</span><span class='line'>If this HTTPS server uses a certificate signed by a CA represented in
+</span><span class='line'> the bundle, the certificate verification probably failed due to a
+</span><span class='line'> problem with the certificate (it might be expired, or the name might
+</span><span class='line'> not match the domain name in the URL).
+</span><span class='line'>If you'd like to turn off curl's verification of the certificate, use
+</span><span class='line'> the -k (or --insecure) option.
+</span><span class='line'> 
+</span><span class='line'>[root@hadoop-master2 CA]# cp /etc/pki/tls/certs/ca-bundle.crt{,.bak}
+</span><span class='line'>[root@hadoop-master2 CA]# cat /etc/pki/CA/ca.crt &gt;&gt; /etc/pki/tls/certs/ca-bundle.crt
+</span><span class='line'>[root@hadoop-master2 CA]# 
+</span><span class='line'>[root@hadoop-master2 CA]# curl https://www.winse.com
+</span><span class='line'>curl: (51) SSL: certificate subject name 'winse.com' does not match target host name 'www.winse.com'
+</span><span class='line'>[root@hadoop-master2 CA]# curl https://winse.com
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>tomcat配置</h2>
+
+<p>直接使用nginx的key和crt，需要安装APR.</p>
+
+<ul>
+<li><a href="http://stackoverflow.com/questions/8716259/what-does-the-apr-based-apache-tomcat-native-library-was-not-found-mean">http://stackoverflow.com/questions/8716259/what-does-the-apr-based-apache-tomcat-native-library-was-not-found-mean</a></li>
+<li><a href="http://stackoverflow.com/questions/4278047/apr-based-apache-tomcat-native-library-was-not-found-on-the-java-library-path">http://stackoverflow.com/questions/4278047/apr-based-apache-tomcat-native-library-was-not-found-on-the-java-library-path</a></li>
+<li><a href="http://jmchung.github.io/blog/2013/09/06/centos-installing-apache-portable-runtime-apr-for-tomcat/">http://jmchung.github.io/blog/2013/09/06/centos-installing-apache-portable-runtime-apr-for-tomcat/</a></li>
+<li><a href="https://tomcat.apache.org/native-doc/">https://tomcat.apache.org/native-doc/</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu1 apache-tomcat-8.0.38]# yum install tomcat-native
+</span><span class='line'>[root@cu1 apache-tomcat-8.0.38]# less conf/server.xml 
+</span><span class='line'>&lt;Connector
+</span><span class='line'>           protocol="org.apache.coyote.http11.Http11AprProtocol"
+</span><span class='line'>           port="9443" maxThreads="200"
+</span><span class='line'>           scheme="https" secure="true" SSLEnabled="true"
+</span><span class='line'>           SSLCertificateFile="/home/cu/tools/apache-tomcat-8.0.38/conf/nginx.crt"
+</span><span class='line'>           SSLCertificateKeyFile="/home/cu/tools/apache-tomcat-8.0.38/conf/nginx.key"
+</span><span class='line'>           SSLVerifyClient="optional" SSLProtocol="TLSv1+TLSv1.1+TLSv1.2"/&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>本地访问</h2>
+
+<p>把/etc/pki/CA目录下的ca.crt拷贝本地，安装到<strong>受信任的根证书颁发机构</strong>目录下面。然后https访问即可。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li>V<a href="http://seanlook.com/2015/01/18/openssl-self-sign-ca/">基于OpenSSL自建CA和颁发SSL证书</a></li>
+<li><p>V<a href="http://blog.csdn.net/napolunyishi/article/details/42425827">CentOS6.5下openssl加密解密及CA自签颁发证书详解</a></p></li>
+<li><p><a href="http://fengwan.blog.51cto.com/508652/1869743">OpenSSL生成自签名的sha256泛域名证书</a></p></li>
+<li><p><a href="http://blog.csdn.net/kent7306/article/details/50547388">tomcat配置https单向认证笔记</a></p></li>
+<li><a href="https://tomcat.apache.org/tomcat-7.0-doc/ssl-howto.html">SSL/TLS Configuration HOW-TO</a></li>
+<li><p><a href="https://www.oschina.net/question/12_23148">5分钟内搞定 Tomcat 的 SSL 配置</a></p></li>
+<li><p><a href="http://www.freehao123.com/startssl-ssl/">StartSSL免费SSL证书</a></p></li>
+<li><a href="http://nginx.org/en/docs/http/configuring_https_servers.html#single_http_https_server">http://nginx.org/en/docs/http/configuring_https_servers.html#single_http_https_server</a></li>
+<li>Redirect http to https in nginx <a href="http://serverfault.com/questions/338700/redirect-http-mydomain-com12345-to-https-mydomain-com12345-in-nginx">http://serverfault.com/questions/338700/redirect-http-mydomain-com12345-to-https-mydomain-com12345-in-nginx</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1095,504 +1796,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/10/20/ssh-upgrade-on-centos6/">红帽6升级SSH</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-10-20T19:29:50+08:00" pubdate data-updated="true">Thu 2016-10-20 19:29</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>安全检查报告SSH版本太低存在漏洞需要进行升级，但是红帽没有现成的高版本打包好SSH的rpm。自己动手丰衣足食，没有网上一些朋友遇到那么多的问题，但是也是这纠结过程。</p>
-
-<p>搞一台身边的机器测试安装，如果远程机器搞不好就连不上了！！先手动编译安装一遍，把编译需要的依赖都安装好，然后再rpmbuild就会比较顺利。</p>
-
-<h2>运维同事编译安装的步骤</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>加载光盘的packages
-</span><span class='line'># mount -o loop disk1.iso /mnt/disk
-</span><span class='line'># vi /etc/yum.repo.d/local.repo
-</span><span class='line'>
-</span><span class='line'>[root@localhost SOURCES]# ll *.tar.gz
-</span><span class='line'>-rw-r--r--. 1 root   root   1499808 3月  10 2016 openssh-7.2p2.tar.gz
-</span><span class='line'>-rw-r--r--. 1 root   root   5489494 10月 20 16:41 openssl-1.0.2j.tar.gz
-</span><span class='line'>-rw-r--r--. 1 root   root     29229 6月  26 2004 x11-ssh-askpass-1.2.4.1.tar.gz
-</span><span class='line'>
-</span><span class='line'>一、升级 Zlib
-</span><span class='line'>1、下载最新版本 Zlib
-</span><span class='line'># ./configure --prefix=/usr/local/zlib
-</span><span class='line'>本次遇到GCC未安装
-</span><span class='line'>yum -y install gcc
-</span><span class='line'>./configure --prefix=/usr/local/zlib
-</span><span class='line'># make
-</span><span class='line'># make install
-</span><span class='line'>这样，就把 zlib 编译安装在 /usr/local/zilib 中了。
-</span><span class='line'>二、升级 OpenSSL
-</span><span class='line'>1、下载最新版本 OpenSSL
-</span><span class='line'>which openssl    查看到当前是在/usr/bin/openssl
-</span><span class='line'># ./config --prefix=/usr --shared
-</span><span class='line'>本次遇到系统时间不对的，修改好系统时间后config正常。
-</span><span class='line'># make
-</span><span class='line'># make test （这一步很重要哦！是进行 SSL 加密协议的完整测试，如果出现错误就要一定先找出哪里的原因，否则一味继续可能导致最终 SSH 不能使用，后果很严重哦！）
-</span><span class='line'># make install
-</span><span class='line'>三、升级 OpenSSH
-</span><span class='line'>1、下载最新版本 OpenSSH
-</span><span class='line'>#  ./configure --prefix=/usr --sysconfdir=/etc/ssh --with-pam --with-zlib=/usr/local/zlib --with-ssl-dir=/usr/bin/openssl --with-md5-passwords 
-</span><span class='line'>（注意，如果 configure 时提示 PAM 有错误，那一般是因为系统中没有安装 pam-devel RPM 包，找到安装光盘，安装 pam-devel 就可以解决啦）如果是sshkeygen提示错误，需要make  clean再重新编译
-</span><span class='line'>本次安装过程提示了pam问题,cd /opt/cdrom-mirror/Packages
-</span><span class='line'>rpm -ivh pam-devel-1.1.1-10.el6_2.1.x86_64.rpm
-</span><span class='line'>./configure --prefix=/usr --sysconfdir=/etc/ssh --with-pam --with-zlib=/usr/local/zlib --with-ssl-dir=/usr/bin/openssl --with-md5-passwords 
-</span><span class='line'># make
-</span><span class='line'># make install
-</span><span class='line'>ssh -V 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>编译RPM包</h2>
-
-<p>机器太多，不太可能一台台的编译安装。首先用rpmbuild打包，然后用createrepo制作本地私有仓库。主要是openssl打包比较纠结！OpenSSH完全依赖OpenSSL的，所以OpenSSL的版本一定要先编译安装好，然后再编译OpenSSH。相应的包下面都有对应的spec文件。</p>
-
-<p>实际操作过程是先打包OpenSSH的：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'> cd
-</span><span class='line'> mkdir rpmbuild
-</span><span class='line'> cd rpmbuild/
-</span><span class='line'> mkdir -pv {BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
-</span><span class='line'>
-</span><span class='line'> cd SOURCES/
-</span><span class='line'> cd ../SPECS/
-</span><span class='line'> cp ~/updatessh/openssh-7.2p2/contrib/redhat/openssh.spec ./
-</span><span class='line'> cd ..
-</span><span class='line'> cd SOURCES/
-</span><span class='line'> vi /etc/resolv.conf
-</span><span class='line'> wget http://pkgs.fedoraproject.org/repo/pkgs/openssh/x11-ssh-askpass-1.2.4.1.tar.gz/8f2e41f3f7eaa8543a2440454637f3c3/x11-ssh-askpass-1.2.4.1.tar.gz
-</span><span class='line'> wget http://pkgs.fedoraproject.org/repo/pkgs/openssh/openssh-7.2p2.tar.gz/13009a9156510d8f27e752659075cced/openssh-7.2p2.tar.gz
-</span><span class='line'> cd ..
-</span><span class='line'> yum groupinstall "X Window System" "Desktop" "Desktop Platform" "General Purpose Desktop"
-</span><span class='line'> yum -y install libX11-devel
-</span><span class='line'> yum install imake
-</span><span class='line'> yum provides \*/Intrinsic.h
-</span><span class='line'> yum install libXt-devel
-</span><span class='line'> yum search gtk
-</span><span class='line'> yum install gtk2 gtk2-devel
-</span><span class='line'> vi SPECS/openssh.spec
-</span><span class='line'> rpmbuild -bb SPECS/openssh.spec</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后坑就摆在那里了：重启sshd失败。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 在rpmbuild\RPMS\x86_64目录下面创建createrepo私有仓库
-</span><span class='line'># /etc/yum.repo.d/local.repo增加节点
-</span><span class='line'>
-</span><span class='line'># yum install openssh 
-</span><span class='line'>
-</span><span class='line'># 重启
-</span><span class='line'>[root@localhost ~]# service sshd restart
-</span><span class='line'>然后启动了[失败]（具体错没记下来）</span></code></pre></td></tr></table></div></figure>
-
-
-<p>感觉是OpenSSL的问题了。然后打包好OpenSSL后安装竟然报错：找不到libssl的动态链接库</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Error: Package: wget-1.12-1.4.el6.x86_64 (@anaconda-RedHatEnterpriseLinux-201206132210.x86_64/6.3)
-</span><span class='line'>           Requires: libcrypto.so.10()(64bit)
-</span><span class='line'>           Removing: openssl-1.0.0-20.el6_2.5.x86_64 (@cdrom)
-</span><span class='line'>               libcrypto.so.10()(64bit)
-</span><span class='line'>           Updated By: openssl-1.0.2j-1.x86_64 (upgrade)
-</span><span class='line'>               Not found
-</span><span class='line'>Error: Package: 1:wpa_supplicant-0.7.3-3.el6.x86_64 (@cdrom)
-</span><span class='line'>           Requires: libssl.so.10()(64bit)
-</span><span class='line'>           Removing: openssl-1.0.0-20.el6_2.5.x86_64 (@cdrom)
-</span><span class='line'>               libssl.so.10()(64bit)
-</span><span class='line'>           Updated By: openssl-1.0.2j-1.x86_64 (upgrade)
-</span><span class='line'>               Not found</span></code></pre></td></tr></table></div></figure>
-
-
-<p>官方的出的spec打包的rpm安装后竟然会少东西。百思不得其解，通过查看cdrom openssl-1.0.0-20.el6_2.5.x86_64.rpm与rpmbuild openssl-1.0.2j-1.x86_64.rpm的确还不同：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# rpm -qlp /opt/cdrom/Packages/openssl-1.0.0-20.el6_2.5.x86_64.rpm | grep libssl
-</span><span class='line'>...
-</span><span class='line'>/usr/lib64/libssl.so.1.0.0
-</span><span class='line'>/usr/lib64/libssl.so.10
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# rpm -qlp /opt/cdrom/Packages/openssl-1.0.0-20.el6_2.5.x86_64.rpm | grep libssl
-</span><span class='line'>...
-</span><span class='line'>/usr/lib64/libssl.so.1.0.0</span></code></pre></td></tr></table></div></figure>
-
-
-<p>在spec里面增加libssl.so.10软链接也没用。rpm并没有提供libssl.so.10的 <strong> provide </strong> 服务（可以通过<a href="http://stackoverflow.com/questions/25638461/how-can-i-make-rpm-tell-what-libraries-are-provided-inside-it">rpm -qip &ndash;provides RPM</a>查看）。</p>
-
-<p>实在想不出办法了，只能先看下官网怎么打包的。最后通过查看 openssl-1.0.0-20.el6_2.5.src.rpm 的打包spec是进行定制了的，把原来编译生成的动态链接库so.$(SHLIB_MAJOR).$(SHLIB_MINOR)文件名改成so.$(SHLIB_SONAMEVER)。主要的两个patch为：</p>
-
-<ul>
-<li>openssl-1.0.0-beta3-soversion.patch</li>
-<li>openssl-1.0.0-beta4-redhat.patch</li>
-</ul>
-
-
-<p>参考修改如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>修改Makefile
-</span><span class='line'>diff -u openssl-1.0.2j/Makefile.org rpmbuild/SOURCES/openssl-1.0.2j/Makefile.org
-</span><span class='line'>--- openssl-1.0.2j/Makefile.org 2016-09-26 17:49:07.000000000 +0800
-</span><span class='line'>+++ rpmbuild/SOURCES/openssl-1.0.2j/Makefile.org        2016-10-20 15:28:32.000000000 +0800
-</span><span class='line'>@@ -10,6 +10,7 @@
-</span><span class='line'> SHLIB_MAJOR=
-</span><span class='line'> SHLIB_MINOR=
-</span><span class='line'> SHLIB_EXT=
-</span><span class='line'>+SHLIB_SONAMEVER=10
-</span><span class='line'> PLATFORM=dist
-</span><span class='line'> OPTIONS=
-</span><span class='line'> CONFIGURE_ARGS=
-</span><span class='line'>@@ -342,10 +343,9 @@
-</span><span class='line'> link-shared:
-</span><span class='line'>        @ set -e; for i in $(SHLIBDIRS); do \
-</span><span class='line'>                $(MAKE) -f $(HERE)/Makefile.shared -e $(BUILDENV) \
-</span><span class='line'>-                       LIBNAME=$$i LIBVERSION=$(SHLIB_MAJOR).$(SHLIB_MINOR) \
-</span><span class='line'>+                       LIBNAME=$$i LIBVERSION=$(SHLIB_SONAMEVER) \
-</span><span class='line'>                        LIBCOMPATVERSIONS=";$(SHLIB_VERSION_HISTORY)" \
-</span><span class='line'>                        symlink.$(SHLIB_TARGET); \
-</span><span class='line'>-               libs="$$libs -l$$i"; \
-</span><span class='line'>        done
-</span><span class='line'> 
-</span><span class='line'> build-shared: do_$(SHLIB_TARGET) link-shared
-</span><span class='line'>@@ -356,7 +356,7 @@
-</span><span class='line'>                        libs="$(LIBKRB5) $$libs"; \
-</span><span class='line'>                fi; \
-</span><span class='line'>                $(CLEARENV) && $(MAKE) -f Makefile.shared -e $(BUILDENV) \
-</span><span class='line'>-                       LIBNAME=$$i LIBVERSION=$(SHLIB_MAJOR).$(SHLIB_MINOR) \
-</span><span class='line'>+                       LIBNAME=$$i LIBVERSION=$(SHLIB_SONAMEVER) \
-</span><span class='line'>                        LIBCOMPATVERSIONS=";$(SHLIB_VERSION_HISTORY)" \
-</span><span class='line'>                        LIBDEPS="$$libs $(EX_LIBS)" \
-</span><span class='line'>                        link_a.$(SHLIB_TARGET); \
-</span><span class='line'>
-</span><span class='line'>修改Configure1
-</span><span class='line'>diff -u openssl-1.0.2j/Configure rpmbuild/SOURCES/openssl-1.0.2j/Configure
-</span><span class='line'>--- openssl-1.0.2j/Configure    2016-09-26 17:49:07.000000000 +0800
-</span><span class='line'>+++ rpmbuild/SOURCES/openssl-1.0.2j/Configure   2016-10-20 16:40:33.000000000 +0800
-</span><span class='line'>@@ -1781,7 +1781,7 @@
-</span><span class='line'>        elsif ($shared_extension ne "" && $shared_extension =~ /^\.s([ol])\.[^\.]*\.[^\.]*$/)
-</span><span class='line'>                {
-</span><span class='line'>                my $sotmp = $1;
-</span><span class='line'>-               s/^SHARED_LIBS_LINK_EXTS=.*/SHARED_LIBS_LINK_EXTS=.s$sotmp.\$(SHLIB_MAJOR) .s$sotmp/;
-</span><span class='line'>+               s/^SHARED_LIBS_LINK_EXTS=.*/SHARED_LIBS_LINK_EXTS=.s$sotmp.\$(SHLIB_SONAMEVER) .s$sotmp/;
-</span><span class='line'>                }
-</span><span class='line'>        elsif ($shared_extension ne "" && $shared_extension =~ /^\.[^\.]*\.[^\.]*\.dylib$/)
-</span><span class='line'>                {
-</span><span class='line'>
-</span><span class='line'>修改Configure2
-</span><span class='line'>rpmbuild/SOURCES/openssl-1.0.2j/Configure 文件中 so.\$(SHLIB_MAJOR).\$(SHLIB_MINOR) 替换成 so.\$(SHLIB_SONAMEVER)
-</span><span class='line'>
-</span><span class='line'>修改spec
-</span><span class='line'>[root@localhost ~]# diff openssl-1.0.2j/openssl.spec rpmbuild/SPECS/openssl.spec
-</span><span class='line'>110a111,121
-</span><span class='line'>&gt; version=%{version}
-</span><span class='line'>&gt; soversion=10
-</span><span class='line'>&gt; rename so.${soversion} so.${version} $RPM_BUILD_ROOT%{_libdir}/*.so.${soversion}
-</span><span class='line'>&gt; for lib in $RPM_BUILD_ROOT/usr/lib64/*.so.${version} ; do
-</span><span class='line'>&gt;         chmod 755 ${lib}
-</span><span class='line'>&gt;         ln -s -f `basename ${lib}` $RPM_BUILD_ROOT/usr/lib64/`basename ${lib} .${version}`
-</span><span class='line'>&gt;         ln -s -f `basename ${lib}` $RPM_BUILD_ROOT/usr/lib64/`basename ${lib} .${version}`.${soversion}
-</span><span class='line'>&gt; 
-</span><span class='line'>&gt; done
-</span><span class='line'>&gt; </span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后打包OpenSSL，用Yum更新OpenSSL；再打包OpenSSH，最后再用Yum安装OpenSSH。</p>
-
-<h2>配置</h2>
-
-<p>打包好完成后完成大半的任务了，但是重启过程出现了一些问题：</p>
-
-<ol>
-<li>error while loading shared libraries: libcrypto.so.10: cannot enable executable stack as shared object requires: Permission denied</li>
-</ol>
-
-
-<p>运行： <code>execstack -c libcrypto.so.10</code> 解决。 <a href="http://www.linuxquestions.org/questions/linux-kernel-70/longterm-and-grsec-on-slackware-13-0-a-903612/">http://www.linuxquestions.org/questions/linux-kernel-70/longterm-and-grsec-on-slackware-13-0-a-903612/</a></p>
-
-<ol>
-<li>重启后远程密码登录上不，但是机器重启是可以登录的，而且su通过密码也是可以切换的。</li>
-</ol>
-
-
-<p>由于su切换没问题，应该不是加解密的问题。最后经常是selinux的问题： <code>setenforce 0 ; vi /etc/selinux/config</code> 完成配置。</p>
-
-<p>到此纠结的SSH升级告一段落。后面上百台机器通过puppet就可以搞定了。</p>
-
-<p>最后分享一个牛逼到不能再牛逼升级配置的文章： <a href="http://www.tsingfun.com/html/2016/env_0330/1332.html">http://www.tsingfun.com/html/2016/env_0330/1332.html</a> 包括了升级过程中你遇到和没遇到的所有问题了。</p>
-
-<h2>再记</h2>
-
-<p>在测试机上面搞的都是默认的配置啊，安全级别本来就不高。但是到生产就不同了，本来加了防护的。需要特别注意！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>#centos6.8
-</span><span class='line'>#直接用openssl-1.0.1e-48.el6
-</span><span class='line'>[root@localhost yum.repos.d]# mount -o loop CentOS-6.8-x86_64-bin-DVD1.iso /opt/cdrom
-</span><span class='line'>[root@localhost yum.repos.d]# vi local.repo
-</span><span class='line'>
-</span><span class='line'>[root@localhost rpmbuild]#  yum groupinstall "X Window System" "Desktop" "Desktop Platform" "General Purpose Desktop"
-</span><span class='line'>
-</span><span class='line'>[root@localhost yum.repos.d]# yum install -y libX11-devel imake libXt-devel gtk2 gtk2-devel 
-</span><span class='line'>
-</span><span class='line'>[root@localhost rpmbuild]# yum install -y rpm-build
-</span><span class='line'>[root@localhost rpmbuild]# yum install -y openssl-devel   krb5-devel pam-devel 
-</span><span class='line'>
-</span><span class='line'>[root@localhost rpmbuild]# yum install gcc
-</span><span class='line'>
-</span><span class='line'>[root@localhost rpmbuild]# rpmbuild -bb SPEC/openssh.spec
-</span><span class='line'>
-</span><span class='line'>自己做的repo：
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master1 ssh]# ll
-</span><span class='line'>total 6192
-</span><span class='line'>-rw-r--r-- 1 root root  439708 Oct 21 17:53 openssh-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root   41752 Oct 21 17:53 openssh-askpass-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root   22684 Oct 21 17:53 openssh-askpass-gnome-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root  581836 Oct 21 17:53 openssh-clients-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root   16948 Oct 21 17:53 openssh-debuginfo-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root  391544 Oct 21 17:53 openssh-server-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root 3226970 Oct 21 17:23 openssl-1.0.1e-48.el6.src.rpm
-</span><span class='line'>-rw-r--r-- 1 root root 1595916 May 12 18:49 openssl-1.0.1e-48.el6.x86_64.rpm
-</span><span class='line'>drwxr-xr-x 2 root root    4096 Oct 21 18:47 repodata
-</span><span class='line'>
-</span><span class='line'>注意点：
-</span><span class='line'>
-</span><span class='line'>1 selinux关掉
-</span><span class='line'>
-</span><span class='line'>2 开个telnet以防万一
-</span><span class='line'>
-</span><span class='line'>yum install telnet-server
-</span><span class='line'>chkconfig telnet on
-</span><span class='line'>service xinetd restart
-</span><span class='line'>
-</span><span class='line'>3 PAM
-</span><span class='line'>vi /etc/ssh/sshd_config
-</span><span class='line'>UsePAM no（反正要确认pam，或者看看/etc/pam.d/sshd是否满足要求）
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/2">&larr; Older</a>
@@ -1667,6 +1870,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2016/12/14/elasticsearch5-head-plugin-config/">elasticsearch5安装Head插件</a>
       </li>
     
@@ -1692,10 +1899,6 @@
     
       <li class="post">
         <a href="/blog/2016/10/12/maven-create-ourself-archetype/">Maven创建自己的Archetype</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
       </li>
     
   </ul>
@@ -1816,7 +2019,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (40) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (41) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1829,7 +2032,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (154)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (155)</li>
 	</ul>
 	
 </section>
@@ -1887,7 +2090,7 @@
     </div>
   </div>
   <footer role="contentinfo"><p>
-  Copyright &copy; 2016 - Winse Liu -
+  Copyright &copy; 2017 - Winse Liu -
   <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
   <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
 </p>

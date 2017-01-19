@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Tools | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/tools/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2016-12-14T20:31:51+08:00</updated>
+  <updated>2017-01-19T19:50:56+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,396 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Nginx配置https]]></title>
+    <link href="http://winseliu.com/blog/2017/01/19/nginx-https/"/>
+    <updated>2017-01-19T15:53:45+08:00</updated>
+    <id>http://winseliu.com/blog/2017/01/19/nginx-https</id>
+    <content type="html"><![CDATA[<p>很早前弄过https，当时只是玩玩实际工作中并没有用到。现在业务需要得配置https。欠的债总是要还的，使用puppet的时刻默认全部信任不走证书认证。这里为了安装tomcat的https还是绕不过去。硬着头皮整吧。</p>
+
+<h2>编译</h2>
+
+<pre><code>[... nginx-1.10.2]$ tar zxvf zlib-1.2.8.tar.gz 
+[... nginx-1.10.2]$ tar zxvf pcre-8.36.tar.gz 
+
+[... nginx-1.10.2]$ mv zlib-1.2.8 src/zlib
+[... nginx-1.10.2]$ mv pcre-8.36 src/pcre
+
+[... nginx-1.10.2]$ ./configure --prefix=/home/hadoop/nginx --with-http_ssl_module --with-pcre=src/pcre --with-zlib=src/zlib
+[... nginx-1.10.2]$ make &amp;&amp; make install
+</code></pre>
+
+<h2>生成证书</h2>
+
+<p>先整一个能访问的https，再通过本地CA来进行授权（本地浏览器安装这个CA），最后处理chrome sha-1的问题。</p>
+
+<ul>
+<li>自己签发（无CA）</li>
+</ul>
+
+
+<pre><code># RSA密钥
+[hadoop@cu1 conf]$ openssl genrsa -des3 -out server.key 1024
+Generating RSA private key, 1024 bit long modulus
+...........++++++
+................++++++
+e is 65537 (0x10001)
+Enter pass phrase for server.key:
+Verifying - Enter pass phrase for server.key:
+# 拷贝一个不需要输入密码的密钥文件
+[hadoop@cu1 conf]$ cp server.key server.key.org
+[hadoop@cu1 conf]$ openssl rsa -in server.key.org -out server.key
+Enter pass phrase for server.key.org:
+writing RSA key
+
+# 需要提交给 SSL 认证机构(生成一个证书请求)
+[hadoop@cu1 conf]$ openssl req -new -key server.key -out server.csr
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [XX]:CN
+State or Province Name (full name) []:GD
+Locality Name (eg, city) [Default City]:GZ
+Organization Name (eg, company) [Default Company Ltd]:Eshore
+Organizational Unit Name (eg, section) []:CU
+Common Name (eg, your name or your server's hostname) []:cu.eshore.cn
+Email Address []:ca@eshore.cn
+
+Please enter the following 'extra' attributes
+to be sent with your certificate request
+A challenge password []:
+An optional company name []:
+
+# 认证机构颁发(自己签发证书)
+[hadoop@cu1 conf]$ openssl x509 -req -days 365 -in server.csr -signkey server.key -out server.crt
+Signature ok
+subject=/C=CN/ST=Guangdong/L=Guangzhou/O=Eshore/OU=CU/CN=cu1
+Getting Private key
+</code></pre>
+
+<ul>
+<li>本地CA授权 &amp; SHA2(推荐)</li>
+</ul>
+
+
+<pre><code>[root@cu1 apache-tomcat-8.0.38]# ll /etc/pki/CA
+total 16
+drwxr-xr-x. 2 root root 4096 Mar  1  2016 certs 存放CA签署（颁发）过的数字证书（证书备份目录）
+drwxr-xr-x. 2 root root 4096 Mar  1  2016 crl 吊销的证书
+drwxr-xr-x. 2 root root 4096 Mar  1  2016 newcerts
+drwx------. 2 root root 4096 Mar  1  2016 private 用于存放CA的私钥
+[root@cu1 apache-tomcat-8.0.38]# ll /etc/pki/tls/
+total 24
+lrwxrwxrwx  1 root root    19 May 22  2015 cert.pem -&gt; certs/ca-bundle.crt
+drwxr-xr-x. 2 root root  4096 Mar 22  2016 certs
+drwxr-xr-x. 2 root root  4096 Mar 22  2016 misc
+-rw-r--r--  1 root root 10906 Feb 24  2016 openssl.cnf openssl的CA主配置文件
+drwxr-xr-x. 2 root root  4096 Mar  1  2016 private 证书密钥存放目录
+
+# 修改配置(一部分为默认值，一部分与sha2有关)
+[root@cu1 pki]# pwd
+/etc/pki
+[root@cu1 pki]# vi tls/openssl.cnf 
+[root@cu1 pki]# diff /home/hadoop/openssl.cnf tls/openssl.cnf 
+50c50
+&lt; certificate   = $dir/cacert.pem       # The CA certificate
+---
+&gt; certificate   = $dir/ca.crt   # The CA certificate
+55c55
+&lt; private_key   = $dir/private/cakey.pem# The private key
+---
+&gt; private_key   = $dir/private/ca.key # The private key
+74c74
+&lt; default_crl_days= 30                  # how long before next CRL
+---
+&gt; default_crl_days= 365                 # how long before next CRL
+86,87c86,87
+&lt; stateOrProvinceName   = match
+&lt; organizationName      = match
+---
+&gt; stateOrProvinceName   = optional
+&gt; organizationName      = optional
+107c107
+&lt; default_md            = sha1
+---
+&gt; default_md            = sha256
+126c126
+&lt; # req_extensions = v3_req # The extensions to add to a certificate request
+---
+&gt; req_extensions = v3_req # The extensions to add to a certificate request
+130c130
+&lt; countryName_default           = XX
+---
+&gt; countryName_default           = CN
+135c135
+&lt; #stateOrProvinceName_default  = Default Province
+---
+&gt; #stateOrProvinceName_default  = GD
+
+# CA证书
+清理原来的旧文件
+[root@cu1 pki]# cd CA
+[root@cu1 CA]# rm -rf index.txt* serial*
+[root@cu1 CA]# rm cacert.pem private/cakey.pem 
+初始化
+[root@cu1 CA]# touch index.txt serial
+[root@cu1 CA]# echo 01 &gt; serial 
+
+[root@cu1 CA]# openssl genrsa -out private/ca.key 2048
+Generating RSA private key, 2048 bit long modulus
+.........................................................................+++
+...........................+++
+e is 65537 (0x10001)
+
+[root@cu1 CA]# chmod 600 private/ca.key 
+
+[root@cu1 CA]# openssl req -new -x509 -key private/ca.key -out ca.crt
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [CN]:CN
+State or Province Name (full name) []:GD
+Locality Name (eg, city) [Default City]:GZ
+Organization Name (eg, company) [Default Company Ltd]:Eshore
+Organizational Unit Name (eg, section) []:CU   
+Common Name (eg, your name or your server's hostname) []:eshore.cn
+Email Address []:ca@eshore.cn
+
+# 应用的证书
+[root@cu1 conf]# openssl genrsa -out nginx.key 2048
+Generating RSA private key, 2048 bit long modulus
+...................................................................+++
+.....+++
+e is 65537 (0x10001)
+[root@cu1 conf]# 
+
+[root@cu1 conf]# openssl req -new -key nginx.key -out nginx.csr
+You are about to be asked to enter information that will be incorporated
+into your certificate request.
+What you are about to enter is what is called a Distinguished Name or a DN.
+There are quite a few fields but you can leave some blank
+For some fields there will be a default value,
+If you enter '.', the field will be left blank.
+-----
+Country Name (2 letter code) [CN]:CN
+State or Province Name (full name) []:GD
+Locality Name (eg, city) [Default City]:GZ
+Organization Name (eg, company) [Default Company Ltd]:Eshore
+Organizational Unit Name (eg, section) []:Cu
+Common Name (eg, your name or your server's hostname) []:cu.eshore.cn
+Email Address []:cu@eshore.cn
+
+Please enter the following 'extra' attributes
+to be sent with your certificate request
+A challenge password []:
+An optional company name []:
+
+查看是否为sha-2
+[root@cu1 conf]# openssl req -in nginx.csr -text | grep sha256
+
+# 应用证书颁发方式二选一
+* 默认的方式，但不是sha-2。把生成的证书请求csr文件发到CA服务器上，在CA上执行：
+签发过程其实默认使用配置中的ca.crt和ca.key这两个文件.
+[root@cu1 conf]# openssl ca -in nginx.csr -out nginx.crt
+Using configuration from /etc/pki/tls/openssl.cnf
+Check that the request matches the signature
+Signature ok
+Certificate Details:
+        Serial Number: 1 (0x1)
+        Validity
+            Not Before: Jan 19 07:24:24 2017 GMT
+            Not After : Jan 19 07:24:24 2018 GMT
+        Subject:
+            countryName               = CN
+            stateOrProvinceName       = GD
+            organizationName          = Eshore
+            organizationalUnitName    = Cu
+            commonName                = cu.eshore.cn
+            emailAddress              = cu@eshore.cn
+        X509v3 extensions:
+            X509v3 Basic Constraints: 
+                CA:FALSE
+            Netscape Comment: 
+                OpenSSL Generated Certificate
+            X509v3 Subject Key Identifier: 
+                7B:3D:E8:18:D9:77:20:8F:A2:76:7F:6C:F2:01:65:49:3F:92:1A:7F
+            X509v3 Authority Key Identifier: 
+                keyid:5F:8C:1E:3D:F7:A1:86:82:22:F5:88:12:36:16:82:49:B6:9C:84:F1
+
+Certificate is to be certified until Jan 19 07:24:24 2018 GMT (365 days)
+Sign the certificate? [y/n]:y
+
+
+1 out of 1 certificate requests certified, commit? [y/n]y
+Write out database with 1 new entries
+Data Base Updated
+[root@cu1 conf]# 
+
+* sha-2签名算法
+http://www.ibm.com/support/knowledgecenter/zh/SSPMR3_9.0.0/com.ibm.tivoli.tem.doc_9.0/SUA_9.0/com.ibm.license.mgmt.doc/security/t_generate_certificate_CA.html
+[root@cu1 conf]# openssl x509 -req -days 365 -in nginx.csr -CA /etc/pki/CA/ca.crt -CAkey /etc/pki/CA/private/ca.key -CAserial /etc/pki/CA/serial -sha256 -out nginx.crt 
+Signature ok
+subject=/C=CN/ST=GD/L=GZ/O=Eshore/OU=Cu/CN=cu.eshore.cn/emailAddress=cu@eshore.cn
+Getting CA Private Key
+</code></pre>
+
+<p>生成key和csr请求可以一条命令搞定：</p>
+
+<pre><code>https://www.digicert.com/easy-csr/openssl.htm
+
+openssl req -new -newkey rsa:2048 -nodes -out star_winse_com.csr -keyout star_winse_com.key -subj "/C=CN/ST=GD/L=GZ/O=winse/CN=*.winse.com"
+</code></pre>
+
+<h2>nginx配置</h2>
+
+<pre><code>    server {
+        listen       14443 ssl;
+        server_name  cu.eshore.cn;
+
+        ssl on;
+        ssl_certificate      nginx.crt;
+        ssl_certificate_key  nginx.key;
+
+        ssl_session_cache    shared:SSL:1m;
+        ssl_session_timeout  5m;
+
+        ssl_ciphers  HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers  on;
+
+        location / {
+            root   html;
+            index  index.html index.htm;
+        }
+
+        location /omc {
+            proxy_set_header        X-Real-IP $remote_addr;
+            proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header        Host $http_host;
+
+            proxy_pass http://localhost:9000;
+        }
+
+    }
+</code></pre>
+
+<p>MAKR</p>
+
+<blockquote><p>同时，为了统一，你可以把这三个文件都移动到 /etc/ssl/private/ 目录。
+然后可以修改 Nginx 配置文件
+server { <br/>
+    listen 80;
+    listen [::]:80 ssl ipv6only=on;<br/>
+    listen 443 ssl;
+    listen [::]:443 ssl ipv6only=on;
+    server_name example.com;
+    ssl on;
+    ssl_certificate /etc/ssl/private/example_com.crt;
+    ssl_certificate_key /etc/ssl/private/example_com.key;
+}</p>
+
+<p>server_names barretlee.com *.barretlee.com
+ssl on;
+ssl_certificate /etc/nginx/ssl/barretlee.com.crt;
+ssl_certificate_key /etc/nginx/ssl/barretlee.com.key;
+ssl_protocols TLSv1 TLSv1.1 TLSv1.2;
+ssl_ciphers &ldquo;EECDH+ECDSA+AESGCM EECDH+aRSA+AESGCM EECDH+ECDSA+SHA384EECDH+ECDSA+SHA256 EECDH+aRSA+SHA384 EECDH+aRSA+SHA256 EECDH+aRSA+RC4EECDH EDH+aRSA RC4 !aNULL !eNULL !LOW !3DES !MD5 !EXP !PSK !SRP !DSS !MEDIUM&rdquo;;</p>
+
+<h1>Add perfect forward secrecy</h1>
+
+<p>ssl_prefer_server_ciphers on;
+add_header Strict-Transport-Security &ldquo;max-age=31536000; includeSubdomains&rdquo;;</p>
+
+<p>同时，如果是全站 HTTPS 并且不考虑 HTTP 的话，可以加入 HSTS 告诉你的浏览器本
+网站全站加密，并且强制用 HTTPS 访问
+        add_header Strict-Transport-Security max-age=63072000;
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+同时也可以单独开一个 Nginx 配置，把 HTTP 的访问请求都用 301 跳转到 HTTPS</p>
+
+<p>浏览器访问HTTP的请求重定向到HTTPS
+If they come here using HTTP, bounce them to the correct scheme
+error_page 497 <a href="https://$host:$server_port$request_uri;">https://$host:$server_port$request_uri;</a></p></blockquote>
+
+<p>curl访问(把CA证书内容加入到ca-bundle.crt)：</p>
+
+<pre><code>[root@hadoop-master2 nginx]# curl https://www.winse.com
+curl: (60) Peer certificate cannot be authenticated with known CA certificates
+More details here: http://curl.haxx.se/docs/sslcerts.html
+
+curl performs SSL certificate verification by default, using a "bundle"
+ of Certificate Authority (CA) public keys (CA certs). If the default
+ bundle file isn't adequate, you can specify an alternate file
+ using the --cacert option.
+If this HTTPS server uses a certificate signed by a CA represented in
+ the bundle, the certificate verification probably failed due to a
+ problem with the certificate (it might be expired, or the name might
+ not match the domain name in the URL).
+If you'd like to turn off curl's verification of the certificate, use
+ the -k (or --insecure) option.
+
+[root@hadoop-master2 CA]# cp /etc/pki/tls/certs/ca-bundle.crt{,.bak}
+[root@hadoop-master2 CA]# cat /etc/pki/CA/ca.crt &gt;&gt; /etc/pki/tls/certs/ca-bundle.crt
+[root@hadoop-master2 CA]# 
+[root@hadoop-master2 CA]# curl https://www.winse.com
+curl: (51) SSL: certificate subject name 'winse.com' does not match target host name 'www.winse.com'
+[root@hadoop-master2 CA]# curl https://winse.com
+...
+</code></pre>
+
+<h2>tomcat配置</h2>
+
+<p>直接使用nginx的key和crt，需要安装APR.</p>
+
+<ul>
+<li><a href="http://stackoverflow.com/questions/8716259/what-does-the-apr-based-apache-tomcat-native-library-was-not-found-mean">http://stackoverflow.com/questions/8716259/what-does-the-apr-based-apache-tomcat-native-library-was-not-found-mean</a></li>
+<li><a href="http://stackoverflow.com/questions/4278047/apr-based-apache-tomcat-native-library-was-not-found-on-the-java-library-path">http://stackoverflow.com/questions/4278047/apr-based-apache-tomcat-native-library-was-not-found-on-the-java-library-path</a></li>
+<li><a href="http://jmchung.github.io/blog/2013/09/06/centos-installing-apache-portable-runtime-apr-for-tomcat/">http://jmchung.github.io/blog/2013/09/06/centos-installing-apache-portable-runtime-apr-for-tomcat/</a></li>
+<li><a href="https://tomcat.apache.org/native-doc/">https://tomcat.apache.org/native-doc/</a></li>
+</ul>
+
+
+<pre><code>[root@cu1 apache-tomcat-8.0.38]# yum install tomcat-native
+[root@cu1 apache-tomcat-8.0.38]# less conf/server.xml 
+&lt;Connector
+           protocol="org.apache.coyote.http11.Http11AprProtocol"
+           port="9443" maxThreads="200"
+           scheme="https" secure="true" SSLEnabled="true"
+           SSLCertificateFile="/home/cu/tools/apache-tomcat-8.0.38/conf/nginx.crt"
+           SSLCertificateKeyFile="/home/cu/tools/apache-tomcat-8.0.38/conf/nginx.key"
+           SSLVerifyClient="optional" SSLProtocol="TLSv1+TLSv1.1+TLSv1.2"/&gt;
+</code></pre>
+
+<h2>本地访问</h2>
+
+<p>把/etc/pki/CA目录下的ca.crt拷贝本地，安装到<strong>受信任的根证书颁发机构</strong>目录下面。然后https访问即可。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li>V<a href="http://seanlook.com/2015/01/18/openssl-self-sign-ca/">基于OpenSSL自建CA和颁发SSL证书</a></li>
+<li><p>V<a href="http://blog.csdn.net/napolunyishi/article/details/42425827">CentOS6.5下openssl加密解密及CA自签颁发证书详解</a></p></li>
+<li><p><a href="http://fengwan.blog.51cto.com/508652/1869743">OpenSSL生成自签名的sha256泛域名证书</a></p></li>
+<li><p><a href="http://blog.csdn.net/kent7306/article/details/50547388">tomcat配置https单向认证笔记</a></p></li>
+<li><a href="https://tomcat.apache.org/tomcat-7.0-doc/ssl-howto.html">SSL/TLS Configuration HOW-TO</a></li>
+<li><p><a href="https://www.oschina.net/question/12_23148">5分钟内搞定 Tomcat 的 SSL 配置</a></p></li>
+<li><p><a href="http://www.freehao123.com/startssl-ssl/">StartSSL免费SSL证书</a></p></li>
+<li><a href="http://nginx.org/en/docs/http/configuring_https_servers.html#single_http_https_server">http://nginx.org/en/docs/http/configuring_https_servers.html#single_http_https_server</a></li>
+<li>Redirect http to https in nginx <a href="http://serverfault.com/questions/338700/redirect-http-mydomain-com12345-to-https-mydomain-com12345-in-nginx">http://serverfault.com/questions/338700/redirect-http-mydomain-com12345-to-https-mydomain-com12345-in-nginx</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Jasperreports使用小结]]></title>
@@ -702,227 +1092,6 @@ UsePAM no（反正要确认pam，或者看看/etc/pam.d/sshd是否满足要求�
 </code></pre>
 
 <p>注意 <strong> archetypeCatalog </strong> 属性，如果不配置为本地（local/internal ）的话要等很久（可以用-X输出调试信息查看操作停在哪）。对于intellij idea可以在 Default Settings - Build,Exection,Deployment - Build Tools - Maven - Runner 加上 VM Options 参数。</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Maven压缩js/css功能实践]]></title>
-    <link href="http://winseliu.com/blog/2016/08/19/j2ee-maven-resources-compress/"/>
-    <updated>2016-08-19T16:34:28+08:00</updated>
-    <id>http://winseliu.com/blog/2016/08/19/j2ee-maven-resources-compress</id>
-    <content type="html"><![CDATA[<p>为了节约网络带宽，一般在发布项目时对资源(js/css)文件进行压缩（去掉空行、精简代码等）。但是要做到兼容开发与生产还是的下一番功夫才行。</p>
-
-<pre><code>$ ls -l src/main/webapp/static/assets/js/ | head
-total 3120
--rwxrwxr--+ 1 winse None  24804 Aug 10 17:40 bootbox.js
--rwxrwxr--+ 1 winse None  71315 Aug 10 17:40 bootstrap.js
--rwxrwxr--+ 1 winse None  13905 Aug 10 17:40 bootstrap-colorpicker.js
--rwxrwxr--+ 1 winse None  49319 Aug 10 17:40 bootstrap-multiselect.js
-...
-
-$ ls -l target/dist/js/ | head
-total 1368
--rwxrwx---+ 1 winse None   8943 Aug 19 16:53 bootbox-min.js
--rwxrwx---+ 1 winse None   8057 Aug 19 16:53 bootstrap-colorpicker-min.js
--rwxrwx---+ 1 winse None  38061 Aug 19 16:53 bootstrap-min.js
--rwxrwx---+ 1 winse None  18232 Aug 19 16:53 bootstrap-multiselect-min.js
-...
-</code></pre>
-
-<p>项目中原本使用dist(压缩)、assets目录放置js/css等资源，在部署的时刻替换dist为assets，有点麻烦。首先想到的<strong>用nginx进行url重写</strong>，但是需要增加一个服务有点麻烦，能不能直接用spring来实现呢？</p>
-
-<ul>
-<li>自定义一个handler类</li>
-</ul>
-
-
-<p>查看Spring的 <code>mvc:resources</code> 实现，相当于注册了一个 <code>location -&gt; ResourceHttpRequestHandler</code> 的映射。
-第一种尝试自动化的方式就是自定义handler类来进行资源的定位。增加 StaticRequestHandler 的处理类，增加配置 location 和 compressLocation 的配置：首先去查找压缩文件([NAME]-min.js)，找不到然后再找源文件([NAME].js)位置。</p>
-
-<p>主要修改 getResource 方法，具体完整代码如下：</p>
-
-<pre><code>## java
-public class StaticRequestHandler extends ResourceHttpRequestHandler {
-
-    private final static Log logger = LogFactory.getLog(ResourceHttpRequestHandler.class);
-
-    private String location;
-    private String compressLocation;
-
-    private Resource locationResource;
-    private Resource compressLocationResource;
-
-    public void setLocation(String location) {
-        this.location = location;
-    }
-
-    public void setCompressLocation(String compressLocation) {
-        this.compressLocation = compressLocation;
-    }
-
-    @Override
-    public void afterPropertiesSet() throws Exception {
-        super.afterPropertiesSet();
-
-        this.locationResource = getWebApplicationContext().getResource(location);
-        super.setLocations(Collections.singletonList(this.locationResource));
-
-        this.compressLocationResource = getWebApplicationContext().getResource(compressLocation);
-    }
-
-    @Override
-    protected Resource getResource(HttpServletRequest request) {
-        String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
-        if (path == null) {
-            throw new IllegalStateException("Required request attribute '"
-                    + HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE + "' is not set");
-        }
-
-        if (!StringUtils.hasText(path) || isInvalidPath(path)) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Ignoring invalid resource path [" + path + "]");
-            }
-            return null;
-        }
-
-        Resource res = null;
-        if (path.endsWith(".css")) {
-            res = findResource(compressLocationResource, path.substring(0, path.length() - 4) + ".min.css");
-        } else if (path.endsWith(".js")) {
-            res = findResource(compressLocationResource, path.substring(0, path.length() - 3) + ".min.js");
-        }
-
-        if (res == null) {
-            res = findResource(locationResource, path);
-        }
-
-        return res;
-    }
-
-    private Resource findResource(Resource location, String path) {
-        try {
-            if (logger.isDebugEnabled()) {
-                logger.debug("Trying relative path [" + path + "] against base location: " + location);
-            }
-            Resource resource = location.createRelative(path);
-            if (resource.exists() &amp;&amp; resource.isReadable()) {
-                if (logger.isDebugEnabled()) {
-                    logger.debug("Found matching resource: " + resource);
-                }
-                return resource;
-            } else if (logger.isTraceEnabled()) {
-                logger.trace("Relative resource doesn't exist or isn't readable: " + resource);
-            }
-        } catch (IOException ex) {
-            logger.debug("Failed to create relative resource - trying next resource location", ex);
-        }
-
-        return null;
-    }
-
-}
-
-## spring config
-    &lt;!-- 静态资源 --&gt;
-    &lt;!-- &lt;mvc:resources mapping="/static/**" location="/static/" /&gt; --&gt;
-
-    &lt;bean class="org.springframework.web.servlet.handler.SimpleUrlHandlerMapping"&gt;
-        &lt;property name="mappings"&gt;
-            &lt;value&gt;
-                /static/assets/**=staticRequestHandler
-            &lt;/value&gt;
-        &lt;/property&gt;
-    &lt;/bean&gt;
-    &lt;bean id="staticRequestHandler" class="com.hotel.servlet.resource.StaticRequestHandler"&gt;
-        &lt;property name="location" value="/static/assets/" /&gt;
-        &lt;property name="compressLocation" value="/static/dist/" /&gt;
-    &lt;/bean&gt;
-</code></pre>
-
-<p>这种方式实现了自动定位压缩资源 <code>min.js</code> 的功能，但是压缩还是不能自动化而且不能实时的更新（min要单独压缩产生），并且调试和生产环境还是需要手动的修改配置来切换。</p>
-
-<p>有没有更好的自动化的实现开发环境和生产环境分开呢？</p>
-
-<ul>
-<li>Maven打包时压缩然后替换源文件</li>
-</ul>
-
-
-<p>使用 <strong>yuicompressor-maven-plugin</strong> 插件压缩资源，然后把压缩资源<strong>先</strong>打包放置到assets目录下。</p>
-
-<p>注意： yuicomressor 插件的 nosuffix 配置为 true ! 这样压缩后的文件名和源文件名称才一样。</p>
-
-<pre><code>## spring config
-    &lt;!-- 静态资源 --&gt;
-    &lt;mvc:resources mapping="/static/**" location="/static/" /&gt;
-
-## maven pom.xml
-        &lt;profile&gt;
-            &lt;id&gt;release&lt;/id&gt;
-
-            &lt;build&gt;
-                &lt;plugins&gt;
-                    &lt;!-- http://alchim.sourceforge.net/yuicompressor-maven-plugin/compress-mojo.html --&gt;
-                    &lt;plugin&gt;
-                        &lt;groupId&gt;net.alchim31.maven&lt;/groupId&gt;
-                        &lt;artifactId&gt;yuicompressor-maven-plugin&lt;/artifactId&gt;
-                        &lt;version&gt;1.3.2&lt;/version&gt;
-                        &lt;executions&gt;
-                            &lt;execution&gt;
-                                &lt;id&gt;compress_js_css&lt;/id&gt;
-                                &lt;phase&gt;process-resources&lt;/phase&gt;
-                                &lt;goals&gt;
-                                    &lt;goal&gt;compress&lt;/goal&gt;
-                                &lt;/goals&gt;
-                            &lt;/execution&gt;
-                        &lt;/executions&gt;
-                        &lt;configuration&gt;
-                            &lt;encoding&gt;UTF-8&lt;/encoding&gt;
-                            &lt;nosuffix&gt;true&lt;/nosuffix&gt;
-                            &lt;skip&gt;false&lt;/skip&gt;
-
-                            &lt;jswarn&gt;false&lt;/jswarn&gt;
-                            &lt;nomunge&gt;false&lt;/nomunge&gt;
-                            &lt;preserveAllSemiColons&gt;false&lt;/preserveAllSemiColons&gt;
-
-                            &lt;sourceDirectory&gt;src/main/webapp/static/assets&lt;/sourceDirectory&gt;
-                            &lt;outputDirectory&gt;${project.build.directory}/dist&lt;/outputDirectory&gt;
-                        &lt;/configuration&gt;
-                    &lt;/plugin&gt;
-
-                    &lt;plugin&gt;
-                        &lt;artifactId&gt;maven-war-plugin&lt;/artifactId&gt;
-                        &lt;version&gt;2.6&lt;/version&gt;
-                        &lt;configuration&gt;
-                            &lt;webResources&gt;
-                                &lt;resource&gt;
-                                    &lt;directory&gt;${project.build.directory}/dist&lt;/directory&gt;
-                                    &lt;targetPath&gt;static/assets&lt;/targetPath&gt;
-                                    &lt;filtering&gt;false&lt;/filtering&gt;
-                                &lt;/resource&gt;
-                            &lt;/webResources&gt;
-                        &lt;/configuration&gt;
-                    &lt;/plugin&gt;
-
-                &lt;/plugins&gt;
-            &lt;/build&gt;
-        &lt;/profile&gt;
-</code></pre>
-
-<p>war插件添加了自定义webResources资源，首先把压缩的文件拷贝到对应目录，maven发现文件已经存在就不会再拷贝同名的文件。这样源文件就相当于被替换成压缩的资源了。</p>
-
-<h2>总结</h2>
-
-<p>使用maven插件压缩打包，完美的解决js/css压缩导致的开发和生产不兼容问题。</p>
-
-<h2>后记</h2>
-
-<p>jsp使用了tag的地方总是会产生很多的空行，看着挺烦的。其实可以通过在jsp开头添加 trimDirectiveWhitespaces 属性来去掉空行：</p>
-
-<pre><code>&lt;%@ page language="java" trimDirectiveWhitespaces="true" contentType="text/html; charset=utf-8" pageEncoding="utf-8"%&gt;
-</code></pre>
 
 <p>&ndash;END</p>
 ]]></content>
