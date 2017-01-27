@@ -9,9 +9,22 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="经典文章 http://parquet.apache.org/documentation/latest/
-https://blog.twitter.com/2013/dremel-made-simple-with-parquet
-https://cwiki.apache.org/ &hellip;">
+  <meta name="description" content="查询程序一开始只是简单使用dbcp来做连接的限制。在实践的过程中遇到各种问题，本文记录DBCP的参数优化提高程序健壮性的两次过程。 最开始的DBCP的配置： 1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+&lt;bean id="hiveDataSource" class &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +98,644 @@ https://cwiki.apache.org/ &hellip;">
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/04/08/dbcp-parameters/">DBCP参数在Hive JDBC上的实践</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2016-04-08T19:48:01+08:00" pubdate data-updated="true">Fri 2016-04-08 19:48</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>查询程序一开始只是简单使用dbcp来做连接的限制。在实践的过程中遇到各种问题，本文记录DBCP的参数优化提高程序健壮性的两次过程。</p>
+
+<p>最开始的DBCP的配置：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+</span><span class='line'>  destroy-method="close" 
+</span><span class='line'>  p:driverClassName="${hiveDriverClassName}"
+</span><span class='line'>  p:url="${hiveUrl}" 
+</span><span class='line'>  p:username="${hiveUsername}" 
+</span><span class='line'>  p:password="${hivePassword}"
+</span><span class='line'>  p:maxIdle="${hiveMaxIdle}" 
+</span><span class='line'>  p:maxWait="${hiveMaxWait}" 
+</span><span class='line'>  p:maxActive="${hiveMaxActive}" /&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;bean id="hiveTemplate" class="org.springframework.jdbc.core.JdbcTemplate"&gt;
+</span><span class='line'>  &lt;property name="dataSource"&gt;
+</span><span class='line'>      &lt;ref bean="hiveDataSource" /&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>&lt;/bean&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>第一个遇到的问题，就是每次hiveserver2重启后，这个查询程序也得重启。在实际使用过程中非常的麻烦！！</p>
+
+<h4>重启问题（连接断开后不能重连）</h4>
+
+<p>首先给出学习的链接 <a href="http://elf8848.iteye.com/blog/1931778">http://elf8848.iteye.com/blog/1931778</a> 巨详细，同时问题的场景都一模一样啊！！</p>
+
+<p>添加三个参数：</p>
+
+<ul>
+<li>testOnBorrow = &ldquo;true&rdquo;       借出连接时不要测试，否则很影响性能</li>
+<li>testWhileIdle = &ldquo;true&rdquo;       指明连接是否被空闲连接回收器(如果有)进行检验.如果检测失败,则连接将被从池中去除.</li>
+<li>validationQuery = &ldquo;show databases&rdquo; 验证连接是否可用，使用的SQL语句</li>
+</ul>
+
+
+<p>解释：</p>
+
+<p>testWhileIdle = &ldquo;true&rdquo; 表示每 {timeBetweenEvictionRunsMillis} (默认-1，不执行)秒，取出 {numTestsPerEvictionRun} (默认值3)条连接，使用 {validationQuery} 进行测试 ，测试不成功就销毁连接。销毁连接后，连接数量就少了，如果小于minIdle数量，就新建连接。</p>
+
+<p>testOnBorrow = &ldquo;true&rdquo; 它的默认值是true，如果测试失败会drop掉然后再borrow。false表示每次从连接池中取出连接时，不需要执行 {validationQuery} 中的SQL进行测试。若配置为true,对性能有非常大的影响，性能会下降7-10倍。所在一定要配置为false.</p>
+
+<p>调整参数后hiveserver2重启，查询再连会先报错然后再连。在每次取连接的时刻使用 <code>show databases</code> 测试，如果失败则从pool中删掉这个连接，重新再取，实现了重连的效果。这里不用 <code>select 1</code> hive里面执行很慢， 同时testWhileIdle并没有生效，因为没有配置timeBetweenEvictionRunsMillis参数。</p>
+
+<p>调整后的：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+</span><span class='line'>destroy-method="close" 
+</span><span class='line'>p:driverClassName="${hiveDriverClassName}"
+</span><span class='line'>p:url="${hiveUrl}" 
+</span><span class='line'>p:username="${hiveUsername}" 
+</span><span class='line'>p:password="${hivePassword}"
+</span><span class='line'>p:testOnBorrow="${hiveTestOnBorrow}"
+</span><span class='line'>p:testWhileIdle="${hiveTestWhileIdle}" 
+</span><span class='line'>p:validationQuery="${hiveValidationQuery}"
+</span><span class='line'>p:maxIdle="${hiveMaxIdle}" 
+</span><span class='line'>p:maxWait="${hiveMaxWait}" 
+</span><span class='line'>p:maxActive="${hiveMaxActive}" 
+</span><span class='line'>/&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>问题又来了，由于测试切换tez和spark才配置了上面的重连。但是切换到spark后，启动的spark会一直保持(连接创建的session不会主动关闭)，直到hiveserver2 session超时(默认6h检查一次，7h idle就关闭)。</p>
+
+<p>注意：有个隐忧，hive-on-spark每个连接都创建一个SESSION，这就退化到MR操作了。不能完全利用SPARK的优势！！例如业务中，即查询count、又获取一页数据，这里就是两个单独的spark程序！！N个session就N个 <strong>hive on spark</strong> 啊！！</p>
+
+<h4>第二个问题，服务端session强制关闭</h4>
+
+<p>问题其实和参考中的: <strong>MySQL8小时问题，Mysql服务器默认连接的“wait_timeout”是8小时，也就是说一个connection空闲超过8个小时，Mysql将自动断开该 connection</strong> 一模一样的。在增加 <strong>minEvictableIdleTimeMillis</strong> 和 <strong>timeBetweenEvictionRunsMillis</strong> 设置检查和回收的时间。</p>
+
+<ul>
+<li>timeBetweenEvictionRunsMillis = &ldquo;1800000&rdquo;  每30分钟运行一次空闲连接回收器，没必要那么频繁。</li>
+<li>minEvictableIdleTimeMillis = &ldquo;3600000&rdquo;  池中的连接空闲1个小时后被回收，如果1个半小时没有操作，这个session就会被客户端关闭。可以通过yarn-8088的scheduler页面查看。</li>
+</ul>
+
+
+<p>设置后的最终效果：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+</span><span class='line'>destroy-method="close" 
+</span><span class='line'>p:driverClassName="${hiveDriverClassName}"
+</span><span class='line'>p:url="${hiveUrl}" 
+</span><span class='line'>p:username="${hiveUsername}" 
+</span><span class='line'>p:password="${hivePassword}"
+</span><span class='line'>p:testOnBorrow="${hiveTestOnBorrow}"
+</span><span class='line'>p:validationQuery="${hiveValidationQuery}"
+</span><span class='line'>p:maxWait="${hiveMaxWait}" 
+</span><span class='line'>p:maxIdle="${hiveMaxIdle}" 
+</span><span class='line'>p:maxActive="${hiveMaxActive}" 
+</span><span class='line'>p:testWhileIdle="${hiveTestWhileIdle}" 
+</span><span class='line'>p:timeBetweenEvictionRunsMillis="${hiveTimeBetweenEvictionRunsMillis}" 
+</span><span class='line'>p:minEvictableIdleTimeMillis="${hiveMinEvictableIdleTimeMillis}" 
+</span><span class='line'>p:removeAbandoned="true"
+</span><span class='line'>p:logAbandoned="true"
+</span><span class='line'>/&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>很多程序都有很多参数，大部分能通过文档明白，但是一些参数不到实践真的很难真正体会它的含义。参考的文章两次改进我查看了，但是第一次看的时刻根本没去加其他参数，因为对我来说没用，解决当前问题用不到嘛。</p>
+
+<p>hadoop的参数更多，core/hdfs/mapred/yarn需要多用才能发现参数的功能和妙用。<strong>纸上得来终觉浅，绝知此事要躬行</strong> 。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-04-04T16:07:21+08:00" pubdate data-updated="true">Mon 2016-04-04 16:07</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>资料</h2>
+
+<ul>
+<li><a href="http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html">http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html</a></li>
+<li><a href="https://fedoraproject.org/wiki/How_to_create_an_RPM_package/zh-cn">https://fedoraproject.org/wiki/How_to_create_an_RPM_package/zh-cn</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part1/index.html">用 RPM 打包软件-打包教程</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part3/index.html">用 RPM 打包软件-高级部分：安装前后控制</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/l-rpm/index.html">RPM 打包技术与典型 SPEC 文件分析-各变量含义</a></li>
+<li><a href="http://hlee.iteye.com/blog/343499">http://hlee.iteye.com/blog/343499</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part1/indent-2.spec">案例</a></li>
+<li><p><a href="https://github.com/apache/zookeeper/tree/release-3.4.8/src/packages">zookeeper打包案例</a></p></li>
+<li><p><a href="http://www.ibm.com/developerworks/cn/linux/l-cn-checkinstall/index.html">http://www.ibm.com/developerworks/cn/linux/l-cn-checkinstall/index.html</a></p></li>
+</ul>
+
+
+<h2>实践</h2>
+
+<ul>
+<li>系统配置准备</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 新建一个docker实例，来测试、学习
+</span><span class='line'>[root@cu1 ~]# docker run -ti centos:centos6 /bin/bash
+</span><span class='line'>
+</span><span class='line'>[root@bdc25400cc63 mywget]# cat /etc/redhat-release 
+</span><span class='line'>CentOS release 6.6 (Final)
+</span><span class='line'>
+</span><span class='line'># 安装编译环境所需的软件
+</span><span class='line'>yum install which tree lrzsz tar gcc rpm-build
+</span><span class='line'># wget编译的依赖
+</span><span class='line'>yum install -y gnutls gnutls-devel</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>步骤</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bdc25400cc63 home]# mkdir mywget 
+</span><span class='line'>[root@bdc25400cc63 home]# cd mywget/
+</span><span class='line'>[root@bdc25400cc63 mywget]# mkdir BUILD RPMS SOURCES SPECS SRPMS
+</span><span class='line'>[root@bdc25400cc63 mywget]# cd SOURCES/
+</span><span class='line'>[root@bdc25400cc63 SOURCES]# mv /home/wget-1.17.tar.gz .
+</span><span class='line'>[root@bdc25400cc63 SOURCES]# ls
+</span><span class='line'>wget-1.17.tar.gz
+</span><span class='line'>[root@bdc25400cc63 SOURCES]# cd ..
+</span><span class='line'>
+</span><span class='line'>[root@bdc25400cc63 mywget]# rpmbuild --showrc
+</span><span class='line'>[test@bdc25400cc63 mywget]$ rpm --eval "%{_topdir}"
+</span><span class='line'>
+</span><span class='line'>[test@bdc25400cc63 mywget]$ grep -i _topdir /usr/lib/rpm/rpmrc /usr/lib/rpm/redhat/rpmrc /usr/lib/rpm/macros /usr/lib/rpm/redhat/macros  | less
+</span><span class='line'>/usr/lib/rpm/macros:%_builddir          %{_topdir}/BUILD
+</span><span class='line'>/usr/lib/rpm/macros:%_rpmdir            %{_topdir}/RPMS
+</span><span class='line'>/usr/lib/rpm/macros:%_sourcedir         %{_topdir}/SOURCES
+</span><span class='line'>/usr/lib/rpm/macros:%_specdir           %{_topdir}/SPECS
+</span><span class='line'>/usr/lib/rpm/macros:%_srcrpmdir         %{_topdir}/SRPMS
+</span><span class='line'>/usr/lib/rpm/macros:%_buildrootdir              %{_topdir}/BUILDROOT
+</span><span class='line'>/usr/lib/rpm/macros:%_topdir            %{getenv:HOME}/rpmbuild
+</span><span class='line'>
+</span><span class='line'>[test@bdc25400cc63 mywget]$ cat ~/.rpmmacros 
+</span><span class='line'>%_topdir /home/mywget/rpm
+</span><span class='line'>
+</span><span class='line'># 2016-5-12 15:28:35
+</span><span class='line'># spec里面有define和global，应该是这个导致的！用global应该即可以了？
+</span><span class='line'>
+</span><span class='line'>[root@bdc25400cc63 mywget]# vi SPECS/wget.spec
+</span><span class='line'>  # this is a sample spec file for wget
+</span><span class='line'>  
+</span><span class='line'>  %define _topdir /home/mywget
+</span><span class='line'>  %define name    wget
+</span><span class='line'>  %define release 2
+</span><span class='line'>  %define version 1.17
+</span><span class='line'>  # 定义 _buildrootdir 不起作用，不知道为啥??? 在 .rpmmacros 定义了 %_topdir，root转到 /home/mywget/rpm/BUILDROOT 了。
+</span><span class='line'>  
+</span><span class='line'>  %define _unpackaged_files_terminate_build 0
+</span><span class='line'>  
+</span><span class='line'>  Summary:   GNU wget
+</span><span class='line'>  License:   GPL
+</span><span class='line'>  Name:      %{name}
+</span><span class='line'>  Version:   %{version}
+</span><span class='line'>  Release:   %{release}
+</span><span class='line'>  Source:    %{name}-%{version}.tar.gz
+</span><span class='line'>  Prefix:    /usr/local/wget
+</span><span class='line'>  Group:     Development/Tools
+</span><span class='line'>  
+</span><span class='line'>  %description
+</span><span class='line'>  The GNU wget program downloads files from the Internet using the command-line.
+</span><span class='line'>  
+</span><span class='line'>  %prep
+</span><span class='line'>  %setup -q
+</span><span class='line'>  
+</span><span class='line'>  %build
+</span><span class='line'>  ./configure
+</span><span class='line'>  make
+</span><span class='line'>  
+</span><span class='line'>  %install
+</span><span class='line'>  make install prefix=$RPM_BUILD_ROOT/usr/local/wget # or use DESTDIR=$RPM_BUILD_ROOT
+</span><span class='line'>  
+</span><span class='line'>  %post
+</span><span class='line'>  echo "hello world"
+</span><span class='line'>  
+</span><span class='line'>  %preun
+</span><span class='line'>  echo "bye"
+</span><span class='line'>  
+</span><span class='line'>  %clean
+</span><span class='line'>  rm -rf $RPM_BUILD_ROOT
+</span><span class='line'>  
+</span><span class='line'>  %files
+</span><span class='line'>  %defattr(-, root, root)
+</span><span class='line'>  /usr/local/wget/bin/wget
+</span><span class='line'>  
+</span><span class='line'>[root@bdc25400cc63 mywget]# rpmbuild -vv -bb --clean SPECS/wget.spec 
+</span><span class='line'>
+</span><span class='line'>[root@bdc25400cc63 mywget]# tree .
+</span><span class='line'>.
+</span><span class='line'>├── BUILD
+</span><span class='line'>├── RPMS
+</span><span class='line'>│   └── x86_64
+</span><span class='line'>│       ├── wget-1.17-2.x86_64.rpm
+</span><span class='line'>│       └── wget-debuginfo-1.17-2.x86_64.rpm
+</span><span class='line'>├── SOURCES
+</span><span class='line'>│   └── wget-1.17.tar.gz
+</span><span class='line'>├── SPECS
+</span><span class='line'>│   └── wget.spec
+</span><span class='line'>└── SRPMS
+</span><span class='line'>
+</span><span class='line'>6 directories, 4 files
+</span><span class='line'>
+</span><span class='line'>[root@bdc25400cc63 mywget]# rpm -qpl RPMS/x86_64/wget-1.17-2.x86_64.rpm  
+</span><span class='line'>/usr/local/wget/bin/wget
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>接下来就可以直接拿到这个包到其他机器上安装了，如果自己建立了本地库，使用createrepo更新下，就可以使用yum安装最新打的包了。</p>
+
+<p>注： <code>%pre</code> , <code>%post</code> 和 <code>%preun</code> , <code>%postun</code> 可以在安装前后执行一些脚本。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia-build]# mkdir BUILD RPMS SOURCES SPECS SRPMS
+</span><span class='line'>[root@cu2 ganglia-build]# cd SOURCES/
+</span><span class='line'>[root@cu2 SOURCES]# ll
+</span><span class='line'>total 1272
+</span><span class='line'>-rw-r--r-- 1 root root 1302320 Jan 20 09:35 ganglia-3.7.2.tar.gz
+</span><span class='line'>[root@cu2 SOURCES]# cd ..
+</span><span class='line'>
+</span><span class='line'>[root@cu2 ganglia-build]# ll
+</span><span class='line'>total 20
+</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 BUILD
+</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 RPMS
+</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SOURCES
+</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SPECS
+</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SRPMS
+</span><span class='line'>
+</span><span class='line'>[root@cu2 ganglia-build]# cd SPECS/
+</span><span class='line'>[root@cu2 SPECS]# vi gmetad.spec
+</span><span class='line'>
+</span><span class='line'>[root@cu2 ganglia-build]# rpmbuild --clean -v -ba SPECS/gmetad.spec 
+</span><span class='line'>
+</span><span class='line'>[root@cu2 ganglia-build]# rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>重新打包已有rpm</h2>
+
+<p>下载源码包，再修改内容，最后使用rpm-build重新打包。</p>
+
+<p>这里以puppetserver为例，使用jdk7即可但官网打包的依赖是jdk8，这里修改依赖然后重新打包：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 rpmbuild]# rpm -ivh puppetserver-2.3.1-1.el6.src.rpm 
+</span><span class='line'>warning: puppetserver-2.3.1-1.el6.src.rpm: Header V4 RSA/SHA1 Signature, key ID 4bd6ec30: NOKEY
+</span><span class='line'>   1:puppetserver           warning: user mockbuild does not exist - using root
+</span><span class='line'>warning: group mockbuild does not exist - using root
+</span><span class='line'>########################################### [100%]
+</span><span class='line'>warning: user mockbuild does not exist - using root
+</span><span class='line'>warning: group mockbuild does not exist - using root
+</span><span class='line'>[root@cu2 rpmbuild]# ll
+</span><span class='line'>total 32904
+</span><span class='line'>-rw-r--r-- 1 root root 33681889 May 10 17:44 puppetserver-2.3.1-1.el6.src.rpm
+</span><span class='line'>drwxr-xr-x 2 root root     4096 May 10 17:55 SOURCES
+</span><span class='line'>drwxr-xr-x 2 root root     4096 May 10 17:55 SPECS
+</span><span class='line'>
+</span><span class='line'>#-- 注释掉jdk8的部分
+</span><span class='line'>[root@cu2 rpmbuild]# grep -3 jdk SPECS/puppetserver.spec 
+</span><span class='line'>
+</span><span class='line'># java 1.8.0 is available starting in fedora 20 and el 6
+</span><span class='line'>#%if 0%{?fedora} &gt;= 20 || 0%{?rhel} &gt;= 6
+</span><span class='line'>#%global open_jdk          java-1.8.0-openjdk-headless
+</span><span class='line'>#%else
+</span><span class='line'>%global open_jdk          java-1.7.0-openjdk
+</span><span class='line'>#%endif
+</span><span class='line'>
+</span><span class='line'>[root@cu2 rpmbuild]# yum install -y ruby
+</span><span class='line'>[root@cu2 rpmbuild]# rpmbuild -v -bb --clean SPECS/puppetserver.spec 
+</span><span class='line'>
+</span><span class='line'>[root@cu2 rpmbuild]# yum deplist RPMS/noarch/puppetserver-2.3.1-1.el6.noarch.rpm 
+</span><span class='line'>Loaded plugins: fastestmirror, priorities
+</span><span class='line'>Finding dependencies: 
+</span><span class='line'>Loading mirror speeds from cached hostfile
+</span><span class='line'> * base: centos.ustc.edu.cn
+</span><span class='line'> * centosplus: centos.ustc.edu.cn
+</span><span class='line'> * epel: mirror01.idc.hinet.net
+</span><span class='line'> * extras: centos.ustc.edu.cn
+</span><span class='line'> * updates: centos.ustc.edu.cn
+</span><span class='line'>193 packages excluded due to repository priority protections
+</span><span class='line'>package: puppetserver.noarch 2.3.1-1.el6
+</span><span class='line'>  dependency: chkconfig
+</span><span class='line'>   provider: chkconfig.x86_64 1.3.49.3-5.el6
+</span><span class='line'>   provider: chkconfig.x86_64 1.3.49.3-5.el6_7.2
+</span><span class='line'>  dependency: /bin/bash
+</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6
+</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6_7.1
+</span><span class='line'>  dependency: java-1.7.0-openjdk
+</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.79-2.5.5.4.el6
+</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.101-2.6.6.1.el6_7
+</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.85-2.6.1.3.el6_6
+</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.85-2.6.1.3.el6_7
+</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.91-2.6.2.2.el6_7
+</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.95-2.6.4.0.el6_7
+</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.99-2.6.5.0.el6_7
+</span><span class='line'>  dependency: puppet-agent &gt;= 1.4.0
+</span><span class='line'>   provider: puppet-agent.x86_64 1.4.1-1.el6
+</span><span class='line'>  dependency: net-tools
+</span><span class='line'>   provider: net-tools.x86_64 1.60-110.el6_2
+</span><span class='line'>  dependency: /usr/bin/env
+</span><span class='line'>   provider: coreutils.x86_64 8.4-37.el6
+</span><span class='line'>   provider: coreutils.x86_64 8.4-37.el6_7.3
+</span><span class='line'>  dependency: /bin/sh
+</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6
+</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6_7.1
+</span><span class='line'>  dependency: config(puppetserver) = 2.3.1-1.el6
+</span><span class='line'>   provider: puppetserver.noarch 2.3.1-1.el6 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1789,546 +2440,6 @@ https://cwiki.apache.org/ &hellip;">
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn/">SparkSQL-on-YARN的Executors池(动态)配置</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-03-25T15:14:53+08:00" pubdate data-updated="true">Fri 2016-03-25 15:14</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>官网配置资料</h2>
-
-<ul>
-<li><a href="http://spark.apache.org/docs/latest/running-on-yarn.html">http://spark.apache.org/docs/latest/running-on-yarn.html</a></li>
-<li><a href="http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup">http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup</a></li>
-<li><a href="http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
-</ul>
-
-
-<h2>实战</h2>
-
-<h4>修改YARN配置，添加spark-yarn-shuffle.jar，同步配置和jar到nodemanager节点并重启。</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ vi etc/hadoop/yarn-site.xml 
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;mapreduce_shuffle,spark_shuffle&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.mapreduce.shuffle.class&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;org.apache.hadoop.mapred.ShuffleHandler&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.spark_shuffle.class&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;org.apache.spark.network.yarn.YarnShuffleService&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ cp ~/spark-1.6.0-bin-2.6.3/lib/spark-1.6.0-yarn-shuffle.jar share/hadoop/yarn/
-</span><span class='line'>
-</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az share $h:~/hadoop-2.6.3/ ; done 
-</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az etc $h:~/hadoop-2.6.3/ ; done 
-</span><span class='line'>
-</span><span class='line'>rsync -vaz etc hadoop-master2:~/hadoop-2.6.3/
-</span><span class='line'>rsync -vaz share hadoop-master2:~/hadoop-2.6.3/
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
-</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-yarn.sh </span></code></pre></td></tr></table></div></figure>
-
-
-<h4>原来已经部署了Hive-1.2.1（和spark-1.6.0的hive是匹配的），直接把hive-site.xml做一个软链到spark/conf下面：</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ cd conf/
-</span><span class='line'>[hadoop@hadoop-master1 conf]$ ln -s ~/hive/conf/hive-site.xml 
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ ll conf/hive-site.xml 
-</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop 36 3月  25 11:30 conf/hive-site.xml -&gt; /home/hadoop/hive/conf/hive-site.xml</span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意：如果原来配置了tez，把hive-site.xml的 <strong>hive.execution.engine</strong> 配置注释掉。或者启动的时刻换引擎： <code>bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr</code></p>
-
-<h4>修改spark配置</h4>
-
-<p>spark-defaults.conf</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-defaults.conf 
-</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar
-</span><span class='line'>
-</span><span class='line'>spark.dynamicAllocation.enabled    true
-</span><span class='line'>spark.shuffle.service.enabled      true
-</span><span class='line'>spark.dynamicAllocation.executorIdleTimeout    600s
-</span><span class='line'>spark.dynamicAllocation.minExecutors    160
-</span><span class='line'>spark.dynamicAllocation.maxExecutors    1800
-</span><span class='line'>spark.dynamicAllocation.schedulerBacklogTimeout   5s
-</span><span class='line'>
-</span><span class='line'>spark.driver.maxResultSize   0
-</span><span class='line'>
-</span><span class='line'>spark.eventLog.enabled  true
-</span><span class='line'>spark.eventLog.compress  true
-</span><span class='line'>spark.eventLog.dir    hdfs:///spark-eventlogs
-</span><span class='line'>spark.yarn.historyServer.address hadoop-master2:18080
-</span><span class='line'>
-</span><span class='line'>spark.serializer        org.apache.spark.serializer.KryoSerializer
-</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>spark.yarn.jar 配置后，spark启动后直接使用该文件作为executor的main-jar，不需要每次都上传一次spark.jar（每次都搞一下180M也不少资源了）</li>
-<li>enabled 启用动态两个都配置必须设置为true</li>
-<li>executorIdleTimeout 关闭不用executors需要等待的时间</li>
-<li>schedulerBacklogTimeout 增加积压的任务时间来判断是否增加executors</li>
-<li>minExecutors 至少存活的executors个数</li>
-</ul>
-
-
-<p>spark-env.sh环境变量</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-env.sh 
-</span><span class='line'>SPARK_CLASSPATH=/home/hadoop/hive/lib/mysql-connector-java-5.1.21-bin.jar:$SPARK_CLASSPATH
-</span><span class='line'>HADOOP_CONF_DIR=/home/hadoop/hadoop/etc/hadoop
-</span><span class='line'>SPARK_DRIVER_MEMORY=30g
-</span><span class='line'>SPARK_PID_DIR=/home/hadoop/tmp/pids</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>启动</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ sbin/start-thriftserver.sh --master yarn-client
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ sbin/start-history-server.sh hdfs:///spark-eventlogs
-</span><span class='line'>
-</span><span class='line'># 不包括hadoop jars的情况下，自己编写脚本把hadoop的依赖包加入classpath
-</span><span class='line'>[hadoop@hadoop-master2 spark-1.3.1-bin-hadoop2.6.3-without-hive]$ cat start-historyserver.sh 
-</span><span class='line'>#!/bin/sh
-</span><span class='line'>
-</span><span class='line'>bin=`dirname $0`
-</span><span class='line'>cd $bin
-</span><span class='line'>
-</span><span class='line'>source $HADOOP_HOME/libexec/hadoop-config.sh
-</span><span class='line'>
-</span><span class='line'>export SPARK_PID_DIR=/home/hadoop/tmp/pids
-</span><span class='line'>export SPARK_CLASSPATH=`hadoop classpath`
-</span><span class='line'>
-</span><span class='line'>export SPARK_PID_DIR=/home/hadoop/tmp/pids
-</span><span class='line'>
-</span><span class='line'># http://spark.apache.org/docs/latest/monitoring.html#viewing-after-the-fact
-</span><span class='line'>export SPARK_HISTORY_OPTS="-Dspark.history.fs.update.interval=30s -Dspark.history.fs.cleaner.enabled=true -Dspark.history.fs.logDirectory=hdfs:///spark-eventlogs"
-</span><span class='line'>sbin/start-history-server.sh 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>收工。</p>
-
-<p>整个过程就是：添加spark-shuffle到yarn，然后配置spark参数，最后就是重启任务（yarn/hiveserver）。</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/03/17/hadoop-memory-opts-and-args/">Hadoop内存环境变量和参数</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-03-17T14:09:26+08:00" pubdate data-updated="true">Thu 2016-03-17 14:09</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>问题：</h2>
-
-<p><a href="https://www.zhihu.com/question/25498407">https://www.zhihu.com/question/25498407</a></p>
-
-<p>问题是hadoop内存的配置，涉及两个方面：</p>
-
-<ul>
-<li>namenode/datanode/resourcemanager/nodemanager的HEAPSIZE环境变量</li>
-<li>在配置文件/Configuration中影响MR运行的变量</li>
-</ul>
-
-
-<p>尽管搞hadoop有好一阵子了，对这些变量有个大概的了解，但没有真正的去弄懂他们的区别。乘着这个机会好好的整整（其实就是下载源码然后全文查找<sup>V</sup>^）。</p>
-
-<h2>HEAPSIZE环境变量</h2>
-
-<p>hadoop-env.sh配置文件hdfs和yarn脚本都会加载。hdfs是一脉相承使用 <strong>HADOOP_HEAPSIZE</strong> ，而yarn使用新的环境变量 <strong>YARN_HEAPSIZE</strong> 。</p>
-
-<p>hadoop/hdfs/yarn命令最终会把HEAPSIZE的参数转换了 <strong>JAVA_HEAP_MAX</strong>，把它作为启动参数传递给Java。</p>
-
-<ul>
-<li>hadoop</li>
-</ul>
-
-
-<p>hadoop命令是把 <code>HADOOP_HEAPSIZE</code> 转换为 <code>JAVA_HEAP_MAX</code> ，调用路径：</p>
-
-<p><code>hadoop -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>JAVA_HEAP_MAX=-Xmx1000m 
-</span><span class='line'>
-</span><span class='line'># check envvars which might override default args
-</span><span class='line'>if [ "$HADOOP_HEAPSIZE" != "" ]; then
-</span><span class='line'>  #echo "run with heapsize $HADOOP_HEAPSIZE"
-</span><span class='line'>  JAVA_HEAP_MAX="-Xmx""$HADOOP_HEAPSIZE""m"
-</span><span class='line'>  #echo $JAVA_HEAP_MAX
-</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>hdfs</li>
-</ul>
-
-
-<p>hdfs其实就是从hadoop脚本里面分离出来的。调用路径：</p>
-
-<p><code>hdfs -&gt; hdfs-config.sh -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<ul>
-<li>yarn</li>
-</ul>
-
-
-<p>yarn也调用了hadoop-env.sh，但是设置内存的参数变成了 <strong>YARN_HEAPSIZE</strong> 。调用路径：</p>
-
-<p><code>yarn -&gt; yarn-config.sh -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>JAVA_HEAP_MAX=-Xmx1000m 
-</span><span class='line'>
-</span><span class='line'># For setting YARN specific HEAP sizes please use this
-</span><span class='line'># Parameter and set appropriately
-</span><span class='line'># YARN_HEAPSIZE=1000
-</span><span class='line'>
-</span><span class='line'># check envvars which might override default args
-</span><span class='line'>if [ "$YARN_HEAPSIZE" != "" ]; then
-</span><span class='line'>  JAVA_HEAP_MAX="-Xmx""$YARN_HEAPSIZE""m"
-</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>实例：</li>
-</ul>
-
-
-<p>配置hadoop参数的时刻，一般都是配置 <strong>hadoop-env.sh</strong> 如：<code>export HADOOP_HEAPSIZE=16000</code> 。查看相关进程命令有：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_resourcemanager -Xmx1000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_timelineserver -Xmx1000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_nodemanager -Xmx1000m 
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_journalnode -Xmx16000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_namenode -Xmx16000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_journalnode -Xmx16000m
-</span><span class='line'>/usr/local/jdk1.7.0_17/bin/java -Dproc_datanode -Xmx16000m</span></code></pre></td></tr></table></div></figure>
-
-
-<p>与hdfs有关的内存都修改成功了。而与yarn的还是默认的1g(堆)内存。</p>
-
-<h2>MR配置文件参数</h2>
-
-<p>分成两组，一种是直接设置数字(mb结束的属性)，一种是配置java虚拟机变量的-Xmx。</p>
-
-<pre><code>* yarn.app.mapreduce.am.resource.mb、mapreduce.map.memory.mb、mapreduce.reduce.memory.mb
-    用于调度计算内存，是不是还能分配任务（计算额度）
-* yarn.app.mapreduce.am.command-opts、mapreduce.map.java.opts、mapreduce.reduce.java.opts
-    程序实际启动使用的参数
-</code></pre>
-
-<p>一个是控制中枢，一个是实实在在的限制。</p>
-
-<ul>
-<li>官网文档的介绍：</li>
-</ul>
-
-
-<blockquote><ul>
-<li>mapreduce.map.memory.mb 1024    The amount of memory to request from the scheduler for each map task.</li>
-<li>mapreduce.reduce.memory.mb  1024    The amount of memory to request from the scheduler for each reduce task.</li>
-<li>mapred.child.java.opts  -Xmx200m    Java opts for the task processes.</li>
-</ul>
-</blockquote>
-
-<ul>
-<li><p>下面用实践来验证效果：</p>
-
-<ul>
-<li>先搞一个很大大只有一个block的文件，把程序运行时间拖长一点</li>
-<li>修改opts参数，查看效果</li>
-<li>修改mb参数，查看效果</li>
-</ul>
-</li>
-<li><p>实践一</p></li>
-</ul>
-
-
-<p>mapreduce.map.memory.mb设置为1000，而mapreduce.map.java.opts设置为1200m。程序照样跑的很欢！！</p>
-
-<p>同时从map的 YarnChild 进程看出起实际作用的是 mapreduce.map.java.opts 参数。memory.mb用来计算节点是否有足够的内存来跑任务，以及用来计算整个集群的可用内存等。而java.opts则是用来限制真正任务的堆内存用量。</p>
-
-<p><strong>注意</strong> ： 这里仅仅是用来测试，正式环境java.opts的内存应该小于memory.mb！！具体配置参考：<a href="http://blog.javachen.com/2015/06/05/yarn-memory-and-cpu-configuration.html">yarn-memory-and-cpu-configuration</a></p>
-
-<p><img src="/images/blogs/hadoop-opts/yarn-opts-mb.jpg" alt="" /></p>
-
-<ul>
-<li>实践二</li>
-</ul>
-
-
-<p>map.memory.mb设置太大，导致调度失败！</p>
-
-<p><img src="/images/blogs/hadoop-opts/yarn-mb-1.jpg" alt="" /></p>
-
-<ul>
-<li>实践三</li>
-</ul>
-
-
-<p>尽管实际才用不大于1.2G的内存，但是由于mapreduce.map.memory.mb设置为8G，整个集群显示已用内存18G（2 * 8g + 1 * 2g）。登录实际运行任务的机器，实际内存其实不多。</p>
-
-<p><img src="/images/blogs/hadoop-opts/yarn-mb-2.jpg" alt="" />
-<img src="/images/blogs/hadoop-opts/yarn-mb-3.jpg" alt="" /></p>
-
-<p>reduce和am（appmaster）的参数类似。</p>
-
-<p><img src="/images/blogs/hadoop-opts/yarn-appmaster-mb-1.jpg" alt="" />
-<img src="/images/blogs/hadoop-opts/yarn-appmaster-mb-2.jpg" alt="" /></p>
-
-<h2>mapred.child.java.opts参数</h2>
-
-<p>这是一个过时的属性，当然你设置也能起效果(没有设置mapreduce.map.java.opts/mapreduce.reduce.java.opts)。相当于把MR的java.opts都设置了。</p>
-
-<p><img src="/images/blogs/hadoop-opts/mapred-opts.jpg" alt="" /></p>
-
-<p>获取map/reduce的opts中间会取 <strong>mapred.child.java.opts</strong> 的值。</p>
-
-<p><img src="/images/blogs/hadoop-opts/mapred-opts-2.jpg" alt="" /></p>
-
-<h2>admin-opts</h2>
-
-<p>查找源码后，其实opts被分成两部分：admin和user。admin的写在前面，user在后面。user设置的opts可以覆盖admin设置的。应该是方便用于设置默认值吧。</p>
-
-<h2>实例</h2>
-
-<p>同时在一台很牛掰的机器上跑程序（分了yarn.nodemanager.resource.memory-mb 26G内存），但是总是只能一次跑一个任务，但还剩很多内存(20G)没有用啊！！初步怀疑是调度算法的问题。</p>
-
-<p>查看了调度的日志，初始化的时刻会输出 <strong>scheduler.capacity.LeafQueue</strong> 的日志，打印了集群控制的一些参数。然后 同时找到一篇<a href="http://stackoverflow.com/questions/33465300/why-does-yarn-job-not-transition-to-running-state">http://stackoverflow.com/questions/33465300/why-does-yarn-job-not-transition-to-running-state</a> 说是调整 <strong>yarn.scheduler.capacity.maximum-am-resource-percent</strong> ，是用于控制appmaster最多可用的资源。</p>
-
-<p>appmaster的默认内存是： <strong>yarn.app.mapreduce.am.resource.mb  1536</strong>（client设置有效）， <strong>yarn.scheduler.capacity.maximum-am-resource-percent 0.1</strong>。</p>
-
-<p>跑第二job的时刻，第二个appmaster调度的时刻没有足够的内存（26G * 0.1 - 1.536 > 1.536），所以就跑不了两个job。</p>
-
-<h2>CLIENT_OPTS</h2>
-
-<p>一般 HADOOP 集群都会配套 HIVE，hive直接用 sql 来查询数据比mapreduce简单很多。启动hive是直接用 hadoop jar 来启动的。相对于一个客户端程序。控制hive内存的就是 HADOOP_CLIENT_OPTS 环境变量中的 -Xmx 。</p>
-
-<p>所以要调整 hive 内存的使用，可以通过调整 HADOOP_CLIENT_OPTS 来控制。（当然理解这些环境变量，你就可以随心随欲的改）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hive]$ sh -x bin/hiveserver2 
-</span><span class='line'>...
-</span><span class='line'>++ exec /home/hadoop/hadoop/bin/hadoop jar /home/hadoop/hive/lib/hive-service-1.2.1.jar org.apache.hive.service.server.HiveServer2
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hive]$ grep -3  "HADOOP_CLIENT_OPTS" ~/hadoop/etc/hadoop/hadoop-env.sh
-</span><span class='line'>export HADOOP_PORTMAP_OPTS="-Xmx512m $HADOOP_PORTMAP_OPTS"
-</span><span class='line'>
-</span><span class='line'># The following applies to multiple commands (fs, dfs, fsck, distcp etc)
-</span><span class='line'>export HADOOP_CLIENT_OPTS="-Xmx128m $HADOOP_CLIENT_OPTS"
-</span><span class='line'>#HADOOP_JAVA_PLATFORM_OPTS="-XX:-UsePerfData $HADOOP_JAVA_PLATFORM_OPTS"
-</span><span class='line'>
-</span><span class='line'># On secure datanodes, user to run the datanode as after dropping privileges.
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hive]$ jinfo 10249
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>VM Flags:
-</span><span class='line'>
-</span><span class='line'>-Xmx256m -Djava.net.preferIPv4Stack=true -Dhadoop.log.dir=/home/hadoop/hadoop-2.6.3/logs -Dhadoop.log.file=hadoop.log -Dhadoop.home.dir=/home/hadoop/hadoop-2.6.3 -Dhadoop.id.str=hadoop -Dhadoop.root.logger=INFO,console -Djava.library.path=/home/hadoop/hadoop-2.6.3/lib/native -Dhadoop.policy.file=hadoop-policy.xml -Djava.net.preferIPv4Stack=true -Xmx128m -Dhadoop.security.logger=INFO,NullAppender
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 hive]$ jmap -heap 10249
-</span><span class='line'>...
-</span><span class='line'>Heap Configuration:
-</span><span class='line'>   MinHeapFreeRatio = 40
-</span><span class='line'>   MaxHeapFreeRatio = 70
-</span><span class='line'>   MaxHeapSize      = 134217728 (128.0MB)
-</span><span class='line'>...
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/10">&larr; Older</a>
@@ -2405,6 +2516,14 @@ https://cwiki.apache.org/ &hellip;">
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/01/25/develop-environment-prepare/">[整理] 环境准备工具集</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/01/21/jarsperreports-pdf-chinese/">jarsperreports生成PDF中文问题</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/01/20/nginx-https-with-tomcat-http/">Nginx Https With Tomcat Http</a>
       </li>
     
@@ -2426,14 +2545,6 @@ https://cwiki.apache.org/ &hellip;">
     
       <li class="post">
         <a href="/blog/2016/11/10/play2-development-environment-with-eclipse/">Play2开发环境搭建</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/10/20/ssh-upgrade-on-centos6/">红帽6升级SSH</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2016/10/12/sparksql-view-and-debug-generatecode/">SparkSQL查看调试生成代码</a>
       </li>
     
   </ul>
@@ -2554,7 +2665,7 @@ https://cwiki.apache.org/ &hellip;">
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (41) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (43) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2567,7 +2678,7 @@ https://cwiki.apache.org/ &hellip;">
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (156)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (158)</li>
 	</ul>
 	
 </section>
@@ -2633,19 +2744,19 @@ https://cwiki.apache.org/ &hellip;">
 </footer>
   
 
+<!-- 多说公共JS代码 start (一个网页只需插入一次) -->
 <script type="text/javascript">
-      var disqus_shortname = 'winseliu';
-      
-        
-        var disqus_script = 'count.js';
-      
-    (function () {
-      var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
-      dsq.src = '//' + disqus_shortname + '.disqus.com/' + disqus_script;
-      (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
-    }());
-</script>
-
+var duoshuoQuery = {short_name:"winseliu"};
+	(function() {
+		var ds = document.createElement('script');
+		ds.type = 'text/javascript';ds.async = true;
+		ds.src = (document.location.protocol == 'https:' ? 'https:' : 'http:') + '//static.duoshuo.com/embed.js';
+		ds.charset = 'UTF-8';
+		(document.getElementsByTagName('head')[0] 
+		 || document.getElementsByTagName('body')[0]).appendChild(ds);
+	})();
+	</script>
+<!-- 多说公共JS代码 end -->
 
 
 
