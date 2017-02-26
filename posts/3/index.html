@@ -9,7 +9,16 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="最近接了一个报表的任务，原来也有接触过，但是仅限于了解没有真正的动手画过。这里把从选型到最后成型一路下来遇到的问题整理下。 主要两个大问题：环境的搭建，以及子报表(嵌套报表)的配置。 选择Jasperreports 知道的有Birts、Pentaho、FineReport感觉其实都差不多， &hellip;">
+  <meta name="description" content="同事在使用Spark-Kafka-Streaming的时刻遇到只能读取一个分区的情况，最后他找到问题所在。这里记录下，说白了就是Spark-2.0.0默认是用Kafka-0.10.0.1，自己换程序版本有风险！ 问题的关键点 Kafka-0.10.1.0 1
+2
+3
+4
+5
+6
+7
+8
+9
+10 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +92,328 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/12/09/spark2-0-kafka0-10-1-partitions-work-incorrent/">Spark2-0 & Kafka0-10-1订阅多个单只读一个分区</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-12-09T12:02:38+08:00" pubdate data-updated="true">Fri 2016-12-09 12:02</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>同事在使用Spark-Kafka-Streaming的时刻遇到只能读取一个分区的情况，最后他找到问题所在。这里记录下，说白了就是Spark-2.0.0默认是用Kafka-0.10.0.1，自己换程序版本有风险！</p>
+
+<h2>问题的关键点</h2>
+
+<ul>
+<li>Kafka-0.10.1.0</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>org/apache/kafka/clients/consumer/KafkaConsumer.java
+</span><span class='line'>    private void updateFetchPositions(Set&lt;TopicPartition&gt; partitions) {
+</span><span class='line'>        // lookup any positions for partitions which are awaiting reset (which may be the
+</span><span class='line'>        // case if the user called seekToBeginning or seekToEnd. We do this check first to
+</span><span class='line'>        // avoid an unnecessary lookup of committed offsets (which typically occurs when
+</span><span class='line'>        // the user is manually assigning partitions and managing their own offsets).
+</span><span class='line'>        fetcher.resetOffsetsIfNeeded(partitions);
+</span><span class='line'>
+</span><span class='line'>        if (!subscriptions.hasAllFetchPositions()) {
+</span><span class='line'>            // if we still don't have offsets for all partitions, then we should either seek
+</span><span class='line'>            // to the last committed position or reset using the auto reset policy
+</span><span class='line'>
+</span><span class='line'>            // first refresh commits for all assigned partitions
+</span><span class='line'>            coordinator.refreshCommittedOffsetsIfNeeded();
+</span><span class='line'>
+</span><span class='line'>            // then do any offset lookups in case some positions are not known
+</span><span class='line'>            fetcher.updateFetchPositions(partitions);
+</span><span class='line'>        }
+</span><span class='line'>    }</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>Kafka-0.10.0.1</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>org.apache.kafka.clients.consumer.KafkaConsumer#updateFetchPositions
+</span><span class='line'>    private void updateFetchPositions(Set&lt;TopicPartition&gt; partitions) {
+</span><span class='line'>        // refresh commits for all assigned partitions
+</span><span class='line'>        coordinator.refreshCommittedOffsetsIfNeeded();
+</span><span class='line'>
+</span><span class='line'>        // then do any offset lookups in case some positions are not known
+</span><span class='line'>        fetcher.updateFetchPositions(partitions);
+</span><span class='line'>    }</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>问题描述以及说明</h2>
+
+<p>当订阅同一个主题的多个分区时，每次SparkStreaming会获取每次处理的Offset。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>org.apache.spark.streaming.kafka010.DirectKafkaInputDStream#latestOffsets
+</span><span class='line'>  protected def latestOffsets(): Map[TopicPartition, Long] = {
+</span><span class='line'>    val c = consumer
+</span><span class='line'>    c.poll(0)
+</span><span class='line'>    val parts = c.assignment().asScala
+</span><span class='line'>
+</span><span class='line'>    // make sure new partitions are reflected in currentOffsets
+</span><span class='line'>    val newPartitions = parts.diff(currentOffsets.keySet)
+</span><span class='line'>    // position for new partitions determined by auto.offset.reset if no commit
+</span><span class='line'>    currentOffsets = currentOffsets ++ newPartitions.map(tp =&gt; tp -&gt; c.position(tp)).toMap
+</span><span class='line'>    // don't want to consume messages, so pause
+</span><span class='line'>    c.pause(newPartitions.asJava)
+</span><span class='line'>    // find latest available offsets
+</span><span class='line'>    c.seekToEnd(currentOffsets.keySet.asJava)
+</span><span class='line'>    parts.map(tp =&gt; tp -&gt; c.position(tp)).toMap
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  override def compute(validTime: Time): Option[KafkaRDD[K, V]] = {
+</span><span class='line'>    val untilOffsets = clamp(latestOffsets())
+</span><span class='line'>    val offsetRanges = untilOffsets.map { case (tp, uo) =&gt;
+</span><span class='line'>      val fo = currentOffsets(tp)
+</span><span class='line'>      OffsetRange(tp.topic, tp.partition, fo, uo)
+</span><span class='line'>    }
+</span><span class='line'>    val rdd = new KafkaRDD[K, V](
+</span><span class='line'>      context.sparkContext, executorKafkaParams, offsetRanges.toArray, getPreferredHosts, true)
+</span><span class='line'>... </span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果使用kafka-0.10.1.0时，seekToEnd会重置当前客户端分区实例的position为null。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>org.apache.kafka.clients.consumer.KafkaConsumer#seekToEnd
+</span><span class='line'>    public void seekToEnd(Collection&lt;TopicPartition&gt; partitions) {
+</span><span class='line'>        acquire();
+</span><span class='line'>        try {
+</span><span class='line'>            Collection&lt;TopicPartition&gt; parts = partitions.size() == 0 ? this.subscriptions.assignedPartitions() : partitions;
+</span><span class='line'>            for (TopicPartition tp : parts) {
+</span><span class='line'>                log.debug("Seeking to end of partition {}", tp);
+</span><span class='line'>                subscriptions.needOffsetReset(tp, OffsetResetStrategy.LATEST);
+</span><span class='line'>            }
+</span><span class='line'>        } finally {
+</span><span class='line'>            release();
+</span><span class='line'>        }
+</span><span class='line'>    }
+</span><span class='line'>org.apache.kafka.clients.consumer.internals.SubscriptionState#needOffsetReset(TopicPartition, OffsetResetStrategy)
+</span><span class='line'>    public void needOffsetReset(TopicPartition partition, OffsetResetStrategy offsetResetStrategy) {
+</span><span class='line'>        assignedState(partition).awaitReset(offsetResetStrategy);
+</span><span class='line'>    } 
+</span><span class='line'>org.apache.kafka.clients.consumer.internals.SubscriptionState.TopicPartitionState#awaitReset
+</span><span class='line'>        private void awaitReset(OffsetResetStrategy strategy) {
+</span><span class='line'>            this.resetStrategy = strategy;
+</span><span class='line'>            this.position = null;
+</span><span class='line'>        }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>此时再调用position一个个分区的获取最新位置信息。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>org.apache.kafka.clients.consumer.KafkaConsumer#position
+</span><span class='line'>    public long position(TopicPartition partition) {
+</span><span class='line'>        acquire();
+</span><span class='line'>        try {
+</span><span class='line'>            if (!this.subscriptions.isAssigned(partition))
+</span><span class='line'>                throw new IllegalArgumentException("You can only check the position for partitions assigned to this consumer.");
+</span><span class='line'>            Long offset = this.subscriptions.position(partition);
+</span><span class='line'>            if (offset == null) {
+</span><span class='line'>                updateFetchPositions(Collections.singleton(partition));
+</span><span class='line'>                offset = this.subscriptions.position(partition);
+</span><span class='line'>            }
+</span><span class='line'>            return offset;
+</span><span class='line'>        } finally {
+</span><span class='line'>            release();
+</span><span class='line'>        }
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    private void updateFetchPositions(Set&lt;TopicPartition&gt; partitions) {
+</span><span class='line'>        // lookup any positions for partitions which are awaiting reset (which may be the
+</span><span class='line'>        // case if the user called seekToBeginning or seekToEnd. We do this check first to
+</span><span class='line'>        // avoid an unnecessary lookup of committed offsets (which typically occurs when
+</span><span class='line'>        // the user is manually assigning partitions and managing their own offsets).
+</span><span class='line'>        fetcher.resetOffsetsIfNeeded(partitions);
+</span><span class='line'>
+</span><span class='line'>        if (!subscriptions.hasAllFetchPositions()) {
+</span><span class='line'>            // if we still don't have offsets for all partitions, then we should either seek
+</span><span class='line'>            // to the last committed position or reset using the auto reset policy
+</span><span class='line'>
+</span><span class='line'>            // first refresh commits for all assigned partitions
+</span><span class='line'>            coordinator.refreshCommittedOffsetsIfNeeded();
+</span><span class='line'>
+</span><span class='line'>            // then do any offset lookups in case some positions are not known
+</span><span class='line'>            fetcher.updateFetchPositions(partitions);
+</span><span class='line'>        }
+</span><span class='line'>    } 
+</span><span class='line'>
+</span><span class='line'>org.apache.kafka.clients.consumer.internals.Fetcher#resetOffsetsIfNeeded
+</span><span class='line'>    public void resetOffsetsIfNeeded(Set&lt;TopicPartition&gt; partitions) {
+</span><span class='line'>        for (TopicPartition tp : partitions) {
+</span><span class='line'>            // TODO: If there are several offsets to reset, we could submit offset requests in parallel
+</span><span class='line'>            if (subscriptions.isAssigned(tp) && subscriptions.isOffsetResetNeeded(tp))
+</span><span class='line'>                resetOffset(tp);
+</span><span class='line'>        }
+</span><span class='line'>    }
+</span><span class='line'>org.apache.kafka.clients.consumer.internals.SubscriptionState.TopicPartitionState#seek
+</span><span class='line'>        private void seek(long offset) {
+</span><span class='line'>            this.position = offset;
+</span><span class='line'>            this.resetStrategy = null;
+</span><span class='line'>        } </span></code></pre></td></tr></table></div></figure>
+
+
+<p>新版本KafkaConsumer先更新位置，最终调用seek设置position以及重置resetStrategy。</p>
+
+<p>但是后面又额外多了一个判断！！检测所有的分区，只要有一个有问题就重新获取position，最对有问题啊！尽管后面又调用updateFetchPositions但是环境已经变了啊！！导致多个分区的情况下只能读取一个分区的数据。</p>
+
+<p>问题找到了，直接客户端用旧的就行了。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1496,93 +1827,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/10/12/maven-create-ourself-archetype/">Maven创建自己的Archetype</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-10-12T12:06:53+08:00" pubdate data-updated="true">Wed 2016-10-12 12:06</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>最近经常用到scala，创建的小工程也挺多的。每次都的复制一些properties和plugins挺繁琐的。准备自己搞一个archetype，以后直接用archetype生成一步到位（相当于一个模板）。</p>
-
-<ul>
-<li><a href="https://my.oschina.net/wangrikui/blog/498807">https://my.oschina.net/wangrikui/blog/498807</a></li>
-<li><a href="http://www.cnblogs.com/whitewolf/p/3606034.html">http://www.cnblogs.com/whitewolf/p/3606034.html</a></li>
-</ul>
-
-
-<h2>首先创建一个模板工程</h2>
-
-<p>把需要修改的属性和插件，以及一些常用到的文件都放置好，如log4j.properties等。</p>
-
-<h2>使用命令创建archetype工程</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mvn clean archetype:create-from-project</span></code></pre></td></tr></table></div></figure>
-
-
-<p><strong> 注意：</strong> maven-archetype-plugin插件需要定位mvn.bat，而我的maven-3.3.9的命令名称为mvn.cmd，需要简单暴力的复制一个。</p>
-
-<p>生成后，在 <strong> target\generated-sources\archetype </strong> 目录即为创建archetype工程。</p>
-
-<h2>清理IDE相关文件</h2>
-
-<p>target\generated-sources\archetype\src\main\resources\META-INF\maven 下面的 archetype-metadata.xml 为Archetype的元数据（真正包括那些文件的配置）。可以根据实际情况进行编辑</p>
-
-<p>文件夹 target\generated-sources\archetype\src\main\resources\archetype-resources 下包括所有（新建时）需要拷贝的文件，但同时目录下面也包括了IDE相关文件，可以把这些文件<strong> 删掉 </strong> 。</p>
-
-<h2>本地安装</h2>
-
-<p>清理完文件后，回到 target\generated-sources\archetype 执行 <code>mvn install</code> 把这个原型(Archetype)安装到本地。</p>
-
-<h2>使用</h2>
-
-<ul>
-<li><a href="https://my.oschina.net/u/225373/blog/468035">https://my.oschina.net/u/225373/blog/468035</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mvn archetype:generate -B \
-</span><span class='line'>-DarchetypeGroupId=com.example -DarchetypeArtifactId=scala-simple-archetype -DarchetypeVersion=1.0 \
-</span><span class='line'>-DarchetypeCatalog=local \
-</span><span class='line'>-DgroupId=com.github.winse -DartifactId=Hello</span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意 <strong> archetypeCatalog </strong> 属性，如果不配置为本地（local/internal ）的话要等很久（可以用-X输出调试信息查看操作停在哪）。对于intellij idea可以在 Default Settings - Build,Exection,Deployment - Build Tools - Maven - Runner 加上 VM Options 参数。</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/4">&larr; Older</a>
@@ -1659,6 +1903,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/02/25/k8s-docker-multinode/">K8s集群部署</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/02/08/k8s-minikube-on-windows/">K8s Minikube on Windows</a>
       </li>
     
@@ -1684,10 +1932,6 @@
     
       <li class="post">
         <a href="/blog/2017/01/20/nginx-https-with-tomcat-http/">Nginx Https With Tomcat Http</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a>
       </li>
     
   </ul>
@@ -1724,7 +1968,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/docker/'>docker</a> (7) 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (8) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1768,7 +2012,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (1) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (2) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1825,7 +2069,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (162)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (163)</li>
 	</ul>
 	
 </section>
