@@ -9,7 +9,16 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="最近经常用到scala，创建的小工程也挺多的。每次都的复制一些properties和plugins挺繁琐的。准备自己搞一个archetype，以后直接用archetype生成一步到位（相当于一个模板）。 https://my.oschina.net/wangrikui/blog/498807 &hellip;">
+  <meta name="description" content="网站和一些书籍都有介绍SparkSQL（DataFrame）会根据相应的操作生成最终运行的语句。这里从一个简单的、低级的问题入手到最后通过查看生成的代码查找问题的根源，并简单介绍怎么来调试SparkSQL。 问题来源： 1
+2
+3
+4
+5
+6
+7
+8
+9
+case class Access(id: &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +92,317 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/10/12/sparksql-view-and-debug-generatecode/">SparkSQL查看调试生成代码</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-10-12T19:48:58+08:00" pubdate data-updated="true">Wed 2016-10-12 19:48</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>网站和一些书籍都有介绍SparkSQL（DataFrame）会根据相应的操作生成最终运行的语句。这里从一个简单的、低级的问题入手到最后通过查看生成的代码查找问题的根源，并简单介绍怎么来调试SparkSQL。</p>
+
+<p>问题来源：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>case class Access(id:String,url:String,time:String){
+</span><span class='line'>def compute():(String, Int)
+</span><span class='line'>}
+</span><span class='line'>Object Access {
+</span><span class='line'>def apply(row:Row): Option[Access]
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'># main
+</span><span class='line'>df.map(Access(_)).filter(!_.isEmpty).map(_.get).map(_.compute)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>运行之后 compute 总是报 NullPointerException 异常。按RDD以及Scala的操作都是没法理解的，怎么就变成 <code>Access(null,null,null)</code> 了呢？后面尽管改成 <code>df.flatMap(Access(_)).map(_.compute)</code> 后运行正常了，但是还是想看看SparkSQL到底干了啥！！！</p>
+
+<h2>SparkSQL干了什么</h2>
+
+<p>Spark RDD是在 RDD#compute 中明确定义好了操作的。而SparkSQL的操作最终转换成了LogicalPlan，看不出它做了什么东东。</p>
+
+<p>其实，与数据库SQL的explain看执行计划类似，SparkSQL也有explain的方法来查看程序的执行计划。（这里代码全部贴出来了，根据情况自己去掉注释啊）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>object AccessAnalyser {
+</span><span class='line'>
+</span><span class='line'>  def main(args: Array[String]): Unit = {
+</span><span class='line'>
+</span><span class='line'>    // conf
+</span><span class='line'>
+</span><span class='line'>    // clean
+</span><span class='line'>    new File("target/generated-sources").listFiles().filter(_.isFile()).foreach(_.delete)
+</span><span class='line'>
+</span><span class='line'>    sys.props("org.codehaus.janino.source_debugging.enable") = "true"
+</span><span class='line'>    sys.props("org.codehaus.janino.source_debugging.dir") = "target/generated-sources"
+</span><span class='line'>
+</span><span class='line'>    val input = "r:/match10.dat"
+</span><span class='line'>    val output = "r:/output"
+</span><span class='line'>    def delete(f: File): Unit = {
+</span><span class='line'>      if (f.isDirectory) f.listFiles().foreach(delete)
+</span><span class='line'>      f.delete()
+</span><span class='line'>    }
+</span><span class='line'>    delete(new File(output))
+</span><span class='line'>
+</span><span class='line'>    // program
+</span><span class='line'>
+</span><span class='line'>    val conf = new SparkConf().setAppName("DPI Analyser").setMaster("local[10]")
+</span><span class='line'>    // fix windows path.
+</span><span class='line'>    conf.set(/*SQLConf.WAREHOUSE_PATH*/ "spark.sql.warehouse.dir", "spark-warehouse")
+</span><span class='line'>
+</span><span class='line'>    val sc = new SparkContext(conf)
+</span><span class='line'>    val sqlContext = new SQLContext(sc)
+</span><span class='line'>
+</span><span class='line'>    import sqlContext.implicits._
+</span><span class='line'>    import org.apache.spark.sql.functions._
+</span><span class='line'>
+</span><span class='line'>    val df = sqlContext.read
+</span><span class='line'>      .format("com.databricks.spark.csv")
+</span><span class='line'>      .option("header", "false") // Use first line of all files as header
+</span><span class='line'>      .option("quote", "'")
+</span><span class='line'>      .option("escape", "'")
+</span><span class='line'>      .option("delimiter", ",")
+</span><span class='line'>      .load(input)
+</span><span class='line'>
+</span><span class='line'>    df
+</span><span class='line'>      .flatMap(Access(_))
+</span><span class='line'>      //      .map(Access(_)).filter((t: Option[Access]) =&gt; !t.isEmpty).map(_.get) // sparksql不合适用Option
+</span><span class='line'>      .map(_.compute)
+</span><span class='line'>      .explain(true)
+</span><span class='line'>      //      .toDF("id", "score")
+</span><span class='line'>      //      .groupBy("id").agg(sum("score") as "score")
+</span><span class='line'>      //      .sort("score", "id")
+</span><span class='line'>      //      .repartition(1)
+</span><span class='line'>      //      .write.format("com.databricks.spark.csv").save(output)
+</span><span class='line'>
+</span><span class='line'>    sc.stop()
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>运行上面的代码，在console窗口输出了任务的执行计划：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>== Parsed Logical Plan ==
+</span><span class='line'>'SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._1, true) AS _1#20, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._2 AS _2#21]
+</span><span class='line'>+- 'MapElements &lt;function1&gt;, obj#19: scala.Tuple2
+</span><span class='line'>   +- 'DeserializeToObject unresolveddeserializer(newInstance(class com.github.winse.spark.access.Access)), obj#18: com.github.winse.spark.access.Access
+</span><span class='line'>      +- SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).id, true) AS id#12, staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).url, true) AS url#13, staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).time, true) AS time#14]
+</span><span class='line'>         +- MapPartitions &lt;function1&gt;, obj#11: com.github.winse.spark.access.Access
+</span><span class='line'>            +- DeserializeToObject createexternalrow(_c0#0.toString, _c1#1.toString, _c2#2.toString, StructField(_c0,StringType,true), StructField(_c1,StringType,true), StructField(_c2,StringType,true)), obj#10: org.apache.spark.sql.Row
+</span><span class='line'>               +- Relation[_c0#0,_c1#1,_c2#2] csv
+</span><span class='line'>
+</span><span class='line'>== Physical Plan ==
+</span><span class='line'>*SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._1, true) AS _1#20, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._2 AS _2#21]
+</span><span class='line'>+- *MapElements &lt;function1&gt;, obj#19: scala.Tuple2
+</span><span class='line'>   +- MapPartitions &lt;function1&gt;, obj#11: com.github.winse.spark.access.Access
+</span><span class='line'>      +- DeserializeToObject createexternalrow(_c0#0.toString, _c1#1.toString, _c2#2.toString, StructField(_c0,StringType,true), StructField(_c1,StringType,true), StructField(_c2,StringType,true)), obj#10: org.apache.spark.sql.Row
+</span><span class='line'>         +- *Scan csv [_c0#0,_c1#1,_c2#2] Format: CSV, InputPaths: file:/r:/match10.dat, PushedFilters: [], ReadSchema: struct&lt;_c0:string,_c1:string,_c2:string&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>OK，看到执行计划了，那生成的代码长什么样呢？以及怎么调试这些生成的代码呢？</p>
+
+<h2>Hack 源码</h2>
+
+<p>在进行调试之前，先改一下代码重新编译下catalyst用于调试，并替换maven下面的spark-catalyst_2.11 ：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>winse@Lenovo-PC ~/git/spark/sql/catalyst
+</span><span class='line'>$ git diff .
+</span><span class='line'>diff --git a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala b/sql/catalyst/                                                                                          src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
+</span><span class='line'>index 16fb1f6..56bfbf7 100644
+</span><span class='line'>--- a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
+</span><span class='line'>+++ b/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
+</span><span class='line'>@@ -854,7 +854,7 @@ object CodeGenerator extends Logging {
+</span><span class='line'>     val parentClassLoader = new ParentClassLoader(Utils.getContextOrSparkClassLoader)
+</span><span class='line'>     evaluator.setParentClassLoader(parentClassLoader)
+</span><span class='line'>     // Cannot be under package codegen, or fail with java.lang.InstantiationException
+</span><span class='line'>-    evaluator.setClassName("org.apache.spark.sql.catalyst.expressions.GeneratedClass")
+</span><span class='line'>     evaluator.setDefaultImports(Array(
+</span><span class='line'>       classOf[Platform].getName,
+</span><span class='line'>       classOf[InternalRow].getName,
+</span><span class='line'>@@ -875,12 +875,14 @@ object CodeGenerator extends Logging {
+</span><span class='line'>
+</span><span class='line'>     logDebug({
+</span><span class='line'>       // Only add extra debugging info to byte code when we are going to print the source code.
+</span><span class='line'>-      evaluator.setDebuggingInformation(true, true, false)
+</span><span class='line'>+      evaluator.setDebuggingInformation(true, true, true)
+</span><span class='line'>       s"\n$formatted"
+</span><span class='line'>     })
+</span><span class='line'>
+</span><span class='line'>     try {
+</span><span class='line'>-      evaluator.cook("generated.java", code.body)
+</span><span class='line'>+      evaluator.cook(code.body)
+</span><span class='line'>       recordCompilationStats(evaluator)
+</span><span class='line'>     } catch {
+</span><span class='line'>       case e: Exception =&gt;
+</span><span class='line'>
+</span><span class='line'>E:\git\spark\sql\catalyst&gt;mvn clean package -DskipTests -Dmaven.test.skip=true
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>SparkSQL生成代码用的是janino，官网文档有提供debugging的资料：<a href="http://janino-compiler.github.io/janino/#debugging">http://janino-compiler.github.io/janino/#debugging</a> 。简单说明下三处修改：</p>
+
+<ul>
+<li>查看org.codehaus.janino.Scanner构造方法，如果配置了debugging以及optionalFileName==null就会把源码保存到临时文件。</li>
+<li>一开始没想到要注释掉setClassName的，后面把CodeGenerator#doCompile拷贝出来慢慢和官网提供的例子对，就把setClassName换成setExtendedClass竟然成了弹出了源码页面。又看到下面就setExtendedClass就注释掉setClassName就ok了。</li>
+<li>源代码里面的参数不能查看的，就是编译的时刻把这个选项去掉了。把debugVars设置为true。</li>
+</ul>
+
+
+<h2>运行调试</h2>
+
+<p>先做好调试准备工作：</p>
+
+<ul>
+<li>在compute方法里面打一个断点然后调试运行</li>
+<li>修改log4j日志级别: log4j.logger.org.apache.spark.sql.catalyst.expressions.codegen=DEBUG</li>
+<li>把项目导入eclipse（IDEA弹不出源代码）</li>
+</ul>
+
+
+<p>然后运行。点击Debug视图的GeneratedIterator，在弹出的代码视图点击查找源码按钮，再弹出的添加源代码对话框（Edit Source Lookup Path）添加路径target/generated-sources（注意这里要用绝对路径）！接下来就一步步的调就行了。</p>
+
+<p><img src="/images/blogs/sparksql-debug.png" alt="" /></p>
+
+<p>调试着生成的代码能更好的理解前面explain的执行计划。看到代码就好理解最开始的Access(null,null,null)了：对象到字段反序列化的问题。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -775,421 +1095,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/08/19/j2ee-maven-resources-compress/">Maven压缩js/css功能实践</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-08-19T16:34:28+08:00" pubdate data-updated="true">Fri 2016-08-19 16:34</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>为了节约网络带宽，一般在发布项目时对资源(js/css)文件进行压缩（去掉空行、精简代码等）。但是要做到兼容开发与生产还是的下一番功夫才行。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ ls -l src/main/webapp/static/assets/js/ | head
-</span><span class='line'>total 3120
-</span><span class='line'>-rwxrwxr--+ 1 winse None  24804 Aug 10 17:40 bootbox.js
-</span><span class='line'>-rwxrwxr--+ 1 winse None  71315 Aug 10 17:40 bootstrap.js
-</span><span class='line'>-rwxrwxr--+ 1 winse None  13905 Aug 10 17:40 bootstrap-colorpicker.js
-</span><span class='line'>-rwxrwxr--+ 1 winse None  49319 Aug 10 17:40 bootstrap-multiselect.js
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>$ ls -l target/dist/js/ | head
-</span><span class='line'>total 1368
-</span><span class='line'>-rwxrwx---+ 1 winse None   8943 Aug 19 16:53 bootbox-min.js
-</span><span class='line'>-rwxrwx---+ 1 winse None   8057 Aug 19 16:53 bootstrap-colorpicker-min.js
-</span><span class='line'>-rwxrwx---+ 1 winse None  38061 Aug 19 16:53 bootstrap-min.js
-</span><span class='line'>-rwxrwx---+ 1 winse None  18232 Aug 19 16:53 bootstrap-multiselect-min.js
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<p>项目中原本使用dist(压缩)、assets目录放置js/css等资源，在部署的时刻替换dist为assets，有点麻烦。首先想到的<strong>用nginx进行url重写</strong>，但是需要增加一个服务有点麻烦，能不能直接用spring来实现呢？</p>
-
-<ul>
-<li>自定义一个handler类</li>
-</ul>
-
-
-<p>查看Spring的 <code>mvc:resources</code> 实现，相当于注册了一个 <code>location -&gt; ResourceHttpRequestHandler</code> 的映射。
-第一种尝试自动化的方式就是自定义handler类来进行资源的定位。增加 StaticRequestHandler 的处理类，增加配置 location 和 compressLocation 的配置：首先去查找压缩文件([NAME]-min.js)，找不到然后再找源文件([NAME].js)位置。</p>
-
-<p>主要修改 getResource 方法，具体完整代码如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>## java
-</span><span class='line'>public class StaticRequestHandler extends ResourceHttpRequestHandler {
-</span><span class='line'>
-</span><span class='line'>  private final static Log logger = LogFactory.getLog(ResourceHttpRequestHandler.class);
-</span><span class='line'>
-</span><span class='line'>  private String location;
-</span><span class='line'>  private String compressLocation;
-</span><span class='line'>
-</span><span class='line'>  private Resource locationResource;
-</span><span class='line'>  private Resource compressLocationResource;
-</span><span class='line'>
-</span><span class='line'>  public void setLocation(String location) {
-</span><span class='line'>      this.location = location;
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  public void setCompressLocation(String compressLocation) {
-</span><span class='line'>      this.compressLocation = compressLocation;
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  @Override
-</span><span class='line'>  public void afterPropertiesSet() throws Exception {
-</span><span class='line'>      super.afterPropertiesSet();
-</span><span class='line'>
-</span><span class='line'>      this.locationResource = getWebApplicationContext().getResource(location);
-</span><span class='line'>      super.setLocations(Collections.singletonList(this.locationResource));
-</span><span class='line'>
-</span><span class='line'>      this.compressLocationResource = getWebApplicationContext().getResource(compressLocation);
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  @Override
-</span><span class='line'>  protected Resource getResource(HttpServletRequest request) {
-</span><span class='line'>      String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
-</span><span class='line'>      if (path == null) {
-</span><span class='line'>          throw new IllegalStateException("Required request attribute '"
-</span><span class='line'>                  + HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE + "' is not set");
-</span><span class='line'>      }
-</span><span class='line'>
-</span><span class='line'>      if (!StringUtils.hasText(path) || isInvalidPath(path)) {
-</span><span class='line'>          if (logger.isDebugEnabled()) {
-</span><span class='line'>              logger.debug("Ignoring invalid resource path [" + path + "]");
-</span><span class='line'>          }
-</span><span class='line'>          return null;
-</span><span class='line'>      }
-</span><span class='line'>
-</span><span class='line'>      Resource res = null;
-</span><span class='line'>      if (path.endsWith(".css")) {
-</span><span class='line'>          res = findResource(compressLocationResource, path.substring(0, path.length() - 4) + ".min.css");
-</span><span class='line'>      } else if (path.endsWith(".js")) {
-</span><span class='line'>          res = findResource(compressLocationResource, path.substring(0, path.length() - 3) + ".min.js");
-</span><span class='line'>      }
-</span><span class='line'>
-</span><span class='line'>      if (res == null) {
-</span><span class='line'>          res = findResource(locationResource, path);
-</span><span class='line'>      }
-</span><span class='line'>
-</span><span class='line'>      return res;
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  private Resource findResource(Resource location, String path) {
-</span><span class='line'>      try {
-</span><span class='line'>          if (logger.isDebugEnabled()) {
-</span><span class='line'>              logger.debug("Trying relative path [" + path + "] against base location: " + location);
-</span><span class='line'>          }
-</span><span class='line'>          Resource resource = location.createRelative(path);
-</span><span class='line'>          if (resource.exists() && resource.isReadable()) {
-</span><span class='line'>              if (logger.isDebugEnabled()) {
-</span><span class='line'>                  logger.debug("Found matching resource: " + resource);
-</span><span class='line'>              }
-</span><span class='line'>              return resource;
-</span><span class='line'>          } else if (logger.isTraceEnabled()) {
-</span><span class='line'>              logger.trace("Relative resource doesn't exist or isn't readable: " + resource);
-</span><span class='line'>          }
-</span><span class='line'>      } catch (IOException ex) {
-</span><span class='line'>          logger.debug("Failed to create relative resource - trying next resource location", ex);
-</span><span class='line'>      }
-</span><span class='line'>
-</span><span class='line'>      return null;
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>## spring config
-</span><span class='line'>  &lt;!-- 静态资源 --&gt;
-</span><span class='line'>  &lt;!-- &lt;mvc:resources mapping="/static/**" location="/static/" /&gt; --&gt;
-</span><span class='line'>
-</span><span class='line'>  &lt;bean class="org.springframework.web.servlet.handler.SimpleUrlHandlerMapping"&gt;
-</span><span class='line'>      &lt;property name="mappings"&gt;
-</span><span class='line'>          &lt;value&gt;
-</span><span class='line'>              /static/assets/**=staticRequestHandler
-</span><span class='line'>          &lt;/value&gt;
-</span><span class='line'>      &lt;/property&gt;
-</span><span class='line'>  &lt;/bean&gt;
-</span><span class='line'>  &lt;bean id="staticRequestHandler" class="com.hotel.servlet.resource.StaticRequestHandler"&gt;
-</span><span class='line'>      &lt;property name="location" value="/static/assets/" /&gt;
-</span><span class='line'>      &lt;property name="compressLocation" value="/static/dist/" /&gt;
-</span><span class='line'>  &lt;/bean&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>这种方式实现了自动定位压缩资源 <code>min.js</code> 的功能，但是压缩还是不能自动化而且不能实时的更新（min要单独压缩产生），并且调试和生产环境还是需要手动的修改配置来切换。</p>
-
-<p>有没有更好的自动化的实现开发环境和生产环境分开呢？</p>
-
-<ul>
-<li>Maven打包时压缩然后替换源文件</li>
-</ul>
-
-
-<p>使用 <strong>yuicompressor-maven-plugin</strong> 插件压缩资源，然后把压缩资源<strong>先</strong>打包放置到assets目录下。</p>
-
-<p>注意： yuicomressor 插件的 nosuffix 配置为 true ! 这样压缩后的文件名和源文件名称才一样。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>## spring config
-</span><span class='line'>  &lt;!-- 静态资源 --&gt;
-</span><span class='line'>  &lt;mvc:resources mapping="/static/**" location="/static/" /&gt;
-</span><span class='line'>
-</span><span class='line'>## maven pom.xml
-</span><span class='line'>      &lt;profile&gt;
-</span><span class='line'>          &lt;id&gt;release&lt;/id&gt;
-</span><span class='line'>
-</span><span class='line'>          &lt;build&gt;
-</span><span class='line'>              &lt;plugins&gt;
-</span><span class='line'>                  &lt;!-- http://alchim.sourceforge.net/yuicompressor-maven-plugin/compress-mojo.html --&gt;
-</span><span class='line'>                  &lt;plugin&gt;
-</span><span class='line'>                      &lt;groupId&gt;net.alchim31.maven&lt;/groupId&gt;
-</span><span class='line'>                      &lt;artifactId&gt;yuicompressor-maven-plugin&lt;/artifactId&gt;
-</span><span class='line'>                      &lt;version&gt;1.3.2&lt;/version&gt;
-</span><span class='line'>                      &lt;executions&gt;
-</span><span class='line'>                          &lt;execution&gt;
-</span><span class='line'>                              &lt;id&gt;compress_js_css&lt;/id&gt;
-</span><span class='line'>                              &lt;phase&gt;process-resources&lt;/phase&gt;
-</span><span class='line'>                              &lt;goals&gt;
-</span><span class='line'>                                  &lt;goal&gt;compress&lt;/goal&gt;
-</span><span class='line'>                              &lt;/goals&gt;
-</span><span class='line'>                          &lt;/execution&gt;
-</span><span class='line'>                      &lt;/executions&gt;
-</span><span class='line'>                      &lt;configuration&gt;
-</span><span class='line'>                          &lt;encoding&gt;UTF-8&lt;/encoding&gt;
-</span><span class='line'>                          &lt;nosuffix&gt;true&lt;/nosuffix&gt;
-</span><span class='line'>                          &lt;skip&gt;false&lt;/skip&gt;
-</span><span class='line'>
-</span><span class='line'>                          &lt;jswarn&gt;false&lt;/jswarn&gt;
-</span><span class='line'>                          &lt;nomunge&gt;false&lt;/nomunge&gt;
-</span><span class='line'>                          &lt;preserveAllSemiColons&gt;false&lt;/preserveAllSemiColons&gt;
-</span><span class='line'>
-</span><span class='line'>                          &lt;sourceDirectory&gt;src/main/webapp/static/assets&lt;/sourceDirectory&gt;
-</span><span class='line'>                          &lt;outputDirectory&gt;${project.build.directory}/dist&lt;/outputDirectory&gt;
-</span><span class='line'>                      &lt;/configuration&gt;
-</span><span class='line'>                  &lt;/plugin&gt;
-</span><span class='line'>
-</span><span class='line'>                  &lt;plugin&gt;
-</span><span class='line'>                      &lt;artifactId&gt;maven-war-plugin&lt;/artifactId&gt;
-</span><span class='line'>                      &lt;version&gt;2.6&lt;/version&gt;
-</span><span class='line'>                      &lt;configuration&gt;
-</span><span class='line'>                          &lt;webResources&gt;
-</span><span class='line'>                              &lt;resource&gt;
-</span><span class='line'>                                  &lt;directory&gt;${project.build.directory}/dist&lt;/directory&gt;
-</span><span class='line'>                                  &lt;targetPath&gt;static/assets&lt;/targetPath&gt;
-</span><span class='line'>                                  &lt;filtering&gt;false&lt;/filtering&gt;
-</span><span class='line'>                              &lt;/resource&gt;
-</span><span class='line'>                          &lt;/webResources&gt;
-</span><span class='line'>                      &lt;/configuration&gt;
-</span><span class='line'>                  &lt;/plugin&gt;
-</span><span class='line'>                  
-</span><span class='line'>              &lt;/plugins&gt;
-</span><span class='line'>          &lt;/build&gt;
-</span><span class='line'>      &lt;/profile&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>war插件添加了自定义webResources资源，首先把压缩的文件拷贝到对应目录，maven发现文件已经存在就不会再拷贝同名的文件。这样源文件就相当于被替换成压缩的资源了。</p>
-
-<h2>总结</h2>
-
-<p>使用maven插件压缩打包，完美的解决js/css压缩导致的开发和生产不兼容问题。</p>
-
-<h2>后记</h2>
-
-<p>jsp使用了tag的地方总是会产生很多的空行，看着挺烦的。其实可以通过在jsp开头添加 trimDirectiveWhitespaces 属性来去掉空行：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;%@ page language="java" trimDirectiveWhitespaces="true" contentType="text/html; charset=utf-8" pageEncoding="utf-8"%&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/5">&larr; Older</a>
@@ -1266,6 +1171,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/03/05/k8s-docker-multinode-on-centos6/">k8s在Centos6部署实践</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/02/25/k8s-docker-multinode/">K8s集群部署</a>
       </li>
     
@@ -1291,10 +1200,6 @@
     
       <li class="post">
         <a href="/blog/2017/01/21/jarsperreports-pdf-chinese/">jarsperreports生成PDF中文问题</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/01/20/nginx-https-with-tomcat-http/">Nginx Https With Tomcat Http</a>
       </li>
     
   </ul>
@@ -1331,7 +1236,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/docker/'>docker</a> (8) 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1375,7 +1280,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (2) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1432,7 +1337,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (163)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (164)</li>
 	</ul>
 	
 </section>

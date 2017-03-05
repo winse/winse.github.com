@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Docker | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/docker/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-02-26T09:47:32+08:00</updated>
+  <updated>2017-03-05T18:31:47+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,360 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[k8s在Centos6部署实践]]></title>
+    <link href="http://winseliu.com/blog/2017/03/05/k8s-docker-multinode-on-centos6/"/>
+    <updated>2017-03-05T08:49:29+08:00</updated>
+    <id>http://winseliu.com/blog/2017/03/05/k8s-docker-multinode-on-centos6</id>
+    <content type="html"><![CDATA[<p>centos6系统比较"老"啊，既没有systemd，也没有docker-engine。网上各种资料要么是原始安装，要么就是在centos7上装的。不太想在系统上做，按照kube-deploy的docker-multinode的脚本来进行修改安装，版本不兼容需要开推土机填坑啊，centos6上面的docker才1.7还不能用kubernetes-1.3，dashboard也需要自己安装。</p>
+
+<p>环境描述：</p>
+
+<ul>
+<li>cu2: bootstrap(etcd, flannel), main(hyperkube, pause, kubernetes-dashboard)</li>
+<li>cu4、cu5: bootstrap(flannel), main(hyperkube, pause)</li>
+</ul>
+
+
+<pre><code>[root@cu2 ~]# docker -H unix:///var/run/docker-bootstrap.sock ps | grep -v IMAGE | awk '{print $2}' | sort -u
+gcr.io/google_containers/etcd-amd64:3.0.4
+quay.io/coreos/flannel:v0.6.1-amd64
+[root@cu2 ~]# docker ps | grep -v IMAGE | awk '{print $2}' | sort -u
+bigdata:v1
+gcr.io/google_containers/hyperkube-amd64:v1.2.7
+gcr.io/google_containers/kubernetes-dashboard-amd64:v1.5.1
+gcr.io/google_containers/pause:2.0
+[root@cu2 ~]# ssh cu4
+Last login: Sun Mar  5 02:25:14 2017 from 192.168.0.214
+[root@cu4 ~]# docker -H unix:///var/run/docker-bootstrap.sock ps | grep -v IMAGE | awk '{print $2}' | sort -u
+quay.io/coreos/flannel:v0.6.1-amd64
+[root@cu4 ~]# docker ps | grep -v IMAGE | awk '{print $2}' | sort -u
+bigdata:v1
+gcr.io/google_containers/hyperkube-amd64:v1.2.7
+gcr.io/google_containers/pause:2.0
+</code></pre>
+
+<ul>
+<li>etcd，flannel，和kubernetes-dashboard用的是docker-multinode时的版本。</li>
+<li>kubelet是1.2的最新版v1.2.7。</li>
+<li>pause:2.0是启动apiserver、controller容器时自动下载的版本。</li>
+</ul>
+
+
+<h2>准备</h2>
+
+<ul>
+<li>安装docker，<a href="https://wiki.centos.org/zh/Cloud/Docker">Docker</a> <a href="/blog/2014/09/27/docker-start-guide-on-centos/">Docker入门</a></li>
+<li>代理，<a href="/blog/2017/02/04/privoxy-http-proxy-for-shadowsocks/">Privoxy</a></li>
+<li>镜像导入导出，<a href="/blog/2017/02/06/docker-http-proxy-and-save-reload/">Docker save/load</a></li>
+</ul>
+
+
+<h2>先看效果（看了菜单再看吃不吃这家）</h2>
+
+<pre><code>## 下载部署脚本 https://github.com/winse/docker-hadoop/tree/master/k8s/docker-multinode-centos6
+
+## 防火墙
+# 或者最后面增加 iptables -A INPUT -s 10.0.0.0/8 -j ACCEPT
+iptables -I INPUT 1 -s 10.0.0.0/8 -j ACCEPT
+
+## 配置参数增加双引号
+sed -i 's/other_args=/other_args="" /' /etc/sysconfig/docker
+
+## 先把镜像全部下载下来 git pull ...
+* 在master节点
+[root@cu2 ~]# docker images
+REPOSITORY                                            TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
+gcr.io/google_containers/kubernetes-dashboard-amd64   v1.5.1              9af7d5c61ccf        7 weeks ago         103.6 MB
+gcr.io/google_containers/hyperkube-amd64              v1.2.7              1dd7250ed1b3        4 months ago        231.4 MB
+quay.io/coreos/flannel                                v0.6.1-amd64        ef86f3a53de0        6 months ago        27.89 MB
+gcr.io/google_containers/etcd-amd64                   3.0.4               ef5e89d609f1        6 months ago        39.62 MB
+gcr.io/google_containers/pause                        2.0                 9981ca1bbdb5        17 months ago       350.2 kB
+
+## 下载kubectl
+https://storage.googleapis.com/kubernetes-release/release/v1.2.7/bin/linux/amd64/kubectl 
+https://kubernetes.io/docs/user-guide/prereqs/
+https://kubernetes.io/docs/user-guide/kubectl/kubectl_version/
+
+## 环境变量
+export KUBECONFIG=/var/lib/kubelet/kubeconfig/kubeconfig.yaml
+export PATH=...
+
+## 启动MASTER
+./master.sh
+
+## 测试效果
+curl -fsSL http://localhost:2379/health
+curl -s http://localhost:8080/healthz
+curl -s http://localhost:8080/api
+kubectl get ns
+kubectl create namespace kube-system
+
+* 在worker节点
+[root@cu4 ~]# docker images
+REPOSITORY                                 TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
+gcr.io/google_containers/hyperkube-amd64   v1.2.7              1dd7250ed1b3        4 months ago        231.4 MB
+quay.io/coreos/flannel                     v0.6.1-amd64        ef86f3a53de0        6 months ago        27.89 MB
+gcr.io/google_containers/pause             2.0                 9981ca1bbdb5        17 months ago       350.2 kB
+
+## 启动WORKER
+MASTER_IP=cu2 ./worker.sh
+</code></pre>
+
+<p>在第一次启动master脚本可能会有点问题：setup-files容器运行可能不正常，可手动登录kubelet的容器执行一次setup-files.sh脚本临时修复。如果不急的话等上一段时间多run几次后好像也能跑起来（囧）</p>
+
+<pre><code>[root@cu2 ~]# docker exec -ti kube_kubelet_624b2 bash
+root@cu2:/# /setup-files.sh IP:10.0.0.1,DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc,DNS:kubernetes.default.svc.cluster.local
+
+然后再次提交dashboard：
+[root@cu2 docker-multinode-centos6]# ./dashboard.sh 
+</code></pre>
+
+<p>然后启动应用，测试多节点的情况下启动的容器网络能否互通：</p>
+
+<pre><code>## 运行查看容器
+[root@cu2 ~]# kubectl run redis --image=bigdata:v1 -r 5 --command -- /usr/sbin/sshd -D
+
+[root@cu2 ~]# kubectl get pods -o wide
+NAME                       READY     STATUS    RESTARTS   AGE       NODE
+k8s-master-192.168.0.214   4/4       Running   22         1h        192.168.0.214
+k8s-proxy-192.168.0.214    1/1       Running   0          1h        192.168.0.214
+redis-2212193268-1789v     1/1       Running   0          1h        192.168.0.174
+redis-2212193268-1j4ej     1/1       Running   0          1h        192.168.0.174
+redis-2212193268-8dbmq     1/1       Running   0          1h        192.168.0.30
+redis-2212193268-a447n     1/1       Running   0          1h        192.168.0.30
+redis-2212193268-tu5fl     1/1       Running   0          1h        192.168.0.214
+
+https://kubernetes.io/docs/user-guide/jsonpath/
+[root@cu2 ~]# kubectl get pods -o wide -l run=redis -o jsonpath={..podIP}
+10.1.75.2 10.1.75.3 10.1.58.3 10.1.58.2 10.1.33.3
+
+## 登录容器
+# 用ssh登录
+[root@cu2 ~]# kubectl describe pods redis-2212193268-tu5fl | grep IP
+IP:             10.1.33.3
+[root@cu2 ~]# ssh 10.1.33.3
+The authenticity of host '10.1.33.3 (10.1.33.3)' can't be established.
+RSA key fingerprint is e5:58:ae:3b:54:c9:bb:0d:4c:9b:bc:fd:04:fe:be:cc.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added '10.1.33.3' (RSA) to the list of known hosts.
+root@10.1.33.3's password: 
+Last login: Sat Mar  4 18:17:51 2017 from 10.1.61.1
+[root@redis-2212193268-tu5fl ~]# exit
+logout
+Connection to 10.1.33.3 closed.
+
+# exec登录
+[root@cu2 ~]# kubectl exec -ti redis-2212193268-tu5fl bash
+[root@redis-2212193268-tu5fl /]# 
+
+## ping五台机器全部节点的机器都是互通的
+[root@redis-2212193268-tu5fl /]# ping 10.1.75.2
+PING 10.1.75.2 (10.1.75.2) 56(84) bytes of data.
+64 bytes from 10.1.75.2: icmp_seq=1 ttl=60 time=1.15 ms
+64 bytes from 10.1.75.2: icmp_seq=2 ttl=60 time=0.607 ms
+^C
+--- 10.1.75.2 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1492ms
+rtt min/avg/max/mdev = 0.607/0.880/1.154/0.275 ms
+[root@redis-2212193268-tu5fl /]# ping 10.1.75.3
+PING 10.1.75.3 (10.1.75.3) 56(84) bytes of data.
+64 bytes from 10.1.75.3: icmp_seq=1 ttl=60 time=1.23 ms
+64 bytes from 10.1.75.3: icmp_seq=2 ttl=60 time=0.702 ms
+^C
+--- 10.1.75.3 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1311ms
+rtt min/avg/max/mdev = 0.702/0.966/1.231/0.266 ms
+[root@redis-2212193268-tu5fl /]# ping 10.1.58.3
+PING 10.1.58.3 (10.1.58.3) 56(84) bytes of data.
+64 bytes from 10.1.58.3: icmp_seq=1 ttl=60 time=1.60 ms
+64 bytes from 10.1.58.3: icmp_seq=2 ttl=60 time=0.521 ms
+^C
+--- 10.1.58.3 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1510ms
+rtt min/avg/max/mdev = 0.521/1.061/1.602/0.541 ms
+[root@redis-2212193268-tu5fl /]# ping 10.1.58.2
+PING 10.1.58.2 (10.1.58.2) 56(84) bytes of data.
+64 bytes from 10.1.58.2: icmp_seq=1 ttl=60 time=1.39 ms
+64 bytes from 10.1.58.2: icmp_seq=2 ttl=60 time=0.432 ms
+^C
+--- 10.1.58.2 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1470ms
+rtt min/avg/max/mdev = 0.432/0.915/1.398/0.483 ms
+[root@redis-2212193268-tu5fl /]# ping 10.1.33.3         
+PING 10.1.33.3 (10.1.33.3) 56(84) bytes of data.
+64 bytes from 10.1.33.3: icmp_seq=1 ttl=64 time=0.036 ms
+64 bytes from 10.1.33.3: icmp_seq=2 ttl=64 time=0.049 ms
+^C
+--- 10.1.33.3 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1373ms
+rtt min/avg/max/mdev = 0.036/0.042/0.049/0.009 ms
+</code></pre>
+
+<p>全部启动好后dashboard的效果图：</p>
+
+<p><img src="/images/blogs/k8s-dashboard.jpg" alt="" /></p>
+
+<h2>从脚本中学习</h2>
+
+<p>官网这份<a href="https://kubernetes.io/docs/getting-started-guides/scratch/#starting-cluster-services">Creating a Custom Cluster from Scratch</a> 看的糊里糊涂，真不是给入门级的同学看的。需要有一定的实践经验才能看的懂。</p>
+
+<p>另辟蹊径，根据docker-multi的启动脚本来拆分学习然后模拟动手实践。在根据 <a href="https://kubernetes.io/docs/getting-started-guides/docker-multinode/">Portable Multi-Node Cluster</a> 文档学习操作的时刻不理解bootstrap docker以及main docker的含义。这次通过单独运行提取每个函数运行后才理解，其实就相当于跑两个docker应用程序，互相不影响。</p>
+
+<pre><code>[root@cu2 ~]# ps aux|grep docker
+root      5310  0.0  0.2 645128 19180 pts/1    Sl   13:14   0:01 docker -d -H unix:///var/run/docker-bootstrap.sock -p /var/run/docker-bootstrap.pid --iptables=false --ip-masq=false --bridge=none --graph=/var/lib/docker-bootstrap --exec-root=/var/run/docker-bootstrap
+root      5782  1.1  0.5 2788284 43620 pts/1   Sl   13:14   0:23 /usr/bin/docker -d --mtu=1464 --bip=10.1.33.1/24
+root     10935  0.0  0.0 103316   896 pts/1    S+   13:47   0:00 grep docker
+</code></pre>
+
+<p>bootstrap docker启动后，容器etcd和flannel启动都很顺利。</p>
+
+<ul>
+<li>问题1： 执行docker0网卡重置失败（问题都是在自己虚拟机试，弄好后再放到测试环境的）：</li>
+</ul>
+
+
+<pre><code>[root@bigdata1 data]# ip link set docker0 down
+[root@bigdata1 data]# ip link del docker0
+RTNETLINK answers: Operation not supported
+
+[root@bigdata1 data]# ip addr 
+
+删不掉，但是可以修改ip地址来实现相似的效果
+
+ifconfig docker0 ${FLANNEL_SUBNET}
+或者 
+[root@bigdata1 data]# ip link set dev docker0 mtu 1460
+[root@bigdata1 data]# ip addr del 172.17.42.1/16 dev docker0
+[root@bigdata1 data]# ip addr add ${FLANNEL_SUBNET} dev docker0
+[root@bigdata1 data]# ip link set dev docker0 up
+[root@bigdata1 data]# ifconfig
+
+先添加参数在前端运行
+[root@bigdata1 data]# docker -d --mtu=1472 --bip=10.1.42.1/24
+
+启动
+[root@bigdata1 data]# sed -i 's/other_args=/other_args="--mtu=1472 --bip=10.1.42.1/24"/' /etc/sysconfig/docker
+[root@bigdata1 data]# service docker start
+Starting docker:                                           [确定]
+[root@bigdata1 data]# service docker status
+docker (pid  4542) 正在运行...
+</code></pre>
+
+<ul>
+<li>问题2：volumns mount不支持shared</li>
+</ul>
+
+
+<pre><code>[root@bigdata1 data]# echo $KUBELET_MOUNTS
+-v /sys:/sys:rw -v /var/run:/var/run:rw -v /run:/run:rw -v /var/lib/docker:/var/lib/docker:rw -v /var/lib/kubelet:/var/lib/kubelet:shared -v /var/log/containers:/var/log/containers:rw
+
+[root@bigdata1 data]# mkdir -p /var/lib/kubelet
+[root@bigdata1 data]# mount --bind /var/lib/kubelet /var/lib/kubelet
+[root@bigdata1 data]# mount --make-shared /var/lib/kubelet
+
+[root@bigdata1 data]# docker run -d \
+&gt;     --net=host \
+&gt;     --pid=host \
+&gt;     --privileged \
+&gt;     --name kube_kubelet_$(kube::helpers::small_sha) \
+&gt;     ${KUBELET_MOUNTS} \
+&gt;     gcr.io/google_containers/hyperkube-${ARCH}:${K8S_VERSION} \
+&gt;     /hyperkube kubelet \
+&gt;       --allow-privileged \
+&gt;       --api-servers=http://localhost:8080 \
+&gt;       --config=/etc/kubernetes/manifests-multi \
+&gt;       --cluster-dns=10.0.0.10 \
+&gt;       --cluster-domain=cluster.local \
+&gt;       ${CNI_ARGS} \
+&gt;       ${CONTAINERIZED_FLAG} \
+&gt;       --hostname-override=${IP_ADDRESS} \
+&gt;       --v=2
+Error response from daemon: invalid mode for volumes-from: shared
+
+# 改成z
+    KUBELET_MOUNT="-v /var/lib/kubelet:/var/lib/kubelet:z"
+
+[root@bigdata1 ~]# echo $KUBELET_MOUNTS
+-v /sys:/sys:rw -v /var/run:/var/run:rw -v /run:/run:rw -v /var/lib/docker:/var/lib/docker:rw -v /var/lib/kubelet:/var/lib/kubelet:z -v /var/log/containers:/var/log/containers:rw
+</code></pre>
+
+<ul>
+<li>问题3：cgroup问题</li>
+</ul>
+
+
+<pre><code>Error: failed to run Kubelet: failed to get mounted cgroup subsystems: failed to find cgroup mounts
+failed to run Kubelet: failed to get mounted cgroup subsystems: failed to find cgroup mounts
+
+centos7 
+[root@k8s docker.service.d]# ll /sys/fs/cgroup/
+blkio/            cpuacct/          cpuset/           freezer/          memory/           net_cls,net_prio/ perf_event/       systemd/          
+cpu/              cpu,cpuacct/      devices/          hugetlb/          net_cls/          net_prio/         pids/             
+
+centos6
+http://wushank.blog.51cto.com/3489095/1203545
+[root@bigdata1 bin]# ls /cgroup/
+blkio  cpu  cpuacct  cpuset  devices  freezer  memory  net_cls
+
+把/cgroup加入到卷映射路径
+  KUBELET_MOUNTS="\
+    ${ROOTFS_MOUNT} \
+    -v /sys:/sys:rw \
+    -v /cgroup:/cgroup:rw \
+    -v /var/run:/var/run:rw \
+    -v /run:/run:rw \
+    -v /var/lib/docker:/var/lib/docker:rw \
+    ${KUBELET_MOUNT} \
+    -v /var/log/containers:/var/log/containers:rw"
+</code></pre>
+
+<ul>
+<li>问题4：再说版本，v1.3+的版本在centos6上运行kubelet报错：</li>
+</ul>
+
+
+<pre><code>[root@bigdata1 ~]# docker logs 7a2f7aec2239
+...
+E0228 10:56:05.408129    2516 kubelet.go:2049] Container runtime sanity check failed: container runtime version is older than 1.21
+</code></pre>
+
+<p>1.3以上的版本都会报这个错。kubernetes用1.2.7的版本即可。</p>
+
+<ul>
+<li>问题5：dashboard配置注意点</li>
+</ul>
+
+
+<p>1 imagePullPolicy 就是个坑啊！改成IfNotPresent <a href="https://kubernetes.io/docs/user-guide/images/  ">https://kubernetes.io/docs/user-guide/images/  </a>
+2 namespace 也不能改，好像会写数据库然后指定的namespace就是kube-system
+3 apiserver 由于没有addon-manager的支持，暂时使用http获取数据</p>
+
+<p>处理完以上问题，K8S集群就跑起来了，然后整合成开始用的脚本。当然后续还有很多工作，不仅仅是怎么用，还有一些其他辅助的软件需要配置和安装。</p>
+
+<h2>后续学习操作</h2>
+
+<ul>
+<li>DNS</li>
+<li>监控 <a href="https://kubernetes.io/docs/user-guide/monitoring/">https://kubernetes.io/docs/user-guide/monitoring/</a></li>
+<li>安全HTTPS <a href="https://kubernetes.io/docs/admin/authentication/#creating-certificates">https://kubernetes.io/docs/admin/authentication/#creating-certificates</a></li>
+<li>register</li>
+</ul>
+
+
+<h2>其他参考</h2>
+
+<ul>
+<li><a href="http://chenguomin.blog.51cto.com/8794192/1828905">http://chenguomin.blog.51cto.com/8794192/1828905</a></li>
+<li><a href="http://www.pangxie.space/docker/618">http://www.pangxie.space/docker/618</a></li>
+<li><a href="https://kubernetes.io/docs/user-guide/kubeconfig-file/">https://kubernetes.io/docs/user-guide/kubeconfig-file/</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[K8s集群部署]]></title>
@@ -159,11 +513,11 @@ d10130677853022fe37742437e39b21b3fcfbb90b3f24075457f469e238b0712
 ...一堆容器列表
 </code></pre>
 
-<p>如果有问题就防火墙的问题（我遇到过的啊，下载镜像和本地firewall设置的问题）。</p>
+<p>如果有问题基本就是防火墙的问题（我遇到过的啊，下载镜像和本地firewall设置的问题）。</p>
 
 <p>上面安装kubectl时已经配置了代理地址。如果部署master的时刻pull镜像出错，那还得需要给docker配置代理增加配置 /etc/systemd/system/docker.service.d/http-proxy.conf  参考 <a href="https://docs.docker.com/engine/admin/systemd/#http-proxy">https://docs.docker.com/engine/admin/systemd/#http-proxy</a> 。具体错误详情及处理查看下面的【问题及处理】部分</p>
 
-<p><strong>安装启动好</strong>后，就可以通过浏览器图形界面来管理集群了： <a href="http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default">http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default</a></p>
+<p><strong>安装启动好</strong>后，就可以通过浏览器图形界面来管理集群了(dashboard启动有问题的话查看后面的问题处理)： <a href="http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default">http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default</a></p>
 
 <h4>启动worker</h4>
 
@@ -336,6 +690,8 @@ Feb 25 00:04:36 k8s dockerd: time="2017-02-25T00:04:36.406470062+08:00" level=er
 </code></pre>
 
 <p>开放6443端口dashboard启动成功。通过浏览器能正常访问</p>
+
+<p></p>
 
 <pre><code>[root@k8s ~]# firewall-cmd --zone=public --add-port=6443/tcp --permanent
 success
@@ -867,8 +1223,7 @@ Loaded image: gcr.io/google_containers/kubedns-amd64:1.9
 </ul>
 
 
-<pre><code>[root@k8s ~]# yum install epel-release
-[root@k8s ~]# yum install python-pip
+<pre><code>[root@k8s ~]# yum install epel-release python-pip -y
 
 [root@k8s ~]# pip install shadowsocks
 Collecting shadowsocks
@@ -929,7 +1284,7 @@ Successfully installed pip-9.0.1
 <pre><code>[root@k8s ~]# yum install privoxy -y
 
 查找listen-address行注释掉，在最后添加如下两行
-[root@k8s docker.service.d]# cat /etc/privoxy/config 
+[root@k8s docker.service.d]# vi /etc/privoxy/config 
 ...
 forward-socks5 / 127.0.0.1:1080 .
 listen-address k8s:8118
@@ -973,336 +1328,6 @@ curl: (7) Failed to connect to 2404:6800:4008:802::200e: Network is unreachable
 <A HREF="http://www.google.com/">here</A>.
 </BODY></HTML>
 ```</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[VMware-Centos6 Build hadoop-2.6]]></title>
-    <link href="http://winseliu.com/blog/2015/03/08/vmware-build-hadoop2-dot-6/"/>
-    <updated>2015-03-08T08:22:14+08:00</updated>
-    <id>http://winseliu.com/blog/2015/03/08/vmware-build-hadoop2-dot-6</id>
-    <content type="html"><![CDATA[<p>每次编译hadoop（-common）都是惊心动魄，没一次顺顺当当的！由于作者的偷懒(vmware共享windows目录)，引发的又一起血案~~~</p>
-
-<p>同时，有时生产环境不是自己能选择的，需要适应各种环境来编译相应的hadoop，此时在已有的linux开发环境使用docker搭建各种linux及其方便的事情。这里在centos6上搭建docker-centos5实例来编译hadoop。</p>
-
-<h2>环境说明</h2>
-
-<ul>
-<li>操作系统</li>
-</ul>
-
-
-<pre><code>[root@localhost ~]# uname -a
-Linux localhost.localdomain 2.6.32-431.el6.x86_64 #1 SMP Fri Nov 22 03:15:09 UTC 2013 x86_64 x86_64 x86_64 GNU/Linux
-[root@localhost ~]# cat /etc/redhat-release 
-CentOS release 6.5 (Final)
-</code></pre>
-
-<ul>
-<li>使用VMware的<strong>Shared Folders</strong>建立了maven和hadoop-2.6.0-src到宿主机器的映射：(不要直接在源码映射的目录下编译，先拷贝到linux的硬盘下！！)</li>
-</ul>
-
-
-<pre><code>[root@localhost ~]# ll -a hadoop-2.6.0-src maven
-lrwxrwxrwx. 1 root root 26 Mar  7 22:47 hadoop-2.6.0-src -&gt; /mnt/hgfs/hadoop-2.6.0-src
-lrwxrwxrwx. 1 root root 15 Mar  7 22:47 maven -&gt; /mnt/hgfs/maven
-</code></pre>
-
-<h2>具体操作</h2>
-
-<pre><code># 安装maven，jdk
-cat apache-maven-3.2.3-bin.tar.gz | ssh root@192.168.154.130 "cat - | tar zxv "
-
-tar zxvf jdk-7u60-linux-x64.gz -C ~/
-vi .bash_profile 
-
-# 开发环境
-yum install gcc glibc-headers gcc-c++ zlib-devel
-yum install openssl-devel
-
-# 安装protobuf
-tar zxvf protobuf-2.5.0.tar.gz 
-cd protobuf-2.5.0
-./configure 
-make &amp;&amp; make install
-
-## 编译hadoop-common
-# 从映射文件中拷贝hadoop-common到linux文件系统，然后在编译hadoop-common
-cd hadoop-2.6.0-src/hadoop-common-project/hadoop-common/
-cd ..
-cp -r  hadoop-common ~/  #Q:为啥要拷贝一份，【遇到的问题】中有进行解析
-cd ~/hadoop-common
-mvn install
-mvn -X clean package -Pdist,native -Dmaven.test.skip=true -Dmaven.javadoc.skip=true
-
-## 编译全部，耗时比较久，可以先去吃个饭^v^
-cp -r /mnt/hgfs/hadoop-2.6.0-src ~/
-mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true #Q:这里为啥不能用maven.test.skip?
-</code></pre>
-
-<p>$$TAG centos5 20160402</p>
-
-<ul>
-<li>docker build hadoop-2.6.3(比自己搞个虚拟机更快)</li>
-</ul>
-
-
-<p>实际生产需要使用centos5，这里在centos5编译。其他下载<a href="https://github.com/CentOS/sig-cloud-instance-images">Centos</a>特定版本，步骤是一样的。</p>
-
-<pre><code>[hadoop@cu2 ~]$ cat /etc/redhat-release 
-CentOS release 6.6 (Final)
-
-[root@cu2 shm]# unzip sig-cloud-instance-images-centos-5.zip 
-[root@cu2 shm]# cd sig-cloud-instance-images-c8d1a81b0516bca0f20434be8d0fac4f7d58a04a/docker/
-[root@cu2 docker]# cat centos-5-20150304_1234-docker.tar.xz | docker import - centos:centos5
-[root@cu2 ~]# docker images
-REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-centos              centos5             a3f6a632c5ec        27 seconds ago      284.1 MB
-
-# 把本机原有资源利用起来，如：maven/repo/jdk/hadoop等
-[root@cu2 ~]# docker run -ti -v /home/hadoop:/home/hadoop -v /opt:/opt -v /data:/data centos:centos5 /bin/bash
-
-export JAVA_HOME=/opt/jdk1.7.0_17
-export MAVEN_HOME=/opt/apache-maven-3.3.9
-export PATH=$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH
-
-yum install lrzsz zlib-devel make which gcc gcc-c++ cmake openssl openssl-devel -y
-
-cd protobuf-2.5.0
-./configure 
-make &amp;&amp; make install
-which protoc
-
-cd hadoop-2.6.3-src/
-mvn clean package -Dmaven.javadoc.skip=true -DskipTests -Pdist,native 
-
-cd hadoop-dist/target/hadoop-2.6.3/lib/native/
-cd ..
-tar zcvf native-hadoop2.6.3-centos5.tar.gz native
-
-----
-
-在centos5编译snappy-1.1.3死都过不去，**Makefile.am:4: Libtool library used but `LIBTOOL' is undefined** 
-网上资料都差了，最后直接用centos6编译好的snappy可以。哎，有的用就好。
-
-[root@8fb11f6b3ced hadoop-2.6.3-src]# mvn package -Dmaven.javadoc.skip=true -DskipTests -Pdist,native  -Drequire.snappy=true  -Dsnappy.prefix=/home/hadoop/snappy
-[root@8fb11f6b3ced hadoop-2.6.3-src]# cd hadoop-dist/target/hadoop-2.6.3/
-[root@8fb11f6b3ced hadoop-2.6.3]# pwd
-/home/hadoop/sources/hadoop-2.6.3-src/hadoop-dist/target/hadoop-2.6.3
-[root@8fb11f6b3ced hadoop-2.6.3]# cd lib/native/
-[root@8fb11f6b3ced native]# tar zxvf /home/hadoop/snappy/snappy-libs.tar.gz 
-
-[root@8fb11f6b3ced native]# cd /home/hadoop/sources/hadoop-2.6.3-src/hadoop-dist/target/hadoop-2.6.3
-[root@8fb11f6b3ced hadoop-2.6.3]# bin/hadoop checknative -a
-
-# 打包到正式环境
-[root@8fb11f6b3ced hadoop-2.6.3]# cd lib/
-[root@8fb11f6b3ced lib]# tar zcvf native-hadoop2.6.3-centos5-with-snappy.tar.gz native
-</code></pre>
-
-<p>$$END TAG centos5 20160402</p>
-
-<h2>遇到的问题</h2>
-
-<ul>
-<li><p>第一个问题肯定是没有<strong>c</strong>的编译环境，安装gcc即可。</p></li>
-<li><p><code>configure: error: C++ preprocessor "/lib/cpp" fails sanity check</code>，安装c++。</p></li>
-</ul>
-
-
-<p>-> <a href="http://www.cnblogs.com/niocai/archive/2011/11/04/2236458.html">configure: error: C++ preprocessor &ldquo;/lib/cpp&rdquo; fails sanity check</a></p>
-
-<ul>
-<li><code>Unknown lifecycle phase "c"</code>，点击错误提示最后的链接查看解决方法，即执行<code>mvn install</code>。</li>
-</ul>
-
-
-<p>-> <a href="http://blog.csdn.net/kamemo/article/details/6523992">执行第一maven用例出错：Unknown lifecycle phase &ldquo;complile&rdquo;.</a>
--> <a href="https://cwiki.apache.org/confluence/display/MAVEN/LifecyclePhaseNotFoundException">LifecyclePhaseNotFoundException</a></p>
-
-<ul>
-<li><code>CMake Error at /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:108 (message): Could NOT find ZLIB (missing: ZLIB_INCLUDE_DIR)</code>， 缺少zlib-devel。</li>
-</ul>
-
-
-<p>-> <a href="http://ask.csdn.net/questions/62307">Cmake时报错：Could NOT find ImageMagick</a></p>
-
-<ul>
-<li><code>cmake_symlink_library: System Error: Operation not supported</code>， 共享的windows目录下不能创建linux的软链接。</li>
-</ul>
-
-
-<p>-> <a href="http://bbs.chinaunix.net/forum.php?mod=viewthread&amp;tid=3595245&amp;fromuid=26971268">参见9楼回复</a></p>
-
-<blockquote><p>创建链接不成功，要确认当前帐户下是否有权限在编译的目录中有创建链接的权限</p>
-
-<p>比如，你如果是在一个WINDOWS机器上的共享目录中编译，就没法创建链接，就会失败。把源码复制到本地的目录中再编译就不会有这问题。</p></blockquote>
-
-<ul>
-<li>全部编译时仅能用skipTests，不能maven.test.skip。</li>
-</ul>
-
-
-<pre><code>main:
-     [echo] Running test_libhdfs_threaded
-     [exec] nmdCreate: NativeMiniDfsCluster#Builder#Builder error:
-     [exec] java.lang.NoClassDefFoundError: org/apache/hadoop/hdfs/MiniDFSCluster$Builder
-     [exec] Caused by: java.lang.ClassNotFoundException: org.apache.hadoop.hdfs.MiniDFSCluster$Builder
-     [exec]     at java.net.URLClassLoader$1.run(URLClassLoader.java:366)
-     [exec]     at java.net.URLClassLoader$1.run(URLClassLoader.java:355)
-     [exec]     at java.security.AccessController.doPrivileged(Native Method)
-     [exec]     at java.net.URLClassLoader.findClass(URLClassLoader.java:354)
-     [exec]     at java.lang.ClassLoader.loadClass(ClassLoader.java:425)
-     [exec]     at sun.misc.Launcher$AppClassLoader.loadClass(Launcher.java:308)
-     [exec]     at java.lang.ClassLoader.loadClass(ClassLoader.java:358)
-     [exec] TEST_ERROR: failed on /root/hadoop-2.6.0-src/hadoop-hdfs-project/hadoop-hdfs/src/main/native/libhdfs/test_libhdfs_threaded.c:326 (errno: 2): got NULL from tlhCluster
-</code></pre>
-
-<ul>
-<li><code>Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the</code>，安装openssl-devel。</li>
-</ul>
-
-
-<pre><code>main:
-    [mkdir] Created dir: /root/hadoop-2.6.0-src/hadoop-tools/hadoop-pipes/target/native
-     [exec] -- The C compiler identification is GNU 4.4.7
-     [exec] -- The CXX compiler identification is GNU 4.4.7
-     [exec] -- Check for working C compiler: /usr/bin/cc
-     [exec] -- Check for working C compiler: /usr/bin/cc -- works
-     [exec] -- Detecting C compiler ABI info
-     [exec] -- Detecting C compiler ABI info - done
-     [exec] -- Check for working CXX compiler: /usr/bin/c++
-     [exec] -- Check for working CXX compiler: /usr/bin/c++ -- works
-     [exec] -- Detecting CXX compiler ABI info
-     [exec] -- Detecting CXX compiler ABI info - done
-     [exec] -- Configuring incomplete, errors occurred!
-     [exec] See also "/root/hadoop-2.6.0-src/hadoop-tools/hadoop-pipes/target/native/CMakeFiles/CMakeOutput.log".
-     [exec] CMake Error at /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:108 (message):
-     [exec]   Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the
-     [exec]   system variable OPENSSL_ROOT_DIR (missing: OPENSSL_LIBRARIES
-     [exec]   OPENSSL_INCLUDE_DIR)
-     [exec] Call Stack (most recent call first):
-     [exec]   /usr/share/cmake/Modules/FindPackageHandleStandardArgs.cmake:315 (_FPHSA_FAILURE_MESSAGE)
-     [exec]   /usr/share/cmake/Modules/FindOpenSSL.cmake:313 (find_package_handle_standard_args)
-     [exec]   CMakeLists.txt:20 (find_package)
-     [exec] 
-     [exec] 
-</code></pre>
-
-<h2>成功</h2>
-
-<pre><code>[INFO] Executed tasks
-[INFO] 
-[INFO] --- maven-javadoc-plugin:2.8.1:jar (module-javadocs) @ hadoop-dist ---
-[INFO] Skipping javadoc generation
-[INFO] ------------------------------------------------------------------------
-[INFO] Reactor Summary:
-[INFO] 
-[INFO] Apache Hadoop Main ................................. SUCCESS [ 43.005 s]
-[INFO] Apache Hadoop Project POM .......................... SUCCESS [ 25.511 s]
-[INFO] Apache Hadoop Annotations .......................... SUCCESS [ 21.177 s]
-[INFO] Apache Hadoop Assemblies ........................... SUCCESS [ 11.728 s]
-[INFO] Apache Hadoop Project Dist POM ..................... SUCCESS [ 51.274 s]
-[INFO] Apache Hadoop Maven Plugins ........................ SUCCESS [ 35.625 s]
-[INFO] Apache Hadoop MiniKDC .............................. SUCCESS [ 21.936 s]
-[INFO] Apache Hadoop Auth ................................. SUCCESS [ 24.665 s]
-[INFO] Apache Hadoop Auth Examples ........................ SUCCESS [ 17.058 s]
-[INFO] Apache Hadoop Common ............................... SUCCESS [06:07 min]
-[INFO] Apache Hadoop NFS .................................. SUCCESS [ 41.279 s]
-[INFO] Apache Hadoop KMS .................................. SUCCESS [ 59.186 s]
-[INFO] Apache Hadoop Common Project ....................... SUCCESS [  7.216 s]
-[INFO] Apache Hadoop HDFS ................................. SUCCESS [04:29 min]
-[INFO] Apache Hadoop HttpFS ............................... SUCCESS [ 52.883 s]
-[INFO] Apache Hadoop HDFS BookKeeper Journal .............. SUCCESS [ 28.972 s]
-[INFO] Apache Hadoop HDFS-NFS ............................. SUCCESS [ 24.901 s]
-[INFO] Apache Hadoop HDFS Project ......................... SUCCESS [  7.486 s]
-[INFO] hadoop-yarn ........................................ SUCCESS [  7.466 s]
-[INFO] hadoop-yarn-api .................................... SUCCESS [ 32.970 s]
-[INFO] hadoop-yarn-common ................................. SUCCESS [ 25.549 s]
-[INFO] hadoop-yarn-server ................................. SUCCESS [  6.709 s]
-[INFO] hadoop-yarn-server-common .......................... SUCCESS [ 25.292 s]
-[INFO] hadoop-yarn-server-nodemanager ..................... SUCCESS [ 29.555 s]
-[INFO] hadoop-yarn-server-web-proxy ....................... SUCCESS [ 12.800 s]
-[INFO] hadoop-yarn-server-applicationhistoryservice ....... SUCCESS [ 14.025 s]
-[INFO] hadoop-yarn-server-resourcemanager ................. SUCCESS [ 21.121 s]
-[INFO] hadoop-yarn-server-tests ........................... SUCCESS [ 24.019 s]
-[INFO] hadoop-yarn-client ................................. SUCCESS [ 18.949 s]
-[INFO] hadoop-yarn-applications ........................... SUCCESS [  7.586 s]
-[INFO] hadoop-yarn-applications-distributedshell .......... SUCCESS [  8.428 s]
-[INFO] hadoop-yarn-applications-unmanaged-am-launcher ..... SUCCESS [ 12.671 s]
-[INFO] hadoop-yarn-site ................................... SUCCESS [  7.518 s]
-[INFO] hadoop-yarn-registry ............................... SUCCESS [ 18.518 s]
-[INFO] hadoop-yarn-project ................................ SUCCESS [ 38.781 s]
-[INFO] hadoop-mapreduce-client ............................ SUCCESS [ 13.133 s]
-[INFO] hadoop-mapreduce-client-core ....................... SUCCESS [ 23.772 s]
-[INFO] hadoop-mapreduce-client-common ..................... SUCCESS [ 22.815 s]
-[INFO] hadoop-mapreduce-client-shuffle .................... SUCCESS [ 16.810 s]
-[INFO] hadoop-mapreduce-client-app ........................ SUCCESS [ 14.404 s]
-[INFO] hadoop-mapreduce-client-hs ......................... SUCCESS [ 18.157 s]
-[INFO] hadoop-mapreduce-client-jobclient .................. SUCCESS [ 14.637 s]
-[INFO] hadoop-mapreduce-client-hs-plugins ................. SUCCESS [  9.190 s]
-[INFO] Apache Hadoop MapReduce Examples ................... SUCCESS [  9.037 s]
-[INFO] hadoop-mapreduce ................................... SUCCESS [ 59.280 s]
-[INFO] Apache Hadoop MapReduce Streaming .................. SUCCESS [ 26.724 s]
-[INFO] Apache Hadoop Distributed Copy ..................... SUCCESS [ 31.503 s]
-[INFO] Apache Hadoop Archives ............................. SUCCESS [ 19.867 s]
-[INFO] Apache Hadoop Rumen ................................ SUCCESS [ 27.401 s]
-[INFO] Apache Hadoop Gridmix .............................. SUCCESS [ 20.102 s]
-[INFO] Apache Hadoop Data Join ............................ SUCCESS [ 20.382 s]
-[INFO] Apache Hadoop Ant Tasks ............................ SUCCESS [ 12.207 s]
-[INFO] Apache Hadoop Extras ............................... SUCCESS [ 24.069 s]
-[INFO] Apache Hadoop Pipes ................................ SUCCESS [ 31.975 s]
-[INFO] Apache Hadoop OpenStack support .................... SUCCESS [ 32.225 s]
-[INFO] Apache Hadoop Amazon Web Services support .......... SUCCESS [02:45 min]
-[INFO] Apache Hadoop Client ............................... SUCCESS [01:38 min]
-[INFO] Apache Hadoop Mini-Cluster ......................... SUCCESS [ 15.450 s]
-[INFO] Apache Hadoop Scheduler Load Simulator ............. SUCCESS [ 46.489 s]
-[INFO] Apache Hadoop Tools Dist ........................... SUCCESS [01:31 min]
-[INFO] Apache Hadoop Tools ................................ SUCCESS [  7.603 s]
-[INFO] Apache Hadoop Distribution ......................... SUCCESS [ 32.967 s]
-[INFO] ------------------------------------------------------------------------
-[INFO] BUILD SUCCESS
-[INFO] ------------------------------------------------------------------------
-[INFO] Total time: 39:30 min
-[INFO] Finished at: 2015-03-08T10:55:47+08:00
-[INFO] Final Memory: 102M/340M
-[INFO] ------------------------------------------------------------------------
-</code></pre>
-
-<p>把src编译出来的native下面的文件拷贝到hadoop集群程序目录下：</p>
-
-<pre><code>[hadoop@hadoop-master1 lib]$ scp -r root@172.17.42.1:~/hadoop-2.6.0-src/hadoop-dist/target/hadoop-2.6.0/lib/native ./
-[hadoop@hadoop-master1 lib]$ cd native/
-[hadoop@hadoop-master1 native]$ ll
-total 4356
--rw-r--r--. 1 hadoop hadoop 1119518 Mar  8 03:11 libhadoop.a
--rw-r--r--. 1 hadoop hadoop 1486964 Mar  8 03:11 libhadooppipes.a
-lrwxrwxrwx. 1 hadoop hadoop      18 Mar  3 21:08 libhadoop.so -&gt; libhadoop.so.1.0.0
--rwxr-xr-x. 1 hadoop hadoop  671237 Mar  8 03:11 libhadoop.so.1.0.0
--rw-r--r--. 1 hadoop hadoop  581944 Mar  8 03:11 libhadooputils.a
--rw-r--r--. 1 hadoop hadoop  359490 Mar  8 03:11 libhdfs.a
-lrwxrwxrwx. 1 hadoop hadoop      16 Mar  3 21:08 libhdfs.so -&gt; libhdfs.so.0.0.0
--rwxr-xr-x. 1 hadoop hadoop  228451 Mar  8 03:11 libhdfs.so.0.0.0
-</code></pre>
-
-<p>添加编译的native包前后对比：</p>
-
-<pre><code>[hadoop@hadoop-master1 hadoop-2.6.0]$ hadoop fs -ls /
-15/03/08 03:09:12 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-Found 3 items
--rw-r--r--   1 hadoop supergroup       1366 2015-03-06 16:49 /README.txt
-drwx------   - hadoop supergroup          0 2015-03-06 16:54 /tmp
-drwxr-xr-x   - hadoop supergroup          0 2015-03-06 16:54 /user
-
-# 编译好后，警告提示没有了
-[hadoop@hadoop-master1 hadoop-2.6.0]$ hadoop fs -ls /
-Found 3 items
--rw-r--r--   1 hadoop supergroup       1366 2015-03-06 16:49 /README.txt
-drwx------   - hadoop supergroup          0 2015-03-06 16:54 /tmp
-drwxr-xr-x   - hadoop supergroup          0 2015-03-06 16:54 /user
-</code></pre>
 
 <p>&ndash;END</p>
 ]]></content>
