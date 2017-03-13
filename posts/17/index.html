@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="tachyon程序是在HDFS与程序之间缓冲，相当于CPU与磁盘设备之间内存的功能。tachyon提供了TachyonFS、TachyonFile等API使操作起来更像一个文件系统；同时实现了HDFS的FileSystem接口，方便原有程序的迁移，只要把url的模式（schema） &hellip;">
+  <meta name="description" content="要了解一个框架，一般都是从框架提供/开放的接口入手。先从最直接的方式下手，可以通过tachyon tfs和浏览器19999端口获取集群以及文件的相关信息。 要了解tachyon首先就是其文件系统，可以从两个功能开始：命令行tachyon.command.TFsShell和web-servlet。 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +83,197 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2015/04/18/tachyon-deep-source/">Tachyon剖析</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2015-04-18T23:13:01+08:00" pubdate data-updated="true">Sat 2015-04-18 23:13</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>要了解一个框架，一般都是从框架提供/开放的接口入手。先从最直接的方式下手，可以通过<code>tachyon tfs</code>和浏览器19999端口获取集群以及文件的相关信息。</p>
+
+<ul>
+<li>要了解tachyon首先就是其文件系统，可以从两个功能开始：命令行tachyon.command.TFsShell和web-servlet。</li>
+<li>然后会深入tachyon.client包，了解<strong>TachyonFS</strong>和TachyonFile处理io的方式。以及tachyon.hadoop的包。</li>
+<li>io处理：
+
+<ul>
+<li>写：BlockOutStream（#getLocalBlockTemporaryPath； MappedByteBuffer）、FileOutStream</li>
+<li>读：RemoteBlockInStream、LocalBlockInStream</li>
+</ul>
+</li>
+<li>了解thrift：MasterClient、MasterServiceHandler、WorkerClient、WorkerServiceHandler、ClientBlockInfo、ClientFileInfo。</li>
+<li>看tachyon.example，巩固</li>
+</ul>
+
+
+<p>注：MappedByteBuffer在windows存在资源占用的bug！参见<a href="http://www.th7.cn/Program/java/2012/01/31/57401.shtml">http://www.th7.cn/Program/java/2012/01/31/57401.shtml</a>，</p>
+
+<p>把整个io流理清之后，然后需要了解tachyon是怎么维护这些信息的：</p>
+
+<ul>
+<li>配置：WorkerConf、MasterConf、UserConf</li>
+<li>了解thrift：MasterClient、MasterServiceHandler、ClientWorkerInfo、MasterInfo</li>
+<li>TachyonMaster和TachyonWorker的启动</li>
+<li>Checkpoint、Image、Journal</li>
+<li>内存淘汰策略</li>
+<li>DataServer在哪里用到（nio/netty）：TachyonFile#readRemoteByteBuffer、RemoteBlockInStream#read(byte[], int, int)</li>
+<li>HA</li>
+<li>Dependency（不知道怎么用）</li>
+</ul>
+
+
+<p>远程调试Worker以及tfs：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ cat conf/tachyon-env.sh 
+</span><span class='line'>export TACHYON_WORKER_JAVA_OPTS="$TACHYON_JAVA_OPTS -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8070"
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ export TACHYON_JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8070"
+</span><span class='line'>[hadoop@hadoop-master2 tachyon-0.6.1]$ bin/tachyon tfs lsr /</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>IO/client</h2>
+
+<ul>
+<li>TachyonFS是client与Master/Worker的纽带，请求<strong>文件系统和文件</strong>的元数据CRUD操作。其中的WorkerClient仅用于写（保存）文件。</li>
+<li>TachyonFile是文件的抽象处理集合，可以获取文件的基本属性（元数据），同时提供了IO的接口用于文件内容的读写。</li>
+<li>InStream读、获取文件内容
+
+<ul>
+<li>EmptyBlockInStream(文件包括的块为0）</li>
+<li>BlockInStream(文件包括的块为1）
+
+<ul>
+<li>LocalBlockInStream 仅当是localworker且该块在本机时，通过MappedByteBuffer获取数据（数据在ramdisk也就是内存盘上哦）。</li>
+<li>RemoteBlockInStream （通过nio从远程的worker#DataServer机器获取数据#retrieveByteBufferFromRemoteMachine，如果readtype设置为cache同时把数据缓冲到本地worker）</li>
+</ul>
+</li>
+<li>FileInStream(文件包括的块为1+，可以理解为BlocksInStream。通过mCurrentPosition / mBlockCapacity来获取当前的blockindex最终还是调用BlockInStream）</li>
+</ul>
+</li>
+<li>FileOutStream写，写数据入口就是只有FileOutStream
+
+<ul>
+<li>BlockOutStream（WriteType设置了需要缓冲，会写到本地localworker。<strong>由于需要进行分块，会复杂些#appendCurrentBuffer</strong>）</li>
+<li>UnderFileSystem（如果WriteType设置了Through，则把数据写一份到underfs文件系统）</li>
+</ul>
+</li>
+</ul>
+
+
+<h2>Master</h2>
+
+<p>TachyonMaster是master的启动类，所有的服务都是在这个类里面初始化启动的。</p>
+
+<ul>
+<li>HA：LeaderSelectorClient</li>
+<li>EditLog：EditLogProcessor、Journal。
+
+<ul>
+<li>如果是HA模式，leader调用setup方法把EditLogProcessor停掉。也就是说在HA模式下，standby才会运行EditLogProcessor实时处理editlog。</li>
+<li>leader和非HA master则仅在启动时通过调用MasterInfo#init处理editlog一次。</li>
+</ul>
+</li>
+<li>Thrift: TServer、MasterServiceHandler；与MasterClient对应的服务端。</li>
+<li>Web: UIWebServer，使用jetty的内嵌服务器。</li>
+<li>MasterInfo</li>
+</ul>
+
+
+<h2>Worker</h2>
+
+<h2>Thrift</h2>
+
+<h2>HA</h2>
+
+<p>当配置<code>tachyon.usezookeeper</code>设置为true时，启动master时会初始化LeaderSelectorClient对象。使用curator连接到zookeeper服务器进行leader的选举。</p>
+
+<p><strong>LeaderSelectorClient</strong>实现了LeaderSelectorListener接口，创建LeaderSelector并传入当前实例作为监听实例，当选举完成后，被选leader触发takeLeadership事件。</p>
+
+<blockquote><p>public void takeLeadership(CuratorFramework client) throws Exception
+Called when your instance has been granted leadership. This method should not return until you wish to release leadership</p></blockquote>
+
+<p>takeLeadership方法中把<code>mIsLeader</code>设置为true（master自己判断）、创建<code>mLeaderFolder + mName</code>路径（客户端获取master leader）；然后隔5s的死循环（运行在LeaderSelector单独的线程池）。</p>
+
+<h2>Checkpoint</h2>
+
+<h2>Journal</h2>
+
+<hr />
+
+<h2>问题</h2>
+
+<ul>
+<li>程序没有返回内容，没有响应（v1.1.0已经没有这个问题了）</li>
+</ul>
+
+
+<p>tfs 默认是CACHE_THROUGH，会缓冲同时写ufs。如果改成must则只写cache，然后清理内存，再获取数据，一直没有内容返回，不知道为什么？</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ export TACHYON_JAVA_OPTS="-Dtachyon.user.file.writetype.default=MUST_CACHE "
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs copyFromLocal LICENSE /LICENSE2
+</span><span class='line'>Copied LICENSE to /LICENSE2
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs free /LICENSE2
+</span><span class='line'>/LICENSE2 was successfully freed from memory.
+</span><span class='line'>[eshore@bigdata1 tachyon-0.6.1]$ bin/tachyon tfs cat /LICENSE2</span></code></pre></td></tr></table></div></figure>
+
+
+<p>v1.1</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs ls /README.txt                                            
+</span><span class='line'>1366.00B  04-16-2016 07:56:24:499  In Memory      /README.txt
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs free /README.txt
+</span><span class='line'>/README.txt was successfully freed from memory.
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs cat /README.txt 
+</span><span class='line'>Block 402653184 is not available in Alluxio</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1406,230 +1597,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/03/09/windows-build-hadoop-2-dot-6/">Windows Build hadoop-2.6</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2015-03-09T12:01:55+08:00" pubdate data-updated="true">Mon 2015-03-09 12:01</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>环境</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>C:\Users\winse&gt;java -version
-</span><span class='line'>java version "1.7.0_02"
-</span><span class='line'>Java(TM) SE Runtime Environment (build 1.7.0_02-b13)
-</span><span class='line'>Java HotSpot(TM) Client VM (build 22.0-b10, mixed mode, sharing)
-</span><span class='line'>
-</span><span class='line'>C:\Users\winse&gt;protoc --version
-</span><span class='line'>libprotoc 2.5.0
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC ~
-</span><span class='line'>$ cygcheck -c cygwin
-</span><span class='line'>Cygwin Package Information
-</span><span class='line'>Package              Version        Status
-</span><span class='line'>cygwin               1.7.33-1       OK</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>具体步骤</h2>
-
-<p>在windows下，hadoop-2.6还不能直接编译java-x86的dll。需要自己处理/打patch<a href="https://issues.apache.org/jira/browse/HADOOP-9922">HADOOP-9922</a>，但是官网jira-patch给出来的和2.6.0-src对不上。自己动手丰衣足食，把x64的全部改成Win32即可，附编译成功的patch<a href="http://yunpan.cn/cJaZzSu6DIibg">下载hadoop-2.6.0-common-native-win32-diff.patch（提取码：08fd）</a>。</p>
-
-<ul>
-<li>用visual studio2010的x86命令行进入：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Visual Studio 命令提示(2010)
-</span><span class='line'>
-</span><span class='line'>Setting environment for using Microsoft Visual Studio 2010 x86 tools.</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>切换到hadoop源码目录，打补丁和编译。同时protobuf目录和cygwin\bin目录加入PATH：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>cd hadoop-2.6.0-src
-</span><span class='line'>cd hadoop-common-project\hadoop-common
-</span><span class='line'>patch -p0 &lt; hadoop-2.6.0-common-native-win32-diff.patch
-</span><span class='line'>
-</span><span class='line'>set PATH=%PATH%;E:\local\home\Administrator\bin;c:\cygwin\bin
-</span><span class='line'>
-</span><span class='line'>mvn package -Pdist,native-win -DskipTests -Dtar -Dmaven.javadoc.skip=true</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>编译完成后，直接把<code>hadoop-common\target\bin</code>目录下的内容拷贝到程序的bin目录下。</li>
-</ul>
-
-
-<p>在windows下，执行java程序java.library.path默认到PATH路径找。这也是需要定义<strong>环境变量HADOOP_HOME</strong>，以及把<code>%HADOOP_HOME%\bin</code>加入到PATH的原因！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>HADOOP_HOME=E:\local\libs\big\hadoop-2.2.0 
-</span><span class='line'>PATH=%HADOOP_HOME%\bin;%PATH%</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>配置坑：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@Lenovo-PC /cygdrive/e/local/opt/bigdata/hadoop-2.6.0
-</span><span class='line'>$ find . -name "*-default.xml" | xargs -I{} grep "hadoop.tmp.dir" {}
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/local&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/system&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/staging&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/temp&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/mapred/history/recoverystore&lt;/value&gt;
-</span><span class='line'>  &lt;name&gt;hadoop.tmp.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/io/local&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/s3&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/s3a&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/name&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/data&lt;/value&gt;
-</span><span class='line'>  &lt;value&gt;file://${hadoop.tmp.dir}/dfs/namesecondary&lt;/value&gt;
-</span><span class='line'>    &lt;value&gt;${hadoop.tmp.dir}/yarn/system/rmstore&lt;/value&gt;
-</span><span class='line'>    &lt;value&gt;${hadoop.tmp.dir}/nm-local-dir&lt;/value&gt;
-</span><span class='line'>    &lt;value&gt;${hadoop.tmp.dir}/yarn-nm-recovery&lt;/value&gt;
-</span><span class='line'>    &lt;value&gt;${hadoop.tmp.dir}/yarn/timeline&lt;/value&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>就dfs的在前面加了<code>file://</code>前缀！</p>
-
-<p>所以，在windows下如果你只配置hadoop.tmp.dir（<code>file:///e:/tmp/hadoop</code>）的话还得同时配置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.namenode.name.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/dfs/name&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/dfs/data&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;dfs.namenode.checkpoint.dir&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${hadoop.tmp.dir}/dfs/namesecondary&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>接下来格式化，启动都和同时一样。</p>
-
-<h2>其他</h2>
-
-<p>调试，下载maven源码等</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>set HADOOP_NAMENODE_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090"
-</span><span class='line'>
-</span><span class='line'>mvn dependency:resolve -Dclassifier=sources
-</span><span class='line'>
-</span><span class='line'>mvn eclipse:eclipse -DdownloadSources -DdownloadJavadocs 
-</span><span class='line'>
-</span><span class='line'>mvn dependency:sources 
-</span><span class='line'>mvn dependency:resolve -Dclassifier=javadoc
-</span><span class='line'>
-</span><span class='line'>/* 操作HDFS */
-</span><span class='line'>set HADOOP_ROOT_LOGGER=DEBUG,console</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/18">&larr; Older</a>
@@ -1706,6 +1673,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/03/12/k8s-harbor-config/">K8s Harbor Config</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/03/05/k8s-docker-multinode-on-centos6/">k8s在Centos6部署实践</a>
       </li>
     
@@ -1731,10 +1702,6 @@
     
       <li class="post">
         <a href="/blog/2017/01/25/develop-environment-prepare/">[整理] 环境准备工具集</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/01/21/jarsperreports-pdf-chinese/">jarsperreports生成PDF中文问题</a>
       </li>
     
   </ul>
@@ -1771,7 +1738,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/docker/'>docker</a> (9) 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (10) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1815,7 +1782,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (3) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1872,7 +1839,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (164)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (165)</li>
 	</ul>
 	
 </section>
