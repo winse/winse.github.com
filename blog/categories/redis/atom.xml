@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Redis | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/redis/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-03-13T14:54:22+08:00</updated>
+  <updated>2017-03-23T19:50:31+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,269 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Codis使用进阶]]></title>
+    <link href="http://winseliu.com/blog/2017/03/23/codis-usage2/"/>
+    <updated>2017-03-23T17:48:55+08:00</updated>
+    <id>http://winseliu.com/blog/2017/03/23/codis-usage2</id>
+    <content type="html"><![CDATA[<p>去年年中的时刻有安装过codis。当时因为任务紧就使用jedis的ShardedJedisPool功能粗略的解决，由于是自己手动路由和管理，维护起来太难，特别是当初设置的实例数不够用时，相当麻烦。</p>
+
+<p>年初项目各种测试，于是有些闲暇的时间，重新弄一弄redis cluster。算是搭建一个环境来测试：</p>
+
+<p>版本：</p>
+
+<ul>
+<li>codis-3.2</li>
+<li>centos6</li>
+</ul>
+
+
+<h2>测试环境编译安装</h2>
+
+<p>现在的版本已经有了全部的依赖，直接编译即可。</p>
+
+<ul>
+<li><a href="https://github.com/CodisLabs/codis/blob/release3.2/doc/tutorial_zh.md#0-%E4%B8%8B%E8%BD%BD%E4%B8%8E%E7%BC%96%E8%AF%91">官网文档</a></li>
+</ul>
+
+
+<pre><code>tar zxvf go1.6.2.linux-amd64.tar.gz 
+
+/etc/profile
+export GOROOT=/usr/local/go
+export GOPATH=/opt/go
+export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
+
+-
+
+[root@cu2 CodisLabs]# pwd
+/opt/go/src/github.com/CodisLabs
+
+[root@cu2 CodisLabs]# git clone --branch release3.2  https://github.com/CodisLabs/codis.git 
+
+[root@cu2 CodisLabs]# cd codis/
+
+[root@cu2 codis]# make 
+
+[root@cu2 codis]# ll bin/
+total 101292
+drwxr-xr-x 4 root root     4096 Mar 15 12:58 assets
+-rwxr-xr-x 1 root root 21036930 Mar 15 12:58 codis-admin
+-rwxr-xr-x 1 root root 22343059 Mar 15 12:58 codis-dashboard
+-rwxr-xr-x 1 root root 18378506 Mar 15 12:58 codis-fe
+-rwxr-xr-x 1 root root 22675153 Mar 15 12:58 codis-proxy
+-rwxr-xr-x 1 root root  7982967 Mar 15 12:58 codis-server
+-rwxr-xr-x 1 root root  5580431 Mar 15 12:58 redis-benchmark
+-rwxr-xr-x 1 root root  5712419 Mar 15 12:58 redis-cli
+-rw-r--r-- 1 root root      170 Mar 15 12:58 version
+[root@cu2 codis]# cat bin/version 
+version = 2017-03-15 00:40:41 +0800 @be9ee25c63a64396b5fb0076447be560497b909d @3.2-beta-10-gbe9ee25
+compile = 2017-03-15 12:58:23 +0800 by go version go1.6.2 linux/amd64
+
+[root@cu2 codis]# bin/codis-dashboard --default-config | tee dashboard.toml
+[root@cu2 codis]# bin/codis-proxy --default-config | tee proxy.toml
+</code></pre>
+
+<h2>生产部署</h2>
+
+<p>把测试环境的GOPATH和GOROOT全部拷贝到生产即可。</p>
+
+<pre><code>[ud@cu-ud6 opt]$ ll
+drwxrwxr-x.  2 ud   ud   4096 3月  18 00:10 bin
+drwxr-xr-x. 11 ud   ud   4096 4月  20 2016 go
+drwxr-xr-x.  4 ud   ud   4096 3月  15 12:58 gopath
+drwxr-xr-x.  8 ud   ud   4096 3月  17 20:13 jdk1.8.0_92
+drwxr-xr-x. 10 ud   ud   4096 2月  20 2014 zookeeper-3.4.6
+
+[ud@cu-ud6 opt]$ ll bin
+总用量 24
+-rw-rw-r--. 1 ud ud 234 3月  17 20:36 codis.profile
+lrwxrwxrwx. 1 ud ud  54 3月  17 20:34 redis-cli -&gt; ../gopath/src/github.com/CodisLabs/codis/bin/redis-cli
+-rwxrwxr-x. 1 ud ud 487 3月  17 20:54 start-codis-dashboard.sh
+-rwxrwxr-x. 1 ud ud 310 3月  18 00:10 start-codis-proxy.sh
+-rwxrwxr-x. 1 ud ud 335 3月  17 21:17 start-redis.sh
+-rwxrwxr-x. 1 ud ud 323 3月  17 20:55 start-zoo.sh
+
+[ud@cu-ud6 opt]$ for f in $( find bin -type f ) ; do echo " =============== $f ================= "; cat "$f" ; done
+ =============== bin/codis.profile ================= 
+#!/bin/sh
+
+export GOROOT=/opt/go
+export GOPATH=/opt/gopath
+export CODIS_HOME=$GOPATH/src/github.com/CodisLabs/codis/
+export LOG_DIR=/var/log
+
+export JAVA_HOME=/opt/jdk1.8.0_92
+
+export PATH=$JAVA_HOME/bin:$GOPATH/bin:$GOROOT/bin:$PATH
+
+ =============== bin/start-zoo.sh ================= 
+#!/bin/sh
+
+CODIS_BIN="${BASH_SOURCE-$0}"
+CODIS_BIN="$(dirname "${CODIS_BIN}")"
+CODIS_BINDIR="$(cd "${CODIS_BIN}"; pwd)"
+
+source $CODIS_BINDIR/codis.profile
+
+export ZOO_LOG_DIR=$LOG_DIR
+
+cd /opt/zookeeper-3.4.6
+sed 's@dataDir=/tmp/zookeeper@dataDir=/data/zookeeper@' conf/zoo_sample.cfg &gt;conf/zoo.cfg
+
+bin/zkServer.sh start
+
+ =============== bin/start-codis-dashboard.sh ================= 
+#!/bin/sh
+
+CODIS_BIN="${BASH_SOURCE-$0}"
+CODIS_BIN="$(dirname "${CODIS_BIN}")"
+CODIS_BINDIR="$(cd "${CODIS_BIN}"; pwd)"
+
+source $CODIS_BINDIR/codis.profile
+
+cd $CODIS_HOME
+nohup bin/codis-dashboard \
+  --ncpu=4 \
+  --config=dashboard.toml \
+  --log=$LOG_DIR/codis_dashboard.log \
+  --log-level=INFO \
+  &gt;/dev/null 2&gt;&amp;1 &amp;
+
+nohup bin/codis-fe \
+  --ncpu=4 \
+  --zookeeper=127.0.0.1:2181 \
+  --listen=0.0.0.0:28080 \
+  --log=$LOG_DIR/codis_fe.log \
+  --log-level=INFO \
+  &gt;/dev/null 2&gt;&amp;1 &amp;
+
+ =============== bin/start-codis-proxy.sh ================= 
+#!/bin/sh
+
+CODIS_BIN="${BASH_SOURCE-$0}"
+CODIS_BIN="$(dirname "${CODIS_BIN}")"
+CODIS_BINDIR="$(cd "${CODIS_BIN}"; pwd)"
+
+source $CODIS_BINDIR/codis.profile
+
+cd $CODIS_HOME
+nohup bin/codis-proxy \
+  --ncpu=24 \
+  --config=proxy.toml \
+  --log=$LOG_DIR/codis_proxy.log \
+  --log-level=INFO \
+  &gt;/dev/null 2&gt;&amp;1 &amp;
+
+ =============== bin/start-redis.sh ================= 
+#!/bin/sh
+
+CODIS_BIN="${BASH_SOURCE-$0}"
+CODIS_BIN="$(dirname "${CODIS_BIN}")"
+CODIS_BINDIR="$(cd "${CODIS_BIN}"; pwd)"
+
+source $CODIS_BINDIR/codis.profile
+
+PORT=${1:-6379}
+
+cd $CODIS_HOME
+bin/codis-server --daemonize yes --port $PORT --pidfile /var/run/redis_$PORT.pid --logfile $LOG_DIR/redis_$PORT.log --save "" --bind $(hostname) 
+</code></pre>
+
+<p>环境：</p>
+
+<ul>
+<li>zookeeper: cu-ud6</li>
+<li>dashboard: cu-ud6</li>
+<li>fa: cu-ud6</li>
+<li>proxy: cu-ud6/7/8</li>
+<li>redis: cu-ud6/7/8:6378/6379</li>
+<li>nginx代理: cu-ud9</li>
+</ul>
+
+
+<p>web界面添加步骤：</p>
+
+<ul>
+<li>界面上添加proxy</li>
+<li>再添加group，填数字</li>
+<li>然后添加server</li>
+<li>最后分配slots</li>
+</ul>
+
+
+<p><img src="/images/blogs/codis.jpg" alt="" /></p>
+
+<p>nginx1.11新版本已经支持tcp的代理，可以实现proxy的负载均衡：</p>
+
+<pre><code>./configure --with-stream --with-http_ssl_module --with-pcre=src/pcre --with-zlib=src/zlib --prefix=/usr/local/nginx
+make &amp;&amp; make install
+
+[ud@cu-ud9 nginx]$ cat conf/nginx.conf
+
+#user  nobody;
+worker_processes  1;
+
+#error_log  logs/error.log;
+error_log  /var/log/nginx_error.log  notice;
+#error_log  logs/error.log  info;
+
+#pid        logs/nginx.pid;
+
+events {
+    worker_connections  1024;
+}
+
+stream {
+  upstream proxy {
+    hash   $remote_addr;
+    server cu-ud6:19000;
+    server cu-ud7:19000;
+    server cu-ud8:19000;
+  }
+
+  server {
+    listen cu-ud9:19000;
+    proxy_timeout 600s;
+    proxy_pass proxy;
+  }
+}
+
+# 测试获取数据
+[ud@cu-ud6 opt]$ bin/redis-cli -h cu-ud6 -p 6379 scan 0
+[ud@cu-ud6 opt]$ bin/redis-cli -h cu-ud9 -p 19000
+</code></pre>
+
+<p>重置统计量：</p>
+
+<ul>
+<li><a href="https://github.com/CodisLabs/codis/issues/1049">https://github.com/CodisLabs/codis/issues/1049</a></li>
+</ul>
+
+
+<pre><code>[ud@cu-ud6 codis]$ bin/codis-admin --proxy=cu-ud6:11080 --reset-stats
+</code></pre>
+
+<h2>问题</h2>
+
+<p>pipeline量太大，修改proxy的 backend_max_pipeline/session_max_pipeline 。同时在客户端代码里面执行一定量的pipe后执行sync。</p>
+
+<pre><code>2017/03/18 00:01:23 session.go:79: [INFO] session [0xc839888d80] create: {"ops":0,"create":1489766483,"remote":"192.168.32.182:57029"}
+2017/03/18 00:01:24 session.go:86: [INFO] session [0xc834a06d80] closed: {"ops":39601,"create":1489766483,"lastop":1489766484,"remote":"192.168.32.182:57028"}, error: too many pipelined r
+equests
+</code></pre>
+
+<p>sync还是会超时，修改nginx的proxy_timeout以及客户端初始化的timeout参数。</p>
+
+<pre><code>new JedisPool(new GenericObjectPoolConfig(), "cu-ud9", 19000, 10 * 60 * 1000)
+</code></pre>
+
+<p>W：感觉proxy还是会有停顿，sync后有时会出现几分钟时间没响应。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Redis批量操作]]></title>
@@ -1260,148 +1523,6 @@ make
 <li><a href="http://blog.nosqlfan.com/html/3490.html">Redis采用不同内存分配器碎片率对比</a></li>
 </ul>
 
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Redis维护]]></title>
-    <link href="http://winseliu.com/blog/2014/12/31/redis-operations/"/>
-    <updated>2014-12-31T23:14:57+08:00</updated>
-    <id>http://winseliu.com/blog/2014/12/31/redis-operations</id>
-    <content type="html"><![CDATA[<p>在使用过程中，接触最多的就是它的commands。除了string/hashmap/set/sortedlist的基本使用方式外，下面总结平时会经常使用的命令：</p>
-
-<h2>启动，客户端连接</h2>
-
-<pre><code>[root@docker redis-2.8.13]# nohup src/redis-server --port 6370 &amp;
-
-[root@docker redis-2.8.13]# src/redis-cli -p 6370
-127.0.0.1:6370&gt; 
-</code></pre>
-
-<h2>获取redis的整体状态</h2>
-
-<pre><code>127.0.0.1:6370&gt; info
-...
-# Memory
-used_memory:1415161160
-used_memory_human:1.32G
-used_memory_rss:0
-used_memory_peak:1415161160
-used_memory_peak_human:1.32G
-used_memory_lua:33792
-mem_fragmentation_ratio:0.00
-mem_allocator:jemalloc-3.6.0
-...
-# CPU
-used_cpu_sys:52.47
-used_cpu_user:10.07
-used_cpu_sys_children:0.00
-used_cpu_user_children:0.00
-
-# Keyspace
-db0:keys=4253125,expires=0,avg_ttl=0
-</code></pre>
-
-<p>列出的信息，包括了版本、内存/CPU使用、请求数、键值对等信息。通过这些基本了解redis运行情况。</p>
-
-<h2>清空数据库</h2>
-
-<p>对于数据量少的情况下，可以使用flushall来清理记录。</p>
-
-<pre><code>127.0.0.1:6370&gt; set abc 1234
-OK
-127.0.0.1:6370&gt; keys *
-1) "abc"
-127.0.0.1:6370&gt; flushall
-OK
-127.0.0.1:6370&gt; keys *
-(empty list or set)
-</code></pre>
-
-<p>数据量大的情况不建议使用flushall，可以直接把rdb数据文件干掉，然后重启redis服务就可以了（找不到数据文件后，就是一个新的库）。</p>
-
-<h2>随机获取一个键</h2>
-
-<pre><code>127.0.0.1:6370&gt; mset a 1 b 2 c 3 d 4 e 5 f 6 
-OK
-127.0.0.1:6370&gt; RANDOMKEY
-"a"
-127.0.0.1:6370&gt; RANDOMKEY
-"f"
-127.0.0.1:6370&gt; RANDOMKEY
-"e"
-127.0.0.1:6370&gt; RANDOMKEY
-"a"
-</code></pre>
-
-<h2>遍历获取键值</h2>
-
-<p>一般情况下，我们会使用<code>keys PATTERN</code>来查找匹配的键值。但是，如果数据量很大，keys操作会很消耗系统资源，<code>stop the world</code>的事情不是我们想看到的！此时，可以通过scan/hscan/zscan/ssan命令依次获取。</p>
-
-<ul>
-<li>获取库中的键值</li>
-</ul>
-
-
-<pre><code>127.0.0.1:6370&gt; eval "for i=1,100000 do redis.call('set', 'a' .. i, i) end" 0
-(nil)
-(0.98s)
-</code></pre>
-
-<p>正式环境我们无法预估匹配的键的数量，一根筋的使用keys命令可能并不明智。如果数据量很多，等不到结束应该就会ctrl+c了。这种情况下，可以使用scan命令：</p>
-
-<pre><code>127.0.0.1:6370&gt; scan 0 match ismi:domain:*.upaiyun.com
-1) "6553600"
-2) 1) "ismi:domain:KunMing:1415646303170928524.test.b0.upaiyun.com"
-   2) "ismi:domain:KunMing:1415392926002699280.test.b0.upaiyun.com"
-   3) "ismi:domain:KunMing:141489373375899237.test.b0.upaiyun.com"
-127.0.0.1:6370&gt; scan 0 match ismi:domain:*.upaiyun.com count 10
-1) "6553600"
-2) 1) "ismi:domain:KunMing:1415646303170928524.test.b0.upaiyun.com"
-   2) "ismi:domain:KunMing:1415392926002699280.test.b0.upaiyun.com"
-   3) "ismi:domain:KunMing:141489373375899237.test.b0.upaiyun.com"
-</code></pre>
-
-<p>Basically with COUNT the user specified the amount of work that should be done at every call in order to retrieve elements from the collection. This is just an hint for the implementation, however generally speaking this is what you could expect most of the times from the implementation.</p>
-
-<p>COUNT数值的意思应该是匹配操作的次数，而不是查询结果的个数。通过和<code>scan 0</code>对比可以得出来。</p>
-
-<p>同理，对于set（smembers）可以使用sscan，sortedlist可以使用zcan等。</p>
-
-<h2>lua脚本</h2>
-
-<p>redis内置的脚本语言，直接使用脚本可以减少客户端和服务端连接（多次请求）的压力。例如要批量删除一些键值：</p>
-
-<pre><code>src/redis-cli keys 'v2:*' | awk '{print $1}' | while read line; do src/redis-cli del $line ; done
-</code></pre>
-
-<p>先获取匹配的key，然后使用shell再次调用redis的客户端进行删除。表面上看起来没啥问题，如果匹配的key很多，会产生很多的tcp连接，占用redis服务器的端口！最终端口不够用，请求报错。</p>
-
-<p>此时，如果使用lua脚本的方式，就可以轻松处理。无需考虑端口等问题。</p>
-
-<pre><code># 量少时可以使用
-eval "local aks=redis.call('keys', 'v2:*'); if #aks &gt;0 then redis.call('del', unpack(aks)) end" 0
-
-# 优美
-eval "local aks=redis.call('keys', 'v2:*'); for _,r in ipairs(aks) do redis.call('del', r) end" 0
-</code></pre>
-
-<p>当然，如果键不多，还可以使用一次性全部删除：</p>
-
-<pre><code>src/redis-cli -p $PORT del `~/redis-2.8.13/src/redis-cli -p $PORT 'keys' 'v2:*' | grep -v 'v2:ci:' | grep -v 'v2:ff' | grep -v "$(date +%Y-%m-%d)" | grep -v "$(date +%Y-%m-%d -d '-1 day')"`
-</code></pre>
-
-<p>计算打印 hash键 <strong>总共</strong> 的包括键值对数量</p>
-
-<pre><code>eval "local aks=redis.call('keys', '*'); local res=0; for i,r in ipairs(aks) do res=res+redis.call('hlen', r) end; return res" 0
-</code></pre>
-
-<p>打印 <strong>每个</strong> hash包括的键值对个数</p>
-
-<pre><code>eval "local aks=redis.call('keys', '*'); local res={}; for i,r in ipairs(aks) do res[i]=redis.call('hlen', r) end; return res" 0
-</code></pre>
 
 <p>&ndash;END</p>
 ]]></content>

@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="要了解一个框架，一般都是从框架提供/开放的接口入手。先从最直接的方式下手，可以通过tachyon tfs和浏览器19999端口获取集群以及文件的相关信息。 要了解tachyon首先就是其文件系统，可以从两个功能开始：命令行tachyon.command.TFsShell和web-servlet。 &hellip;">
+  <meta name="description" content="hadoop分为存储和计算两个主要的功能，hdfs步入hadoop2后不论稳定性还是HA等等功能都比hadoop1要更吸引人。hadoop-2.2.0的hdfs已经比较稳定，但是yarn高版本有更加丰富的功能。本文主要关注spark-yarn下日志的查看，以及spark-yarn- &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +83,214 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2015/06/10/hadoop-deploy-spark-diff-version-yarn-and-hdfs/">Hadoop不同版本yarn和hdfs混搭，spark-yarn环境配置</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2015-06-10T18:48:19+08:00" pubdate data-updated="true">Wed 2015-06-10 18:48</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>hadoop分为存储和计算两个主要的功能，hdfs步入hadoop2后不论稳定性还是HA等等功能都比hadoop1要更吸引人。hadoop-2.2.0的hdfs已经比较稳定，但是yarn高版本有更加丰富的功能。本文主要关注spark-yarn下日志的查看，以及spark-yarn-dynamic的配置。</p>
+
+<p>hadoop-2.2.0的hdfs原本已经在使用的环境，在这基础上搭建运行yarn-2.6.0，以及spark-1.3.0-bin-2.2.0。</p>
+
+<ul>
+<li>编译</li>
+</ul>
+
+
+<p>我是在虚拟机里面编译，共享了host主机的maven库。参考【VMware共享目录】，【VMware-Centos6 Build hadoop-2.6】注意<strong>cmake_symlink_library的异常，由于共享的windows目录下不能创建linux的软链接</strong></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>tar zxvf ~/hadoop-2.6.0-src.tar.gz 
+</span><span class='line'>cd hadoop-2.6.0-src/
+</span><span class='line'>mvn package -Pdist,native -DskipTests -Dtar -Dmaven.javadoc.skip=true
+</span><span class='line'>
+</span><span class='line'># 由于hadoop-hdfs还是2.2的，这里编译spark需要用2.2版本！
+</span><span class='line'># 如果用2.6会遇到[UnsatisfiedLinkError:org.apache.hadoop.util.NativeCrc32.nativeComputeChunkedSumsByteArray ](http://blog.csdn.net/zeng_84_long/article/details/44340441)
+</span><span class='line'>cd spark-1.3.0
+</span><span class='line'>export MAVEN_OPTS="-Xmx3g -XX:MaxPermSize=1g -XX:ReservedCodeCacheSize=512m"
+</span><span class='line'>mvn clean package -Phadoop-2.2 -Pyarn -Phive -Phive-thriftserver -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+</span><span class='line'>
+</span><span class='line'>vi make-distribution.sh #注释掉BUILD_COMMAND那一行，不重复执行package！
+</span><span class='line'>./make-distribution.sh  --mvn `which mvn` --tgz  --skip-java-test -Phadoop-2.6 -Pyarn -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><p>配置注意点</p></li>
+<li><p>core-site不要全部拷贝原来的，只要一些主要的配置即可。</p></li>
+<li>yarn-site的<code>yarn.resourcemanager.webapp.address</code>需要填写具体的地址，不能写<code>0.0.0.0</code>。</li>
+<li>yarn-site的<code>yarn.nodemanager.aux-services</code>添加spark_shuffle服务。<a href="https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation">https://spark.apache.org/docs/latest/job-scheduling.html#dynamic-resource-allocation</a></li>
+<li>把hive-site的文件拷贝/链接到spark的conf目录下。</li>
+<li>spark-yarn-dynamic配置: <a href="https://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">https://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 spark-1.3.0-bin-2.2.0]$ cat conf/spark-defaults.conf 
+</span><span class='line'># spark.master                     spark://bigdatamgr1:7077,bigdata8:7077
+</span><span class='line'># spark.eventLog.enabled           true
+</span><span class='line'># spark.eventLog.dir               hdfs://namenode:8021/directory
+</span><span class='line'># spark.executor.extraJavaOptions  -XX:+PrintGCDetails -Dkey=value -Dnumbers="one two three"
+</span><span class='line'># spark.executor.extraJavaOptions       -Xmx16g -Xms16g -Xmn256m -XX:+UseParNewGC -XX:+UseConcMarkSweepGC -XX:CMSInitiatingOccupancyFraction=70 -XX:ParallelGCThreads=10
+</span><span class='line'>spark.driver.memory              48g
+</span><span class='line'>spark.executor.memory            48g
+</span><span class='line'>spark.sql.shuffle.partitions     200
+</span><span class='line'>
+</span><span class='line'>#spark.scheduler.mode FAIR
+</span><span class='line'>spark.serializer  org.apache.spark.serializer.KryoSerializer
+</span><span class='line'>spark.driver.maxResultSize 8g
+</span><span class='line'>#spark.kryoserializer.buffer.max.mb 2048
+</span><span class='line'>
+</span><span class='line'>spark.dynamicAllocation.enabled true
+</span><span class='line'>spark.dynamicAllocation.minExecutors 4
+</span><span class='line'>spark.shuffle.service.enabled true
+</span><span class='line'>
+</span><span class='line'>[eshore@bigdatamgr1 conf]$ cat spark-env.sh 
+</span><span class='line'>#!/usr/bin/env bash
+</span><span class='line'>
+</span><span class='line'>JAVA_HOME=/home/eshore/jdk1.7.0_60
+</span><span class='line'>
+</span><span class='line'># log4j
+</span><span class='line'>
+</span><span class='line'>__add_to_classpath() {
+</span><span class='line'>
+</span><span class='line'>  root=$1
+</span><span class='line'>
+</span><span class='line'>  if [ -d "$root" ] ; then
+</span><span class='line'>    for f in `ls $root/*.jar | grep -v -E '/hive.*.jar'`  ; do
+</span><span class='line'>      if [ -n "$SPARK_DIST_CLASSPATH" ] ; then
+</span><span class='line'>        export SPARK_DIST_CLASSPATH=$SPARK_DIST_CLASSPATH:$f
+</span><span class='line'>      else
+</span><span class='line'>        export SPARK_DIST_CLASSPATH=$f
+</span><span class='line'>      fi
+</span><span class='line'>    done
+</span><span class='line'>  fi
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'># this add tail of SPARK_CLASSPATH
+</span><span class='line'>__add_to_classpath "/home/eshore/apache-hive-0.13.1/lib"
+</span><span class='line'>
+</span><span class='line'>#export HADOOP_CONF_DIR=/data/opt/ibm/biginsights/hadoop-2.2.0/etc/hadoop
+</span><span class='line'>export HADOOP_CONF_DIR=/home/eshore/hadoop-2.6.0/etc/hadoop
+</span><span class='line'>export SPARK_CLASSPATH=$SPARK_CLASSPATH:/home/eshore/spark-1.3.0-bin-2.2.0/conf:$HADOOP_CONF_DIR
+</span><span class='line'>
+</span><span class='line'># HA
+</span><span class='line'>SPARK_DAEMON_JAVA_OPTS="-Dspark.deploy.recoveryMode=ZOOKEEPER -Dspark.deploy.zookeeper.url=bi-00-01.bi.domain.com:2181 -Dspark.deploy.zookeeper.dir=/spark" 
+</span><span class='line'>
+</span><span class='line'>SPARK_PID_DIR=${SPARK_HOME}/pids
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>同步</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>for h in `cat slaves ` ; do rsync -vaz hadoop-2.6.0 $h:~/ --delete --exclude=work --exclude=logs --exclude=metastore_db --exclude=data --exclude=pids ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>启动spark-hive-thrift</li>
+</ul>
+
+
+<p>./sbin/start-thriftserver.sh &ndash;executor-memory 29g &ndash;master yarn-client</p>
+
+<p>对于多任务的集群来说，配置自动动态分配（类似资源池）更有利于资源的使用。可以通过【All Applications】-【ApplicationMaster】-【Executors】来观察执行进程的变化。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1157,446 +1365,6 @@ Called when your instance has been granted leadership. This method should not re
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/03/13/hadoop-distcp/">Hadoop Distcp</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2015-03-13T20:38:23+08:00" pubdate data-updated="true">Fri 2015-03-13 20:38</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>HDFS提供的CP是单线程的，对于大数据量的拷贝操作希望能并行的复制。Hadoop Tools提供了DistCp工具，通过调用MapRed来实现并行的拷贝。</p>
-
-<h2>先来了解下hdfs cp的功能：</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Usage: hdfs dfs -cp [-f] [-p | -p[topax]] URI [URI ...] &lt;dest&gt;
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-not-exists
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -mkdir /cp-exists
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-exists
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -cp /cp /cp-not-exists2/
-</span><span class='line'>cp: `/cp-not-exists2/': No such file or directory
-</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ hadoop fs -ls -R /
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-14 19:55 /cp
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 19:55 /cp/README.1.txt
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 19:54 /cp/README.txt
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-exists
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-exists/cp
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-exists/cp/README.1.txt
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-exists/cp/README.txt
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2015-03-14 20:17 /cp-not-exists
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-not-exists/README.1.txt
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup       1366 2015-03-14 20:17 /cp-not-exists/README.txt</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>DistCp(distributed copy)分布式拷贝简单使用方式：</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.0]$ bin/hadoop distcp /cp /cp-distcp</span></code></pre></td></tr></table></div></figure>
-
-
-<p>用到分布式一般就说明规模不少，且数据量大，操作时间长。DistCp提供了一些参数来控制程序：</p>
-
-<table>
-<thead>
-<tr>
-<th style="text-align:left;"> DistCpOptionSwitch选项    </th>
-<th style="text-align:center;"> 命令行参数                      </th>
-<th style="text-align:left;"> 描述                                        </th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td style="text-align:left;"> LOG_PATH                  </td>
-<td style="text-align:center;"> <code>-log &lt;logdir&gt;               </code> </td>
-<td style="text-align:left;"> map结果输出的目录。默认为<code>JobStagingDir/_logs</code>，在DistCp#configureOutputFormat把该路径设置给CopyOutputFormat#setOutputPath。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> SOURCE_FILE_LISTING       </td>
-<td style="text-align:center;"> <code>-f &lt;urilist_uri&gt;            </code> </td>
-<td style="text-align:left;"> 需要拷贝的source-path&hellip;从改文件获取。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> MAX_MAPS                  </td>
-<td style="text-align:center;"> <code>-m &lt;num_maps&gt;               </code> </td>
-<td style="text-align:left;"> 默认20个，创建job时通过<code>JobContext.NUM_MAPS</code>添加到配置。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> ATOMIC_COMMIT             </td>
-<td style="text-align:center;"> <code>-atomic                     </code> </td>
-<td style="text-align:left;"> 原子操作。要么全部拷贝成功，那么失败。与<code>SYNC_FOLDERS</code> &amp; <code>DELETE_MISSING</code>选项不兼容。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> WORK_PATH                 </td>
-<td style="text-align:center;"> <code>-tmp &lt;tmp_dir&gt;              </code> </td>
-<td style="text-align:left;"> 与atomic一起使用，中间过程存储数据目录。成功后在CopyCommitter一次性移动到target-path下。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> SYNC_FOLDERS              </td>
-<td style="text-align:center;"> <code>-update                     </code> </td>
-<td style="text-align:left;"> 新建或更新文件。当文件大小和blockSize（以及crc）一样忽略。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> DELETE_MISSING            </td>
-<td style="text-align:center;"> <code>-delete                     </code> </td>
-<td style="text-align:left;"> 针对target-path目录，清理source-paths目录下没有的文件。常和<code>SYNC_FOLDERS</code>选项一起使用。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> BLOCKING                  </td>
-<td style="text-align:center;"> <code>-async                      </code> </td>
-<td style="text-align:left;"> 异步运行。其实就是job提交后，不打印日志了没有调用<code>job.waitForCompletion(true)</code>罢了。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> BANDWIDTH                 </td>
-<td style="text-align:center;"> <code>-bandwidth num(M)           </code> </td>
-<td style="text-align:left;"> 获取数据的最大速度。结合ThrottledInputStream来进行控制，在RetriableFileCopyCommand中初始化。</td>
-</tr>
-<tr>
-<td style="text-align:left;"> COPY_STRATEGY             </td>
-<td style="text-align:center;"> <code>-strategy dynamic/uniformsize</code> </td>
-<td style="text-align:left;"> 复制的时刻分组策略，即每个Map到底处理写什么数据。后面会讲到，分为静态和动态。</td>
-</tr>
-</tbody>
-</table>
-
-
-<p>还有新增的两个属性skipcrccheck（SKIP_CRC），append（APPEND）。保留Preserve 属性和ssl选项由于暂时没用到，这里不表，以后用到再补充。</p>
-
-<h2>DistCp的源码</h2>
-
-<p>放在<code>hadoop-2.6.0-src\hadoop-tools\hadoop-distcp</code>目录下。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mvn eclipse:eclipse </span></code></pre></td></tr></table></div></figure>
-
-
-<p>网络没问题的话，一般都能成功生成.classpath和.project两个Eclipse需要的项目文件。然后把项目导入eclipse即可。包括4个目录。</p>
-
-<p>还是先说说整个distcp的实现流程，看看distcp怎么跑的。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ export HADOOP_CLIENT_OPTS="-Dhadoop.root.logger=debug,console -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8071"
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop distcp /cp /cp-distcp
-</span><span class='line'>Listening for transport dt_socket at address: 8071</span></code></pre></td></tr></table></div></figure>
-
-
-<p>运行eclipse远程调试，连接服务器的8071端口，在DistCp的run方法打个断点，就可以调试了解其运行方式。修改log4j为debug，可以查看更详细的日志，了解执行的流程。</p>
-
-<p>服务器的jdk版本和本地eclipse的jdk版本最好一致，这样调试的时刻比较顺畅。</p>
-
-<h3>Driver</h3>
-
-<p>首先进到DistCp(Driver)的main方法，DistCp继承Configured实现了Tool接口，</p>
-
-<p>第一步解析参数</p>
-
-<ol>
-<li>使用<code>ToolRunner.run</code>运行会调用GenericOptionsParser解析<code>-D</code>的属性到Configuration实例；</li>
-<li>进到run方法后，通过<code>OptionsParser.parse</code>来解析配置为DistCpOptions实例；功能比较单一，主要涉及到DistCpOptionSwitch和DistCpOptions两个类。</li>
-</ol>
-
-
-<p>第二步准备MapRed的Job实例</p>
-
-<ol>
-<li>创建metaFolderPath（后面的 待拷贝文件seq文件存取的位置：StagingDir/_distcp[RAND]），对应<code>CONF_LABEL_META_FOLDER</code>属性；</li>
-<li>创建Job，设置名称、InputFormat(UniformSizeInputFormat|DynamicInputFormat)、Map类CopyMapper、Map个数（默认20个）、Reduce个数（0个）、OutputKey|ValueClass、MAP_SPECULATIVE（使用RetriableCommand代替）、CopyOutputFormat</li>
-<li>把命令行的配置写入Configuration。</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>metaFolderPath /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp-1344594636</span></code></pre></td></tr></table></div></figure>
-
-
-<p>此处有话题，设置InputFormat时通过<code>DistCpUtils#getStrategy</code>获取，代码中并没有<code>strategy.impl</code>的键加入到configuration。why？此处也是我们可以学习的，这个设置项在distcp-default.xml配置文件中，这种方式可以实现代码的解耦。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  public static Class&lt;? extends InputFormat&gt; getStrategy(Configuration conf,
-</span><span class='line'>                                                                 DistCpOptions options) {
-</span><span class='line'>    String confLabel = "distcp." +
-</span><span class='line'>        options.getCopyStrategy().toLowerCase(Locale.getDefault()) + ".strategy.impl";
-</span><span class='line'>    return conf.getClass(confLabel, UniformSizeInputFormat.class, InputFormat.class);
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>// 配置
-</span><span class='line'>    &lt;property&gt;
-</span><span class='line'>        &lt;name&gt;distcp.dynamic.strategy.impl&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;org.apache.hadoop.tools.mapred.lib.DynamicInputFormat&lt;/value&gt;
-</span><span class='line'>        &lt;description&gt;Implementation of dynamic input format&lt;/description&gt;
-</span><span class='line'>    &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>    &lt;property&gt;
-</span><span class='line'>        &lt;name&gt;distcp.static.strategy.impl&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;org.apache.hadoop.tools.mapred.UniformSizeInputFormat&lt;/value&gt;
-</span><span class='line'>        &lt;description&gt;Implementation of static input format&lt;/description&gt;
-</span><span class='line'>    &lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>配置CopyOutputFormat时，设置了三个路径：</p>
-
-<ul>
-<li>WorkingDirectory（中间临时存储目录，atomic选项时为tmp路径，否则为target-path路径）；</li>
-<li>CommitDirectory（文件拷贝最终目录，即target-path）；</li>
-<li>OutputPath（map write记录输出路径）。</li>
-</ul>
-
-
-<p>关于命令行选项有一个疑问，用eclipse查看<code>Call Hierachy</code>调用关系的时刻，并没有发现调用<code>DistCpOptions#getXXX</code>的方法，那么是通过什么方式把这些配置项设置到Configuration的呢？ 在DistCpOptionSwitch的枚举类中定义了每个选项的confLabel，在<code>DistCpOptions#appendToConf</code>方法中一起把这些属性填充到Configuration中。 [统一配置] ！！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  public void appendToConf(Configuration conf) {
-</span><span class='line'>    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.ATOMIC_COMMIT,
-</span><span class='line'>        String.valueOf(atomicCommit));
-</span><span class='line'>    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.IGNORE_FAILURES,
-</span><span class='line'>        String.valueOf(ignoreFailures));
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<p>第三步整理需要拷贝的文件列表</p>
-
-<p>这个真tmd的独到，提前把要做的事情规划好。需要拷贝的列表数据最终写入<code>[metaFolder]/fileList.seq</code>（key：与source-path的相对路径，value：该文件的CopyListingFileStatus），对应<code>CONF_LABEL_LISTING_FILE_PATH</code>，也就是map的输入（在自定义的InputFormat中处理）。</p>
-
-<p>涉及CopyList的三个实现FileBasedCopyListing（-f）、GlobbedCopyListing、SimpleCopyListing。最终都调用SimpleCopyListing把文件和空目录列表写入到fileList.seq；最后校验否有重复的文件名，如果存在会抛出DuplicateFileException。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>/tmp/hadoop-yarn/staging/hadoop/.staging/_distcp179796572/fileList.seq</span></code></pre></td></tr></table></div></figure>
-
-
-<p>同时计算需要拷贝的个数和大小（Byte），对应<code>CONF_LABEL_TOTAL_BYTES_TO_BE_COPIED</code>和<code>CONF_LABEL_TOTAL_NUMBER_OF_RECORDS</code>。</p>
-
-<p>第四步提交任务，等待等待无尽的等待。</p>
-
-<p>也可以设置async选项，提交成功后直接完成Driver。</p>
-
-<h3>Mapper</h3>
-
-<p>首先，setup从Configuration中获取配置属性：sync(update)/忽略错误(i)/校验码/overWrite/workPath/finalPath</p>
-
-<p>然后，从CONF_LABEL_LISTING_FILE_PATH路径获取准备好的sourcepath->CopyListingFileStatus键值对作为map的输入。</p>
-
-<p>其实CopyListingFileStatus这个对象真正用到的就是原始Path的路径，真心不知道搞这么多属性干嘛！获取原始路径后又重新实例CopyListingFileStatus为sourceCurrStatus。</p>
-
-<ul>
-<li>如果源路径为文件夹，调用createTargetDirsWithRetry（RetriableDirectoryCreateCommand）创建路径，COPY计数加1，return。</li>
-<li>如果源路径为文件，但是checkUpdate（文件大小和块大小一致）为skip，SKIP计数加1，BYTESSKIPPED计数加上sourceCurrStatus的长度，把改条记录写入map输出，return。</li>
-<li>如果源路径为文件，且检查后不是skip则调用copyFileWithRetry（RetriableFileCopyCommand）拷贝文件，BYTESEXPECTED计数加上sourceCurrStatus的长度，BYTESCOPIED计数加上拷贝文件的大小，COPY计数加1，再return。</li>
-<li>如果配置有保留文件/文件夹属性，对目标进行属性修改。</li>
-</ul>
-
-
-<p>从CopyListing获取数据，调用FileSystem-IO接口进行数据的拷贝（在原有IO的基础上封装了ThrottledInputStream来进行限流处理）。于此同时会涉及到source路径是文件夹但是target不是文件夹等的检查；更新还是覆盖；文件属性的保留和Map计数值的更新操作。</p>
-
-<h3>InputFormat</h3>
-
-<p>自定义了InputFormat来UniformSizeInputFormat进行拆分构造FileSplit，对CONF_LABEL_LISTING_FILE_PATH文件的每个键值的文件大小平均分成Map num
-个数小块，根据键值的位置构造Map num个FileSplit对象。执行map时，RecordReader根据FileSplit来获取键值对，然后传递给map。</p>
-
-<p>新版本的增加了DynamicInputFormat，实现能者多难的功能。先通过实际的日志，看看运行效果：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ export HADOOP_CLIENT_OPTS="-Dhadoop.root.logger=debug,console -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8071"
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop distcp "-Dmapreduce.map.java.opts=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090" -strategy dynamic -m 2 /cp /cp-distcp-dynamic
-</span><span class='line'>
-</span><span class='line'># 创建的chunk
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-</span><span class='line'>drwx------   - hadoop supergroup          0 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        198 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00000
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        224 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00001
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        220 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00002
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-</span><span class='line'>
-</span><span class='line'># 分配后的chunk
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-</span><span class='line'>drwx------   - hadoop supergroup          0 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        220 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/fileList.seq.chunk.00002
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        198 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/task_1426773672048_0006_m_000000
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        224 2015-03-20 00:41 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/chunkDir/task_1426773672048_0006_m_000001
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        506 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq
-</span><span class='line'>-rw-r--r--   1 hadoop supergroup        446 2015-03-20 00:40 /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446/fileList.seq_sorted
-</span><span class='line'>
-</span><span class='line'># map获取后
-</span><span class='line'>[hadoop@hadoop-master2 ~]$  ssh -g -L 8090:hadoop-slaver1:8090 hadoop-slaver1
-</span><span class='line'># 每拷贝完一个chunk/最后map结束，会把上一个跑完的chunk文件删除
-</span><span class='line'># job跑完后，临时目录的数据就被清楚了
-</span><span class='line'>[hadoop@hadoop-master2 ~]$ hadoop fs -ls -R /tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446
-</span><span class='line'>ls: `/tmp/hadoop-yarn/staging/hadoop/.staging/_distcp1568928446': No such file or directory</span></code></pre></td></tr></table></div></figure>
-
-
-<p>由于设置的map num为2，还有一个chunk没有分配出去，等到真正执行的时刻再进行分配。体现了策略的动态性。这个<strong>chunkm_000000分配给map0(其他类似)</strong>，其他没有分配出去的chunk让给map去<strong>抢</strong>。</p>
-
-<p>首先InputFormat创建FileSplit，在此过程中把原来的<code>CONF_LABEL_LISTING_FILE_PATH</code>中的需要处理的文件根据个数等份成chunk。（具体实现看源码，其中numEntriesPerChunk计算一个chunk几个文件比较复杂点）</p>
-
-<p>chunk中的也是sourcepath->CopyListingFileStatus键值对，以seq格式的存储文件中。<code>DynamicInputChunk#acquire(TaskAttemptContext)</code>读取数据的时刻比较有意思，在Driver阶段分配的chunk处理完后，就会动态的取处理余下的chunk，能者多劳。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  public static DynamicInputChunk acquire(TaskAttemptContext taskAttemptContext) throws IOException, InterruptedException {
-</span><span class='line'>    if (!areInvariantsInitialized())
-</span><span class='line'>        initializeChunkInvariants(taskAttemptContext.getConfiguration());
-</span><span class='line'>
-</span><span class='line'>    String taskId = taskAttemptContext.getTaskAttemptID().getTaskID().toString();
-</span><span class='line'>    Path acquiredFilePath = new Path(chunkRootPath, taskId);
-</span><span class='line'>
-</span><span class='line'>    if (fs.exists(acquiredFilePath)) {
-</span><span class='line'>      LOG.info("Acquiring pre-assigned chunk: " + acquiredFilePath);
-</span><span class='line'>      return new DynamicInputChunk(acquiredFilePath, taskAttemptContext);
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    for (FileStatus chunkFile : getListOfChunkFiles()) {
-</span><span class='line'>      if (fs.rename(chunkFile.getPath(), acquiredFilePath)) {
-</span><span class='line'>        LOG.info(taskId + " acquired " + chunkFile.getPath());
-</span><span class='line'>        return new DynamicInputChunk(acquiredFilePath, taskAttemptContext);
-</span><span class='line'>      }
-</span><span class='line'>      else
-</span><span class='line'>        LOG.warn(taskId + " could not acquire " + chunkFile.getPath());
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    return null;
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>OutputFormat &amp; Committer</h3>
-
-<p>自定义的CopyOutputFormat包括了working/commit/output路径的get/set方法，同时指定了自定义的OutputCommitter：CopyCommitter。</p>
-
-<p>正常情况为app-master调用CopyCommitter#commitJob处理善后的事情：保留文件属性的情况下更新文件的属性，atomic情况下把working转到commit路径，delete情况下删除target目录多余的文件。最后清理临时目录。</p>
-
-<p>看完DistCp然后再去看DistCpV1，尽管说功能上类似，但是要和新版本对上仍然要去看distcp的代码。好的代码就是这样吧，让人很自然轻松的理解，而不必反复来回的折腾，甚至于为了免得来回折腾而记住该代码块。（类太大，方法太长，变量定义和使用的位置相隔很远！一个变量作用域太长赋值变更次数太多）</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://hadoop.apache.org/docs/r2.6.0/hadoop-project-dist/hadoop-common/FileSystemShell.html#cp">FileSystemShell cp</a></li>
-<li><a href="http://hadoop.apache.org/docs/r2.6.0/hadoop-mapreduce-client/hadoop-mapreduce-client-core/DistCp.html">DistCp官方文档</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/18">&larr; Older</a>
@@ -1673,6 +1441,10 @@ Called when your instance has been granted leadership. This method should not re
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/03/23/codis-usage2/">Codis使用进阶</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/03/12/k8s-harbor-config/">K8s Harbor Config</a>
       </li>
     
@@ -1698,10 +1470,6 @@ Called when your instance has been granted leadership. This method should not re
     
       <li class="post">
         <a href="/blog/2017/01/27/vnc-server-on-centos7/">在Centos7上安装VNC Server</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/01/25/develop-environment-prepare/">[整理] 环境准备工具集</a>
       </li>
     
   </ul>
@@ -1802,7 +1570,7 @@ Called when your instance has been granted leadership. This method should not re
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/redis/'>redis</a> (6) 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1839,7 +1607,7 @@ Called when your instance has been granted leadership. This method should not re
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (165)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (166)</li>
 	</ul>
 	
 </section>
