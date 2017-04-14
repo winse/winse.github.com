@@ -9,8 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="上次写了一篇关于配置参数是如何影响mapreduce的实际调度的参考： opts（yarn.app.mapreduce.am.command-opts、mapreduce.map.java.opts、mapreduce.reduce.java.opts）是实际运行程序是内存参数。
-memory（ &hellip;">
+  <meta name="description" content="alluxio就是原来的tachyon。老大是华人，文档自然就有福利，把en改成cn就可以查看中文版的文档了。 http://alluxio.org/documentation/master/cn/Architecture.html 注意：docker暂时不能部署alluxio： mount: &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -84,6 +83,1609 @@ memory（ &hellip;">
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/04/15/alluxio-quickstart2/">Alluxio入门大全2</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-04-15T00:41:12+08:00" pubdate data-updated="true">Fri 2016-04-15 00:41</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>alluxio就是原来的tachyon。老大是华人，文档自然就有福利，把en改成cn就可以查看中文版的文档了。</p>
+
+<p><a href="http://alluxio.org/documentation/master/cn/Architecture.html">http://alluxio.org/documentation/master/cn/Architecture.html</a></p>
+
+<p>注意：docker暂时不能部署alluxio： <strong>mount: permission denied</strong></p>
+
+<p>首先介绍alluxio的编译，然后进行本地和集群两种方式的部署，同时介绍HDFS底层存储系统配置和一些常用命令行的使用，最后通过代码和spark读写Alluxio数据，以及升级到V1.1查看系统的Metrics指标来了解存储系统使用情况。</p>
+
+<p>回头看：Alluxio启动时会挂载一个Mem内存盘，其实可以把内存盘路径指定到 /dev/shm 。其他操作就很简单了，也不需要root权限。</p>
+
+<h1>编译</h1>
+
+<ul>
+<li><a href="http://alluxio.org/documentation/master/en/Building-Alluxio-Master-Branch.html">http://alluxio.org/documentation/master/en/Building-Alluxio-Master-Branch.html</a></li>
+<li><a href="http://alluxio.org/documentation/master/en/Running-Alluxio-Locally.html">http://alluxio.org/documentation/master/en/Running-Alluxio-Locally.html</a></li>
+<li><a href="http://alluxio.org/documentation/master/en/Running-Alluxio-on-a-Cluster.html">http://alluxio.org/documentation/master/en/Running-Alluxio-on-a-Cluster.html</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 下载官网打包的bin.tar.gz。不推荐去github下v1.0.1，编译时findbug检查server有两个bug
+</span><span class='line'>http://alluxio.org/downloads/files/1.0.1/alluxio-1.0.1-bin.tar.gz
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 ~]$ cd ~/sources/alluxio-1.0.1/
+</span><span class='line'>[hadoop@cu2 alluxio-1.0.1]$ export MAVEN_OPTS="-Xmx2g -XX:MaxPermSize=512M -XX:ReservedCodeCacheSize=512m"
+</span><span class='line'>[hadoop@cu2 alluxio-1.0.1]$ mvn clean package assembly:single -Phadoop-2.6 -Dhadoop.version=2.6.3 -Pyarn,spark -Dmaven.test.skip=true -Dmaven.javadoc.skip=true
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>编译成功后会生成 assembly/target/alluxio-1.0.1.tar.gz 文件。部署的时刻直接用编译好的 tar.gz 就行了，内容比较简洁和清晰。</p>
+
+<p>还有一个问题，不要加Profile <strong>compileJsp</strong> ，编译没问题但是部署后访问网页抛 ClassNotFound 异常。</p>
+
+<p>windows alluxio-1.1-snapshot 编译需要注意下。打包 assembly 的时刻换行符没有格式化，还有 mvn 编译时需要用到 test 项目(改成skipTests)。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ git diff assembly/src/main/assembly/alluxio-dist.xml
+</span><span class='line'>diff --git a/assembly/src/main/assembly/alluxio-dist.xml b/assembly/src/main/assembly/alluxio-dist.xml
+</span><span class='line'>index 14ecd19..06ddd51 100644
+</span><span class='line'>--- a/assembly/src/main/assembly/alluxio-dist.xml
+</span><span class='line'>+++ b/assembly/src/main/assembly/alluxio-dist.xml
+</span><span class='line'>@@ -11,6 +11,7 @@
+</span><span class='line'>       &lt;outputDirectory&gt;/bin&lt;/outputDirectory&gt;
+</span><span class='line'>       &lt;fileMode&gt;0755&lt;/fileMode&gt;
+</span><span class='line'>       &lt;directoryMode&gt;0755&lt;/directoryMode&gt;
+</span><span class='line'>+      &lt;lineEnding&gt;unix&lt;/lineEnding&gt;
+</span><span class='line'>     &lt;/fileSet&gt;
+</span><span class='line'>     &lt;fileSet&gt;
+</span><span class='line'>       &lt;directory&gt;${basedir}/../conf&lt;/directory&gt;
+</span><span class='line'>@@ -19,6 +20,7 @@
+</span><span class='line'>     &lt;fileSet&gt;
+</span><span class='line'>       &lt;directory&gt;${basedir}/../libexec&lt;/directory&gt;
+</span><span class='line'>       &lt;outputDirectory&gt;/libexec&lt;/outputDirectory&gt;
+</span><span class='line'>+      &lt;lineEnding&gt;unix&lt;/lineEnding&gt;
+</span><span class='line'>     &lt;/fileSet&gt;
+</span><span class='line'>     &lt;fileSet&gt;
+</span><span class='line'>       &lt;directory&gt;${basedir}/..&lt;/directory&gt;
+</span><span class='line'>
+</span><span class='line'>E:\git\alluxio&gt;set MAVEN_OPTS="-Xmx2g"
+</span><span class='line'>E:\git\alluxio&gt;mvn clean package assembly:single -Phadoop-2.6 -Dhadoop.version=2.6.3 -Pyarn,spark -DskipTests -Dmaven.javadoc.skip=true</span></code></pre></td></tr></table></div></figure>
+
+
+<h1>Local部署配置</h1>
+
+<p><a href="http://alluxio.org/documentation/master/cn/Running-Alluxio-Locally.html">http://alluxio.org/documentation/master/cn/Running-Alluxio-Locally.html</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ tar zxf alluxio-1.0.1.tar.gz  
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ cd alluxio-1.0.1/conf/
+</span><span class='line'>[hadoop@hadoop-master2 conf]$ cp alluxio-env.sh.template alluxio-env.sh
+</span><span class='line'>[hadoop@hadoop-master2 conf]$ vi alluxio-env.sh
+</span><span class='line'>...
+</span><span class='line'>JAVA_HOME=/opt/jdk1.7.0_60
+</span><span class='line'>ALLUXIO_UNDERFS_ADDRESS=/home/hadoop/tmp
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 conf]$ cd ..
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio format
+</span><span class='line'>Connecting to localhost as hadoop...
+</span><span class='line'>Formatting Alluxio Worker @ hadoop-master2
+</span><span class='line'>Connection to localhost closed.
+</span><span class='line'>Formatting Alluxio Master @ localhost
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ 
+</span><span class='line'>
+</span><span class='line'># 把hadoop用户加入sudo
+</span><span class='line'>[root@hadoop-master2 ~]# visudo 
+</span><span class='line'>...
+</span><span class='line'>hadoop        ALL=(ALL)       NOPASSWD: ALL
+</span><span class='line'>
+</span><span class='line'># 机器原来部署过hadoop，localhost已经可以无密钥登录。
+</span><span class='line'>
+</span><span class='line'># 启动
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio-start.sh local
+</span><span class='line'>Killed 0 processes on hadoop-master2
+</span><span class='line'>Killed 0 processes on hadoop-master2
+</span><span class='line'>Connecting to localhost as hadoop...
+</span><span class='line'>Killed 0 processes on hadoop-master2
+</span><span class='line'>Connection to localhost closed.
+</span><span class='line'>Formatting RamFS: /mnt/ramdisk (1gb)
+</span><span class='line'>Starting master @ localhost. Logging to /home/hadoop/alluxio-1.0.1/logs
+</span><span class='line'>Starting worker @ hadoop-master2. Logging to /home/hadoop/alluxio-1.0.1/logs
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ 
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ jps
+</span><span class='line'>3780 AlluxioMaster
+</span><span class='line'>3845 Jps
+</span><span class='line'>3807 AlluxioWorker
+</span><span class='line'>
+</span><span class='line'># localhost:19999 通过web页查看集群状态
+</span><span class='line'>
+</span><span class='line'># 关闭
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio-stop.sh all
+</span><span class='line'>Killed 1 processes on hadoop-master2
+</span><span class='line'>Killed 1 processes on hadoop-master2
+</span><span class='line'>Connecting to localhost as hadoop...
+</span><span class='line'>Killed 0 processes on hadoop-master2
+</span><span class='line'>Connection to localhost closed.</span></code></pre></td></tr></table></div></figure>
+
+
+<p>这里完全安装官网的步骤来弄，正式环境的时刻可以用 root 来 mount 内存盘。下面集群部署再介绍。</p>
+
+<p><img src="/images/blogs/alluxio-local.png" alt="" /></p>
+
+<h1>集群部署</h1>
+
+<ul>
+<li><a href="http://alluxio.org/documentation/master/cn/Running-Alluxio-on-a-Cluster.html">http://alluxio.org/documentation/master/cn/Running-Alluxio-on-a-Cluster.html</a></li>
+<li>HA <a href="http://alluxio.org/documentation/master/en/Running-Alluxio-Fault-Tolerant.html">http://alluxio.org/documentation/master/en/Running-Alluxio-Fault-Tolerant.html</a></li>
+</ul>
+
+
+<p>步骤和Local类似。把程序部署到workers节点，所有workers节点都 mount 内存盘，然后调用 start.sh 。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># master 和 workers 的无密钥登录。部署过apache-hadoop的肯定都已经弄过了
+</span><span class='line'>
+</span><span class='line'># 修改配置
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ vi conf/workers 
+</span><span class='line'>bigdata1
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ vi conf/alluxio-env.sh
+</span><span class='line'>ALLUXIO_MASTER_ADDRESS=hadoop-master2
+</span><span class='line'>
+</span><span class='line'># 部署程序
+</span><span class='line'># bin/alluxio copyDir &lt;dirname&gt; 慎用，会把logs目录也同步过去的，
+</span><span class='line'># 当然可以修改alluxio的脚本，反正要知道脚本的作用
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ rsync -az alluxio-1.0.1 bigdata1:~/ --exclude=logs --exclude=/*/src --exclude=underfs --exclude=journal
+</span><span class='line'>
+</span><span class='line'># 使用root用户挂载(workers)节点的内存盘
+</span><span class='line'># 当然还有最简单的方式，直接把 ALLUXIO_RAM_FOLDER=/dev/shm 指定到系统的tmpfs，系统的tmpfs其实也主要用的是内存。
+</span><span class='line'># 变量 ALLUXIO_WORKER_MEMORY_SIZE=512MB 修改内存盘的大小，小于 /dev/shm 的空间大小。
+</span><span class='line'>[root@hadoop-master2 ~]# cd /home/hadoop/alluxio-1.0.1
+</span><span class='line'>[root@hadoop-master2 alluxio-1.0.1]# bin/alluxio-mount.sh Mount workers
+</span><span class='line'>Connecting to bigdata1 as root...
+</span><span class='line'>Warning: Permanently added 'bigdata1,192.168.191.133' (RSA) to the list of known hosts.
+</span><span class='line'>Formatting RamFS: /mnt/ramdisk (1gb)
+</span><span class='line'>Connection to bigdata1 closed.
+</span><span class='line'>
+</span><span class='line'># worker节点确认
+</span><span class='line'>[hadoop@bigdata1 ~]$ mount
+</span><span class='line'>/dev/mapper/VolGroup-lv_root on / type ext4 (rw)
+</span><span class='line'>proc on /proc type proc (rw)
+</span><span class='line'>sysfs on /sys type sysfs (rw)
+</span><span class='line'>devpts on /dev/pts type devpts (rw,gid=5,mode=620)
+</span><span class='line'>tmpfs on /dev/shm type tmpfs (rw,rootcontext="system_u:object_r:tmpfs_t:s0")
+</span><span class='line'>/dev/sda1 on /boot type ext4 (rw)
+</span><span class='line'>none on /proc/sys/fs/binfmt_misc type binfmt_misc (rw)
+</span><span class='line'>ramfs on /mnt/ramdisk type ramfs (rw,size=1gb)
+</span><span class='line'>
+</span><span class='line'># 格式化：主要是清理/创建JOURNAL目录，清理workers本地缓存(tiered-storage)目录数据
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio format
+</span><span class='line'>Connecting to bigdata1 as hadoop...
+</span><span class='line'>Formatting Alluxio Worker @ bigdata1
+</span><span class='line'>Connection to bigdata1 closed.
+</span><span class='line'>Formatting Alluxio Master @ localhost
+</span><span class='line'>
+</span><span class='line'># 启动
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio-start.sh all NoMount
+</span><span class='line'>Killed 1 processes on hadoop-master2
+</span><span class='line'>Killed 1 processes on hadoop-master2
+</span><span class='line'>Connecting to bigdata1 as hadoop...
+</span><span class='line'>Killed 0 processes on bigdata1
+</span><span class='line'>Connection to bigdata1 closed.
+</span><span class='line'>Starting master @ localhost. Logging to /home/hadoop/alluxio-1.0.1/logs
+</span><span class='line'>Connecting to bigdata1 as hadoop...
+</span><span class='line'>Starting worker @ bigdata1. Logging to /home/hadoop/alluxio-1.0.1/logs
+</span><span class='line'>Connection to bigdata1 closed.
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ jps
+</span><span class='line'>5164 AlluxioMaster
+</span><span class='line'>5219 Jps
+</span><span class='line'>
+</span><span class='line'>[hadoop@bigdata1 alluxio-1.0.1]$ jps
+</span><span class='line'>1849 Jps
+</span><span class='line'>1829 AlluxioWorker
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>通过网页查看，如果 <strong>Running Workers</strong> 为 <strong>0</strong> ，到workers节点 alluxio-1.0.1/logs 下面去看日志然后定位问题。防火墙没开放？还是其他配置不正确，如hosts等等。</p>
+
+<h1>命令行HelloWorld</h1>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs copyFromLocal conf/alluxio-env.sh /
+</span><span class='line'>Copied conf/alluxio-env.sh to /
+</span><span class='line'>
+</span><span class='line'># worker节点查看内容（当前只有这一个文件啊，查看方便），block-id可以通过网页或者 fs fileInfo查看
+</span><span class='line'>[hadoop@bigdata1 alluxio-1.0.1]$ tail -1 /mnt/ramdisk/alluxioworker/117440512 
+</span><span class='line'>export ALLUXIO_WORKER_JAVA_OPTS="${ALLUXIO_JAVA_OPTS}"
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 在master机器上调用 persist ，在worker节点没找到对应的数据。竟然直接存储在执行命令的节点了，囧！！！
+</span><span class='line'># alluxio.client.file.FileSystemUtils#persistFile
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs persist /alluxio-env.sh
+</span><span class='line'>persisted file /alluxio-env.sh with size 5493
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ ll /home/hadoop/tmp/
+</span><span class='line'>total 28
+</span><span class='line'>-rwxrwxrwx  1 hadoop hadoop 5493 Apr 15 03:33 alluxio-env.sh
+</span><span class='line'>
+</span><span class='line'>[hadoop@bigdata1 alluxio-1.0.1]$ bin/alluxio fs persist /alluxio-env.sh
+</span><span class='line'>/alluxio-env.sh is already persisted
+</span><span class='line'>[hadoop@bigdata1 alluxio-1.0.1]$ ll /home/hadoop/tmp
+</span><span class='line'>总用量 0</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在master调用 persist 后，再在worker节点调用 persist 竟然提示 <strong>already persisted</strong> 了。如果在分布式的情况下，本地磁盘 <strong>不适合</strong> 用于做 underfs ！！官网也是说 <strong>单节点</strong> <strong>本地文件系统</strong>。</p>
+
+<blockquote><p>Alluxio提供了通用接口以简化插入不同的底层存储系统。目前我们支持Amazon S3，OpenStack Swift，Apache HDFS，GlusterFS以及单节点本地文件系统</p></blockquote>
+
+<h1>使用HDFS作为底层存储</h1>
+
+<p><a href="http://alluxio.org/documentation/master/en/Configuring-Alluxio-with-HDFS.html">http://alluxio.org/documentation/master/en/Configuring-Alluxio-with-HDFS.html</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ vi conf/alluxio-env.sh
+</span><span class='line'>...
+</span><span class='line'>JAVA_HOME=/opt/jdk1.7.0_60
+</span><span class='line'>HADOOP_HOME=/home/hadoop/hadoop-2.6.3
+</span><span class='line'>
+</span><span class='line'># source $HADOOP_HOME/libexec/hadoop-config.sh
+</span><span class='line'>JAVA_LIBRARY_PATH="$HADOOP_HOME/lib/native"
+</span><span class='line'>ALLUXIO_JAVA_OPTS="$ALLUXIO_JAVA_OPTS -Djava.library.path=$JAVA_LIBRARY_PATH"
+</span><span class='line'>LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$JAVA_LIBRARY_PATH
+</span><span class='line'>
+</span><span class='line'>ALLUXIO_CLASSPATH=$HADOOP_HOME/etc/hadoop:$ALLUXIO_CLASSPATH
+</span><span class='line'>ALLUXIO_UNDERFS_ADDRESS=hdfs:///alluxio                       # 配置一个alluxio子路径比较好管理
+</span><span class='line'>ALLUXIO_MASTER_ADDRESS=hadoop-master2
+</span><span class='line'>
+</span><span class='line'># 清理/创建元数据目录和workers节点本地缓冲存储的数据
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio format
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio-start.sh master
+</span><span class='line'>
+</span><span class='line'># master启动正常后，启动workers节点
+</span><span class='line'># 上面已经用root mount了内存盘了，没有的用root执行 bin/alluxio-mount.sh Mount workers
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio-start.sh workers NoMount</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>使用</li>
+</ul>
+
+
+<p><a href="http://alluxio.org/documentation/master/en/Command-Line-Interface.html">http://alluxio.org/documentation/master/en/Command-Line-Interface.html</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs copyFromLocal  ~/hadoop-2.6.3/README.txt /
+</span><span class='line'>Copied /home/hadoop/hadoop-2.6.3/README.txt to /
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs ls /
+</span><span class='line'>1366.00B  04-15-2016 09:30:45:829  In Memory      /README.txt
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs location /README.txt
+</span><span class='line'>/README.txt with file id 33554431 is on nodes: 
+</span><span class='line'>bigdata1
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs persist /README.txt
+</span><span class='line'>/README.txt is already persisted
+</span><span class='line'>
+</span><span class='line'># 默认文件只写到 Cache ，可以修改配置来进行修改
+</span><span class='line'># alluxio.client.WriteType
+</span><span class='line'>[hadoop@hadoop-master2 alluxio]$ export ALLUXIO_JAVA_OPTS="-Dalluxio.user.file.writetype.default=CACHE_THROUGH"
+</span><span class='line'>[hadoop@hadoop-master2 alluxio]$ bin/alluxio fs copyFromLocal ~/hadoop-2.6.3/README.txt /                      
+</span><span class='line'>Copied /home/hadoop/hadoop-2.6.3/README.txt to /
+</span><span class='line'>[hadoop@hadoop-master2 alluxio]$ bin/alluxio fs fileInfo /README.txt                                           
+</span><span class='line'>FileInfo{fileId=452984831, name=README.txt, path=/README.txt, ufsPath=hdfs:///alluxio/README.txt, length=1366, blockSizeBytes=536870912, creationTimeMs=1460765370996, completed=true, folder=false, pinned=false, cacheable=true, persisted=true, blockIds=[436207616], inMemoryPercentage=100, lastModificationTimesMs=1460765372423, ttl=-1, userName=, groupName=, permission=0, persistenceState=PERSISTED, mountPoint=false}
+</span><span class='line'>Containing the following blocks: 
+</span><span class='line'>BlockInfo{id=436207616, length=1366, locations=[BlockLocation{workerId=1, address=WorkerNetAddress{host=bigdata1, rpcPort=29998, dataPort=29999, webPort=30000}, tierAlias=MEM}]}
+</span><span class='line'>
+</span><span class='line'># Creates a 0 byte file. The file will be written to the under file system. 
+</span><span class='line'># For example, touch can be used to create a file signifying the compeletion of analysis on a directory.
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs touch /1234.txt    
+</span><span class='line'>/1234.txt has been created
+</span><span class='line'>
+</span><span class='line'># 已经persist的文件，重命名后，hdfs上面的文件也立即改变了
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs mv /1234.txt /4321.txt
+</span><span class='line'>Renamed /1234.txt to /4321.txt
+</span><span class='line'>
+</span><span class='line'># 空文件没有分配实际的存储，只有元数据
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs location /4321.txt    
+</span><span class='line'>/4321.txt with file id 67108863 is on nodes: 
+</span><span class='line'>
+</span><span class='line'># free掉memory，然后删掉underfs目录下的文件
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs free /
+</span><span class='line'>/ was successfully freed from memory.
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.3]$ bin/hdfs dfs -rmr /alluxio/*
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs ls /  
+</span><span class='line'>1366.00B  04-15-2016 09:30:45:829  Not In Memory  /README.txt
+</span><span class='line'>0.00B     04-15-2016 09:37:48:971  In Memory      /4321.txt
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs tail /README.txt
+</span><span class='line'>File does not exist: /alluxio/README.txt
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.INodeFile.valueOf(INodeFile.java:66)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.INodeFile.valueOf(INodeFile.java:56)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getBlockLocationsUpdateTimes(FSNamesystem.java:1893)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getBlockLocationsInt(FSNamesystem.java:1834)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getBlockLocations(FSNamesystem.java:1814)
+</span><span class='line'>
+</span><span class='line'># 按照文件名把 README.txt 放到 underfs 目录下面
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.3]$ bin/hdfs dfs -put *.txt /alluxio/ 
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs tail /README.txt
+</span><span class='line'>...
+</span><span class='line'>software:
+</span><span class='line'>  Hadoop Core uses the SSL libraries from the Jetty project written 
+</span><span class='line'>by mortbay.org.
+</span><span class='line'>
+</span><span class='line'># 数据载入内存
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs load /
+</span><span class='line'>/README.txt loaded
+</span><span class='line'>/ loaded
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs ls /  
+</span><span class='line'>1366.00B  04-15-2016 09:30:45:829  In Memory      /README.txt
+</span><span class='line'>0.00B     04-15-2016 09:37:48:971  In Memory      /4321.txt
+</span><span class='line'>
+</span><span class='line'># 载入underfs的目录结构
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio loadufs / hdfs:///alluxio 
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs ls /
+</span><span class='line'>1366.00B  04-15-2016 09:30:45:829  In Memory      /README.txt
+</span><span class='line'>0.00B     04-15-2016 09:37:48:971  In Memory      /4321.txt
+</span><span class='line'>15.07KB   04-15-2016 10:12:33:176  Not In Memory  /LICENSE.txt
+</span><span class='line'>101.00B   04-15-2016 10:12:33:190  Not In Memory  /NOTICE.txt
+</span><span class='line'>
+</span><span class='line'># 通过 fileInfo 查看信息； fileId, ufsPath, 和分区blocks信息
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs fileInfo /README.txt
+</span><span class='line'>
+</span><span class='line'># 通配符要这么写，也是醉鸟
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs rm /\\*
+</span><span class='line'>/4321.txt has been removed
+</span><span class='line'>/LICENSE.txt has been removed
+</span><span class='line'>/NOTICE.txt has been removed
+</span><span class='line'>/README.md has been removed
+</span><span class='line'>/README.txt has been removed
+</span><span class='line'>
+</span><span class='line'># alluxio系统中没有的文件，但是underfs包括的文件，读取一遍后元数据会载入alluxio
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ alluxio fs ls /
+</span><span class='line'>1366.00B  04-16-2016 08:09:30:996  In Memory      /README.txt
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ alluxio fs cat /LICENSE.txt
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ alluxio fs ls /
+</span><span class='line'>1366.00B  04-16-2016 08:09:30:996  In Memory      /README.txt
+</span><span class='line'>15.07KB   04-16-2016 08:26:22:495  Not In Memory  /LICENSE.txt</span></code></pre></td></tr></table></div></figure>
+
+
+<p>文件结构大概搞明白了，从 underfs 加载目录结构(loadufs)，文件载入alluxio内存(fs load)，alluxio文件持久化(fs persist)都有对应的命令。
+理解 <a href="http://alluxio.org/documentation/master/en/Unified-and-Transparent-Namespace.html">mount</a> 和linux的mount类似，把 underfs 当做一个硬盘设备去理解。</p>
+
+<p>但是好像没有修改文件的API，难道不支持修改？？暂时好像没有(2016-4-15 23:06:20 v1.1)</p>
+
+<blockquote><p><a href="http://alluxio.org/documentation/master/en/Key-Value-System-API.html">http://alluxio.org/documentation/master/en/Key-Value-System-API.html</a>
+Like files in Alluxio filesystem, the semantics of key-value system are also write-once</p></blockquote>
+
+<h1>FileSystem API</h1>
+
+<ul>
+<li><a href="http://docs.scala-lang.org/tutorials/scala-with-maven.html">http://docs.scala-lang.org/tutorials/scala-with-maven.html</a></li>
+<li><a href="http://alluxio.org/documentation/master/en/File-System-API.html">http://alluxio.org/documentation/master/en/File-System-API.html</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># scala
+</span><span class='line'>object App {
+</span><span class='line'>
+</span><span class='line'>  def using[A &lt;: {def close() : Unit}, B](resource: A)(f: A =&gt; B): B =
+</span><span class='line'>    try { f(resource) } finally { resource.close() }
+</span><span class='line'>
+</span><span class='line'>  def main(args: Array[String]) {
+</span><span class='line'>    // @see alluxio.Configuration.Configuration(boolean)
+</span><span class='line'>    System.setProperty(Constants.MASTER_HOSTNAME, "192.168.191.132")
+</span><span class='line'>    System.setProperty("HADOOP_USER_NAME", "hadoop")
+</span><span class='line'>
+</span><span class='line'>    val fs = FileSystem.Factory.get();
+</span><span class='line'>    val path = new AlluxioURI("/README.md");
+</span><span class='line'>    using(fs.createFile(path, CreateFileOptions.defaults().setWriteType(WriteType.THROUGH))){ out =&gt;
+</span><span class='line'>      val content =
+</span><span class='line'>"""FileSystem API Write.
+</span><span class='line'>   -------------------------
+</span><span class='line'>   Hello World!
+</span><span class='line'>"""
+</span><span class='line'>      out.write(content.getBytes)
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    using(fs.openFile(path)) { in =&gt;
+</span><span class='line'>      val buffer = new Array[Byte](1024)
+</span><span class='line'>      val size = in.read(buffer)
+</span><span class='line'>      System.out.println(new String(buffer, 0, size))
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'># THROUGH 仅写入到underfs
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ bin/alluxio fs ls /README.md
+</span><span class='line'>115.00B   04-15-2016 20:36:57:345  Not In Memory  /README.md
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ ~/hadoop-2.6.3/bin/hadoop fs -cat /alluxio/README.md
+</span><span class='line'>FileSystem API Write.
+</span><span class='line'>   -------------------------
+</span><span class='line'>   Hello World!
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.0.1]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<p>程序在win10系统运行，需要把 core-site.xml 加到 src/main/resources 下面（前面配置为了省事直接写 <strong>hdfs:///alluxio</strong>, 不加载配置的话程序不知道namenode）</p>
+
+<p>如果<strong>把WriteType设置为 CACHE_THROUGH ，写 underfs 的同时也会写本地缓存</strong>。提交成功后，文件的状态为：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs ls /README.md
+</span><span class='line'>115.00B   04-15-2016 23:48:33:749  In Memory      /README.md
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio fs fileInfo /README.md
+</span><span class='line'>FileInfo{fileId=318767103, name=README.md, path=/README.md, ufsPath=hdfs:///alluxio/README.md, length=115, blockSizeBytes=536870912, creationTimeMs=1460735313749, completed=true, folder=false, pinned=false, cacheable=true, persisted=true, blockIds=[301989888], inMemoryPercentage=100, lastModificationTimesMs=1460735315749, ttl=-1, userName=, groupName=, permission=0, persistenceState=PERSISTED, mountPoint=false}
+</span><span class='line'>Containing the following blocks: 
+</span><span class='line'>BlockInfo{id=301989888, length=115, locations=[BlockLocation{workerId=1, address=WorkerNetAddress{host=bigdata1, rpcPort=29998, dataPort=29999, webPort=30000}, tierAlias=MEM}]}
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ ~/hadoop-2.6.3/bin/hadoop fs -ls /alluxio/ 
+</span><span class='line'>Found 4 items
+</span><span class='line'>-rw-r--r--   1 hadoop supergroup      15429 2016-04-15 09:57 /alluxio/LICENSE.txt
+</span><span class='line'>-rw-r--r--   1 hadoop supergroup        101 2016-04-15 09:57 /alluxio/NOTICE.txt
+</span><span class='line'>-rwxrwxrwx   1 hadoop supergroup        115 2016-04-15 23:48 /alluxio/README.md</span></code></pre></td></tr></table></div></figure>
+
+
+<h1>大数据程序中使用Alluxio</h1>
+
+<p>hadoop2通过 <code>org.apache.hadoop.fs.FileSystem</code> services获取绑定的对象，所以<strong>不需要</strong>在core-site.xml里面配置 <strong>fs.alluxio.impl</strong> 和 <strong>fs.alluxio-ft.impl</strong></p>
+
+<ul>
+<li><a href="http://alluxio.org/documentation/master/en/Running-Spark-on-Alluxio.html">http://alluxio.org/documentation/master/en/Running-Spark-on-Alluxio.html</a></li>
+<li><a href="http://alluxio.org/documentation/master/en/Running-Hadoop-MapReduce-on-Alluxio.html">http://alluxio.org/documentation/master/en/Running-Hadoop-MapReduce-on-Alluxio.html</a></li>
+</ul>
+
+
+<p>其实都是通过 <strong>Hadoop FileSystem API</strong> 来访问Alluxio的。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># .bash_profile加环境变量
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ vi ~/.bash_profile 
+</span><span class='line'>...
+</span><span class='line'>HADOOP_HOME=~/hadoop
+</span><span class='line'>SPARK_HOME=~/spark
+</span><span class='line'>ALLUXIO_HOME=~/alluxio
+</span><span class='line'>
+</span><span class='line'>PATH=$HADOOP_HOME/bin:$SPARK_HOME/bin:$ALLUXIO_HOME/bin:$MAVEN_HOME/bin:$ANT_HOME/bin:$PATH
+</span><span class='line'># 这里没有 export HADOOP_HOME SPARK_HOME 
+</span><span class='line'># 因为在hadoop/spark的启动脚本也定义了这些变量。如果export，也需要把软链接同步到slaves节点
+</span><span class='line'>export PATH ANT_HOME MAVEN_HOME
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ ln -s hadoop-2.6.3 hadoop
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ ln -s alluxio-1.1.0-SNAPSHOT alluxio
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ ln -s spark-1.6.0-bin-2.6.3 spark
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ . .bash_profile 
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ export SPARK_CLASSPATH=\
+</span><span class='line'>&gt; ~/alluxio/core/client/target/alluxio-core-client-1.1.0-SNAPSHOT-jar-with-dependencies.jar 
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ 
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ spark-shell --master local
+</span><span class='line'>scala&gt; val file=sc.textFile("alluxio://hadoop-master2:19998/README.txt")
+</span><span class='line'>file: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[1] at textFile at &lt;console&gt;:27
+</span><span class='line'>
+</span><span class='line'>scala&gt; file.count()
+</span><span class='line'>res0: Long = 31
+</span><span class='line'>
+</span><span class='line'>scala&gt; file.take(2)
+</span><span class='line'>res1: Array[String] = Array(For the latest information about Hadoop, please visit our website at:, "")
+</span><span class='line'>
+</span><span class='line'># wordcount
+</span><span class='line'>scala&gt; val op = file.flatMap(_.split(" ")).map((_,1)).reduceByKey(_ + _)
+</span><span class='line'># word sort asc
+</span><span class='line'>scala&gt; op.sortByKey().take(10)
+</span><span class='line'># count sort desc
+</span><span class='line'>scala&gt; op.map(kv =&gt; (kv._2, kv._1)).sortByKey(false).map(kv =&gt; (kv._2, kv._1)).take(10)
+</span><span class='line'>
+</span><span class='line'>scala&gt; op.map(kv =&gt; (kv._2, kv._1)).sortByKey(false).map(kv =&gt; (kv._2, kv._1)).saveAsTextFile("alluxio://hadoop-master2:19998/output/")
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ alluxio fs cat /output/*
+</span><span class='line'>(,18)
+</span><span class='line'>(the,8)
+</span><span class='line'>(and,6)
+</span><span class='line'>(of,5)
+</span><span class='line'>(The,4)
+</span><span class='line'>(this,3)
+</span><span class='line'>(encryption,3)
+</span><span class='line'>(for,3)
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果运行在集群，在slave的节点也需要与主节点一样的目录结构。 或者按照<a href="http://spark.apache.org/docs/latest/programming-guide.html#using-the-shell">官网的教程</a>操作。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># spark_classpath 会被带到 task 的启动环境变量里面
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ rsync -az alluxio bigdata1:~/
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ export SPARK_CLASSPATH=\
+</span><span class='line'>&gt; ~/alluxio/core/client/target/alluxio-core-client-1.1.0-SNAPSHOT-jar-with-dependencies.jar
+</span><span class='line'> 
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ spark-shell --master spark://hadoop-master2:7077
+</span><span class='line'>scala&gt; val file=sc.textFile("alluxio://hadoop-master2:19998/README.txt")
+</span><span class='line'>file: org.apache.spark.rdd.RDD[String] = MapPartitionsRDD[1] at textFile at &lt;console&gt;:27
+</span><span class='line'>
+</span><span class='line'>scala&gt; val op = file.flatMap(_.split(" ")).map((_,1)).reduceByKey(_ + _)
+</span><span class='line'>op: org.apache.spark.rdd.RDD[(String, Int)] = ShuffledRDD[4] at reduceByKey at &lt;console&gt;:29
+</span><span class='line'>
+</span><span class='line'>scala&gt; op.map(kv =&gt; (kv._2, kv._1)).sortByKey(false).map(kv =&gt; (kv._2, kv._1)).saveAsTextFile("alluxio://hadoop-master2:19998/output2/")
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p><img src="/images/blogs/alluxio-spark-word-count.png" alt="" /></p>
+
+<h1>Metrics</h1>
+
+<p><a href="http://www.alluxio.org/documentation/master/cn/Metrics-System.html">http://www.alluxio.org/documentation/master/cn/Metrics-System.html</a></p>
+
+<p>v1.0.1有对应的api，可以通过 <a href="http://hadoop-master2:19999/metrics/json/">http://hadoop-master2:19999/metrics/json/</a> 查看。当前master主干分支v1.1.0可以在网页上面查看这些指标。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 拷贝配置
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ cd conf
+</span><span class='line'>[hadoop@hadoop-master2 conf]$ cp ~/alluxio-1.0.1/conf/alluxio-env.sh ./
+</span><span class='line'>[hadoop@hadoop-master2 conf]$ cp ~/alluxio-1.0.1/conf/log4j.properties ./
+</span><span class='line'>[hadoop@hadoop-master2 conf]$ cp ~/alluxio-1.0.1/conf/workers ./ 
+</span><span class='line'>
+</span><span class='line'># 启动master（使用原来的元数据）
+</span><span class='line'># 共享元数据，在 alluxio-env.sh 修改环境变量 ALLUXIO_JAVA_OPTS 
+</span><span class='line'># 添加 -Dalluxio.master.journal.folder=${ALLUXIO_JOURNAL_FOLDER} / ALLUXIO_JOURNAL_FOLDER=/home/hadoop/journal
+</span><span class='line'>[hadoop@hadoop-master2 alluxio-1.1.0-SNAPSHOT]$ bin/alluxio-start.sh master
+</span><span class='line'>Starting master @ hadoop-master2. Logging to /home/hadoop/alluxio-1.1.0-SNAPSHOT/logs</span></code></pre></td></tr></table></div></figure>
+
+
+<p>v1.1.0 页面多了 Metrics 页签：</p>
+
+<p><img src="/images/blogs/alluxio-metrics.png" alt="" /></p>
+
+<h1>其他文档</h1>
+
+<ul>
+<li>配置alluxio-default.properties <a href="http://alluxio.org/documentation/master/en/Configuration-Settings.html">http://alluxio.org/documentation/master/en/Configuration-Settings.html</a></li>
+<li>分层本地缓存 <a href="http://alluxio.org/documentation/master/en/Tiered-Storage-on-Alluxio.html">http://alluxio.org/documentation/master/en/Tiered-Storage-on-Alluxio.html</a></li>
+<li><a href="https://dzone.com/articles/Accelerate-In-Memory-Processing-with-Spark-from-Hours-to-Seconds-With-Tachyon">https://dzone.com/articles/Accelerate-In-Memory-Processing-with-Spark-from-Hours-to-Seconds-With-Tachyon</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/04/13/hiveserver2-ui-and-upgrade-hive2-dot-0-0/">Hiveserver2 Ui and Upgrade hive2.0.0</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-04-13T12:03:43+08:00" pubdate data-updated="true">Wed 2016-04-13 12:03</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>升级hive的标准动作：</p>
+
+<ul>
+<li>更新metadata，就是执行sql语句。更新前先备份原来的库！！</li>
+<li>调整依赖，我这里是升级spark，编译参考<a href="/blog/2016/03/28/hive-on-spark/">spark-without-hive</a></li>
+<li>修改参数(hive/spark/hadoop)来适应新版本</li>
+<li>hiveserver2 ui：启动hiveserver2服务，访问10002端口即可。<a href="https://cwiki.apache.org/confluence/display/Hive/Setting+Up+HiveServer2#SettingUpHiveServer2-WebUIforHiveServer2">UI配置</a></li>
+</ul>
+
+
+<p>环境说明：</p>
+
+<ul>
+<li>centos5</li>
+<li>hadoop-2.6.3</li>
+<li>spark-1.6.0-without-hive</li>
+<li>hive-2.0.0</li>
+</ul>
+
+
+<h2>操作详情</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+<span class='line-number'>100</span>
+<span class='line-number'>101</span>
+<span class='line-number'>102</span>
+<span class='line-number'>103</span>
+<span class='line-number'>104</span>
+<span class='line-number'>105</span>
+<span class='line-number'>106</span>
+<span class='line-number'>107</span>
+<span class='line-number'>108</span>
+<span class='line-number'>109</span>
+<span class='line-number'>110</span>
+<span class='line-number'>111</span>
+<span class='line-number'>112</span>
+<span class='line-number'>113</span>
+<span class='line-number'>114</span>
+<span class='line-number'>115</span>
+<span class='line-number'>116</span>
+<span class='line-number'>117</span>
+<span class='line-number'>118</span>
+<span class='line-number'>119</span>
+<span class='line-number'>120</span>
+<span class='line-number'>121</span>
+<span class='line-number'>122</span>
+<span class='line-number'>123</span>
+<span class='line-number'>124</span>
+<span class='line-number'>125</span>
+<span class='line-number'>126</span>
+<span class='line-number'>127</span>
+<span class='line-number'>128</span>
+<span class='line-number'>129</span>
+<span class='line-number'>130</span>
+<span class='line-number'>131</span>
+<span class='line-number'>132</span>
+<span class='line-number'>133</span>
+<span class='line-number'>134</span>
+<span class='line-number'>135</span>
+<span class='line-number'>136</span>
+<span class='line-number'>137</span>
+<span class='line-number'>138</span>
+<span class='line-number'>139</span>
+<span class='line-number'>140</span>
+<span class='line-number'>141</span>
+<span class='line-number'>142</span>
+<span class='line-number'>143</span>
+<span class='line-number'>144</span>
+<span class='line-number'>145</span>
+<span class='line-number'>146</span>
+<span class='line-number'>147</span>
+<span class='line-number'>148</span>
+<span class='line-number'>149</span>
+<span class='line-number'>150</span>
+<span class='line-number'>151</span>
+<span class='line-number'>152</span>
+<span class='line-number'>153</span>
+<span class='line-number'>154</span>
+<span class='line-number'>155</span>
+<span class='line-number'>156</span>
+<span class='line-number'>157</span>
+<span class='line-number'>158</span>
+<span class='line-number'>159</span>
+<span class='line-number'>160</span>
+<span class='line-number'>161</span>
+<span class='line-number'>162</span>
+<span class='line-number'>163</span>
+<span class='line-number'>164</span>
+<span class='line-number'>165</span>
+<span class='line-number'>166</span>
+<span class='line-number'>167</span>
+<span class='line-number'>168</span>
+<span class='line-number'>169</span>
+<span class='line-number'>170</span>
+<span class='line-number'>171</span>
+<span class='line-number'>172</span>
+<span class='line-number'>173</span>
+<span class='line-number'>174</span>
+<span class='line-number'>175</span>
+<span class='line-number'>176</span>
+<span class='line-number'>177</span>
+<span class='line-number'>178</span>
+<span class='line-number'>179</span>
+<span class='line-number'>180</span>
+<span class='line-number'>181</span>
+<span class='line-number'>182</span>
+<span class='line-number'>183</span>
+<span class='line-number'>184</span>
+<span class='line-number'>185</span>
+<span class='line-number'>186</span>
+<span class='line-number'>187</span>
+<span class='line-number'>188</span>
+<span class='line-number'>189</span>
+<span class='line-number'>190</span>
+<span class='line-number'>191</span>
+<span class='line-number'>192</span>
+<span class='line-number'>193</span>
+<span class='line-number'>194</span>
+<span class='line-number'>195</span>
+<span class='line-number'>196</span>
+<span class='line-number'>197</span>
+<span class='line-number'>198</span>
+<span class='line-number'>199</span>
+<span class='line-number'>200</span>
+<span class='line-number'>201</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 备份
+</span><span class='line'>[hadoop@file1 tools]$ mysqldump -uroot -p hive &gt;hive1.2.1-20160413.backup.sql
+</span><span class='line'>
+</span><span class='line'># 准备好程序后的目录结构
+</span><span class='line'>[hadoop@file1 ~]$ ll
+</span><span class='line'>总计 20
+</span><span class='line'>drwxrwxr-x 3 hadoop hadoop 4096 04-13 11:59 collect
+</span><span class='line'>drwx------ 3 hadoop hadoop 4096 04-07 16:43 dfs
+</span><span class='line'>lrwxrwxrwx 1 hadoop hadoop   18 04-11 10:09 hadoop -&gt; tools/hadoop-2.6.3
+</span><span class='line'>lrwxrwxrwx 1 hadoop hadoop   40 04-13 10:26 hive -&gt; /home/hadoop/tools/apache-hive-2.0.0-bin
+</span><span class='line'>lrwxrwxrwx 1 hadoop hadoop   42 04-13 10:52 spark -&gt; tools/spark-1.6.0-bin-hadoop2-without-hive
+</span><span class='line'>drwxrwxr-x 6 hadoop hadoop 4096 04-13 12:10 tmp
+</span><span class='line'>drwxrwxr-x 9 hadoop hadoop 4096 04-13 11:48 tools
+</span><span class='line'>[hadoop@file1 tools]$ ll
+</span><span class='line'>总计 84
+</span><span class='line'>drwxrwxr-x  8 hadoop hadoop  4096 04-08 09:25 apache-hive-1.2.1-bin
+</span><span class='line'>drwxrwxr-x  8 hadoop hadoop  4096 04-13 10:16 apache-hive-2.0.0-bin
+</span><span class='line'>drwxr-xr-x 11 hadoop hadoop  4096 04-07 16:34 hadoop-2.6.3
+</span><span class='line'>-rw-rw-r--  1 hadoop hadoop 46879 04-13 10:11 hive1.2.1-20160413.backup.sql
+</span><span class='line'>drwxrwxr-x  2 hadoop hadoop  4096 03-31 15:28 mysql
+</span><span class='line'>lrwxrwxrwx  1 hadoop hadoop    36 04-13 10:17 spark -&gt; spark-1.6.0-bin-hadoop2-without-hive
+</span><span class='line'>drwxrwxr-x 11 hadoop hadoop  4096 04-07 18:23 spark-1.3.1-bin-hadoop2.6.3-without-hive
+</span><span class='line'>drwxrwxr-x 11 hadoop hadoop  4096 03-28 11:15 spark-1.6.0-bin-hadoop2-without-hive
+</span><span class='line'>drwxr-xr-x 11 hadoop hadoop  4096 03-31 16:14 zookeeper-3.4.6
+</span><span class='line'>
+</span><span class='line'># 环境变量我直接加载的是link软链接的，我这直接修改软链就行了。根据情况调整。
+</span><span class='line'># apache-hive-2.0.0-bin同级目录建立spark软链接，或者再hive-env.sh中指定SPARK_HOME的位置
+</span><span class='line'>
+</span><span class='line'># hive-1.2.1并没有txn的表，所有要单独执行下hive-txn-schema-2.0.0.mysql.sql，
+</span><span class='line'># 然后再更新（后面的Duplicate column的错没问题的）
+</span><span class='line'>[hadoop@file1 tools]$ cd apache-hive-2.0.0-bin/scripts/metastore/upgrade/mysql/
+</span><span class='line'>[hadoop@file1 mysql]$ mysql -uroot -p
+</span><span class='line'>Enter password: 
+</span><span class='line'>Welcome to the MySQL monitor.  Commands end with ; or \g.
+</span><span class='line'>Your MySQL connection id is 10765
+</span><span class='line'>Server version: 5.5.48 MySQL Community Server (GPL)
+</span><span class='line'>
+</span><span class='line'>Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+</span><span class='line'>
+</span><span class='line'>Oracle is a registered trademark of Oracle Corporation and/or its
+</span><span class='line'>affiliates. Other names may be trademarks of their respective
+</span><span class='line'>owners.
+</span><span class='line'>
+</span><span class='line'>Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+</span><span class='line'>
+</span><span class='line'>mysql&gt; use hive;
+</span><span class='line'>Reading table information for completion of table and column names
+</span><span class='line'>You can turn off this feature to get a quicker startup with -A
+</span><span class='line'>
+</span><span class='line'>Database changed
+</span><span class='line'>mysql&gt; source hive-txn-schema-2.0.0.mysql.sql
+</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.04 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.03 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 1 row affected (0.04 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.03 sec)
+</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 1 row affected (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 1 row affected (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
+</span><span class='line'>
+</span><span class='line'>mysql&gt; source upgrade-1.2.0-to-2.0.0.mysql.sql
+</span><span class='line'>+------------------------------------------------+
+</span><span class='line'>|                                                |
+</span><span class='line'>+------------------------------------------------+
+</span><span class='line'>| Upgrading MetaStore schema from 1.2.0 to 2.0.0 |
+</span><span class='line'>+------------------------------------------------+
+</span><span class='line'>1 row in set, 1 warning (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>+---------------------------------------------------------------------------------------------------------------+
+</span><span class='line'>|                                                                                                               |
+</span><span class='line'>+---------------------------------------------------------------------------------------------------------------+
+</span><span class='line'>| &lt; HIVE-7018 Remove Table and Partition tables column LINK_TARGET_ID from Mysql for other DBs do not have it &gt; |
+</span><span class='line'>+---------------------------------------------------------------------------------------------------------------+
+</span><span class='line'>1 row in set, 1 warning (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected, 1 warning (0.03 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected, 1 warning (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected, 1 warning (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.00 sec)
+</span><span class='line'>
+</span><span class='line'>+---------------------------------+
+</span><span class='line'>| Completed remove LINK_TARGET_ID |
+</span><span class='line'>+---------------------------------+
+</span><span class='line'>| Completed remove LINK_TARGET_ID |
+</span><span class='line'>+---------------------------------+
+</span><span class='line'>1 row in set (0.02 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.02 sec)
+</span><span class='line'>
+</span><span class='line'>Query OK, 31 rows affected (0.01 sec)
+</span><span class='line'>Records: 31  Duplicates: 0  Warnings: 0
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.05 sec)
+</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.02 sec)
+</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.00 sec)
+</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.03 sec)
+</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
+</span><span class='line'>
+</span><span class='line'>Query OK, 0 rows affected (0.00 sec)
+</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
+</span><span class='line'>
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'CQ_HIGHEST_TXN_ID'
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'CQ_META_INFO'
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'CQ_HADOOP_JOB_ID'
+</span><span class='line'>ERROR 1050 (42S01): Table 'COMPLETED_COMPACTIONS' already exists
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'TXN_AGENT_INFO'
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'TXN_HEARTBEAT_COUNT'
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'HL_HEARTBEAT_COUNT'
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'TXN_META_INFO'
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'HL_AGENT_INFO'
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'HL_BLOCKEDBY_EXT_ID'
+</span><span class='line'>ERROR 1060 (42S21): Duplicate column name 'HL_BLOCKEDBY_INT_ID'
+</span><span class='line'>ERROR 1050 (42S01): Table 'AUX_TABLE' already exists
+</span><span class='line'>Query OK, 1 row affected (0.01 sec)
+</span><span class='line'>Rows matched: 1  Changed: 1  Warnings: 0
+</span><span class='line'>
+</span><span class='line'>+---------------------------------------------------------+
+</span><span class='line'>|                                                         |
+</span><span class='line'>+---------------------------------------------------------+
+</span><span class='line'>| Finished upgrading MetaStore schema from 1.2.0 to 2.0.0 |
+</span><span class='line'>+---------------------------------------------------------+
+</span><span class='line'>1 row in set, 1 warning (0.00 sec)
+</span><span class='line'>
+</span><span class='line'># 拷贝hive原来的配置和依赖jar
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 mysql]$ cd ~/tools/apache-hive-2.0.0-bin/conf/
+</span><span class='line'>[hadoop@file1 conf]$ cp ~/tools/apache-hive-1.2.1-bin/conf/hive-site.xml ./
+</span><span class='line'>[hadoop@file1 conf]$ cp ~/tools/apache-hive-1.2.1-bin/conf/spark-defaults.conf ./
+</span><span class='line'>[hadoop@file1 conf]$ cp ~/tools/apache-hive-1.2.1-bin/conf/hive-env.sh ./
+</span><span class='line'>
+</span><span class='line'># 用到spark需要加大PermSize
+</span><span class='line'>[hadoop@file1 hive]$ vi conf/hive-env.sh
+</span><span class='line'>export HADOOP_USER_CLASSPATH_FIRST=true
+</span><span class='line'>export HADOOP_OPTS="$HADOOP_OPTS -XX:MaxPermSize=256m"
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 conf]$ cd ../lib/
+</span><span class='line'>[hadoop@file1 lib]$ cp ~/tools/apache-hive-1.2.1-bin/lib/mysql-connector-java-5.1.34.jar ./
+</span><span class='line'>
+</span><span class='line'># centos5需要删除下面两个jar，centos6没必要删
+</span><span class='line'>[hadoop@file1 apache-hive-2.0.0-bin]$ rm lib/hive-jdbc-2.0.0-standalone.jar 
+</span><span class='line'>[hadoop@file1 apache-hive-2.0.0-bin]$ rm lib/snappy-java-1.0.5.jar 
+</span><span class='line'>
+</span><span class='line'># spark-1.6.0更新
+</span><span class='line'>
+</span><span class='line'># http://spark.apache.org/docs/latest/hadoop-provided.html
+</span><span class='line'># http://stackoverflow.com/questions/30906412/noclassdeffounderror-com-apache-hadoop-fs-fsdatainputstream-when-execute-spark-s
+</span><span class='line'>[hadoop@file1 apache-hive-2.0.0-bin]$ cd ~/tools/spark-1.6.0-bin-hadoop2-without-hive/conf/
+</span><span class='line'>[hadoop@file1 conf]$ cp spark-env.sh.template spark-env.sh
+</span><span class='line'>[hadoop@file1 conf]$ vi spark-env.sh
+</span><span class='line'>HADOOP_HOME=/home/hadoop/hadoop
+</span><span class='line'>SPARK_DIST_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 ~]$ cp ~/tools/spark-1.6.0-bin-hadoop2-without-hive/lib/spark-1.6.0-yarn-shuffle.jar ~/tools/hadoop-2.6.3/share/hadoop/yarn/
+</span><span class='line'>[hadoop@file1 ~]$ rm ~/tools/hadoop-2.6.3/share/hadoop/yarn/spark-1.3.1-yarn-shuffle.jar 
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 ~]$ rsync -vaz --delete ~/tools/hadoop-2.6.3/share file2:~/tools/hadoop-2.6.3/ 
+</span><span class='line'>[hadoop@file1 ~]$ rsync -vaz --delete ~/tools/hadoop-2.6.3/share file3:~/tools/hadoop-2.6.3/ 
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 ~]$ hdfs dfs -put ~/tools/spark-1.6.0-bin-hadoop2-without-hive/lib/spark-assembly-1.6.0-hadoop2.6.3.jar /spark/
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 apache-hive-2.0.0-bin]$ vi conf/spark-defaults.conf 
+</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3.jar
+</span><span class='line'>
+</span><span class='line'># 重启yarn（如果你用hiveserver2，先往下看，后面还会修改配置重启的）
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 apache-hive-2.0.0-bin]$ cd ~/tools/hadoop-2.6.3/
+</span><span class='line'>[hadoop@file1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
+</span><span class='line'>[hadoop@file1 hadoop-2.6.3]$ sbin/start-yarn.sh 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>更新到这里，执行hive命令是ok了的。但是hiveserver还有问题。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 启动hiveserver2
+</span><span class='line'>[hadoop@file1 hive]$ nohup bin/hiveserver2 &
+</span><span class='line'>
+</span><span class='line'># 启动spark historyserver
+</span><span class='line'>[hadoop@file1 spark]$ cat start-historyserver.sh 
+</span><span class='line'>source $HADOOP_HOME/libexec/hadoop-config.sh
+</span><span class='line'>sbin/start-history-server.sh hdfs:///spark-eventlogs
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 hive]$ bin/beeline -u jdbc:hive2://file1:10000/ -n hadoop -p hadoop
+</span><span class='line'>which: no hbase in (/home/hadoop/hadoop/bin:/home/hadoop/hive/bin:/opt/jdk1.7.0_60/bin:/usr/kerberos/bin:/usr/local/bin:/bin:/usr/bin:/home/hadoop/tools/hadoop-2.6.3/bin:/home/hadoop/tools/hadoop-2.6.3:/home/hadoop/tools/apache-hive-1.2.1-bin:/home/hadoop/bin)
+</span><span class='line'>ls: /home/hadoop/hive/lib/hive-jdbc-*-standalone.jar: 没有那个文件或目录
+</span><span class='line'>SLF4J: Class path contains multiple SLF4J bindings.
+</span><span class='line'>SLF4J: Found binding in [jar:file:/home/hadoop/tools/apache-hive-2.0.0-bin/lib/log4j-slf4j-impl-2.4.1.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+</span><span class='line'>SLF4J: Found binding in [jar:file:/home/hadoop/tools/hadoop-2.6.3/share/hadoop/common/lib/slf4j-log4j12-1.7.5.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+</span><span class='line'>SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+</span><span class='line'>SLF4J: Actual binding is of type [org.apache.logging.slf4j.Log4jLoggerFactory]
+</span><span class='line'>Connecting to jdbc:hive2://file1:10000/
+</span><span class='line'>Error: Failed to open new session: java.lang.RuntimeException: org.apache.hadoop.ipc.RemoteException(org.apache.hadoop.security.authorize.AuthorizationException): User: hadoop is not allowed to impersonate hadoop (state=,code=0)
+</span><span class='line'>Beeline version 2.0.0 by Apache Hive
+</span><span class='line'>beeline&gt; </span></code></pre></td></tr></table></div></figure>
+
+
+<p>Beeline连接hiveserver2失败，模拟的hadoop用户授权失败。需要修改hadoop的参数。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># https://community.hortonworks.com/questions/4905/error-while-running-hive-queries-from-zeppelin.html
+</span><span class='line'># http://stackoverflow.com/questions/25073792/error-e0902-exception-occured-user-root-is-not-allowed-to-impersonate-root
+</span><span class='line'># core-site.xml添加，并重启集群hdfs & yarn
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;hadoop.proxyuser.hadoop.hosts&lt;/name&gt;&lt;value&gt;*&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;hadoop.proxyuser.hadoop.groups&lt;/name&gt;&lt;value&gt;*&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 hadoop-2.6.3]$ sbin/stop-all.sh
+</span><span class='line'>[hadoop@file1 hadoop-2.6.3]$ sbin/start-all.sh 
+</span><span class='line'>
+</span><span class='line'>[hadoop@file1 hive]$ bin/beeline -u jdbc:hive2://file1:10000 -n hadoop -p hadoop
+</span><span class='line'>...
+</span><span class='line'>0: jdbc:hive2://file1:10000/&gt; set hive.execution.engine=spark;
+</span><span class='line'>No rows affected (0.019 seconds)
+</span><span class='line'>0: jdbc:hive2://file1:10000/&gt; select count(*) from t_info where edate=20160413;
+</span><span class='line'>INFO  : Compiling command(queryId=hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea): select count(*) from t_info where edate=20160413
+</span><span class='line'>INFO  : Semantic Analysis Completed
+</span><span class='line'>INFO  : Returning Hive schema: Schema(fieldSchemas:[FieldSchema(name:c0, type:bigint, comment:null)], properties:null)
+</span><span class='line'>INFO  : Completed compiling command(queryId=hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea); Time taken: 0.523 seconds
+</span><span class='line'>INFO  : Executing command(queryId=hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea): select count(*) from t_info where edate=20160413
+</span><span class='line'>INFO  : Query ID = hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea
+</span><span class='line'>INFO  : Total jobs = 1
+</span><span class='line'>INFO  : Launching Job 1 out of 1
+</span><span class='line'>INFO  : Starting task [Stage-1:MAPRED] in serial mode
+</span><span class='line'>
+</span><span class='line'>INFO  : 
+</span><span class='line'>Query Hive on Spark job[0] stages:
+</span><span class='line'>INFO  : 0
+</span><span class='line'>INFO  : 1
+</span><span class='line'>INFO  : 
+</span><span class='line'>Status: Running (Hive on Spark job[0])
+</span><span class='line'>INFO  : Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>INFO  : 2016-04-13 11:41:20,519 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:23,577 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:26,817 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:29,858 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:32,903 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:35,942 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:37,969 Stage-0_0: 0(+9)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:38,981 Stage-0_0: 1(+8)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:39,994 Stage-0_0: 3(+7)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:43,030 Stage-0_0: 3(+7)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:45,056 Stage-0_0: 5(+5)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:46,072 Stage-0_0: 6(+4)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:47,085 Stage-0_0: 8(+2)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:48,096 Stage-0_0: 9(+1)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:51,125 Stage-0_0: 9(+1)/10     Stage-1_0: 0/1
+</span><span class='line'>INFO  : 2016-04-13 11:41:52,134 Stage-0_0: 10/10 Finished       Stage-1_0: 1/1 Finished
+</span><span class='line'>INFO  : Status: Finished successfully in 64.78 seconds
+</span><span class='line'>INFO  : Completed executing command(queryId=hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea); Time taken: 71.767 seconds
+</span><span class='line'>INFO  : OK
+</span><span class='line'>+-----------+--+
+</span><span class='line'>|    c0     |
+</span><span class='line'>+-----------+--+
+</span><span class='line'>| 89867722  |
+</span><span class='line'>+-----------+--+
+</span><span class='line'>1 row selected (72.45 seconds)
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>本来升级是想看看UI长什么样子，有点失望，功能太少了。只能看当前执行的SQL和session，历史记录不能查看。期待新版本UI更强大。</p>
+
+<p>升级后beeline上下键切换历史的也不起作用了，hive-2.0.0没也啥吸引的功能（<strong>hive2准备淘汰mr了</strong>），觉得不爽可以直接替换 软链 退回hive1.2.1-spark1.3.1（实践后没问题，spark.yarn.jar记得改）</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1793,644 +3395,6 @@ appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9&#8217; not found 
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/04/08/dbcp-parameters/">DBCP参数在Hive JDBC上的实践</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2016-04-08T19:48:01+08:00" pubdate data-updated="true">Fri 2016-04-08 19:48</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>查询程序一开始只是简单使用dbcp来做连接的限制。在实践的过程中遇到各种问题，本文记录DBCP的参数优化提高程序健壮性的两次过程。</p>
-
-<p>最开始的DBCP的配置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
-</span><span class='line'>  destroy-method="close" 
-</span><span class='line'>  p:driverClassName="${hiveDriverClassName}"
-</span><span class='line'>  p:url="${hiveUrl}" 
-</span><span class='line'>  p:username="${hiveUsername}" 
-</span><span class='line'>  p:password="${hivePassword}"
-</span><span class='line'>  p:maxIdle="${hiveMaxIdle}" 
-</span><span class='line'>  p:maxWait="${hiveMaxWait}" 
-</span><span class='line'>  p:maxActive="${hiveMaxActive}" /&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;bean id="hiveTemplate" class="org.springframework.jdbc.core.JdbcTemplate"&gt;
-</span><span class='line'>  &lt;property name="dataSource"&gt;
-</span><span class='line'>      &lt;ref bean="hiveDataSource" /&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>&lt;/bean&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>第一个遇到的问题，就是每次hiveserver2重启后，这个查询程序也得重启。在实际使用过程中非常的麻烦！！</p>
-
-<h4>重启问题（连接断开后不能重连）</h4>
-
-<p>首先给出学习的链接 <a href="http://elf8848.iteye.com/blog/1931778">http://elf8848.iteye.com/blog/1931778</a> 巨详细，同时问题的场景都一模一样啊！！</p>
-
-<p>添加三个参数：</p>
-
-<ul>
-<li>testOnBorrow = &ldquo;true&rdquo;       借出连接时不要测试，否则很影响性能</li>
-<li>testWhileIdle = &ldquo;true&rdquo;       指明连接是否被空闲连接回收器(如果有)进行检验.如果检测失败,则连接将被从池中去除.</li>
-<li>validationQuery = &ldquo;show databases&rdquo; 验证连接是否可用，使用的SQL语句</li>
-</ul>
-
-
-<p>解释：</p>
-
-<p>testWhileIdle = &ldquo;true&rdquo; 表示每 {timeBetweenEvictionRunsMillis} (默认-1，不执行)秒，取出 {numTestsPerEvictionRun} (默认值3)条连接，使用 {validationQuery} 进行测试 ，测试不成功就销毁连接。销毁连接后，连接数量就少了，如果小于minIdle数量，就新建连接。</p>
-
-<p>testOnBorrow = &ldquo;true&rdquo; 它的默认值是true，如果测试失败会drop掉然后再borrow。false表示每次从连接池中取出连接时，不需要执行 {validationQuery} 中的SQL进行测试。若配置为true,对性能有非常大的影响，性能会下降7-10倍。所在一定要配置为false.</p>
-
-<p>调整参数后hiveserver2重启，查询再连会先报错然后再连。在每次取连接的时刻使用 <code>show databases</code> 测试，如果失败则从pool中删掉这个连接，重新再取，实现了重连的效果。这里不用 <code>select 1</code> hive里面执行很慢， 同时testWhileIdle并没有生效，因为没有配置timeBetweenEvictionRunsMillis参数。</p>
-
-<p>调整后的：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
-</span><span class='line'>destroy-method="close" 
-</span><span class='line'>p:driverClassName="${hiveDriverClassName}"
-</span><span class='line'>p:url="${hiveUrl}" 
-</span><span class='line'>p:username="${hiveUsername}" 
-</span><span class='line'>p:password="${hivePassword}"
-</span><span class='line'>p:testOnBorrow="${hiveTestOnBorrow}"
-</span><span class='line'>p:testWhileIdle="${hiveTestWhileIdle}" 
-</span><span class='line'>p:validationQuery="${hiveValidationQuery}"
-</span><span class='line'>p:maxIdle="${hiveMaxIdle}" 
-</span><span class='line'>p:maxWait="${hiveMaxWait}" 
-</span><span class='line'>p:maxActive="${hiveMaxActive}" 
-</span><span class='line'>/&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>问题又来了，由于测试切换tez和spark才配置了上面的重连。但是切换到spark后，启动的spark会一直保持(连接创建的session不会主动关闭)，直到hiveserver2 session超时(默认6h检查一次，7h idle就关闭)。</p>
-
-<p>注意：有个隐忧，hive-on-spark每个连接都创建一个SESSION，这就退化到MR操作了。不能完全利用SPARK的优势！！例如业务中，即查询count、又获取一页数据，这里就是两个单独的spark程序！！N个session就N个 <strong>hive on spark</strong> 啊！！</p>
-
-<h4>第二个问题，服务端session强制关闭</h4>
-
-<p>问题其实和参考中的: <strong>MySQL8小时问题，Mysql服务器默认连接的“wait_timeout”是8小时，也就是说一个connection空闲超过8个小时，Mysql将自动断开该 connection</strong> 一模一样的。在增加 <strong>minEvictableIdleTimeMillis</strong> 和 <strong>timeBetweenEvictionRunsMillis</strong> 设置检查和回收的时间。</p>
-
-<ul>
-<li>timeBetweenEvictionRunsMillis = &ldquo;1800000&rdquo;  每30分钟运行一次空闲连接回收器，没必要那么频繁。</li>
-<li>minEvictableIdleTimeMillis = &ldquo;3600000&rdquo;  池中的连接空闲1个小时后被回收，如果1个半小时没有操作，这个session就会被客户端关闭。可以通过yarn-8088的scheduler页面查看。</li>
-</ul>
-
-
-<p>设置后的最终效果：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
-</span><span class='line'>destroy-method="close" 
-</span><span class='line'>p:driverClassName="${hiveDriverClassName}"
-</span><span class='line'>p:url="${hiveUrl}" 
-</span><span class='line'>p:username="${hiveUsername}" 
-</span><span class='line'>p:password="${hivePassword}"
-</span><span class='line'>p:testOnBorrow="${hiveTestOnBorrow}"
-</span><span class='line'>p:validationQuery="${hiveValidationQuery}"
-</span><span class='line'>p:maxWait="${hiveMaxWait}" 
-</span><span class='line'>p:maxIdle="${hiveMaxIdle}" 
-</span><span class='line'>p:maxActive="${hiveMaxActive}" 
-</span><span class='line'>p:testWhileIdle="${hiveTestWhileIdle}" 
-</span><span class='line'>p:timeBetweenEvictionRunsMillis="${hiveTimeBetweenEvictionRunsMillis}" 
-</span><span class='line'>p:minEvictableIdleTimeMillis="${hiveMinEvictableIdleTimeMillis}" 
-</span><span class='line'>p:removeAbandoned="true"
-</span><span class='line'>p:logAbandoned="true"
-</span><span class='line'>/&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>很多程序都有很多参数，大部分能通过文档明白，但是一些参数不到实践真的很难真正体会它的含义。参考的文章两次改进我查看了，但是第一次看的时刻根本没去加其他参数，因为对我来说没用，解决当前问题用不到嘛。</p>
-
-<p>hadoop的参数更多，core/hdfs/mapred/yarn需要多用才能发现参数的功能和妙用。<strong>纸上得来终觉浅，绝知此事要躬行</strong> 。</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-04-04T16:07:21+08:00" pubdate data-updated="true">Mon 2016-04-04 16:07</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>资料</h2>
-
-<ul>
-<li><a href="http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html">http://www.rpm.org/max-rpm-snapshot/rpmbuild.8.html</a></li>
-<li><a href="https://fedoraproject.org/wiki/How_to_create_an_RPM_package/zh-cn">https://fedoraproject.org/wiki/How_to_create_an_RPM_package/zh-cn</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part1/index.html">用 RPM 打包软件-打包教程</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part3/index.html">用 RPM 打包软件-高级部分：安装前后控制</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/l-rpm/index.html">RPM 打包技术与典型 SPEC 文件分析-各变量含义</a></li>
-<li><a href="http://hlee.iteye.com/blog/343499">http://hlee.iteye.com/blog/343499</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/linux/management/package/rpm/part1/indent-2.spec">案例</a></li>
-<li><p><a href="https://github.com/apache/zookeeper/tree/release-3.4.8/src/packages">zookeeper打包案例</a></p></li>
-<li><p><a href="http://www.ibm.com/developerworks/cn/linux/l-cn-checkinstall/index.html">http://www.ibm.com/developerworks/cn/linux/l-cn-checkinstall/index.html</a></p></li>
-</ul>
-
-
-<h2>实践</h2>
-
-<ul>
-<li>系统配置准备</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 新建一个docker实例，来测试、学习
-</span><span class='line'>[root@cu1 ~]# docker run -ti centos:centos6 /bin/bash
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# cat /etc/redhat-release 
-</span><span class='line'>CentOS release 6.6 (Final)
-</span><span class='line'>
-</span><span class='line'># 安装编译环境所需的软件
-</span><span class='line'>yum install which tree lrzsz tar gcc rpm-build
-</span><span class='line'># wget编译的依赖
-</span><span class='line'>yum install -y gnutls gnutls-devel</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>步骤</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bdc25400cc63 home]# mkdir mywget 
-</span><span class='line'>[root@bdc25400cc63 home]# cd mywget/
-</span><span class='line'>[root@bdc25400cc63 mywget]# mkdir BUILD RPMS SOURCES SPECS SRPMS
-</span><span class='line'>[root@bdc25400cc63 mywget]# cd SOURCES/
-</span><span class='line'>[root@bdc25400cc63 SOURCES]# mv /home/wget-1.17.tar.gz .
-</span><span class='line'>[root@bdc25400cc63 SOURCES]# ls
-</span><span class='line'>wget-1.17.tar.gz
-</span><span class='line'>[root@bdc25400cc63 SOURCES]# cd ..
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# rpmbuild --showrc
-</span><span class='line'>[test@bdc25400cc63 mywget]$ rpm --eval "%{_topdir}"
-</span><span class='line'>
-</span><span class='line'>[test@bdc25400cc63 mywget]$ grep -i _topdir /usr/lib/rpm/rpmrc /usr/lib/rpm/redhat/rpmrc /usr/lib/rpm/macros /usr/lib/rpm/redhat/macros  | less
-</span><span class='line'>/usr/lib/rpm/macros:%_builddir          %{_topdir}/BUILD
-</span><span class='line'>/usr/lib/rpm/macros:%_rpmdir            %{_topdir}/RPMS
-</span><span class='line'>/usr/lib/rpm/macros:%_sourcedir         %{_topdir}/SOURCES
-</span><span class='line'>/usr/lib/rpm/macros:%_specdir           %{_topdir}/SPECS
-</span><span class='line'>/usr/lib/rpm/macros:%_srcrpmdir         %{_topdir}/SRPMS
-</span><span class='line'>/usr/lib/rpm/macros:%_buildrootdir              %{_topdir}/BUILDROOT
-</span><span class='line'>/usr/lib/rpm/macros:%_topdir            %{getenv:HOME}/rpmbuild
-</span><span class='line'>
-</span><span class='line'>[test@bdc25400cc63 mywget]$ cat ~/.rpmmacros 
-</span><span class='line'>%_topdir /home/mywget/rpm
-</span><span class='line'>
-</span><span class='line'># 2016-5-12 15:28:35
-</span><span class='line'># spec里面有define和global，应该是这个导致的！用global应该即可以了？
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# vi SPECS/wget.spec
-</span><span class='line'>  # this is a sample spec file for wget
-</span><span class='line'>  
-</span><span class='line'>  %define _topdir /home/mywget
-</span><span class='line'>  %define name    wget
-</span><span class='line'>  %define release 2
-</span><span class='line'>  %define version 1.17
-</span><span class='line'>  # 定义 _buildrootdir 不起作用，不知道为啥??? 在 .rpmmacros 定义了 %_topdir，root转到 /home/mywget/rpm/BUILDROOT 了。
-</span><span class='line'>  
-</span><span class='line'>  %define _unpackaged_files_terminate_build 0
-</span><span class='line'>  
-</span><span class='line'>  Summary:   GNU wget
-</span><span class='line'>  License:   GPL
-</span><span class='line'>  Name:      %{name}
-</span><span class='line'>  Version:   %{version}
-</span><span class='line'>  Release:   %{release}
-</span><span class='line'>  Source:    %{name}-%{version}.tar.gz
-</span><span class='line'>  Prefix:    /usr/local/wget
-</span><span class='line'>  Group:     Development/Tools
-</span><span class='line'>  
-</span><span class='line'>  %description
-</span><span class='line'>  The GNU wget program downloads files from the Internet using the command-line.
-</span><span class='line'>  
-</span><span class='line'>  %prep
-</span><span class='line'>  %setup -q
-</span><span class='line'>  
-</span><span class='line'>  %build
-</span><span class='line'>  ./configure
-</span><span class='line'>  make
-</span><span class='line'>  
-</span><span class='line'>  %install
-</span><span class='line'>  make install prefix=$RPM_BUILD_ROOT/usr/local/wget # or use DESTDIR=$RPM_BUILD_ROOT
-</span><span class='line'>  
-</span><span class='line'>  %post
-</span><span class='line'>  echo "hello world"
-</span><span class='line'>  
-</span><span class='line'>  %preun
-</span><span class='line'>  echo "bye"
-</span><span class='line'>  
-</span><span class='line'>  %clean
-</span><span class='line'>  rm -rf $RPM_BUILD_ROOT
-</span><span class='line'>  
-</span><span class='line'>  %files
-</span><span class='line'>  %defattr(-, root, root)
-</span><span class='line'>  /usr/local/wget/bin/wget
-</span><span class='line'>  
-</span><span class='line'>[root@bdc25400cc63 mywget]# rpmbuild -vv -bb --clean SPECS/wget.spec 
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# tree .
-</span><span class='line'>.
-</span><span class='line'>├── BUILD
-</span><span class='line'>├── RPMS
-</span><span class='line'>│   └── x86_64
-</span><span class='line'>│       ├── wget-1.17-2.x86_64.rpm
-</span><span class='line'>│       └── wget-debuginfo-1.17-2.x86_64.rpm
-</span><span class='line'>├── SOURCES
-</span><span class='line'>│   └── wget-1.17.tar.gz
-</span><span class='line'>├── SPECS
-</span><span class='line'>│   └── wget.spec
-</span><span class='line'>└── SRPMS
-</span><span class='line'>
-</span><span class='line'>6 directories, 4 files
-</span><span class='line'>
-</span><span class='line'>[root@bdc25400cc63 mywget]# rpm -qpl RPMS/x86_64/wget-1.17-2.x86_64.rpm  
-</span><span class='line'>/usr/local/wget/bin/wget
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>接下来就可以直接拿到这个包到其他机器上安装了，如果自己建立了本地库，使用createrepo更新下，就可以使用yum安装最新打的包了。</p>
-
-<p>注： <code>%pre</code> , <code>%post</code> 和 <code>%preun</code> , <code>%postun</code> 可以在安装前后执行一些脚本。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia-build]# mkdir BUILD RPMS SOURCES SPECS SRPMS
-</span><span class='line'>[root@cu2 ganglia-build]# cd SOURCES/
-</span><span class='line'>[root@cu2 SOURCES]# ll
-</span><span class='line'>total 1272
-</span><span class='line'>-rw-r--r-- 1 root root 1302320 Jan 20 09:35 ganglia-3.7.2.tar.gz
-</span><span class='line'>[root@cu2 SOURCES]# cd ..
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia-build]# ll
-</span><span class='line'>total 20
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 BUILD
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 RPMS
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SOURCES
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SPECS
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Jun 15 10:25 SRPMS
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia-build]# cd SPECS/
-</span><span class='line'>[root@cu2 SPECS]# vi gmetad.spec
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia-build]# rpmbuild --clean -v -ba SPECS/gmetad.spec 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia-build]# rpm -qpl RPMS/x86_64/ganglia-3.7.2-1.el6.x86_64.rpm </span></code></pre></td></tr></table></div></figure>
-
-
-<h2>重新打包已有rpm</h2>
-
-<p>下载源码包，再修改内容，最后使用rpm-build重新打包。</p>
-
-<p>这里以puppetserver为例，使用jdk7即可但官网打包的依赖是jdk8，这里修改依赖然后重新打包：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 rpmbuild]# rpm -ivh puppetserver-2.3.1-1.el6.src.rpm 
-</span><span class='line'>warning: puppetserver-2.3.1-1.el6.src.rpm: Header V4 RSA/SHA1 Signature, key ID 4bd6ec30: NOKEY
-</span><span class='line'>   1:puppetserver           warning: user mockbuild does not exist - using root
-</span><span class='line'>warning: group mockbuild does not exist - using root
-</span><span class='line'>########################################### [100%]
-</span><span class='line'>warning: user mockbuild does not exist - using root
-</span><span class='line'>warning: group mockbuild does not exist - using root
-</span><span class='line'>[root@cu2 rpmbuild]# ll
-</span><span class='line'>total 32904
-</span><span class='line'>-rw-r--r-- 1 root root 33681889 May 10 17:44 puppetserver-2.3.1-1.el6.src.rpm
-</span><span class='line'>drwxr-xr-x 2 root root     4096 May 10 17:55 SOURCES
-</span><span class='line'>drwxr-xr-x 2 root root     4096 May 10 17:55 SPECS
-</span><span class='line'>
-</span><span class='line'>#-- 注释掉jdk8的部分
-</span><span class='line'>[root@cu2 rpmbuild]# grep -3 jdk SPECS/puppetserver.spec 
-</span><span class='line'>
-</span><span class='line'># java 1.8.0 is available starting in fedora 20 and el 6
-</span><span class='line'>#%if 0%{?fedora} &gt;= 20 || 0%{?rhel} &gt;= 6
-</span><span class='line'>#%global open_jdk          java-1.8.0-openjdk-headless
-</span><span class='line'>#%else
-</span><span class='line'>%global open_jdk          java-1.7.0-openjdk
-</span><span class='line'>#%endif
-</span><span class='line'>
-</span><span class='line'>[root@cu2 rpmbuild]# yum install -y ruby
-</span><span class='line'>[root@cu2 rpmbuild]# rpmbuild -v -bb --clean SPECS/puppetserver.spec 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 rpmbuild]# yum deplist RPMS/noarch/puppetserver-2.3.1-1.el6.noarch.rpm 
-</span><span class='line'>Loaded plugins: fastestmirror, priorities
-</span><span class='line'>Finding dependencies: 
-</span><span class='line'>Loading mirror speeds from cached hostfile
-</span><span class='line'> * base: centos.ustc.edu.cn
-</span><span class='line'> * centosplus: centos.ustc.edu.cn
-</span><span class='line'> * epel: mirror01.idc.hinet.net
-</span><span class='line'> * extras: centos.ustc.edu.cn
-</span><span class='line'> * updates: centos.ustc.edu.cn
-</span><span class='line'>193 packages excluded due to repository priority protections
-</span><span class='line'>package: puppetserver.noarch 2.3.1-1.el6
-</span><span class='line'>  dependency: chkconfig
-</span><span class='line'>   provider: chkconfig.x86_64 1.3.49.3-5.el6
-</span><span class='line'>   provider: chkconfig.x86_64 1.3.49.3-5.el6_7.2
-</span><span class='line'>  dependency: /bin/bash
-</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6
-</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6_7.1
-</span><span class='line'>  dependency: java-1.7.0-openjdk
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.79-2.5.5.4.el6
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.101-2.6.6.1.el6_7
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.85-2.6.1.3.el6_6
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.85-2.6.1.3.el6_7
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.91-2.6.2.2.el6_7
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.95-2.6.4.0.el6_7
-</span><span class='line'>   provider: java-1.7.0-openjdk.x86_64 1:1.7.0.99-2.6.5.0.el6_7
-</span><span class='line'>  dependency: puppet-agent &gt;= 1.4.0
-</span><span class='line'>   provider: puppet-agent.x86_64 1.4.1-1.el6
-</span><span class='line'>  dependency: net-tools
-</span><span class='line'>   provider: net-tools.x86_64 1.60-110.el6_2
-</span><span class='line'>  dependency: /usr/bin/env
-</span><span class='line'>   provider: coreutils.x86_64 8.4-37.el6
-</span><span class='line'>   provider: coreutils.x86_64 8.4-37.el6_7.3
-</span><span class='line'>  dependency: /bin/sh
-</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6
-</span><span class='line'>   provider: bash.x86_64 4.1.2-33.el6_7.1
-</span><span class='line'>  dependency: config(puppetserver) = 2.3.1-1.el6
-</span><span class='line'>   provider: puppetserver.noarch 2.3.1-1.el6 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/11">&larr; Older</a>
@@ -2507,11 +3471,19 @@ appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9&#8217; not found 
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/04/14/k8s-hadoop-deploy/">K8s Hadoop Deploy</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/03/30/k8s-harbor-config/">K8s Harbor Config</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/03/23/codis-usage2/">Codis使用进阶</a>
       </li>
     
       <li class="post">
-        <a href="/blog/2017/03/12/k8s-harbor-config/">K8s Harbor Config</a>
+        <a href="/blog/2017/03/12/k8s-harbor-config-on-centos6/">K8s Harbor Config on Centos6</a>
       </li>
     
       <li class="post">
@@ -2528,14 +3500,6 @@ appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9&#8217; not found 
     
       <li class="post">
         <a href="/blog/2017/02/06/docker-http-proxy-and-save-reload/">Docker代理配置以及导入导出</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/02/04/privoxy-http-proxy-for-shadowsocks/">使用Privoxy把shadowsocks转换为Http代理</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/01/27/vnc-server-on-centos7/">在Centos7上安装VNC Server</a>
       </li>
     
   </ul>
@@ -2592,7 +3556,7 @@ appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9&#8217; not found 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (42) 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (43) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2616,7 +3580,7 @@ appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9&#8217; not found 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (4) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2673,7 +3637,7 @@ appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9&#8217; not found 
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (166)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (168)</li>
 	</ul>
 	
 </section>

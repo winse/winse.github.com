@@ -4,7 +4,7 @@
   <title><![CDATA[Category: K8s | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/k8s/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-03-23T19:50:31+08:00</updated>
+  <updated>2017-04-14T14:58:52+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -14,10 +14,421 @@
 
   
   <entry>
+    <title type="html"><![CDATA[K8s Hadoop Deploy]]></title>
+    <link href="http://winseliu.com/blog/2017/04/14/k8s-hadoop-deploy/"/>
+    <updated>2017-04-14T10:56:39+08:00</updated>
+    <id>http://winseliu.com/blog/2017/04/14/k8s-hadoop-deploy</id>
+    <content type="html"><![CDATA[<p>折磨了一个多星期，最后还是调通了。折磨源于不自知，源于孤单，源于自负，后来通过扩展、查阅资料、请教同事顺利解决。简单部署可以查看<a href="https://github.com/winse/docker-hadoop">README.md</a> 。</p>
+
+<pre><code>yum install docker-engine-1.12.6 docker-engine-selinux-1.12.6 -y
+
+cd kube-deploy
+vi hosts
+vi k8s.profile
+./rsync-deploy.sh
+
+cd docker-multinode/
+./master.sh or ./worker.sh
+
+docker save gcr.io/google_containers/etcd-amd64:3.0.4 | docker-bs load
+docker save quay.io/coreos/flannel:v0.6.1-amd64 | docker-bs load
+
+cd kube-deploy/hadoop/kubenetes/
+./prepare.sh
+kubectl create -f hadoop-master2.yaml
+kubectl create -f hadoop-slaver.yaml 
+</code></pre>
+
+<p>现在想来其实就是 <strong> dockerd &ndash;ip-masq=false </strong>的问题（所有涉及的dockerd都需要加）。 还有就是一台机器单机下的容器互相访问，源IP都错也是安装了openvpn所导致对所有过eth0的都加了MASQUERADE。</p>
+
+<p>根源就在于请求的源地址被替换，也就是iptables的转发进行了SNAT。关于iptables转发这篇文章讲的非常清晰；<a href="http://fancyxinyu.blog.163.com/blog/static/18232136620136185434661/">IPtables之四：NAT原理和配置  </a> 。</p>
+
+<h2>所遇到的问题</h2>
+
+<p>没加ip-masq之前，namenode收到datanode的请求后，源地址是flannel.0的ip: 10.1.98.0。</p>
+
+<p>namenode对应的日志为：</p>
+
+<pre><code>2017-04-09 07:22:06,920 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* registerDatanode: from DatanodeRegistration(10.1.98.0, datanodeUuid=5086c549-f3bb-4ef6-8f56-05b1f7adb7d3, infoPort=50075, ipcPort=50020, storageInfo=lv=-56;cid=CID-522174fa-6e7b-4c3f-ae99-23c3018e35d7;nsid=1613705851;c=0) storage 5086c549-f3bb-4ef6-8f56-05b1f7adb7d3
+2017-04-09 07:22:06,920 INFO org.apache.hadoop.net.NetworkTopology: Removing a node: /default-rack/10.1.98.0:50010
+2017-04-09 07:22:06,921 INFO org.apache.hadoop.net.NetworkTopology: Adding a new node: /default-rack/10.1.98.0:50010
+</code></pre>
+
+<p>一开始以为是flannel的问题，换成yum安装，然后同时flannel把backend切换成vxlan后，还是一样的问题。</p>
+
+<p>最后请教搞网络的同事，应该是请求的源地址被替换了，也就定位到iptables。然后通过查看文档，其实前面也有看到过对应的文章，但是看不明白不知道缘由。</p>
+
+<ul>
+<li><a href="https://groups.google.com/d/msg/kubernetes-users/P4uh7y383oo/bPzIRaxhs5gJ">Networking Problem in creating HDFS cluster. - Eugene Yakubovich </a></li>
+<li><a href="https://groups.google.com/d/msg/kubernetes-users/P4uh7y383oo/a1GIV4hcAgAJ">Networking Problem in creating HDFS cluster. - Huihui He </a></li>
+<li><a href="https://developer.ibm.com/recipes/tutorials/networking-your-docker-containers-using-docker0-bridge/">Networking your docker containers using docker0 bridge</a></li>
+</ul>
+
+
+<p>iptables的部分相关信息：</p>
+
+<pre><code>[root@cu2 ~]# iptables -S -t nat
+...
+-A PREROUTING -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+-A PREROUTING -j PREROUTING_direct
+-A PREROUTING -j PREROUTING_ZONES_SOURCE
+-A PREROUTING -j PREROUTING_ZONES
+-A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER
+-A OUTPUT -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+-A OUTPUT -j OUTPUT_direct
+-A OUTPUT ! -d 127.0.0.0/8 -m addrtype --dst-type LOCAL -j DOCKER
+-A POSTROUTING -s 10.1.34.0/24 ! -o docker0 -j MASQUERADE
+-A POSTROUTING -m comment --comment "kubernetes postrouting rules" -j KUBE-POSTROUTING
+-A POSTROUTING -j POSTROUTING_direct
+-A POSTROUTING -j POSTROUTING_ZONES_SOURCE
+-A POSTROUTING -j POSTROUTING_ZONES
+-A KUBE-MARK-DROP -j MARK --set-xmark 0x8000/0x8000
+-A KUBE-MARK-MASQ -j MARK --set-xmark 0x4000/0x4000
+-A KUBE-POSTROUTING -m comment --comment "kubernetes service traffic requiring SNAT" -m mark --mark 0x4000/0x4000 -j MASQUERADE
+-A KUBE-SEP-75CPIAPDB4MAVFWI -s 10.1.40.3/32 -m comment --comment "kube-system/kube-dns:dns-tcp" -j KUBE-MARK-MASQ
+-A KUBE-SEP-75CPIAPDB4MAVFWI -p tcp -m comment --comment "kube-system/kube-dns:dns-tcp" -m tcp -j DNAT --to-destination 10.1.40.3:53
+-A KUBE-SEP-IWNPEB4T46P6VG5J -s 192.168.0.148/32 -m comment --comment "default/kubernetes:https" -j KUBE-MARK-MASQ
+-A KUBE-SEP-IWNPEB4T46P6VG5J -p tcp -m comment --comment "default/kubernetes:https" -m recent --set --name KUBE-SEP-IWNPEB4T46P6VG5J --mask 255.255.255.255 --rsource -m tcp -j DNAT --to-destination 192.168.0.148:6443
+-A KUBE-SEP-UYUINV25NDNSKNUW -s 10.1.40.3/32 -m comment --comment "kube-system/kube-dns:dns" -j KUBE-MARK-MASQ
+-A KUBE-SEP-UYUINV25NDNSKNUW -p udp -m comment --comment "kube-system/kube-dns:dns" -m udp -j DNAT --to-destination 10.1.40.3:53
+-A KUBE-SEP-XDHL2OHX2ICPQHKI -s 10.1.40.2/32 -m comment --comment "kube-system/kubernetes-dashboard:" -j KUBE-MARK-MASQ
+-A KUBE-SEP-XDHL2OHX2ICPQHKI -p tcp -m comment --comment "kube-system/kubernetes-dashboard:" -m tcp -j DNAT --to-destination 10.1.40.2:9090
+-A KUBE-SERVICES -d 10.0.0.1/32 -p tcp -m comment --comment "default/kubernetes:https cluster IP" -m tcp --dport 443 -j KUBE-SVC-NPX46M4PTMTKRN6Y
+-A KUBE-SERVICES -d 10.0.0.95/32 -p tcp -m comment --comment "kube-system/kubernetes-dashboard: cluster IP" -m tcp --dport 80 -j KUBE-SVC-XGLOHA7QRQ3V22RZ
+-A KUBE-SERVICES -d 10.0.0.10/32 -p udp -m comment --comment "kube-system/kube-dns:dns cluster IP" -m udp --dport 53 -j KUBE-SVC-TCOU7JCQXEZGVUNU
+-A KUBE-SERVICES -d 10.0.0.10/32 -p tcp -m comment --comment "kube-system/kube-dns:dns-tcp cluster IP" -m tcp --dport 53 -j KUBE-SVC-ERIFXISQEP7F7OF4
+-A KUBE-SERVICES -m comment --comment "kubernetes service nodeports; NOTE: this must be the last rule in this chain" -m addrtype --dst-type LOCAL -j KUBE-NODEPORTS
+-A KUBE-SVC-ERIFXISQEP7F7OF4 -m comment --comment "kube-system/kube-dns:dns-tcp" -j KUBE-SEP-75CPIAPDB4MAVFWI
+-A KUBE-SVC-NPX46M4PTMTKRN6Y -m comment --comment "default/kubernetes:https" -m recent --rcheck --seconds 10800 --reap --name KUBE-SEP-IWNPEB4T46P6VG5J --mask 255.255.255.255 --rsource -j KUBE-SEP-IWNPEB4T46P6VG5J
+-A KUBE-SVC-NPX46M4PTMTKRN6Y -m comment --comment "default/kubernetes:https" -j KUBE-SEP-IWNPEB4T46P6VG5J
+-A KUBE-SVC-TCOU7JCQXEZGVUNU -m comment --comment "kube-system/kube-dns:dns" -j KUBE-SEP-UYUINV25NDNSKNUW
+-A KUBE-SVC-XGLOHA7QRQ3V22RZ -m comment --comment "kube-system/kubernetes-dashboard:" -j KUBE-SEP-XDHL2OHX2ICPQHKI
+</code></pre>
+
+<p>在dockerd服务脚本加上 <code>--ip-masq=false</code> 后，<code>-A POSTROUTING -s 10.1.34.0/24 ! -o docker0 -j MASQUERADE</code> 这一句就没有了，也就是不会进行源地址重写了，这样请求发送到namenode后还是datanode容器的IP。问题解决，原因简单的让人欲哭无泪啊。</p>
+
+<p>写yaml遇到的一些其他问题：</p>
+
+<ul>
+<li><a href="http://andykdocs.de/development/Docker/Fixing+the+Docker+TERM+variable+issue">Fixing the Docker TERM variable issue</a></li>
+<li><a href="http://stackoverflow.com/questions/27195466/hdfs-datanode-denied-communication-with-namenode-because-hostname-cannot-be-reso">hdfs Datanode denied communication with namenode because hostname cannot be resolved</a></li>
+</ul>
+
+
+<p>当然还有很多其他的问题，这篇就写这么多，优化工作后面的弄好了再写。</p>
+
+<h2>中间过程步骤记录</h2>
+
+<p>记录下中间通过yum安装etcd和flanneld的过程。物理机安装flanneld会把配置docker环境变量（/run/flannel/subnet.env）加入启动脚本。</p>
+
+<pre><code>安装docker-v1.12
+https://docs.docker.com/v1.12/
+https://docs.docker.com/v1.12/engine/installation/linux/centos/
+
+sudo tee /etc/yum.repos.d/docker.repo &lt;&lt;-'EOF'
+[dockerrepo]
+name=Docker Repository
+baseurl=https://yum.dockerproject.org/repo/main/centos/7/
+enabled=1
+gpgcheck=1
+gpgkey=https://yum.dockerproject.org/gpg
+EOF
+
+https://yum.dockerproject.org/repo/main/centos/7/Packages/
+[root@cu3 yum.repos.d]# yum install docker-engine-1.12.6 docker-engine-selinux-1.12.6
+
+https://kubernetes.io/docs/getting-started-guides/centos/centos_manual_config/
+
+cat &gt; /etc/yum.repos.d/virt7-docker-common-release.repo &lt;&lt;EOF
+[virt7-docker-common-release]
+name=virt7-docker-common-release
+baseurl=http://cbs.centos.org/repos/virt7-docker-common-release/x86_64/os/
+gpgcheck=0
+EOF
+
+yum -y install --enablerepo=virt7-docker-common-release etcd flannel
+yum -y install --enablerepo=virt7-docker-common-release flannel
+
+- ETCD配置
+[root@cu3 docker-multinode]# 
+etcdctl mkdir /kube-centos/network
+etcdctl set /kube-centos/network/config "{ \"Network\": \"10.1.0.0/16\", \"SubnetLen\": 24, \"Backend\": { \"Type\": \"vxlan\" } }"
+
+- FlANNEL
+[root@cu3 ~]# cat /etc/sysconfig/flanneld
+# Flanneld configuration options  
+
+# etcd url location.  Point this to the server where etcd runs
+FLANNEL_ETCD_ENDPOINTS="http://cu3:2379"
+
+# etcd config key.  This is the configuration key that flannel queries
+# For address range assignment
+FLANNEL_ETCD_PREFIX="/kube-centos/network"
+
+# Any additional options that you want to pass
+#FLANNEL_OPTIONS=""
+
+[root@cu2 yum.repos.d]# systemctl daemon-reload
+
+[root@cu2 yum.repos.d]# cat /run/flannel/subnet.env
+
+[root@cu2 ~]# systemctl cat docker
+...
+# /usr/lib/systemd/system/docker.service.d/flannel.conf
+[Service]
+EnvironmentFile=-/run/flannel/docker 
+</code></pre>
+
+<p>测试过程中有yaml配置中启动sshd，然后启动容器后，通过手动启动namenode、datanode的方式来测试：</p>
+
+<pre><code>cd hadoop-2.6.5
+gosu hadoop mkdir /data/bigdata
+gosu hadoop sbin/hadoop-daemon.sh start datanode 
+
+cd hadoop-2.6.5/
+gosu hadoop  bin/hadoop namenode -format 
+gosu hadoop sbin/hadoop-daemon.sh start namenode
+</code></pre>
+
+<p>后来发现问题出在iptables后，又回到原来的docker-bootstrap启动，需要删除flannel.1的网络：</p>
+
+<pre><code># yum安装flanneld后停止 https://kubernetes.io/docs/getting-started-guides/scratch/
+ip link set flannel.1 down
+ip link delete flannel.1
+route -n
+</code></pre>
+
+<p>开了防火墙的话，把容器的端加入到信任列表：</p>
+
+<pre><code>systemctl enable firewalld &amp;&amp; systemctl start firewalld
+
+firewall-cmd --zone=trusted --add-source=10.0.0.0/8 --permanent 
+firewall-cmd --zone=trusted --add-source=192.168.0.0/16 --permanent 
+firewall-cmd --reload
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
     <title type="html"><![CDATA[K8s Harbor Config]]></title>
-    <link href="http://winseliu.com/blog/2017/03/12/k8s-harbor-config/"/>
+    <link href="http://winseliu.com/blog/2017/03/30/k8s-harbor-config/"/>
+    <updated>2017-03-30T14:21:50+08:00</updated>
+    <id>http://winseliu.com/blog/2017/03/30/k8s-harbor-config</id>
+    <content type="html"><![CDATA[<p>为了对比，还是想写写在centos7上面<a href="https://github.com/vmware/harbor/tree/master/make/kubernetes">安装Harbor</a>：太简单了，想想当初在6上面安装那酸爽($.$)。。。</p>
+
+<h2>环境说明</h2>
+
+<pre><code>[root@cu2 kube-deploy]# yum install -y redhat-lsb
+[root@cu2 kube-deploy]# lsb_release -a
+LSB Version:    :core-4.1-amd64:core-4.1-noarch:cxx-4.1-amd64:cxx-4.1-noarch:desktop-4.1-amd64:desktop-4.1-noarch:languages-4.1-amd64:languages-4.1-noarch:printing-4.1-amd64:printing-4.1-noarch
+Distributor ID: CentOS
+Description:    CentOS Linux release 7.3.1611 (Core) 
+Release:        7.3.1611
+Codename:       Core
+
+[root@cu2 kube-deploy]# docker version
+Client:
+ Version:      1.12.6
+ API version:  1.24
+ Go version:   go1.6.4
+ Git commit:   78d1802
+ Built:        Tue Jan 10 20:20:01 2017
+ OS/Arch:      linux/amd64
+
+Server:
+ Version:      1.12.6
+ API version:  1.24
+ Go version:   go1.6.4
+ Git commit:   78d1802
+ Built:        Tue Jan 10 20:20:01 2017
+ OS/Arch:      linux/amd64
+</code></pre>
+
+<h2>使用docker-multinode搭建的环境</h2>
+
+<pre><code>[root@cu2 kube-deploy]# kubectl version
+Client Version: version.Info{Major:"1", Minor:"5", GitVersion:"v1.5.6", GitCommit:"114f8911f9597be669a747ab72787e0bd74c9359", GitTreeState:"clean", BuildDate:"2017-03-28T13:36:31Z", GoVersion:"go1.7.4", Compiler:"gc", Platform:"linux/amd64"}
+Server Version: version.Info{Major:"1", Minor:"5", GitVersion:"v1.5.6", GitCommit:"114f8911f9597be669a747ab72787e0bd74c9359", GitTreeState:"clean", BuildDate:"2017-03-28T13:36:31Z", GoVersion:"go1.7.4", Compiler:"gc", Platform:"linux/amd64"}
+</code></pre>
+
+<h2>安装配置</h2>
+
+<ul>
+<li>证书准备</li>
+</ul>
+
+
+<pre><code>[root@cu2 ~]# cd /data/kubernetes/
+[root@cu2 kubernetes]# cd kube-deploy/
+[root@cu2 kube-deploy]# cat easy-rsa.sh 
+#!/bin/sh
+
+# cd /data/kubernetes
+cd ..
+
+git clone https://github.com/OpenVPN/easy-rsa.git
+cd easy-rsa/easyrsa3
+
+echo "# ======  CA  ======= #"
+./easyrsa init-pki
+./easyrsa build-ca #记住输入的密码，下面颁发证书还会用到
+
+echo "# ======  CERT  ======= #"
+./easyrsa gen-req cu nopass
+./easyrsa sign-req server cu #commonName填将要用到的域名咯
+</code></pre>
+
+<ul>
+<li>下载离线镜像</li>
+</ul>
+
+
+<p><a href="http://pan.baidu.com/s/1c1Rtnag">harbor-offline-installer-0.5.0.tgz</a>，加载harbor.0.5.0.tgz里面的镜像</p>
+
+<pre><code>[root@cu2 harbor-make]# docker images 
+REPOSITORY                                            TAG                 IMAGE ID            CREATED             SIZE
+vmware/harbor-jobservice                              0.5.0               1700fbe602a0        3 months ago        148.4 MB
+vmware/harbor-ui                                      0.5.0               6db5718f2012        3 months ago        209.6 MB
+vmware/harbor-db                                      0.5.0               c401344852c6        3 months ago        326.8 MB
+nginx                                                 1.11.5              cc16e49f1304        4 months ago        181.4 MB
+registry                                              2.5.0               44a8766d1758        8 months ago        33.28 MB
+</code></pre>
+
+<ul>
+<li>修改配置和yaml配置的镜像名称</li>
+</ul>
+
+
+<pre><code>[root@cu2 harbor-make]# vi harbor.cfg
+
+hostname = cu.eshore.cn
+ui_url_protocol = https
+ssl_cert = /data/kubernetes/easy-rsa/easyrsa3/pki/issued/cu.crt
+ssl_cert_key = /data/kubernetes/easy-rsa/easyrsa3/pki/private/cu.key 
+
+[root@cu2 harbor-make]# find kubernetes/ -name "*.rc.yaml" 
+kubernetes/nginx/nginx.rc.yaml
+kubernetes/mysql/mysql.rc.yaml
+kubernetes/registry/registry.rc.yaml
+kubernetes/ui/ui.rc.yaml
+kubernetes/jobservice/jobservice.rc.yaml
+</code></pre>
+
+<ul>
+<li>启动</li>
+</ul>
+
+
+<p>k8s启动的配置用github上最新的，不要用release下面的！！</p>
+
+<pre><code>[root@cu2 harbor-make]# cd kubernetes/
+[root@cu2 kubernetes]# python prepare 
+
+[root@cu2 kubernetes]# cat kube.sh 
+#!/bin/sh
+
+OP=${1:-"apply"}
+
+kubectl $OP -f pv/
+
+kubectl $OP -f jobservice/jobservice.cm.yaml
+kubectl $OP -f mysql/mysql.cm.yaml
+kubectl $OP -f nginx/nginx.cm.yaml
+kubectl $OP -f registry/registry.cm.yaml
+kubectl $OP -f ui/ui.cm.yaml
+
+kubectl $OP -f jobservice/jobservice.svc.yaml
+kubectl $OP -f mysql/mysql.svc.yaml
+kubectl $OP -f nginx/nginx.svc.yaml
+kubectl $OP -f registry/registry.svc.yaml
+kubectl $OP -f ui/ui.svc.yaml
+
+kubectl $OP -f registry/registry.rc.yaml 
+kubectl $OP -f mysql/mysql.rc.yaml 
+kubectl $OP -f jobservice/jobservice.rc.yaml 
+kubectl $OP -f ui/ui.rc.yaml 
+kubectl $OP -f nginx/nginx.rc.yaml
+</code></pre>
+
+<p>客户端CA</p>
+
+<pre><code>[root@cu2 kube-deploy]# cat rsync-deploy.sh 
+#!/bin/sh
+
+SERVICES="$@"
+HOSTS=$(echo cu{1..5} )
+
+#########
+# Harbor
+if echo "$SERVICES" | grep harbor &gt;/dev/null ; then 
+
+  sed -i '/cu.eshore.cn/d' /etc/hosts
+
+  cat &gt;&gt;/etc/hosts &lt;&lt;EOF
+$( kubectl get service nginx -n default -o jsonpath="{..clusterIP}" ) cu.eshore.cn
+EOF
+  echo "Updated Local Hosts"
+
+  for h in $HOSTS ; do
+    if [[ $h != "$(hostname)" ]] ; then
+      rsync -az /etc/hosts $h:/etc/
+    fi
+
+    ssh $h "mkdir -p /etc/docker/certs.d/cu.eshore.cn/"
+    rsync -az /data/kubernetes/easy-rsa/easyrsa3/pki/ca.crt $h:/etc/docker/certs.d/cu.eshore.cn/
+
+    ssh $h "docker login -u admin -p Harbor12345 cu.eshore.cn"
+  done
+  echo "Harbor Rsync Succeeded"
+
+fi 
+</code></pre>
+
+<p>搞定，上传下载一个镜像试试：</p>
+
+<pre><code>[root@cu1 dev]# docker build -t cu.eshore.cn/library/codis:3.2 codis/
+[root@cu1 dev]# docker push cu.eshore.cn/library/codis:3.2
+
+[root@cu2 ~]# docker pull cu.eshore.cn/library/codis:3.2
+3.2: Pulling from library/codis
+386a066cd84a: Already exists 
+a3ed95caeb02: Pull complete 
+b1d31257c103: Pull complete 
+0e627f083b66: Pull complete 
+83912002f3f9: Pull complete 
+fc5e0ef7d361: Pull complete 
+47fe51a74a06: Pull complete 
+08dacccac43c: Pull complete 
+ec5a5e8fd71b: Pull complete 
+83f9da97d228: Pull complete 
+d4735c06cafa: Pull complete 
+3a4dc262a84d: Pull complete 
+bcf78ab0a1a9: Pull complete 
+7ac5a6fd0bf8: Pull complete 
+Digest: sha256:1c9280840222d736b7419b7e896b6286709d08e53890ae9e3d18062d61a9ad58
+Status: Downloaded newer image for cu.eshore.cn/library/codis:3.2
+
+[root@cu3 ~]# docker pull cu.eshore.cn/library/codis:3.2
+...
+layers from manifest don't match image configuration 暂时不清楚啥问题，临时解决。。。囧
+[root@cu2 data]# docker save cu.eshore.cn/library/codis:3.2 | ssh cu3 docker load
+</code></pre>
+
+<h2>小结</h2>
+
+<p>高版本的docker和k8s对环境变量和config volumes都支持，配置相对就很简单。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[K8s Harbor Config on Centos6]]></title>
+    <link href="http://winseliu.com/blog/2017/03/12/k8s-harbor-config-on-centos6/"/>
     <updated>2017-03-12T23:21:30+08:00</updated>
-    <id>http://winseliu.com/blog/2017/03/12/k8s-harbor-config</id>
+    <id>http://winseliu.com/blog/2017/03/12/k8s-harbor-config-on-centos6</id>
     <content type="html"><![CDATA[<h2>前传</h2>
 
 <p>前面有写在 centos6 安装k8s的文章，后来重启一台worker节点后该节点的网络就不通了 <strong> connect: Invalid argument </strong> 。更新到最新的0.7.0后worker节点重启网络都能正常连通。</p>
@@ -176,7 +587,7 @@ ui           10.0.0.11    &lt;none&gt;        80/TCP              1d
 # 登录
 [root@cu3 certs.d]# docker login cu.eshore.cn
 Username: admin
-Password: 
+Password: Harbor12345
 Email: 1
 WARNING: login credentials saved in /root/.docker/config.json
 Login Succeeded
@@ -351,8 +762,34 @@ nginx.conf
 <li><a href="https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/https-nginx/nginx-app.yaml">https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/https-nginx/nginx-app.yaml</a> 看到1.2使用secret volumes</li>
 <li><a href="https://github.com/kubernetes/kubernetes/blob/52f4d3806919e4ec16cb17336a1802461cf40a46/test/kubemark/resources/hollow-node_template.yaml">https://github.com/kubernetes/kubernetes/blob/52f4d3806919e4ec16cb17336a1802461cf40a46/test/kubemark/resources/hollow-node_template.yaml</a></li>
 <li><a href="https://kubernetes.io/docs/user-guide/secrets/">https://kubernetes.io/docs/user-guide/secrets/</a></li>
+<li><a href="https://kubernetes.io/docs/user-guide/configmap/">https://kubernetes.io/docs/user-guide/configmap/</a></li>
+<li><a href="https://kubernetes.io/docs/tasks/configure-pod-container/downward-api-volume-expose-pod-information/">https://kubernetes.io/docs/tasks/configure-pod-container/downward-api-volume-expose-pod-information/</a></li>
 </ul>
 
+
+<p>其实就是docker版本老的不支持shared，其实在kubelet的容器里面是创建了对应的文件的：</p>
+
+<pre><code># docker logs
+I0316 08:22:19.729825   13206 volumes.go:279] Used volume plugin "kubernetes.io/configmap" to mount config
+I0316 08:22:19.729860   13206 configmap.go:118] Setting up volume config for pod cfe8b3f6-09fb-11e7-bdde-020047eb000e at /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
+I0316 08:22:19.729915   13206 volumes.go:279] Used volume plugin "kubernetes.io/empty-dir" to mount wrapped_config
+...
+I0316 08:22:19.733309   13206 configmap.go:145] Received configMap default/harbor-ui-config containing (30) pieces of data, 3739 total bytes
+I0316 08:22:19.733470   13206 atomic_writer.go:316] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: current paths:   [app.conf private_key.pem]
+I0316 08:22:19.733493   13206 atomic_writer.go:328] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: new paths:       [app.conf private_key.pem]
+I0316 08:22:19.733502   13206 atomic_writer.go:331] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: paths to remove: map[]
+I0316 08:22:19.733552   13206 atomic_writer.go:136] pod default/ui-rc-psjzs volume config: no update required for target directory /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
+
+[root@cu3 config]# docker exec -ti b34c51260dda bash
+root@cu3:/# ls -al /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
+total 4
+drwxrwxrwt 3 root root  120 Mar 16 04:08 .
+drwxr-xr-x 3 root root 4096 Mar 16 04:08 ..
+drwxr-xr-x 2 root root   80 Mar 16 04:08 ..3983_16_03_04_08_50.565987072
+lrwxrwxrwx 1 root root   31 Mar 16 04:08 ..data -&gt; ..3983_16_03_04_08_50.565987072
+lrwxrwxrwx 1 root root   15 Mar 16 04:08 app.conf -&gt; ..data/app.conf
+lrwxrwxrwx 1 root root   22 Mar 16 04:08 private_key.pem -&gt; ..data/private_key.pem
+</code></pre>
 
 <p>最后放弃了，直接用脚本来创建文件，然后把文件拷贝到对应的机器。</p>
 
@@ -901,7 +1338,7 @@ kubernetes-dashboard   10.0.0.181   nodes         80/TCP          6h        app=
 monitoring-grafana     10.0.0.220   &lt;none&gt;        80/TCP          8m        k8s-app=grafana
 monitoring-influxdb    10.0.0.223   &lt;none&gt;        8086/TCP        8m        k8s-app=influxdb
 
-浏览器访问 登录：admin/admin
+浏览器访问grafana 登录：admin/admin
 http://10.0.0.220/
 </code></pre>
 
@@ -953,6 +1390,7 @@ https://github.com/kubernetes/heapster/blob/master/docs/sink-configuration.md
 <li>安全HTTPS <a href="https://kubernetes.io/docs/admin/authentication/#creating-certificates">https://kubernetes.io/docs/admin/authentication/#creating-certificates</a></li>
 <li>register <a href="http://www.pangxie.space/docker/643">http://www.pangxie.space/docker/643</a> k8s版本旧的话很麻烦</li>
 <li><a href="https://kubernetes.io/docs/tasks/">https://kubernetes.io/docs/tasks/</a></li>
+<li><a href="https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/redis/redis-controller.yaml">https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/redis/redis-controller.yaml</a></li>
 </ul>
 
 
@@ -1305,7 +1743,7 @@ http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboar
 
 <h2>问题及处理</h2>
 
-<p>镜像或者启动失败的问题可以输出脚本调试信息，获取到出错位置的命令单独重新执行来定位。</p>
+<p>镜像或者启动失败的问题可以 <strong>set -x</strong> 输出脚本调试信息，获取到出错位置的命令单独重新执行来定位。</p>
 
 <p>另一种情况，脚本启动完成后，服务不能正常运行。重启机器，再次运行master后就不能访问dashboard了，把master机器的防火墙关闭就行了。github上有同样的一个问题<a href="https://github.com/kubernetes/dashboard/issues/916">https://github.com/kubernetes/dashboard/issues/916</a></p>
 
@@ -1342,7 +1780,7 @@ Feb 25 00:04:36 k8s dockerd: time="2017-02-25T00:04:36.406470062+08:00" level=er
 可以看出访问的端口6443被拦截了
 </code></pre>
 
-<p>开放6443端口dashboard启动成功。通过浏览器能正常访问</p>
+<p>开放6443端口dashboard启动成功（直接把放开ip段也行）。通过浏览器能正常访问</p>
 
 <p></p>
 
@@ -1474,273 +1912,6 @@ hadoop-2607718808-k243d   1/1       Running   0          9m
 <h2>小结</h2>
 
 <p>通过脚本来安装其实不难，就是要翻墙以及一些防火墙的设置需要特别的注意。</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[K8s Minikube on Windows]]></title>
-    <link href="http://winseliu.com/blog/2017/02/08/k8s-minikube-on-windows/"/>
-    <updated>2017-02-08T22:50:06+08:00</updated>
-    <id>http://winseliu.com/blog/2017/02/08/k8s-minikube-on-windows</id>
-    <content type="html"><![CDATA[<p>在windows配置minikube需要先安装docker，或者更直接点的说就是需要docker一样的依赖环境（都是通过iso装载到虚拟机，我们这里不考虑iso内部的软件配置）。先安装docker会把这些依赖都配置好。</p>
-
-<p>系统当前的版本不支持直接安装<a href="https://docs.docker.com/docker-for-windows/">Docker</a>（This version of Docker requires Windows 10 Pro, Enterprise or Education edition with a mininum build number of 10586, Please use <a href="https://www.docker.com/products/docker-toolbox">Docker Toolbox</a>），</p>
-
-<ul>
-<li><a href="https://docs.docker.com/toolbox/toolbox_install_windows/">https://docs.docker.com/toolbox/toolbox_install_windows/</a></li>
-<li><a href="https://rominirani.com/tutorial-getting-started-with-kubernetes-on-your-windows-laptop-with-minikube-3269b54a226#.qvn9h99l4">Tutorial : Getting Started with Kubernetes on your Windows Laptop with Minikube</a></li>
-<li><a href="https://blogs.msdn.microsoft.com/wasimbloch/2017/01/23/setting-up-kubernetes-on-windows10-laptop-with-minikube/">Setting up Kubernetes on Windows10 Laptop with Minikube use Hyper-V</a></li>
-</ul>
-
-
-<p>如果直接全部安装toolbox的VirtualBox、git的应该一切顺利的。由于已有cygwin，想着复用下结果惹了一身骚。</p>
-
-<p>按照自己的安装过程，先介绍下配合cygwin安装docker，然后再介绍全部按官网的工具安装k8s。</p>
-
-<h2>仅尝试Docker，不安装k8s</h2>
-
-<p>但是不想安装git直接使用cygwin来代替。刚刚开始的时刻出现了一些理解上的偏差，后来查询start.sh脚本后大概了解到快捷方式、脚本内容后问题就迎刃而解。</p>
-
-<p>先安装docker toolbox：先禁用windows的Hyper-V；安装时去掉git组件。</p>
-
-<p>安装完成后，启动cygwin的命令行（不要用Docker的快捷图标启动）。然后进行如下配置：</p>
-
-<pre><code>winse@Lenovo-PC ~
-$ cd "C:\Program Files\Docker Toolbox"
-
-做一个c盘的映射
-winse@Lenovo-PC /cygdrive/c/Program Files/Docker Toolbox
-$ ll /
-...
-lrwxrwxrwx   1 winse None               11 Apr  5  2016 c -&gt; /cygdrive/c
-...
-
-根据cygwin的路径配置VirtualBox的路径
-winse@Lenovo-PC /cygdrive/c/Program Files/Docker Toolbox
-$ export VBOX_MSI_INSTALL_PATH="/cygdrive/c/Program Files/Oracle/VirtualBox/"
-
-首先下载boot2docker.iso到 C:\Users\winse\.docker\machine\cache\boot2docker.iso
-https://github.com/boot2docker/boot2docker/releases/download/v1.13.0/boot2docker.iso...
-
-创建一个空的clear脚本（cygwin没有包括clear脚本）
-winse@Lenovo-PC /cygdrive/c/Program Files/Docker Toolbox
-$ touch ~/bin/clear &amp;&amp; chmod +x ~/bin/clear
-
-# 启动
-winse@Lenovo-PC /cygdrive/c/Program Files/Docker Toolbox
-$ ./start.sh
-
-
-                        ##         .
-                  ## ## ##        ==
-               ## ## ## ## ##    ===
-           /"""""""""""""""""\___/ ===
-      ~~~ {~~ ~~~~ ~~~ ~~~~ ~~~ ~ /  ===- ~~~
-           \______ o           __/
-             \    \         __/
-              \____\_______/
-
-docker is configured to use the default machine with IP 192.168.99.100
-For help getting started, check out the docs at https://docs.docker.com
-
-Start interactive shell
-
-winse@Lenovo-PC ~
-$ docker run hello-world
-time="2017-02-08T22:48:33+08:00" level=warning msg="Unable to use system certificate pool: crypto/x509: system root pool is not available on Windows"
-Unable to find image 'hello-world:latest' locally
-latest: Pulling from library/hello-world
-78445dd45222: Pulling fs layer
-78445dd45222: Verifying Checksum
-78445dd45222: Download complete
-78445dd45222: Pull complete
-Digest: sha256:c5515758d4c5e1e838e9cd307f6c6a0d620b5e07e6f927b07d05f6d12a1ac8d7
-Status: Downloaded newer image for hello-world:latest
-
-Hello from Docker!
-This message shows that your installation appears to be working correctly.
-
-To generate this message, Docker took the following steps:
- 1. The Docker client contacted the Docker daemon.
- 2. The Docker daemon pulled the "hello-world" image from the Docker Hub.
- 3. The Docker daemon created a new container from that image which runs the
-    executable that produces the output you are currently reading.
- 4. The Docker daemon streamed that output to the Docker client, which sent it
-    to your terminal.
-
-To try something more ambitious, you can run an Ubuntu container with:
- $ docker run -it ubuntu bash
-
-Share images, automate workflows, and more with a free Docker ID:
- https://cloud.docker.com/
-
-For more examples and ideas, visit:
- https://docs.docker.com/engine/userguide/
-</code></pre>
-
-<h2>使用默认安装，并安装k8s</h2>
-
-<p>由于cygwin的路径与windows的不兼容，而git bash则本身依托于windows的命令行的，兼容性方面更优。</p>
-
-<p>重新安装Docker ToolBox，安装时选择git。</p>
-
-<p>下载minikube需要的一些软件：</p>
-
-<ul>
-<li><a href="https://github.com/kubernetes/minikube/releases">minikube.exe</a></li>
-<li><a href="https://github.com/kubernetes/minikube/blob/v0.16.0/README.md">minikube文档</a></li>
-<li><a href="https://storage.googleapis.com/kubernetes-release/release/v1.5.2/bin/windows/amd64/kubectl.exe">kubectl.exe</a></li>
-<li><a href="https://rominirani.com/tutorial-getting-started-with-kubernetes-on-your-windows-laptop-with-minikube-3269b54a226#.pg14q9wst">Tutorial : Getting Started with Kubernetes on your Windows Laptop with Minikube</a></li>
-<li><a href="https://kubernetes.io/docs/tutorials/stateless-application/hello-minikube/">Hello Minikube On OS X</a></li>
-<li><a href="https://kubernetes.io/docs/getting-started-guides/minikube/">Running Kubernetes Locally via Minikube</a></li>
-</ul>
-
-
-<p>下载minikube和kubectl放到PATH路径下（bin目录已经在PATH中）：</p>
-
-<pre><code>E:\local\bin&gt;dir
-...
-2017-02-08  14:05        50,735,616 kubectl.exe
-2017-02-08  11:22        84,239,872 minikube-windows-amd64.exe
-2017-02-08  11:25    &lt;SYMLINK&gt;      minikube.exe [minikube-windows-amd64.exe] （mklink minikube.exe minikube-windows-amd64.exe）
-</code></pre>
-
-<p>运行 <strong>Docker Quickstart Terminal</strong> (这个快捷方式会先启动docker的虚拟机)，或者直接打开 C:\Program Files\Git\bin\bash.exe 执行如下命令：</p>
-
-<pre><code>查看帮助
-winse@Lenovo-PC MINGW64 ~
-$ minikube start --help
-Starts a local kubernetes cluster using Virtualbox. This command
-assumes you already have Virtualbox installed.
-...
-
-设置代理: 老外的教程都很简单就成功，但是我们操作一堆问题，主要就是万恶的防火墙！！！
-winse@Lenovo-PC MINGW64 ~
-$ export HTTPS_PROXY=http://localhost:8118
-$ export HTTP_PROXY=http://localhost:8118
-$ export NO_PROXY="192.168.0.0/16"
-
-启动
-winse@Lenovo-PC MINGW64 ~
-$ minikube start --v=7 --logtostderr
-
-winse@Lenovo-PC MINGW64 ~
-$ minikube status
-minikubeVM: Running
-localkube: Running
-
-winse@Lenovo-PC MINGW64 ~
-$ kubectl get nodes
-NAME       STATUS    AGE
-minikube   Ready     3h
-</code></pre>
-
-<h4>再次启动，添加代理参数后dashboard才正常运行</h4>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/tutorials/stateless-application/hello-minikube/">https://kubernetes.io/docs/tutorials/stateless-application/hello-minikube/</a></li>
-<li><a href="https://rominirani.com/tutorial-getting-started-with-kubernetes-on-your-windows-laptop-with-minikube-3269b54a226">https://rominirani.com/tutorial-getting-started-with-kubernetes-on-your-windows-laptop-with-minikube-3269b54a226</a></li>
-</ul>
-
-
-<pre><code>winse@Lenovo-PC MINGW64 /c/Program Files/Git/bin
-$ minikube start --docker-env HTTP_PROXY=http://192.168.99.1:8118 --docker-env HTTPS_PROXY=http://192.168.99.1:8118
-Starting local Kubernetes cluster...
-Kubectl is now configured to use the cluster.
-
-winse@Lenovo-PC MINGW64 /c/Program Files/Git/bin
-$ minikube status
-minikubeVM: Running
-localkube: Running
-
-winse@Lenovo-PC MINGW64 /c/Program Files/Git/bin
-$ kubectl cluster-info
-Kubernetes master is running at https://192.168.99.100:8443
-KubeDNS is running at https://192.168.99.100:8443/api/v1/proxy/namespaces/kube-system/services/kube-dns
-kubernetes-dashboard is running at https://192.168.99.100:8443/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard
-
-To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
-
-#Open dashboard
-https://github.com/kubernetes/minikube/issues/379
-https://github.com/kubernetes/minikube/issues/522
-winse@Lenovo-PC MINGW64 /c/Program Files/Git/bin
-$ minikube dashboard
-Opening kubernetes dashboard in default browser...
-
-运行实例
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl get nodes
-NAME       STATUS    AGE
-minikube   Ready     8h
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl run hello-nginx --image=nginx --port=80
-deployment "hello-nginx" created
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe get pods
-NAME                           READY     STATUS              RESTARTS   AGE
-hello-nginx-2471083592-cgn29   0/1       ContainerCreating   0          19s
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe get pods
-NAME                           READY     STATUS             RESTARTS   AGE
-hello-nginx-2471083592-cgn29   0/1       ImagePullBackOff   0          3m
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe describe pod hello-nginx-2471083592-cgn29
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe expose deployment hello-nginx --type=NodePort
-service "hello-nginx" exposed
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe get services
-NAME          CLUSTER-IP   EXTERNAL-IP   PORT(S)        AGE
-hello-nginx   10.0.0.145   &lt;nodes&gt;       80:31570/TCP   1m
-kubernetes    10.0.0.1     &lt;none&gt;        443/TCP        9h
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe describe service hello-nginx
-Name:                   hello-nginx
-Namespace:              default
-Labels:                 run=hello-nginx
-Selector:               run=hello-nginx
-Type:                   NodePort
-IP:                     10.0.0.145
-Port:                   &lt;unset&gt; 80/TCP
-NodePort:               &lt;unset&gt; 31570/TCP
-Endpoints:              172.17.0.4:80
-Session Affinity:       None
-No events.
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ minikube service --url=true hello-nginx
-http://192.168.99.100:31570
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe logs hello-nginx-2471083592-cgn29
-172.17.0.1 - - [10/Feb/2017:02:07:53 +0000] "GET / HTTP/1.1" 200 612 "-" "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.111 Safari/537.36" "-"
-172.17.0.1 - - [10/Feb/2017:02:07:54 +0000] "GET /favicon.ico HTTP/1.1" 404 571 "http://192.168.99.100:31570/" "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.111 Safari/537.36" "-"
-2017/02/10 02:07:54 [error] 6#6: *1 open() "/usr/share/nginx/html/favicon.ico" failed (2: No such file or directory), client: 172.17.0.1, server: localhost, request: "GET /favicon.ico HTTP/1.1", host: "192.168.99.100:31570", referrer: "http://192.168.99.100:31570/"
-
-水平扩展
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe scale --replicas=3 deployment/hello-nginx
-deployment "hello-nginx" scaled
-
-winse@Lenovo-PC MINGW64 /e/local/home/k8s
-$ kubectl.exe get deployment
-NAME          DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   AGE
-hello-nginx   3         3         3            1           21m
-</code></pre>
-
-<p>暂时还不清楚负载均衡是怎么弄的。这个三个应用pods其实是在一个内网（172.17.0.4/5/6），对外有一个服务（10.0.0.145）。</p>
-
-<p>基本的安装过程先记录这么多。</p>
 
 <p>&ndash;END</p>
 ]]></content>

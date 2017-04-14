@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winseliu.com/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-03-23T19:50:31+08:00</updated>
+  <updated>2017-04-14T14:58:52+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,697 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[K8s Hadoop Deploy]]></title>
+    <link href="http://winseliu.com/blog/2017/04/14/k8s-hadoop-deploy/"/>
+    <updated>2017-04-14T10:56:39+08:00</updated>
+    <id>http://winseliu.com/blog/2017/04/14/k8s-hadoop-deploy</id>
+    <content type="html"><![CDATA[<p>折磨了一个多星期，最后还是调通了。折磨源于不自知，源于孤单，源于自负，后来通过扩展、查阅资料、请教同事顺利解决。简单部署可以查看<a href="https://github.com/winse/docker-hadoop">README.md</a> 。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>yum install docker-engine-1.12.6 docker-engine-selinux-1.12.6 -y
+</span><span class='line'>
+</span><span class='line'>cd kube-deploy
+</span><span class='line'>vi hosts
+</span><span class='line'>vi k8s.profile
+</span><span class='line'>./rsync-deploy.sh
+</span><span class='line'>
+</span><span class='line'>cd docker-multinode/
+</span><span class='line'>./master.sh or ./worker.sh
+</span><span class='line'>
+</span><span class='line'>docker save gcr.io/google_containers/etcd-amd64:3.0.4 | docker-bs load
+</span><span class='line'>docker save quay.io/coreos/flannel:v0.6.1-amd64 | docker-bs load
+</span><span class='line'>
+</span><span class='line'>cd kube-deploy/hadoop/kubenetes/
+</span><span class='line'>./prepare.sh
+</span><span class='line'>kubectl create -f hadoop-master2.yaml
+</span><span class='line'>kubectl create -f hadoop-slaver.yaml </span></code></pre></td></tr></table></div></figure>
+
+
+<p>现在想来其实就是 <strong> dockerd &ndash;ip-masq=false </strong>的问题（所有涉及的dockerd都需要加）。 还有就是一台机器单机下的容器互相访问，源IP都错也是安装了openvpn所导致对所有过eth0的都加了MASQUERADE。</p>
+
+<p>根源就在于请求的源地址被替换，也就是iptables的转发进行了SNAT。关于iptables转发这篇文章讲的非常清晰；<a href="http://fancyxinyu.blog.163.com/blog/static/18232136620136185434661/">IPtables之四：NAT原理和配置  </a> 。</p>
+
+<h2>所遇到的问题</h2>
+
+<p>没加ip-masq之前，namenode收到datanode的请求后，源地址是flannel.0的ip: 10.1.98.0。</p>
+
+<p>namenode对应的日志为：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2017-04-09 07:22:06,920 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* registerDatanode: from DatanodeRegistration(10.1.98.0, datanodeUuid=5086c549-f3bb-4ef6-8f56-05b1f7adb7d3, infoPort=50075, ipcPort=50020, storageInfo=lv=-56;cid=CID-522174fa-6e7b-4c3f-ae99-23c3018e35d7;nsid=1613705851;c=0) storage 5086c549-f3bb-4ef6-8f56-05b1f7adb7d3
+</span><span class='line'>2017-04-09 07:22:06,920 INFO org.apache.hadoop.net.NetworkTopology: Removing a node: /default-rack/10.1.98.0:50010
+</span><span class='line'>2017-04-09 07:22:06,921 INFO org.apache.hadoop.net.NetworkTopology: Adding a new node: /default-rack/10.1.98.0:50010</span></code></pre></td></tr></table></div></figure>
+
+
+<p>一开始以为是flannel的问题，换成yum安装，然后同时flannel把backend切换成vxlan后，还是一样的问题。</p>
+
+<p>最后请教搞网络的同事，应该是请求的源地址被替换了，也就定位到iptables。然后通过查看文档，其实前面也有看到过对应的文章，但是看不明白不知道缘由。</p>
+
+<ul>
+<li><a href="https://groups.google.com/d/msg/kubernetes-users/P4uh7y383oo/bPzIRaxhs5gJ">Networking Problem in creating HDFS cluster. - Eugene Yakubovich </a></li>
+<li><a href="https://groups.google.com/d/msg/kubernetes-users/P4uh7y383oo/a1GIV4hcAgAJ">Networking Problem in creating HDFS cluster. - Huihui He </a></li>
+<li><a href="https://developer.ibm.com/recipes/tutorials/networking-your-docker-containers-using-docker0-bridge/">Networking your docker containers using docker0 bridge</a></li>
+</ul>
+
+
+<p>iptables的部分相关信息：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# iptables -S -t nat
+</span><span class='line'>...
+</span><span class='line'>-A PREROUTING -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+</span><span class='line'>-A PREROUTING -j PREROUTING_direct
+</span><span class='line'>-A PREROUTING -j PREROUTING_ZONES_SOURCE
+</span><span class='line'>-A PREROUTING -j PREROUTING_ZONES
+</span><span class='line'>-A PREROUTING -m addrtype --dst-type LOCAL -j DOCKER
+</span><span class='line'>-A OUTPUT -m comment --comment "kubernetes service portals" -j KUBE-SERVICES
+</span><span class='line'>-A OUTPUT -j OUTPUT_direct
+</span><span class='line'>-A OUTPUT ! -d 127.0.0.0/8 -m addrtype --dst-type LOCAL -j DOCKER
+</span><span class='line'>-A POSTROUTING -s 10.1.34.0/24 ! -o docker0 -j MASQUERADE
+</span><span class='line'>-A POSTROUTING -m comment --comment "kubernetes postrouting rules" -j KUBE-POSTROUTING
+</span><span class='line'>-A POSTROUTING -j POSTROUTING_direct
+</span><span class='line'>-A POSTROUTING -j POSTROUTING_ZONES_SOURCE
+</span><span class='line'>-A POSTROUTING -j POSTROUTING_ZONES
+</span><span class='line'>-A KUBE-MARK-DROP -j MARK --set-xmark 0x8000/0x8000
+</span><span class='line'>-A KUBE-MARK-MASQ -j MARK --set-xmark 0x4000/0x4000
+</span><span class='line'>-A KUBE-POSTROUTING -m comment --comment "kubernetes service traffic requiring SNAT" -m mark --mark 0x4000/0x4000 -j MASQUERADE
+</span><span class='line'>-A KUBE-SEP-75CPIAPDB4MAVFWI -s 10.1.40.3/32 -m comment --comment "kube-system/kube-dns:dns-tcp" -j KUBE-MARK-MASQ
+</span><span class='line'>-A KUBE-SEP-75CPIAPDB4MAVFWI -p tcp -m comment --comment "kube-system/kube-dns:dns-tcp" -m tcp -j DNAT --to-destination 10.1.40.3:53
+</span><span class='line'>-A KUBE-SEP-IWNPEB4T46P6VG5J -s 192.168.0.148/32 -m comment --comment "default/kubernetes:https" -j KUBE-MARK-MASQ
+</span><span class='line'>-A KUBE-SEP-IWNPEB4T46P6VG5J -p tcp -m comment --comment "default/kubernetes:https" -m recent --set --name KUBE-SEP-IWNPEB4T46P6VG5J --mask 255.255.255.255 --rsource -m tcp -j DNAT --to-destination 192.168.0.148:6443
+</span><span class='line'>-A KUBE-SEP-UYUINV25NDNSKNUW -s 10.1.40.3/32 -m comment --comment "kube-system/kube-dns:dns" -j KUBE-MARK-MASQ
+</span><span class='line'>-A KUBE-SEP-UYUINV25NDNSKNUW -p udp -m comment --comment "kube-system/kube-dns:dns" -m udp -j DNAT --to-destination 10.1.40.3:53
+</span><span class='line'>-A KUBE-SEP-XDHL2OHX2ICPQHKI -s 10.1.40.2/32 -m comment --comment "kube-system/kubernetes-dashboard:" -j KUBE-MARK-MASQ
+</span><span class='line'>-A KUBE-SEP-XDHL2OHX2ICPQHKI -p tcp -m comment --comment "kube-system/kubernetes-dashboard:" -m tcp -j DNAT --to-destination 10.1.40.2:9090
+</span><span class='line'>-A KUBE-SERVICES -d 10.0.0.1/32 -p tcp -m comment --comment "default/kubernetes:https cluster IP" -m tcp --dport 443 -j KUBE-SVC-NPX46M4PTMTKRN6Y
+</span><span class='line'>-A KUBE-SERVICES -d 10.0.0.95/32 -p tcp -m comment --comment "kube-system/kubernetes-dashboard: cluster IP" -m tcp --dport 80 -j KUBE-SVC-XGLOHA7QRQ3V22RZ
+</span><span class='line'>-A KUBE-SERVICES -d 10.0.0.10/32 -p udp -m comment --comment "kube-system/kube-dns:dns cluster IP" -m udp --dport 53 -j KUBE-SVC-TCOU7JCQXEZGVUNU
+</span><span class='line'>-A KUBE-SERVICES -d 10.0.0.10/32 -p tcp -m comment --comment "kube-system/kube-dns:dns-tcp cluster IP" -m tcp --dport 53 -j KUBE-SVC-ERIFXISQEP7F7OF4
+</span><span class='line'>-A KUBE-SERVICES -m comment --comment "kubernetes service nodeports; NOTE: this must be the last rule in this chain" -m addrtype --dst-type LOCAL -j KUBE-NODEPORTS
+</span><span class='line'>-A KUBE-SVC-ERIFXISQEP7F7OF4 -m comment --comment "kube-system/kube-dns:dns-tcp" -j KUBE-SEP-75CPIAPDB4MAVFWI
+</span><span class='line'>-A KUBE-SVC-NPX46M4PTMTKRN6Y -m comment --comment "default/kubernetes:https" -m recent --rcheck --seconds 10800 --reap --name KUBE-SEP-IWNPEB4T46P6VG5J --mask 255.255.255.255 --rsource -j KUBE-SEP-IWNPEB4T46P6VG5J
+</span><span class='line'>-A KUBE-SVC-NPX46M4PTMTKRN6Y -m comment --comment "default/kubernetes:https" -j KUBE-SEP-IWNPEB4T46P6VG5J
+</span><span class='line'>-A KUBE-SVC-TCOU7JCQXEZGVUNU -m comment --comment "kube-system/kube-dns:dns" -j KUBE-SEP-UYUINV25NDNSKNUW
+</span><span class='line'>-A KUBE-SVC-XGLOHA7QRQ3V22RZ -m comment --comment "kube-system/kubernetes-dashboard:" -j KUBE-SEP-XDHL2OHX2ICPQHKI</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在dockerd服务脚本加上 <code>--ip-masq=false</code> 后，<code>-A POSTROUTING -s 10.1.34.0/24 ! -o docker0 -j MASQUERADE</code> 这一句就没有了，也就是不会进行源地址重写了，这样请求发送到namenode后还是datanode容器的IP。问题解决，原因简单的让人欲哭无泪啊。</p>
+
+<p>写yaml遇到的一些其他问题：</p>
+
+<ul>
+<li><a href="http://andykdocs.de/development/Docker/Fixing+the+Docker+TERM+variable+issue">Fixing the Docker TERM variable issue</a></li>
+<li><a href="http://stackoverflow.com/questions/27195466/hdfs-datanode-denied-communication-with-namenode-because-hostname-cannot-be-reso">hdfs Datanode denied communication with namenode because hostname cannot be resolved</a></li>
+</ul>
+
+
+<p>当然还有很多其他的问题，这篇就写这么多，优化工作后面的弄好了再写。</p>
+
+<h2>中间过程步骤记录</h2>
+
+<p>记录下中间通过yum安装etcd和flanneld的过程。物理机安装flanneld会把配置docker环境变量（/run/flannel/subnet.env）加入启动脚本。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>安装docker-v1.12
+</span><span class='line'>https://docs.docker.com/v1.12/
+</span><span class='line'>https://docs.docker.com/v1.12/engine/installation/linux/centos/
+</span><span class='line'>
+</span><span class='line'>sudo tee /etc/yum.repos.d/docker.repo &lt;&lt;-'EOF'
+</span><span class='line'>[dockerrepo]
+</span><span class='line'>name=Docker Repository
+</span><span class='line'>baseurl=https://yum.dockerproject.org/repo/main/centos/7/
+</span><span class='line'>enabled=1
+</span><span class='line'>gpgcheck=1
+</span><span class='line'>gpgkey=https://yum.dockerproject.org/gpg
+</span><span class='line'>EOF
+</span><span class='line'>
+</span><span class='line'>https://yum.dockerproject.org/repo/main/centos/7/Packages/
+</span><span class='line'>[root@cu3 yum.repos.d]# yum install docker-engine-1.12.6 docker-engine-selinux-1.12.6
+</span><span class='line'>
+</span><span class='line'>https://kubernetes.io/docs/getting-started-guides/centos/centos_manual_config/
+</span><span class='line'>
+</span><span class='line'>cat &gt; /etc/yum.repos.d/virt7-docker-common-release.repo &lt;&lt;EOF
+</span><span class='line'>[virt7-docker-common-release]
+</span><span class='line'>name=virt7-docker-common-release
+</span><span class='line'>baseurl=http://cbs.centos.org/repos/virt7-docker-common-release/x86_64/os/
+</span><span class='line'>gpgcheck=0
+</span><span class='line'>EOF
+</span><span class='line'>
+</span><span class='line'>yum -y install --enablerepo=virt7-docker-common-release etcd flannel
+</span><span class='line'>yum -y install --enablerepo=virt7-docker-common-release flannel
+</span><span class='line'>
+</span><span class='line'>- ETCD配置
+</span><span class='line'>[root@cu3 docker-multinode]# 
+</span><span class='line'>etcdctl mkdir /kube-centos/network
+</span><span class='line'>etcdctl set /kube-centos/network/config "{ \"Network\": \"10.1.0.0/16\", \"SubnetLen\": 24, \"Backend\": { \"Type\": \"vxlan\" } }"
+</span><span class='line'>
+</span><span class='line'>- FlANNEL
+</span><span class='line'>[root@cu3 ~]# cat /etc/sysconfig/flanneld
+</span><span class='line'># Flanneld configuration options  
+</span><span class='line'>
+</span><span class='line'># etcd url location.  Point this to the server where etcd runs
+</span><span class='line'>FLANNEL_ETCD_ENDPOINTS="http://cu3:2379"
+</span><span class='line'>
+</span><span class='line'># etcd config key.  This is the configuration key that flannel queries
+</span><span class='line'># For address range assignment
+</span><span class='line'>FLANNEL_ETCD_PREFIX="/kube-centos/network"
+</span><span class='line'>
+</span><span class='line'># Any additional options that you want to pass
+</span><span class='line'>#FLANNEL_OPTIONS=""
+</span><span class='line'>
+</span><span class='line'>[root@cu2 yum.repos.d]# systemctl daemon-reload
+</span><span class='line'>
+</span><span class='line'>[root@cu2 yum.repos.d]# cat /run/flannel/subnet.env
+</span><span class='line'>
+</span><span class='line'>[root@cu2 ~]# systemctl cat docker
+</span><span class='line'>...
+</span><span class='line'># /usr/lib/systemd/system/docker.service.d/flannel.conf
+</span><span class='line'>[Service]
+</span><span class='line'>EnvironmentFile=-/run/flannel/docker </span></code></pre></td></tr></table></div></figure>
+
+
+<p>测试过程中有yaml配置中启动sshd，然后启动容器后，通过手动启动namenode、datanode的方式来测试：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>cd hadoop-2.6.5
+</span><span class='line'>gosu hadoop mkdir /data/bigdata
+</span><span class='line'>gosu hadoop sbin/hadoop-daemon.sh start datanode 
+</span><span class='line'>
+</span><span class='line'>cd hadoop-2.6.5/
+</span><span class='line'>gosu hadoop  bin/hadoop namenode -format 
+</span><span class='line'>gosu hadoop sbin/hadoop-daemon.sh start namenode</span></code></pre></td></tr></table></div></figure>
+
+
+<p>后来发现问题出在iptables后，又回到原来的docker-bootstrap启动，需要删除flannel.1的网络：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># yum安装flanneld后停止 https://kubernetes.io/docs/getting-started-guides/scratch/
+</span><span class='line'>ip link set flannel.1 down
+</span><span class='line'>ip link delete flannel.1
+</span><span class='line'>route -n</span></code></pre></td></tr></table></div></figure>
+
+
+<p>开了防火墙的话，把容器的端加入到信任列表：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>systemctl enable firewalld && systemctl start firewalld
+</span><span class='line'>
+</span><span class='line'>firewall-cmd --zone=trusted --add-source=10.0.0.0/8 --permanent 
+</span><span class='line'>firewall-cmd --zone=trusted --add-source=192.168.0.0/16 --permanent 
+</span><span class='line'>firewall-cmd --reload</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[K8s Harbor Config]]></title>
+    <link href="http://winseliu.com/blog/2017/03/30/k8s-harbor-config/"/>
+    <updated>2017-03-30T14:21:50+08:00</updated>
+    <id>http://winseliu.com/blog/2017/03/30/k8s-harbor-config</id>
+    <content type="html"><![CDATA[<p>为了对比，还是想写写在centos7上面<a href="https://github.com/vmware/harbor/tree/master/make/kubernetes">安装Harbor</a>：太简单了，想想当初在6上面安装那酸爽($.$)。。。</p>
+
+<h2>环境说明</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 kube-deploy]# yum install -y redhat-lsb
+</span><span class='line'>[root@cu2 kube-deploy]# lsb_release -a
+</span><span class='line'>LSB Version:    :core-4.1-amd64:core-4.1-noarch:cxx-4.1-amd64:cxx-4.1-noarch:desktop-4.1-amd64:desktop-4.1-noarch:languages-4.1-amd64:languages-4.1-noarch:printing-4.1-amd64:printing-4.1-noarch
+</span><span class='line'>Distributor ID: CentOS
+</span><span class='line'>Description:    CentOS Linux release 7.3.1611 (Core) 
+</span><span class='line'>Release:        7.3.1611
+</span><span class='line'>Codename:       Core
+</span><span class='line'>
+</span><span class='line'>[root@cu2 kube-deploy]# docker version
+</span><span class='line'>Client:
+</span><span class='line'> Version:      1.12.6
+</span><span class='line'> API version:  1.24
+</span><span class='line'> Go version:   go1.6.4
+</span><span class='line'> Git commit:   78d1802
+</span><span class='line'> Built:        Tue Jan 10 20:20:01 2017
+</span><span class='line'> OS/Arch:      linux/amd64
+</span><span class='line'>
+</span><span class='line'>Server:
+</span><span class='line'> Version:      1.12.6
+</span><span class='line'> API version:  1.24
+</span><span class='line'> Go version:   go1.6.4
+</span><span class='line'> Git commit:   78d1802
+</span><span class='line'> Built:        Tue Jan 10 20:20:01 2017
+</span><span class='line'> OS/Arch:      linux/amd64
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>使用docker-multinode搭建的环境</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 kube-deploy]# kubectl version
+</span><span class='line'>Client Version: version.Info{Major:"1", Minor:"5", GitVersion:"v1.5.6", GitCommit:"114f8911f9597be669a747ab72787e0bd74c9359", GitTreeState:"clean", BuildDate:"2017-03-28T13:36:31Z", GoVersion:"go1.7.4", Compiler:"gc", Platform:"linux/amd64"}
+</span><span class='line'>Server Version: version.Info{Major:"1", Minor:"5", GitVersion:"v1.5.6", GitCommit:"114f8911f9597be669a747ab72787e0bd74c9359", GitTreeState:"clean", BuildDate:"2017-03-28T13:36:31Z", GoVersion:"go1.7.4", Compiler:"gc", Platform:"linux/amd64"}</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>安装配置</h2>
+
+<ul>
+<li>证书准备</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# cd /data/kubernetes/
+</span><span class='line'>[root@cu2 kubernetes]# cd kube-deploy/
+</span><span class='line'>[root@cu2 kube-deploy]# cat easy-rsa.sh 
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'># cd /data/kubernetes
+</span><span class='line'>cd ..
+</span><span class='line'>
+</span><span class='line'>git clone https://github.com/OpenVPN/easy-rsa.git
+</span><span class='line'>cd easy-rsa/easyrsa3
+</span><span class='line'>
+</span><span class='line'>echo "# ======  CA  ======= #"
+</span><span class='line'>./easyrsa init-pki
+</span><span class='line'>./easyrsa build-ca #记住输入的密码，下面颁发证书还会用到
+</span><span class='line'>
+</span><span class='line'>echo "# ======  CERT  ======= #"
+</span><span class='line'>./easyrsa gen-req cu nopass
+</span><span class='line'>./easyrsa sign-req server cu #commonName填将要用到的域名咯</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>下载离线镜像</li>
+</ul>
+
+
+<p><a href="http://pan.baidu.com/s/1c1Rtnag">harbor-offline-installer-0.5.0.tgz</a>，加载harbor.0.5.0.tgz里面的镜像</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 harbor-make]# docker images 
+</span><span class='line'>REPOSITORY                                            TAG                 IMAGE ID            CREATED             SIZE
+</span><span class='line'>vmware/harbor-jobservice                              0.5.0               1700fbe602a0        3 months ago        148.4 MB
+</span><span class='line'>vmware/harbor-ui                                      0.5.0               6db5718f2012        3 months ago        209.6 MB
+</span><span class='line'>vmware/harbor-db                                      0.5.0               c401344852c6        3 months ago        326.8 MB
+</span><span class='line'>nginx                                                 1.11.5              cc16e49f1304        4 months ago        181.4 MB
+</span><span class='line'>registry                                              2.5.0               44a8766d1758        8 months ago        33.28 MB
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>修改配置和yaml配置的镜像名称</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 harbor-make]# vi harbor.cfg
+</span><span class='line'>
+</span><span class='line'>hostname = cu.eshore.cn
+</span><span class='line'>ui_url_protocol = https
+</span><span class='line'>ssl_cert = /data/kubernetes/easy-rsa/easyrsa3/pki/issued/cu.crt
+</span><span class='line'>ssl_cert_key = /data/kubernetes/easy-rsa/easyrsa3/pki/private/cu.key 
+</span><span class='line'>
+</span><span class='line'>[root@cu2 harbor-make]# find kubernetes/ -name "*.rc.yaml" 
+</span><span class='line'>kubernetes/nginx/nginx.rc.yaml
+</span><span class='line'>kubernetes/mysql/mysql.rc.yaml
+</span><span class='line'>kubernetes/registry/registry.rc.yaml
+</span><span class='line'>kubernetes/ui/ui.rc.yaml
+</span><span class='line'>kubernetes/jobservice/jobservice.rc.yaml</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>启动</li>
+</ul>
+
+
+<p>k8s启动的配置用github上最新的，不要用release下面的！！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 harbor-make]# cd kubernetes/
+</span><span class='line'>[root@cu2 kubernetes]# python prepare 
+</span><span class='line'>
+</span><span class='line'>[root@cu2 kubernetes]# cat kube.sh 
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>OP=${1:-"apply"}
+</span><span class='line'>
+</span><span class='line'>kubectl $OP -f pv/
+</span><span class='line'>
+</span><span class='line'>kubectl $OP -f jobservice/jobservice.cm.yaml
+</span><span class='line'>kubectl $OP -f mysql/mysql.cm.yaml
+</span><span class='line'>kubectl $OP -f nginx/nginx.cm.yaml
+</span><span class='line'>kubectl $OP -f registry/registry.cm.yaml
+</span><span class='line'>kubectl $OP -f ui/ui.cm.yaml
+</span><span class='line'>
+</span><span class='line'>kubectl $OP -f jobservice/jobservice.svc.yaml
+</span><span class='line'>kubectl $OP -f mysql/mysql.svc.yaml
+</span><span class='line'>kubectl $OP -f nginx/nginx.svc.yaml
+</span><span class='line'>kubectl $OP -f registry/registry.svc.yaml
+</span><span class='line'>kubectl $OP -f ui/ui.svc.yaml
+</span><span class='line'>
+</span><span class='line'>kubectl $OP -f registry/registry.rc.yaml 
+</span><span class='line'>kubectl $OP -f mysql/mysql.rc.yaml 
+</span><span class='line'>kubectl $OP -f jobservice/jobservice.rc.yaml 
+</span><span class='line'>kubectl $OP -f ui/ui.rc.yaml 
+</span><span class='line'>kubectl $OP -f nginx/nginx.rc.yaml
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>客户端CA</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 kube-deploy]# cat rsync-deploy.sh 
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>SERVICES="$@"
+</span><span class='line'>HOSTS=$(echo cu{1..5} )
+</span><span class='line'>
+</span><span class='line'>#########
+</span><span class='line'># Harbor
+</span><span class='line'>if echo "$SERVICES" | grep harbor &gt;/dev/null ; then 
+</span><span class='line'>
+</span><span class='line'>  sed -i '/cu.eshore.cn/d' /etc/hosts
+</span><span class='line'>
+</span><span class='line'>  cat &gt;&gt;/etc/hosts &lt;&lt;EOF
+</span><span class='line'>$( kubectl get service nginx -n default -o jsonpath="{..clusterIP}" ) cu.eshore.cn
+</span><span class='line'>EOF
+</span><span class='line'>  echo "Updated Local Hosts"
+</span><span class='line'>
+</span><span class='line'>  for h in $HOSTS ; do
+</span><span class='line'>    if [[ $h != "$(hostname)" ]] ; then
+</span><span class='line'>      rsync -az /etc/hosts $h:/etc/
+</span><span class='line'>    fi
+</span><span class='line'>
+</span><span class='line'>    ssh $h "mkdir -p /etc/docker/certs.d/cu.eshore.cn/"
+</span><span class='line'>    rsync -az /data/kubernetes/easy-rsa/easyrsa3/pki/ca.crt $h:/etc/docker/certs.d/cu.eshore.cn/
+</span><span class='line'>
+</span><span class='line'>    ssh $h "docker login -u admin -p Harbor12345 cu.eshore.cn"
+</span><span class='line'>  done
+</span><span class='line'>  echo "Harbor Rsync Succeeded"
+</span><span class='line'>
+</span><span class='line'>fi 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>搞定，上传下载一个镜像试试：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu1 dev]# docker build -t cu.eshore.cn/library/codis:3.2 codis/
+</span><span class='line'>[root@cu1 dev]# docker push cu.eshore.cn/library/codis:3.2
+</span><span class='line'>
+</span><span class='line'>[root@cu2 ~]# docker pull cu.eshore.cn/library/codis:3.2
+</span><span class='line'>3.2: Pulling from library/codis
+</span><span class='line'>386a066cd84a: Already exists 
+</span><span class='line'>a3ed95caeb02: Pull complete 
+</span><span class='line'>b1d31257c103: Pull complete 
+</span><span class='line'>0e627f083b66: Pull complete 
+</span><span class='line'>83912002f3f9: Pull complete 
+</span><span class='line'>fc5e0ef7d361: Pull complete 
+</span><span class='line'>47fe51a74a06: Pull complete 
+</span><span class='line'>08dacccac43c: Pull complete 
+</span><span class='line'>ec5a5e8fd71b: Pull complete 
+</span><span class='line'>83f9da97d228: Pull complete 
+</span><span class='line'>d4735c06cafa: Pull complete 
+</span><span class='line'>3a4dc262a84d: Pull complete 
+</span><span class='line'>bcf78ab0a1a9: Pull complete 
+</span><span class='line'>7ac5a6fd0bf8: Pull complete 
+</span><span class='line'>Digest: sha256:1c9280840222d736b7419b7e896b6286709d08e53890ae9e3d18062d61a9ad58
+</span><span class='line'>Status: Downloaded newer image for cu.eshore.cn/library/codis:3.2
+</span><span class='line'>
+</span><span class='line'>[root@cu3 ~]# docker pull cu.eshore.cn/library/codis:3.2
+</span><span class='line'>...
+</span><span class='line'>layers from manifest don't match image configuration 暂时不清楚啥问题，临时解决。。。囧
+</span><span class='line'>[root@cu2 data]# docker save cu.eshore.cn/library/codis:3.2 | ssh cu3 docker load</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>小结</h2>
+
+<p>高版本的docker和k8s对环境变量和config volumes都支持，配置相对就很简单。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Codis使用进阶]]></title>
@@ -32,7 +723,7 @@
 
 <h2>测试环境编译安装</h2>
 
-<p>现在的版本已经有了全部的依赖，直接编译即可。</p>
+<p>现在的版本已经有了全部的依赖，直接编译即可。（centos6和官网提供的编译版本不兼容）</p>
 
 <ul>
 <li><a href="https://github.com/CodisLabs/codis/blob/release3.2/doc/tutorial_zh.md#0-%E4%B8%8B%E8%BD%BD%E4%B8%8E%E7%BC%96%E8%AF%91">官网文档</a></li>
@@ -74,6 +765,7 @@
 <span class='line-number'>33</span>
 <span class='line-number'>34</span>
 <span class='line-number'>35</span>
+<span class='line-number'>36</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>tar zxvf go1.6.2.linux-amd64.tar.gz 
 </span><span class='line'>
 </span><span class='line'>/etc/profile
@@ -107,6 +799,7 @@
 </span><span class='line'>version = 2017-03-15 00:40:41 +0800 @be9ee25c63a64396b5fb0076447be560497b909d @3.2-beta-10-gbe9ee25
 </span><span class='line'>compile = 2017-03-15 12:58:23 +0800 by go version go1.6.2 linux/amd64
 </span><span class='line'>
+</span><span class='line'># 生成默认配置
 </span><span class='line'>[root@cu2 codis]# bin/codis-dashboard --default-config | tee dashboard.toml
 </span><span class='line'>[root@cu2 codis]# bin/codis-proxy --default-config | tee proxy.toml
 </span></code></pre></td></tr></table></div></figure>
@@ -334,9 +1027,9 @@
 <p>web界面添加步骤：</p>
 
 <ul>
-<li>界面上添加proxy</li>
-<li>再添加group，填数字</li>
-<li>然后添加server</li>
+<li>界面上添加proxy : cu6/7/8:11080</li>
+<li>再添加group，填数字: &frac12;/&frac34;/5/6</li>
+<li>然后添加server : cu-ud6/7/8:6378/6379</li>
 <li>最后分配slots</li>
 </ul>
 
@@ -381,7 +1074,10 @@
 <span class='line-number'>34</span>
 <span class='line-number'>35</span>
 <span class='line-number'>36</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>./configure --with-stream --with-http_ssl_module --with-pcre=src/pcre --with-zlib=src/zlib --prefix=/usr/local/nginx
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 编译Nginx
+</span><span class='line'>./configure --with-stream --with-http_ssl_module --with-pcre=src/pcre --with-zlib=src/zlib --prefix=/usr/local/nginx
 </span><span class='line'>make && make install
 </span><span class='line'>
 </span><span class='line'>[ud@cu-ud9 nginx]$ cat conf/nginx.conf
@@ -415,8 +1111,9 @@
 </span><span class='line'>}
 </span><span class='line'>
 </span><span class='line'># 测试获取数据
-</span><span class='line'>[ud@cu-ud6 opt]$ bin/redis-cli -h cu-ud6 -p 6379 scan 0
+</span><span class='line'>[ud@cu-ud6 opt]$ bin/redis-cli -h cu-ud6 -p 6379 scan 0 # 样本Key
 </span><span class='line'>[ud@cu-ud6 opt]$ bin/redis-cli -h cu-ud9 -p 19000
+</span><span class='line'>&gt; get XXX
 </span></code></pre></td></tr></table></div></figure>
 
 
@@ -456,10 +1153,10 @@
   </entry>
   
   <entry>
-    <title type="html"><![CDATA[K8s Harbor Config]]></title>
-    <link href="http://winseliu.com/blog/2017/03/12/k8s-harbor-config/"/>
+    <title type="html"><![CDATA[K8s Harbor Config on Centos6]]></title>
+    <link href="http://winseliu.com/blog/2017/03/12/k8s-harbor-config-on-centos6/"/>
     <updated>2017-03-12T23:21:30+08:00</updated>
-    <id>http://winseliu.com/blog/2017/03/12/k8s-harbor-config</id>
+    <id>http://winseliu.com/blog/2017/03/12/k8s-harbor-config-on-centos6</id>
     <content type="html"><![CDATA[<h2>前传</h2>
 
 <p>前面有写在 centos6 安装k8s的文章，后来重启一台worker节点后该节点的网络就不通了 <strong> connect: Invalid argument </strong> 。更新到最新的0.7.0后worker节点重启网络都能正常连通。</p>
@@ -711,7 +1408,7 @@
 </span><span class='line'># 登录
 </span><span class='line'>[root@cu3 certs.d]# docker login cu.eshore.cn
 </span><span class='line'>Username: admin
-</span><span class='line'>Password: 
+</span><span class='line'>Password: Harbor12345
 </span><span class='line'>Email: 1
 </span><span class='line'>WARNING: login credentials saved in /root/.docker/config.json
 </span><span class='line'>Login Succeeded
@@ -957,7 +1654,53 @@
 <li><a href="https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/https-nginx/nginx-app.yaml">https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/https-nginx/nginx-app.yaml</a> 看到1.2使用secret volumes</li>
 <li><a href="https://github.com/kubernetes/kubernetes/blob/52f4d3806919e4ec16cb17336a1802461cf40a46/test/kubemark/resources/hollow-node_template.yaml">https://github.com/kubernetes/kubernetes/blob/52f4d3806919e4ec16cb17336a1802461cf40a46/test/kubemark/resources/hollow-node_template.yaml</a></li>
 <li><a href="https://kubernetes.io/docs/user-guide/secrets/">https://kubernetes.io/docs/user-guide/secrets/</a></li>
+<li><a href="https://kubernetes.io/docs/user-guide/configmap/">https://kubernetes.io/docs/user-guide/configmap/</a></li>
+<li><a href="https://kubernetes.io/docs/tasks/configure-pod-container/downward-api-volume-expose-pod-information/">https://kubernetes.io/docs/tasks/configure-pod-container/downward-api-volume-expose-pod-information/</a></li>
 </ul>
+
+
+<p>其实就是docker版本老的不支持shared，其实在kubelet的容器里面是创建了对应的文件的：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># docker logs
+</span><span class='line'>I0316 08:22:19.729825   13206 volumes.go:279] Used volume plugin "kubernetes.io/configmap" to mount config
+</span><span class='line'>I0316 08:22:19.729860   13206 configmap.go:118] Setting up volume config for pod cfe8b3f6-09fb-11e7-bdde-020047eb000e at /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
+</span><span class='line'>I0316 08:22:19.729915   13206 volumes.go:279] Used volume plugin "kubernetes.io/empty-dir" to mount wrapped_config
+</span><span class='line'>...
+</span><span class='line'>I0316 08:22:19.733309   13206 configmap.go:145] Received configMap default/harbor-ui-config containing (30) pieces of data, 3739 total bytes
+</span><span class='line'>I0316 08:22:19.733470   13206 atomic_writer.go:316] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: current paths:   [app.conf private_key.pem]
+</span><span class='line'>I0316 08:22:19.733493   13206 atomic_writer.go:328] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: new paths:       [app.conf private_key.pem]
+</span><span class='line'>I0316 08:22:19.733502   13206 atomic_writer.go:331] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: paths to remove: map[]
+</span><span class='line'>I0316 08:22:19.733552   13206 atomic_writer.go:136] pod default/ui-rc-psjzs volume config: no update required for target directory /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
+</span><span class='line'>
+</span><span class='line'>[root@cu3 config]# docker exec -ti b34c51260dda bash
+</span><span class='line'>root@cu3:/# ls -al /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
+</span><span class='line'>total 4
+</span><span class='line'>drwxrwxrwt 3 root root  120 Mar 16 04:08 .
+</span><span class='line'>drwxr-xr-x 3 root root 4096 Mar 16 04:08 ..
+</span><span class='line'>drwxr-xr-x 2 root root   80 Mar 16 04:08 ..3983_16_03_04_08_50.565987072
+</span><span class='line'>lrwxrwxrwx 1 root root   31 Mar 16 04:08 ..data -&gt; ..3983_16_03_04_08_50.565987072
+</span><span class='line'>lrwxrwxrwx 1 root root   15 Mar 16 04:08 app.conf -&gt; ..data/app.conf
+</span><span class='line'>lrwxrwxrwx 1 root root   22 Mar 16 04:08 private_key.pem -&gt; ..data/private_key.pem</span></code></pre></td></tr></table></div></figure>
 
 
 <p>最后放弃了，直接用脚本来创建文件，然后把文件拷贝到对应的机器。</p>
@@ -1909,7 +2652,7 @@
 </span><span class='line'>monitoring-grafana     10.0.0.220   &lt;none&gt;        80/TCP          8m        k8s-app=grafana
 </span><span class='line'>monitoring-influxdb    10.0.0.223   &lt;none&gt;        8086/TCP        8m        k8s-app=influxdb
 </span><span class='line'>
-</span><span class='line'>浏览器访问 登录：admin/admin
+</span><span class='line'>浏览器访问grafana 登录：admin/admin
 </span><span class='line'>http://10.0.0.220/
 </span></code></pre></td></tr></table></div></figure>
 
@@ -1994,6 +2737,7 @@
 <li>安全HTTPS <a href="https://kubernetes.io/docs/admin/authentication/#creating-certificates">https://kubernetes.io/docs/admin/authentication/#creating-certificates</a></li>
 <li>register <a href="http://www.pangxie.space/docker/643">http://www.pangxie.space/docker/643</a> k8s版本旧的话很麻烦</li>
 <li><a href="https://kubernetes.io/docs/tasks/">https://kubernetes.io/docs/tasks/</a></li>
+<li><a href="https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/redis/redis-controller.yaml">https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/redis/redis-controller.yaml</a></li>
 </ul>
 
 
@@ -2579,7 +3323,7 @@
 
 <h2>问题及处理</h2>
 
-<p>镜像或者启动失败的问题可以输出脚本调试信息，获取到出错位置的命令单独重新执行来定位。</p>
+<p>镜像或者启动失败的问题可以 <strong>set -x</strong> 输出脚本调试信息，获取到出错位置的命令单独重新执行来定位。</p>
 
 <p>另一种情况，脚本启动完成后，服务不能正常运行。重启机器，再次运行master后就不能访问dashboard了，把master机器的防火墙关闭就行了。github上有同样的一个问题<a href="https://github.com/kubernetes/dashboard/issues/916">https://github.com/kubernetes/dashboard/issues/916</a></p>
 
@@ -2639,7 +3383,7 @@
 </span><span class='line'>可以看出访问的端口6443被拦截了</span></code></pre></td></tr></table></div></figure>
 
 
-<p>开放6443端口dashboard启动成功。通过浏览器能正常访问</p>
+<p>开放6443端口dashboard启动成功（直接把放开ip段也行）。通过浏览器能正常访问</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -6654,193 +7398,6 @@ error_page 497 <a href="https://$host:$server_port$request_uri;">https://$host:$
 <p><img src="http://winseliu.com/images/blogs/sparksql-debug.png" alt="" /></p>
 
 <p>调试着生成的代码能更好的理解前面explain的执行计划。看到代码就好理解最开始的Access(null,null,null)了：对象到字段反序列化的问题。</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Maven创建自己的Archetype]]></title>
-    <link href="http://winseliu.com/blog/2016/10/12/maven-create-ourself-archetype/"/>
-    <updated>2016-10-12T12:06:53+08:00</updated>
-    <id>http://winseliu.com/blog/2016/10/12/maven-create-ourself-archetype</id>
-    <content type="html"><![CDATA[<p>最近经常用到scala，创建的小工程也挺多的。每次都的复制一些properties和plugins挺繁琐的。准备自己搞一个archetype，以后直接用archetype生成一步到位（相当于一个模板）。</p>
-
-<ul>
-<li><a href="https://my.oschina.net/wangrikui/blog/498807">https://my.oschina.net/wangrikui/blog/498807</a></li>
-<li><a href="http://www.cnblogs.com/whitewolf/p/3606034.html">http://www.cnblogs.com/whitewolf/p/3606034.html</a></li>
-</ul>
-
-
-<h2>首先创建一个模板工程</h2>
-
-<p>把需要修改的属性和插件，以及一些常用到的文件都放置好，如log4j.properties等。</p>
-
-<h2>使用命令创建archetype工程</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mvn clean archetype:create-from-project</span></code></pre></td></tr></table></div></figure>
-
-
-<p><strong> 注意：</strong> maven-archetype-plugin插件需要定位mvn.bat，而我的maven-3.3.9的命令名称为mvn.cmd，需要简单暴力的复制一个。</p>
-
-<p>生成后，在 <strong> target\generated-sources\archetype </strong> 目录即为创建archetype工程。</p>
-
-<h2>清理IDE相关文件</h2>
-
-<p>target\generated-sources\archetype\src\main\resources\META-INF\maven 下面的 archetype-metadata.xml 为Archetype的元数据（真正包括那些文件的配置）。可以根据实际情况进行编辑</p>
-
-<p>文件夹 target\generated-sources\archetype\src\main\resources\archetype-resources 下包括所有（新建时）需要拷贝的文件，但同时目录下面也包括了IDE相关文件，可以把这些文件<strong> 删掉 </strong> 。</p>
-
-<h2>本地安装</h2>
-
-<p>清理完文件后，回到 target\generated-sources\archetype 执行 <code>mvn install</code> 把这个原型(Archetype)安装到本地。</p>
-
-<h2>使用</h2>
-
-<ul>
-<li><a href="https://my.oschina.net/u/225373/blog/468035">https://my.oschina.net/u/225373/blog/468035</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mvn archetype:generate -B \
-</span><span class='line'>-DarchetypeGroupId=com.example -DarchetypeArtifactId=scala-simple-archetype -DarchetypeVersion=1.0 \
-</span><span class='line'>-DarchetypeCatalog=local \
-</span><span class='line'>-DgroupId=com.github.winse -DartifactId=Hello</span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意 <strong> archetypeCatalog </strong> 属性，如果不配置为本地（local/internal ）的话要等很久（可以用-X输出调试信息查看操作停在哪）。对于intellij idea可以在 Default Settings - Build,Exection,Deployment - Build Tools - Maven - Runner 加上 VM Options 参数。</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[批量下载163-open的视频]]></title>
-    <link href="http://winseliu.com/blog/2016/09/19/163-open-movies-download/"/>
-    <updated>2016-09-19T23:19:31+08:00</updated>
-    <id>http://winseliu.com/blog/2016/09/19/163-open-movies-download</id>
-    <content type="html"><![CDATA[<p>163的视频资源还是挺丰富的，默认情况下必须用客户端下载。感觉挺麻烦的，对于网络慢的情况可能要下很久，如果能用下载工具批量下载就好了。</p>
-
-<p>首先从视频播放页面获取下载的地址(查看下载按钮的js):</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>appsrc : 'http://mov.bn.netease.com/open-movie/nos/mp4/2015/01/19/SAFDACJPD_sd.m3u8',</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>然后从列表页获取列表所有视频的详情URL，</li>
-<li>然后从详情URL获取appsrc的地址，</li>
-<li>最后把后缀m3u8改成mp4。当然还可以把视频的名称优化下。</li>
-</ul>
-
-
-<p>下面结合【chrome调试工具】、【notepad++】、【shell】来获取视频的下载地址：</p>
-
-<ol>
-<li>F12使用js获取列表详情URL</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$("#list2").find("tr &gt;td.u-ctitle a").each(function(i,node){console.log($(node).attr("href"));})</span></code></pre></td></tr></table></div></figure>
-
-
-<p>使用notepad++的<strong>列处理</strong>功能 处理chrome输出的信息只留下URL保存到url.txt，如 <code>http://open.163.com/movie/2008/1/1/H/M6SGF6VB4_M6SGL3P1H.html</code> 。</p>
-
-<p>这里用同样的步骤也把视频列表的名称获取到，用于后面的视频重命名：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$("#list2").find("tr &gt;td.u-ctitle a").each(function(i,node){console.log($(node).text());})</span></code></pre></td></tr></table></div></figure>
-
-
-<ol>
-<li>使用SHELL获取详情页面的URL</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ cat url.txt | while read line ; do if [ "$line" != '' ] ; then curl -s $line | grep -a appsrc ; fi ; done</span></code></pre></td></tr></table></div></figure>
-
-
-<p>获取到的数据同样包含一些不需要的信息，使用notepad++进行裁剪。提取 <code>http://mov.bn.netease.com/open-movie/nos/mp4/2015/01/19/SAFDCDGNA_sd.m3u8</code>  的视频地址，使用replace把m3u8替换成mp4，然后把URL复制到<strong>迅雷下载的下载框</strong>即可批量下载了。</p>
-
-<ol>
-<li>重命名</li>
-</ol>
-
-
-<p>给获取到的视频的名称加上顺序标识，然后弄成重命名的命令：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mv SAFD8B131_sd.mp4  01机器学习的动机与应用.mp4
-</span><span class='line'>mv SAFD8D355_sd.mp4  02监督学习应用.梯度下降.mp4
-</span><span class='line'>mv SAFD8O947_sd.mp4  03欠拟合与过拟合的概念.mp4
-</span><span class='line'>mv SAFD8PQO8_sd.mp4  04牛顿方法.mp4
-</span><span class='line'>mv SAFD94US8_sd.mp4  05生成学习算法.mp4
-</span><span class='line'>mv SAFD97CGO_sd.mp4  06朴素贝叶斯算法.mp4
-</span><span class='line'>mv SAFD9I82D_sd.mp4  07最优间隔分类器问题.mp4
-</span><span class='line'>mv SAFD9L3B9_sd.mp4  08顺序最小优化算法.mp4
-</span><span class='line'>mv SAFD9VGEO_sd.mp4  09经验风险最小化.mp4
-</span><span class='line'>mv SAFDA37TS_sd.mp4  10特征选择.mp4
-</span><span class='line'>mv SAFDACJPD_sd.mp4  11贝叶斯统计正则化.mp4
-</span><span class='line'>mv SAFDAHG1C_sd.mp4  12K-means算法.mp4
-</span><span class='line'>mv SAFDAQ19J_sd.mp4  13高斯混合模型.mp4
-</span><span class='line'>mv SAFDB0UUS_sd.mp4  14主成分分析法.mp4
-</span><span class='line'>mv SAFDB7QLL_sd.mp4  15奇异值分解.mp4
-</span><span class='line'>mv SAFDBF188_sd.mp4  16马尔可夫决策过程.mp4
-</span><span class='line'>mv SAFDBM41T_sd.mp4  17离散与维数灾难.mp4
-</span><span class='line'>mv SAFDBTL6V_sd.mp4  18线性二次型调节控制.mp4
-</span><span class='line'>mv SAFDC4B84_sd.mp4  19微分动态规划.mp4
-</span><span class='line'>mv SAFDCDGNA_sd.mp4  20策略搜索.mp4</span></code></pre></td></tr></table></div></figure>
-
-
-<p>以上几个步骤就能完美的实现视频的下载。步骤比较多，但是还是很有成就感啊，程序员的逗逼方法。</p>
-
-<h2>附</h2>
-
-<p>几年前下载TED视频的脚本(全部用脚本来实现，其实拆分步骤或许是更好的选择简单些)：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>wget -qO- http://open.163.com/ted/ | iconv -f gbk -t utf-8 | awk '{if($0 ~ /&lt;a href="http:\/\/v\.163\.com\/movie/ ){print}}' \  
-</span><span class='line'> | sed -n 's/.*&lt;a href="\([^"]*\)".*/\1/p' \  
-</span><span class='line'> | while read url  
-</span><span class='line'>do   
-</span><span class='line'>        echo $url;  
-</span><span class='line'>        wget -qO- "$url" | iconv -f gbk -t utf-8 | awk '/appsrc: \047http:\/\//{if(match($0,/http:[^\047]*/))print substr($0,RSTART,RLENGTH);}' \  
-</span><span class='line'> | sed -e s/-list\.m3u8/.mp4/ -e s/movie/movieMP4/  
-</span><span class='line'>done  </span></code></pre></td></tr></table></div></figure>
-
 
 <p>&ndash;END</p>
 ]]></content>
