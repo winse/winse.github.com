@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Puppet | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/puppet/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-04-14T14:58:52+08:00</updated>
+  <updated>2017-05-07T07:43:23+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,308 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Puppet批量自动化部署实战]]></title>
+    <link href="http://winseliu.com/blog/2017/05/05/puppet-automate-deploy-hosts/"/>
+    <updated>2017-05-05T08:33:37+08:00</updated>
+    <id>http://winseliu.com/blog/2017/05/05/puppet-automate-deploy-hosts</id>
+    <content type="html"><![CDATA[<p>断断续续使用Puppet近一年，多次体验到Puppet的强大：SSH更新、需ROOT权限批量处理等等。这次集群新上架了又爽了一把。把整个过程记录下来，方便今后参考。</p>
+
+<p>运维的同事也想了解puppet，在docker容器上安装了一遍，把具体的内容附上：<a href="/files/expect+puppet.txt">expect+puppet.txt</a></p>
+
+<p>这次操作是对以前零零碎碎积累的一次检验和温习。需要用到的工具比较多：</p>
+
+<ul>
+<li>RPM打包、本地YUM仓库 - RPMBUILD、CREATEREPO</li>
+<li>SSH无密钥登录 - EXPECT&amp;FOR</li>
+<li>时间同步、host配置 - SCP、SSH&amp;FOR</li>
+<li>创建用户、新用户无密钥等 - PUPPET</li>
+<li>ssh_known_hosts - PUPPETDB</li>
+<li>rhel.repo、gmond、时区设置 - PUPPET</li>
+</ul>
+
+
+<p>远程配置机器首先当然是进行无密钥登录的设置，这样才能进行批量操作，不然几百台机器每次都需要干预太烦人、工作量太大。无密钥登录使用原来写好的EXPECT脚本，使用FOR循环执行，等待结果即可。</p>
+
+<pre><code>[root@hadoop-master1 ~]# cat ssh-copy-id.expect 
+#!/usr/bin/expect  
+
+## Usage $0 [user@]host password
+
+set host [lrange $argv 0 0];
+set password [lrange $argv 1 1] ;
+
+set timeout 30;
+
+spawn ssh-copy-id $host ;
+
+expect {
+  "(yes/no)?" { send yes\n; exp_continue; }
+  "password:" { send $password\n; exp_continue; }
+}
+
+exec sleep 1;
+
+# 用for，不要用while
+for h in `cat /etc/hosts | grep -v '^#' | grep slaver | grep -E '\.36\.|\.37\.' | awk '{print $2}' ` ; do 
+  ./ssh-copy-id.expect $h 'PASSWD';
+done
+</code></pre>
+
+<p>做好无密钥登录，拷贝 /etc/hosts, /etc/cron.daily/ntp.cron, /etc/yum.repos.d/puppet.repo 到全部的新机器。这里puppet.repo是自己编译搭建的私有仓库（具体编译配置步骤查看puppet分类下的文章），通过 <code>yum install mcollective-plugins-simple</code> 就可以把mcolletive和puppet-agent安装好。把所有步骤封装到一个prepare.sh脚本，内容如下：</p>
+
+<pre><code>#!/bin/sh
+
+# must be hostname!!
+HOSTS="$@"
+PASSWD=${PASSWD:-'root'}
+PUPPETSERVER="hadoop-master1"
+
+for h in $HOSTS ; do ./ssh-copy-id.expect $h "$PASSWD" ; done
+
+for h in $HOSTS ; do
+scp /etc/hosts $h:/etc ;
+scp /etc/yum.repos.d/puppet.repo $h:/etc/yum.repos.d/ ;
+scp /etc/cron.daily/ntp.cron $h:/etc/cron.daily/ ;
+
+ssh $h '
+#ntpdate cu-omc1 #着重注意
+rm -rf /etc/yum.repos.d/CentOS-*
+yum install mcollective-plugins-simple -y
+' ;
+
+scp /etc/puppetlabs/mcollective/server.cfg $h:/etc/puppetlabs/mcollective/
+ssh $h "
+sed -i '/HOSTNAME/ {
+i \
+HOSTNAME=$h
+d
+} ' /etc/sysconfig/network
+hostname $h
+
+echo -e '\n\n[agent]\nserver = $PUPPETSERVER\ncertname=$h' &gt; /etc/puppetlabs/puppet/puppet.conf
+chkconfig mcollective on
+service mcollective start
+"
+
+done
+</code></pre>
+
+<p>然后执行 <code>./prepare.sh hadoop-slaver{200..500}</code> 就可以了。</p>
+
+<p>接下来重点讲讲PUPPET配置的编写。</p>
+
+<p>首先根据当前需要创建的用户、组把创建用户的配置写好：</p>
+
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.10/quick_start_user_group.html">https://docs.puppet.com/puppet/4.10/quick_start_user_group.html</a></li>
+</ul>
+
+
+<pre><code>[root@hadoop-master1 ~]# puppet resource -e group hadoop
+group { 'hadoop':
+  ensure =&gt; 'present',
+  gid    =&gt; '501',
+}
+[root@hadoop-master1 ~]# puppet resource -e user hadoop
+user { 'hadoop':
+  ensure           =&gt; 'present',
+  gid              =&gt; '501',
+  groups           =&gt; ['wheel'],
+  home             =&gt; '/home/hadoop',
+  password         =&gt; '$6$AfnA...uIhHC9I.',
+  password_max_age =&gt; '99999',
+  password_min_age =&gt; '0',
+  shell            =&gt; '/bin/bash',
+  uid              =&gt; '501',
+}
+</code></pre>
+
+<p>添加require、groups，然后删除uid、gid。最后需要添加 managehome => true, 否则用户目录就不会自动创建：</p>
+
+<ul>
+<li><a href="http://www.dbalex.com/category/devops/puppet">http://www.dbalex.com/category/devops/puppet</a></li>
+</ul>
+
+
+<pre><code># 默认不创建用户目录
+[root@hadoop-slaver200 ~]# su - hadoop
+su: warning: cannot change directory to /home/hadoop: No such file or directory
+-bash-4.1$ 
+
+# 创建用户配置成品
+group { 'hadoop':
+  ensure =&gt; 'present',
+}
+
+user { 'hadoop':
+  ensure           =&gt; 'present',
+  groups           =&gt; ['hadoop', 'wheel'],
+  home             =&gt; '/home/hadoop',
+  password         =&gt; '$6$Af...IhHC9I.',
+  password_max_age =&gt; '99999',
+  password_min_age =&gt; '0',
+  shell            =&gt; '/bin/bash',
+  managehome       =&gt; true,
+  require          =&gt; Group['hadoop'],
+}
+</code></pre>
+
+<ul>
+<li><a href="https://ask.puppet.com/question/15753/how-can-i-chown-directories-recursivley/">https://ask.puppet.com/question/15753/how-can-i-chown-directories-recursivley/</a></li>
+<li><a href="https://serverfault.com/questions/542947/issue-with-changing-permission-and-owner-recursively-on-files-with-puppet-and-va">https://serverfault.com/questions/542947/issue-with-changing-permission-and-owner-recursively-on-files-with-puppet-and-va</a></li>
+<li><a href="https://serverfault.com/questions/416254/adding-an-existing-user-to-a-group-with-puppet">https://serverfault.com/questions/416254/adding-an-existing-user-to-a-group-with-puppet</a></li>
+</ul>
+
+
+<p>添加好用户后，就是把无密钥登录也让PUPPET来弄。其实就是把 id_rsa.pub 的内容写入都行机器的 authorized_keys ，PUPPET已经自带了这个类：ssh_authorized_key。把id_ras.pub的内容（中间的内容）赋值给 key 属性即可。</p>
+
+<pre><code>ssh_authorized_key {'root@hadoop-master1':
+  user =&gt; 'root',
+  type =&gt; 'ssh-rsa',
+  key =&gt; 'AAAAB3NzaC1y...O1Q==',
+}
+
+ssh_authorized_key {'hadoop@hadoop-master1':
+  user =&gt; 'hadoop',
+  type =&gt; 'ssh-rsa',
+  key =&gt; 'AAAAB3Nza...IZYPw==',
+  require  =&gt; User['hadoop'],
+}
+</code></pre>
+
+<p>无密钥登录比较容易，没有涉及到收集节点信息。仅仅把公钥写入新机器还不够，还得把 known_hosts 也处理好，不然第一次连接新机器都需要输入一下yes。内容如下：</p>
+
+<pre><code>[hadoop@hadoop-slaver200 ~]$ ssh hadoop-slaver202
+The authenticity of host 'hadoop-slaver202 (192.168.36.59)' can't be established.
+RSA key fingerprint is fe:7e:26:c4:56:ea:f4:21:61:82:6d:9b:4a:72:93:a4.
+Are you sure you want to continue connecting (yes/no)? 
+</code></pre>
+
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_virtual.html">https://docs.puppet.com/puppet/4.4/lang_virtual.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_collectors.html">https://docs.puppet.com/puppet/4.4/lang_collectors.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_exported.html">https://docs.puppet.com/puppet/4.4/lang_exported.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_resources_advanced.html#amending-attributes-with-a-collector">https://docs.puppet.com/puppet/4.4/lang_resources_advanced.html#amending-attributes-with-a-collector</a></li>
+<li><a href="https://docs.puppet.com/puppet/latest/types/ssh_authorized_key.html">https://docs.puppet.com/puppet/latest/types/ssh_authorized_key.html</a></li>
+<li><a href="https://www.puppetcookbook.com/posts/install-package.html">https://www.puppetcookbook.com/posts/install-package.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.10/lang_conditional.html">https://docs.puppet.com/puppet/4.10/lang_conditional.html</a></li>
+</ul>
+
+
+<p>正如上面官网介绍的，需要用到虚拟资源，自动把新机器指纹（fingerprint）写入到机器需要PUPPETDB的支持，安装配置又需要PGSQL的配合。需要耗费一番功夫，但是还是划得来的（具体安装步骤查看puppet分类下的文章）。</p>
+
+<pre><code>if $hostname =~ /^hadoop-/ {
+
+  $host_aliases = [ $ipaddress, $hostname ]
+
+  # Export hostkeys from all hosts.
+  @@sshkey { $::fqdn:
+    ensure =&gt; present,
+    host_aliases =&gt; $host_aliases,
+    type =&gt; 'ssh-rsa',
+    key =&gt; $sshrsakey,
+  }
+
+  if $hostname =~ /^hadoop-master/ {
+    # realize all exported
+    Sshkey &lt;&lt;| |&gt;&gt;
+  }
+
+}
+</code></pre>
+
+<p>先在所有slaver机器运行一遍 puppet agent -t ，然后再在master节点把收集的指纹写入到 /etc/ssh/ssh_known_hosts 。</p>
+
+<p>这里说个插曲：机器的hosts和hostname是通过 FOR&amp;SSH 命令来统一修改的，有些可能没有配置好导致机器的主机名有重复。通过执行配置known_hosts竟然帮我找出了hostname重复的机器，意外的收获。该问题的处理我是直接登录到PGSQL改了对应表的数据处理的。</p>
+
+<p>到这里机器基本能用了。主机名、hosts、时间同步、hadoop用户以及master到该用户的无密钥登录都已经配置好了。</p>
+
+<p></p>
+
+<p>接下来把实战过程中安装gmond的步骤帖出来：</p>
+
+<pre><code>$$ cd /etc/puppetlabs/code/environments/production/manifests/
+
+$$ vi change_site.sh
+#!/bin/sh
+
+## Usage:
+##  ./change_site.sh nrpe.site
+##
+
+[[ $# != 1 ]] &amp;&amp; exit 1
+
+cd $(cd $(dirname $0); pwd)
+
+rm -rf site.pp
+ln -s $1 site.pp
+
+$$ vi pexec.sh
+#!/bin/sh
+
+## Usage:
+##   ./pexec.sh /cu-ud/ sudo_revert.site 
+##
+
+case $# in
+1)
+  FUNC="$1"
+  HOST_PARAM=
+  ;;
+2)
+  FUNC="$2"
+  HOST_PARAM="-I $1"
+  ;;
+*)
+  while [ $# -gt 1 ] ; do 
+    HOST_PARAM="$HOST_PARAM -I $1"
+    shift
+  done
+  FUNC=$1
+  ;;
+esac
+
+cd $(cd $(dirname $0); pwd)
+
+./change_site.sh "$FUNC"
+
+if [[ "$HOST_PARAM" != "" &amp;&amp; ! "$HOST_PARAM" =~ */* ]] ; then
+  mco shell $HOST_PARAM run -- `which puppet` agent -t
+else
+  mco puppet $HOST_PARAM runall 20
+fi
+</code></pre>
+
+<p>由于机器增加比较多，且网络环境变的复杂化。把原来的2个分组修改成4个。不同的网络段和功能分别设置不同的广播端口。</p>
+
+<pre><code>$ ./pexec.sh /hadoop-slaver.$/ gmond.site 
+
+# 采集数据的节点重启后，其他发送数据的节点貌似都需要重启。
+$ screen
+$ for ((i=1;i&lt;=53;i++)); do  mco shell -I /hadoop-slaver${i}.$/ run -- ' service gmond restart ' ; done 
+# 这个确认搞的很麻烦，
+# 想通过ganglia-web获取数据然后判断是否有数据进行重启。
+</code></pre>
+
+<p>Ganglia删除某节点后，如果要从rrds上去掉改节点的信息，需要：重启对应收集的gmond，对应集群的rrds目录，然后重启gmetad。</p>
+
+<h2>总结</h2>
+
+<p>现在添加机器，直接连上puppetserver机器然后执行几个命令就可以搞定；</p>
+
+<pre><code>HOST=new-host-name 
+# 无密钥登录和puppet/mco
+PASSWD=new-host-root-password ./prepare.sh $HOST
+
+./pexec.sh $HOST new-hadoop.site
+./pexec.sh $HOST gmond.site # 当前需要到web界面确认新节点的数据是否被采集
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Puppet批量修改用户密码]]></title>
@@ -219,7 +521,7 @@ gpgcheck=0
 </code></pre>
 
 <ul>
-<li>sudo</li>
+<li>sudo：用于sudo切root，方便调试</li>
 </ul>
 
 
@@ -346,6 +648,8 @@ rrd_rootdir "/data/ganglia/rrds"
 
 <p>注意： data_source 需要配合 gmond/manifests/init.pp 中的 deaf 属性值。</p>
 
+<p><strong>php的时区调整</strong>：vi /etc/php.ini date.timezone = &ldquo;Asia/Shanghai&rdquo;</p>
+
 <p>安装gmond：</p>
 
 <p>在cu-omc2上安装gmond（正则表达式，想怎么匹配就怎么写）：</p>
@@ -355,9 +659,19 @@ rrd_rootdir "/data/ganglia/rrds"
 
 <p>puppet同步好后，就安装好puppet，以及启动gmond服务。</p>
 
-<p>同时看看web是否已经有图像。没有话可以试着重启gmond:</p>
+<p>同时看看web是否已经有图像。<strong>不要看一分钟负载，搞一个明显一点的，如磁盘容量内存容量可以明确判断数据有没有采集到的。</strong> 没有话可以试着重启gmond:</p>
 
 <pre><code>[root@hadoop-master1 production]# mco shell -I /cu-/ run -- service gmond restart
+</code></pre>
+
+<p>不要一次重启太多机器，时间比较长的话可以结合screen命令使用：</p>
+
+<pre><code>[root@hadoop-master1 ~]# screen
+[root@hadoop-master1 ~]# mco shell -I hadoop-slaver2 -I hadoop-slaver3 -I hadoop-slaver4  -I hadoop-slaver5 -I hadoop-slaver6 -I hadoop-slaver7 -I hadoop-slaver8 -I hadoop-slaver9  run -- service gmond restart ; 
+[root@hadoop-master1 ~]# for ((i=1;i&lt;17;i++)) ; do mco shell -I /hadoop-slaver${i}.$/ run -- service gmond restart ; sleep 60 ; done  
+
+[root@hadoop-master1 ~]# screen -ls 
+[root@hadoop-master1 ~]# screen -r 22929
 </code></pre>
 
 <p>&ndash;END</p>
@@ -998,567 +1312,6 @@ $ sudo puppet agent --test --tags apache,us_mirror1
 </code></pre>
 
 <p>再次强调Filter ： <a href="https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html#selecting-request-targets-using-filters">Selecting Request Targets Using Filters</a></p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[MCollective安装配置]]></title>
-    <link href="http://winseliu.com/blog/2016/04/28/mcollective-quick-start/"/>
-    <updated>2016-04-28T08:39:23+08:00</updated>
-    <id>http://winseliu.com/blog/2016/04/28/mcollective-quick-start</id>
-    <content type="html"><![CDATA[<p>puppet agent 通过定时拉取的方式来更新本地系统，但无法满足实时更新的需求。 mcollective 通过 <strong>消息中间件</strong> 的方式，mclient/mservers通过消息的推送/订阅，实现mservers实时执行mclient提交的请求。（添加 m 说明是mcollective的组件！）</p>
-
-<p>最新版的安装除了官网，没有其他可以直接学习的资料（只能参考）。先看官网的资料：</p>
-
-<ul>
-<li>组件功能(必须看看) <a href="https://docs.puppet.com/mcollective/overview_components.html">https://docs.puppet.com/mcollective/overview_components.html</a></li>
-<li>部署 <a href="https://docs.puppet.com/mcollective/deploy/install.html">https://docs.puppet.com/mcollective/deploy/install.html</a></li>
-<li>部署规范/准则 <a href="https://docs.puppet.com/mcollective/deploy/standard.html">https://docs.puppet.com/mcollective/deploy/standard.html</a></li>
-</ul>
-
-
-<p>摘录官网安装描述：[Installing MCollective requires the following steps]</p>
-
-<ul>
-<li>Make sure your middleware is up and running and your firewalls are in order.</li>
-<li>Install the mcollective package on servers, then make sure the mcollective service is running.</li>
-<li>Install the mcollective-client package on admin workstations.</li>
-<li>Most Debian-like and Red Hat-like systems can use the official Puppet Labs packages. Enable the Puppet Labs repos, or import the packages into your own repos.
-
-<ul>
-<li>If you’re on Debian/Ubuntu, mind the missing package dependency.</li>
-</ul>
-</li>
-<li>If your systems can’t use the official packages, check the system requirements and either build your own or run from source.</li>
-</ul>
-
-
-<p>mcollective对于puppet来说是一个锦上添花的组件，没有puppet一样正常运转。部署主要由两个部分组成：</p>
-
-<ul>
-<li>部署消息中间件</li>
-<li>配置mcollective(puppet4.4 agent已经安装该功能，redhat也自带装了Stomp包：<code>/opt/puppetlabs/puppet/lib/ruby/gems/2.1.0/gems/</code> 目录下面)
-
-<ul>
-<li>配置mclient/mserver</li>
-<li>配置Stomp with TLS</li>
-<li>配置security</li>
-</ul>
-</li>
-</ul>
-
-
-<p>本文先简单实现连接远程主机，然后配置安全功能，最后用puppet来重新实现 mcollective 的安装和配置。</p>
-
-<h1>环境说明</h1>
-
-<ul>
-<li>hadoop-master2:
-
-<ul>
-<li>172.17.42.1</li>
-<li>puppetserver, activemq-server, mcollective-client</li>
-</ul>
-</li>
-<li>hadoop-master1/hadoop-slaver1/hadoop-slaver2:
-
-<ul>
-<li>172.17.0.2/&frac34;</li>
-<li>puppet-agent, mcollective-server</li>
-</ul>
-</li>
-</ul>
-
-
-<h1>ActiveMQ部署</h1>
-
-<p>activemq的服务端是一个spring-jetty项目，直接解压运行启动脚本即可。</p>
-
-<pre><code># http://activemq.apache.org/download-archives.html
-# 直接下载最新的 tar.gz
-
-# 解压，启动
-On Unix:
-From a command shell, change to the installation directory and run ActiveMQ as a foregroud process:
-cd [activemq_install_dir]/bin
-./activemq console
-From a command shell, change to the installation directory and run ActiveMQ as a daemon process:
-cd [activemq_install_dir]/bin
-./activemq start
-
-# 确认
-URL: http://127.0.0.1:8161/admin/
-Login: admin
-Passwort: admin
-# 起了好多端口，随便试一个
-netstat -nl|grep 61616
-netstat -anp|grep PID
-
-# 数据/日志目录
-[root@hadoop-master2 apache-activemq-5.13.2]# ll data/
-total 16
--rw-r--r-- 1 root users 4276 Apr 27 21:36 activemq.log
--rw-r--r-- 1 root root     5 Apr 27 21:36 activemq.pid
--rw-r--r-- 1 root root     0 Apr 27 21:36 audit.log
-drwxr-xr-x 2 root root  4096 Apr 27 21:36 kahadb
-</code></pre>
-
-<p><img src="/images/blogs/mcollective-activemq.png" alt="" /></p>
-
-<p>查看连接密码：</p>
-
-<pre><code>[root@hadoop-master2 conf]# cat credentials.properties
-...
-activemq.username=system
-activemq.password=manager
-guest.password=password[root@hadoop-master2 conf]# 
-</code></pre>
-
-<h1>简单配置(unencrypted Stomp) <a name="cli-simple-usage"></a></h1>
-
-<p>安装puppet4.4后，mcollective已经安装好了！直接修改配置连接到activemq即可。</p>
-
-<pre><code>[root@hadoop-master2 puppetlabs]# chkconfig --list | grep mco
-mcollective     0:off   1:off   2:off   3:off   4:off   5:off   6:off
-
-# puppetserver作为mcollective-client
-[root@hadoop-master2 mcollective]# cat client.cfg                    
-...
-connector = activemq
-plugin.activemq.pool.size = 1
-plugin.activemq.pool.1.host = hadoop-master2.example.com
-plugin.activemq.pool.1.port = 61613
-plugin.activemq.pool.1.user = system
-plugin.activemq.pool.1.password = manager
-...
-
-[root@hadoop-master2 mcollective]# mco ping
-
-
----- ping statistics ----
-No responses received
-
-# puppet agent作为mcollective-server
--bash-4.1# cat server.cfg 
-...
-connector = activemq
-plugin.activemq.pool.size = 1
-plugin.activemq.pool.1.host = hadoop-master2.example.com
-plugin.activemq.pool.1.port = 61613
-plugin.activemq.pool.1.user = system
-plugin.activemq.pool.1.password = manager
-...
-
--bash-4.1# service mcollective start
-Starting mcollective:                                      [  OK  ]
--bash-4.1# service mcollective status
-mcollectived (pid  202) is running...
-
-# 其他两台agent机器一样的配置操作
-
-# 1. mcollective-client(puppetserver) 测试
-[root@hadoop-master2 ~]# mco find
-hadoop-master1
-hadoop-slaver2
-hadoop-slaver1
-[root@hadoop-master2 mcollective]# mco ping
-hadoop-master1                           time=148.29 ms
-hadoop-slaver2                           time=187.99 ms
-hadoop-slaver1                           time=190.21 ms
-
-
----- ping statistics ----
-3 replies max: 190.21 min: 148.29 avg: 175.50 
-
-# 2. 先查看/扫描节点状态。（如果配置了facts后，会输出一长串的Facts！）
-[root@hadoop-master2 ssl]# mco inventory hadoop-master1
-Inventory for hadoop-master1:
-
-   Server Statistics:
-                      Version: 2.8.8
-                   Start Time: 2016-04-29 00:21:31 +0800
-                  Config File: /etc/puppetlabs/mcollective/server.cfg
-                  Collectives: mcollective
-              Main Collective: mcollective
-                   Process ID: 155
-               Total Messages: 13
-      Messages Passed Filters: 3
-            Messages Filtered: 0
-             Expired Messages: 0
-                 Replies Sent: 2
-         Total Processor Time: 2.32 seconds
-                  System Time: 0.3 seconds
-
-   Agents:
-      discovery       rpcutil                        
-
-   Data Plugins:
-      agent           collective      fact           
-      fstat                                          
-
-   Configuration Management Classes:
-      No classes applied
-
-   Facts:
-      mcollective =&gt; 1
-
-# 3. 获取节点facts，需要配合puppet一起来使用
-# puppetserver节点 配置更新agent facts.yaml信息
-[root@hadoop-master2 manifests]# cat site.pp 
-file{'/etc/puppetlabs/mcollective/facts.yaml':
-  owner    =&gt; root,
-  group    =&gt; root,
-  mode     =&gt; '400',
-  loglevel =&gt; debug, # reduce noise in Puppet reports
-  content  =&gt; inline_template("&lt;%= scope.to_hash.reject { |k,v| k.to_s =~ /(uptime_seconds|timestamp|free)/ }.to_yaml %&gt;"), # exclude rapidly changing facts
-}
-# 读取facts
-[root@hadoop-master2 manifests]# mco facts hostname
-Report for fact: hostname
-
-        hadoop-master1                           found 1 times
-        hadoop-slaver1                           found 1 times
-        hadoop-slaver2                           found 1 times
-
-Finished processing 3 / 3 hosts in 579.93 ms
-</code></pre>
-
-<p>自带的插件功能比较少，要真正把 mcollective 用起来需要安装插件：puppet, service, package等等。这篇主要记录安装过程，<a href="/blog/2016/04/28/mcollective-plugins/">插件安装以及使用</a>后面具体实践了再写。</p>
-
-<p>我觉得内网生产环境安装，到这一步已经差不多了！下面的安全配置就当深入学习吧。</p>
-
-<h1>Stomp with TLS 配置</h1>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html">https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html">https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html</a></li>
-</ul>
-
-
-<p><strong>Anonymous TLS</strong> 步骤简单一点，这里就不列出来了，自己去看官网的文档: <a href="https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html#anonymous-tls">Anonymous TLS</a></p>
-
-<pre><code># CA-Verified TLS
-
-# 1 手动配置activemq
-
-# 1.1 可以直接用puppet的cert/private-keys，我这里新生成一个activemq的证书
-[root@hadoop-master2 puppetlabs]# puppet master --configprint ssldir
-/etc/puppetlabs/puppet/ssl
-# 一个不冲突的名称即可，不需要是hostname/FQDN
-[root@hadoop-master2 puppetlabs]# puppet cert generate activemq
-Notice: activemq has a waiting certificate request
-Notice: Signed certificate request for activemq
-Notice: Removing file Puppet::SSL::CertificateRequest activemq at '/etc/puppetlabs/puppet/ssl/ca/requests/activemq.pem'
-Notice: Removing file Puppet::SSL::CertificateRequest activemq at '/etc/puppetlabs/puppet/ssl/certificate_requests/activemq.pem'
-[root@hadoop-master2 puppetlabs]# tree /etc/puppetlabs/puppet/ssl/
-/etc/puppetlabs/puppet/ssl/
-...
-├── certificate_requests
-├── certs
-│   ├── activemq.pem
-│   ├── ca.pem
-│   └── hadoop-master2.example.com.pem
-├── crl.pem
-├── private
-├── private_keys
-│   ├── activemq.pem
-│   └── hadoop-master2.example.com.pem
-└── public_keys
-    ├── activemq.pem
-    └── hadoop-master2.example.com.pem
-
-9 directories, 22 files
-
-# certs/activemq.pem, certs/ca.pem, private_keys/activemq.pem 就是我们需要的。
-
-
-# 1.2 创建Truststore
-[root@hadoop-master2 puppetlabs]# which keytool
-/opt/jdk1.7.0_60/bin/keytool
-[root@hadoop-master2 puppetlabs]# cd /etc/puppetlabs/puppet/ssl            
-[root@hadoop-master2 ssl]# keytool -import -alias "CU CA" -file certs/ca.pem -keystore truststore.jks
-Enter keystore password:  
-Re-enter new password: 
-Owner: CN=Puppet CA: hadoop-master2.example.com
-Issuer: CN=Puppet CA: hadoop-master2.example.com
-...
-Trust this certificate? [no]:  y
-Certificate was added to keystore
-[root@hadoop-master2 ssl]# ll
-total 32
-drwxr-xr-x 5 puppet puppet 4096 Apr 23 00:01 ca
-drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 certificate_requests
-drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 certs
--rw-r--r-- 1 puppet puppet  979 Apr 28 10:33 crl.pem
-drwxr-x--- 2 puppet puppet 4096 Apr 22 23:51 private
-drwxr-x--- 2 puppet puppet 4096 Apr 28 19:53 private_keys
-drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 public_keys
--rw-r--r-- 1 root   root   1496 Apr 28 20:01 truststore.jks
-# 验证下指纹fingerprints
-[root@hadoop-master2 ssl]# keytool -list -keystore truststore.jks 
-Enter keystore password:  
-
-Keystore type: JKS
-Keystore provider: SUN
-
-Your keystore contains 1 entry
-
-cu ca, Apr 28, 2016, trustedCertEntry, 
-Certificate fingerprint (SHA1): 40:2C:45:37:6B:C7:9C:92:E7:4D:1E:4F:2B:C4:17:F4:A3:5F:EB:56
-[root@hadoop-master2 ssl]# openssl x509 -in certs/ca.pem -fingerprint -sha1
-SHA1 Fingerprint=40:2C:45:37:6B:C7:9C:92:E7:4D:1E:4F:2B:C4:17:F4:A3:5F:EB:56
-
-
-# 1.3 创建Keystore
-[root@hadoop-master2 ssl]# cat private_keys/activemq.pem certs/activemq.pem &gt;activemq.pem
-# 所有密码都需一致！！ All of these passwords must be the same.
-[root@hadoop-master2 ssl]# openssl pkcs12 -export -in activemq.pem -out activemq.p12 -name activemq      
-Enter Export Password:
-Verifying - Enter Export Password:
-[root@hadoop-master2 ssl]# keytool -importkeystore -destkeystore keystore.jks -srckeystore activemq.p12 \
-&gt; -srcstoretype PKCS12 -alias activemq
-Enter destination keystore password:  XXX
-Re-enter new password: XXX
-Enter source keystore password:  XXX
-[root@hadoop-master2 ssl]# ll -t
-total 52
--rw-r--r-- 1 root   root   3918 Apr 28 20:12 keystore.jks
--rw-r--r-- 1 root   root   4230 Apr 28 20:08 activemq.p12
--rw-r--r-- 1 root   root   5203 Apr 28 20:07 activemq.pem
--rw-r--r-- 1 root   root   1496 Apr 28 20:01 truststore.jks
-...
-# 验证指纹
-[root@hadoop-master2 ssl]# keytool -list -keystore keystore.jks 
-Enter keystore password:  
-
-Keystore type: JKS
-Keystore provider: SUN
-
-Your keystore contains 1 entry
-
-activemq, Apr 28, 2016, PrivateKeyEntry, 
-Certificate fingerprint (SHA1): 4F:DF:DE:64:13:36:0E:74:8B:7F:D3:61:78:29:C4:AA:4F:A4:ED:D8
-[root@hadoop-master2 ssl]# openssl x509 -in certs/activemq.pem -fingerprint -sha1
-SHA1 Fingerprint=4F:DF:DE:64:13:36:0E:74:8B:7F:D3:61:78:29:C4:AA:4F:A4:ED:D8
-
-
-# 1.4 配置activemq
-# http://activemq.apache.org/how-do-i-use-ssl.html
-# https://docs.puppet.com/mcollective/deploy/middleware/activemq.html#tls-credentials
-# https://docs.puppet.com/mcollective/deploy/middleware/activemq.html#stomp
-[root@hadoop-master2 ssl]# mv keystore.jks truststore.jks /opt/puppetlabs/apache-activemq-5.13.2/conf
-[root@hadoop-master2 ssl]# cd /opt/puppetlabs/apache-activemq-5.13.2/conf/
-# 填上面步骤设置的密码
-[root@hadoop-master2 conf]# vi activemq.xml 
-...
-&lt;sslContext&gt;
-  &lt;sslContext keyStore="keystore.jks" keyStorePassword="XXXX"
-              trustStrore="truststore.jks" trustStorePassword="XXXX" /&gt;
-&lt;/sslContext&gt;
-
-&lt;transportConnectors&gt;
-    &lt;!-- DOS protection, limit concurrent connections to 1000 and frame size to 100MB --&gt;
-    &lt;transportConnector name="stomp+nio+ssl" uri="stomp+nio+ssl://0.0.0.0:61614?maximumConnections=1000&amp;amp;wireFormat.maxFrameSize=104857600&amp;amp;needClientAuth=true&amp;amp;transport.enabledProtocols=TLSv1,TLSv1.1,TLSv1.2"/&gt;
-&lt;/transportConnectors&gt;
-
-[root@hadoop-master2 apache-activemq-5.13.2]# chmod 600 conf/activemq.xml 
-[root@hadoop-master2 apache-activemq-5.13.2]# bin/activemq stop
-[root@hadoop-master2 apache-activemq-5.13.2]# bin/activemq start
-# 日志查看
-[root@hadoop-master2 apache-activemq-5.13.2]# less data/activemq.log 
-
-
-# 2 puppetserver(mcollective client)
-# https://docs.puppet.com/mcollective/configure/client.html
-[root@hadoop-master2 ~]# cd /etc/puppetlabs/mcollective/
-[root@hadoop-master2 mcollective]# cat client.cfg
-...
-connector = activemq
-plugin.activemq.pool.size = 1
-plugin.activemq.pool.1.host = hadoop-master2.example.com
-plugin.activemq.pool.1.port = 61614
-plugin.activemq.pool.1.user = system
-plugin.activemq.pool.1.password = manager
-plugin.activemq.pool.1.ssl = true
-plugin.activemq.pool.1.ssl.ca = /etc/puppetlabs/puppet/ssl/certs/ca.pem
-plugin.activemq.pool.1.ssl.key = /etc/puppetlabs/puppet/ssl/private_keys/hadoop-master2.example.com.pem
-plugin.activemq.pool.1.ssl.cert = /etc/puppetlabs/puppet/ssl/certs/hadoop-master2.example.com.pem
-...
-[root@hadoop-master2 mcollective]# mco ping -v
-
-
----- ping statistics ----
-No responses received
-
-# 3 puppet agents(mcollective servers)
-# https://docs.puppet.com/mcollective/configure/server.html
--bash-4.1# puppet agent --configprint confdir
-/etc/puppetlabs/puppet
--bash-4.1# puppet agent --configprint ssldir
-/etc/puppetlabs/puppet/ssl
--bash-4.1# puppet agent --configprint hostprivkey
-/etc/puppetlabs/puppet/ssl/private_keys/hadoop-master1.example.com.pem
--bash-4.1# puppet agent --configprint hostcert
-/etc/puppetlabs/puppet/ssl/certs/hadoop-master1.example.com.pem
--bash-4.1# puppet agent --configprint localcacert
-/etc/puppetlabs/puppet/ssl/certs/ca.pem
-
--bash-4.1# cd /etc/puppetlabs/mcollective/
--bash-4.1# cat server.cfg 
-...
-connector = activemq
-plugin.activemq.pool.size = 1
-plugin.activemq.pool.1.host = hadoop-master2.example.com
-plugin.activemq.pool.1.port = 61614
-plugin.activemq.pool.1.user = system
-plugin.activemq.pool.1.password = manager
-plugin.activemq.pool.1.ssl = true
-plugin.activemq.pool.1.ssl.ca = /etc/puppetlabs/puppet/ssl/certs/ca.pem
-plugin.activemq.pool.1.ssl.key = /etc/puppetlabs/puppet/ssl/private_keys/hadoop-master1.example.com.pem
-plugin.activemq.pool.1.ssl.cert = /etc/puppetlabs/puppet/ssl/certs/hadoop-master1.example.com.pem
-...
--bash-4.1# service mcollective restart
-Shutting down mcollective: 
-Starting mcollective:                                      [  OK  ]
-
-# 其他两台机器一样的操作
-
-# 测试
-[root@hadoop-master2 mcollective]# mco ping -v
-hadoop-master1                           time=41.99 ms
-hadoop-slaver2                           time=84.87 ms
-hadoop-slaver1                           time=85.46 ms
-
-
----- ping statistics ----
-3 replies max: 85.46 min: 41.99 avg: 70.77 
-</code></pre>
-
-<p>更多activemq的设置查看官方文档： <a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq.html">ActiveMQ Config Reference for MCollective Users</a> <a href="https://raw.github.com/puppetlabs/marionette-collective/master/ext/activemq/examples/single-broker/activemq.xml">example activemq.xml</a></p>
-
-<h1>SSL Security plugin</h1>
-
-<p>Stomp with TLS (安全传输层协议)用于加密数据。而 security plugin 主要功能有：</p>
-
-<ul>
-<li>mcollective server要授权才会执行 client 发送的请求。</li>
-<li>create a token that uniquely identify the client - based on the filename of the public key。</li>
-<li>在请求中添加创建时间和TTL保证数据的完整性(不被拦截、篡改以及重复)。</li>
-</ul>
-
-
-<p>参考：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/configure/client.html#security-plugin-settings">https://docs.puppet.com/mcollective/configure/client.html#security-plugin-settings</a></li>
-<li><a href="https://docs.puppet.com/mcollective/security.html">https://docs.puppet.com/mcollective/security.html</a></li>
-<li><a href="https://docs.puppet.com/mcollective/reference/plugins/security_ssl.html">https://docs.puppet.com/mcollective/reference/plugins/security_ssl.html</a></li>
-</ul>
-
-
-<pre><code># 1 生成server秘钥(公钥、私钥)
-[root@hadoop-master2 mcollective-security]# openssl genrsa -out server-private.pem 1024
-...
-[root@hadoop-master2 mcollective-security]# openssl rsa -in server-private.pem -out server-public.pem -outform PEM -pubout  
-writing RSA key
-[root@hadoop-master2 mcollective-security]# ll
-total 12
--rw-r--r-- 1 root root 7915 Apr 29 00:06 server-private.pem
--rw-r--r-- 1 root root 1836 Apr 29 00:07 server-public.pem
-
-# 把 private/public 复制到所有的mcollective-servers节点
-# 把 public 复制到mcollective-clients节点
-[root@hadoop-master2 mcollective-security]# ssh 172.17.0.2 mkdir -p /etc/puppetlabs/mcollective/ssl/clients
-[root@hadoop-master2 mcollective-security]# scp * 172.17.0.2:/etc/puppetlabs/mcollective/ssl/
-server-private.pem   100% 7915     7.7KB/s   00:00    
-server-public.pem    100% 1836     1.8KB/s   00:00    
-
-[root@hadoop-master2 mcollective-security]# mkdir -p /etc/puppetlabs/mcollective/ssl
-[root@hadoop-master2 mcollective-security]# cp server-public.pem /etc/puppetlabs/mcollective/ssl/
-
-# 2 配置mcollective-servers。节点间配置不能同步，TLS配置的证书名称是不一样的！！
--bash-4.1# vi /etc/puppetlabs/mcollective/server.cfg 
-...
-# Plugins
-#securityprovider = psk
-#plugin.psk = unset
-
-securityprovider = ssl
-plugin.ssl_server_private = /etc/puppetlabs/mcollective/ssl/server-private.pem
-plugin.ssl_server_public = /etc/puppetlabs/mcollective/ssl/server-public.pem
-plugin.ssl_client_cert_dir = /etc/puppetlabs/mcollective/ssl/clients/
-plugin.ssl.enfore_ttl = 0
-...
-
--bash-4.1# service mcollective restart
-Shutting down mcollective:                                 [  OK  ]
-Starting mcollective:                                      [  OK  ]
-# 可以通过 /var/log/puppetlabs/mcollective.log 查看详细日志
-
-# 配置一个节点后，mco ping已经不再显示hadoop-master1了！！
-
-# 3 生成client秘钥
-[root@hadoop-master2 mcollective-security]# cd /etc/puppetlabs/mcollective/ssl
-[root@hadoop-master2 ssl]# ll
-total 8
-drwxr-xr-x 2 root root 4096 Apr 29 00:15 clients
--rw-r--r-- 1 root root 1836 Apr 29 00:15 server-public.pem
-[root@hadoop-master2 ssl]# openssl genrsa -out winse-private.pem 1024    
-...
-[root@hadoop-master2 ssl]# openssl rsa -in winse-private.pem -out winse-public.pem -outform PEM -pubout
-writing RSA key
-[root@hadoop-master2 ssl]# ll
-total 16
-drwxr-xr-x 2 root root 4096 Apr 29 00:15 clients
--rw-r--r-- 1 root root 1836 Apr 29 00:15 server-public.pem
--rw-r--r-- 1 root root  887 Apr 29 00:26 winse-private.pem
--rw-r--r-- 1 root root  272 Apr 29 00:26 winse-public.pem
-
-# 把client用户的公钥拷贝到所有mcollective-servers的ssl/clients目录下
-[root@hadoop-master2 ssl]# scp winse-public.pem 172.17.0.2:/etc/puppetlabs/mcollective/ssl/clients
-winse-public.pem 100%  272     0.3KB/s   00:00    
-
-# 4 配置clients
-[root@hadoop-master2 ~]# vi /etc/puppetlabs/mcollective/client.cfg 
-...
-# Plugins
-#securityprovider = psk
-#plugin.psk = unset
-securityprovider = ssl
-plugin.ssl_server_public = /etc/puppetlabs/mcollective/ssl/server-public.pem
-plugin.ssl_client_private = /etc/puppetlabs/mcollective/ssl/winse-private.pem
-plugin.ssl_client_public = /etc/puppetlabs/mcollective/ssl/winse-public.pem
-...
-
-# mcollective-server不需要重启！客户端连接测试
-[root@hadoop-master2 ssl]# mco ping -v
-hadoop-master1                           time=561.29 ms
-hadoop-slaver2                           time=601.91 ms
-hadoop-slaver1                           time=608.31 ms
-
-
----- ping statistics ----
-3 replies max: 608.31 min: 561.29 avg: 590.50 
-</code></pre>
-
-<p>理解了功能后，再按条理配置其实感觉就不是那么难了。遇到问题先查看日志！！</p>
-
-<h1>最佳实践</h1>
-
-<p>官网推荐使用 站点管理工具 统一来安装管理，如puppet。下面使用puppet来配置mcollective：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/deploy/install.html#example">https://docs.puppet.com/mcollective/deploy/install.html#example</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html#creating-keystores-with-puppet">https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html#creating-keystores-with-puppet</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/standard.html#write-the-server-config-file">https://docs.puppet.com/mcollective/deploy/standard.html#write-the-server-config-file</a></li>
-</ul>
-
-
-<p>TODO</p>
-
-<p></p>
 
 <p>&ndash;END</p>
 ]]></content>

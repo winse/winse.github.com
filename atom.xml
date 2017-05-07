@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winseliu.com/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-04-14T14:58:52+08:00</updated>
+  <updated>2017-05-07T07:43:23+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,501 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Puppet批量自动化部署实战]]></title>
+    <link href="http://winseliu.com/blog/2017/05/05/puppet-automate-deploy-hosts/"/>
+    <updated>2017-05-05T08:33:37+08:00</updated>
+    <id>http://winseliu.com/blog/2017/05/05/puppet-automate-deploy-hosts</id>
+    <content type="html"><![CDATA[<p>断断续续使用Puppet近一年，多次体验到Puppet的强大：SSH更新、需ROOT权限批量处理等等。这次集群新上架了又爽了一把。把整个过程记录下来，方便今后参考。</p>
+
+<p>运维的同事也想了解puppet，在docker容器上安装了一遍，把具体的内容附上：<a href="http://winseliu.com/files/expect+puppet.txt">expect+puppet.txt</a></p>
+
+<p>这次操作是对以前零零碎碎积累的一次检验和温习。需要用到的工具比较多：</p>
+
+<ul>
+<li>RPM打包、本地YUM仓库 - RPMBUILD、CREATEREPO</li>
+<li>SSH无密钥登录 - EXPECT&amp;FOR</li>
+<li>时间同步、host配置 - SCP、SSH&amp;FOR</li>
+<li>创建用户、新用户无密钥等 - PUPPET</li>
+<li>ssh_known_hosts - PUPPETDB</li>
+<li>rhel.repo、gmond、时区设置 - PUPPET</li>
+</ul>
+
+
+<p>远程配置机器首先当然是进行无密钥登录的设置，这样才能进行批量操作，不然几百台机器每次都需要干预太烦人、工作量太大。无密钥登录使用原来写好的EXPECT脚本，使用FOR循环执行，等待结果即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 ~]# cat ssh-copy-id.expect 
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 [user@]host password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set password [lrange $argv 1 1] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>spawn ssh-copy-id $host ;
+</span><span class='line'>
+</span><span class='line'>expect {
+</span><span class='line'>  "(yes/no)?" { send yes\n; exp_continue; }
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;
+</span><span class='line'>
+</span><span class='line'># 用for，不要用while
+</span><span class='line'>for h in `cat /etc/hosts | grep -v '^#' | grep slaver | grep -E '\.36\.|\.37\.' | awk '{print $2}' ` ; do 
+</span><span class='line'>  ./ssh-copy-id.expect $h 'PASSWD';
+</span><span class='line'>done
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>做好无密钥登录，拷贝 /etc/hosts, /etc/cron.daily/ntp.cron, /etc/yum.repos.d/puppet.repo 到全部的新机器。这里puppet.repo是自己编译搭建的私有仓库（具体编译配置步骤查看puppet分类下的文章），通过 <code>yum install mcollective-plugins-simple</code> 就可以把mcolletive和puppet-agent安装好。把所有步骤封装到一个prepare.sh脚本，内容如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'># must be hostname!!
+</span><span class='line'>HOSTS="$@"
+</span><span class='line'>PASSWD=${PASSWD:-'root'}
+</span><span class='line'>PUPPETSERVER="hadoop-master1"
+</span><span class='line'>
+</span><span class='line'>for h in $HOSTS ; do ./ssh-copy-id.expect $h "$PASSWD" ; done
+</span><span class='line'>
+</span><span class='line'>for h in $HOSTS ; do
+</span><span class='line'>scp /etc/hosts $h:/etc ;
+</span><span class='line'>scp /etc/yum.repos.d/puppet.repo $h:/etc/yum.repos.d/ ;
+</span><span class='line'>scp /etc/cron.daily/ntp.cron $h:/etc/cron.daily/ ;
+</span><span class='line'>
+</span><span class='line'>ssh $h '
+</span><span class='line'>#ntpdate cu-omc1 #着重注意
+</span><span class='line'>rm -rf /etc/yum.repos.d/CentOS-*
+</span><span class='line'>yum install mcollective-plugins-simple -y
+</span><span class='line'>' ;
+</span><span class='line'>
+</span><span class='line'>scp /etc/puppetlabs/mcollective/server.cfg $h:/etc/puppetlabs/mcollective/
+</span><span class='line'>ssh $h "
+</span><span class='line'>sed -i '/HOSTNAME/ {
+</span><span class='line'>i \
+</span><span class='line'>HOSTNAME=$h
+</span><span class='line'>d
+</span><span class='line'>} ' /etc/sysconfig/network
+</span><span class='line'>hostname $h
+</span><span class='line'>
+</span><span class='line'>echo -e '\n\n[agent]\nserver = $PUPPETSERVER\ncertname=$h' &gt; /etc/puppetlabs/puppet/puppet.conf
+</span><span class='line'>chkconfig mcollective on
+</span><span class='line'>service mcollective start
+</span><span class='line'>"
+</span><span class='line'>
+</span><span class='line'>done
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后执行 <code>./prepare.sh hadoop-slaver{200..500}</code> 就可以了。</p>
+
+<p>接下来重点讲讲PUPPET配置的编写。</p>
+
+<p>首先根据当前需要创建的用户、组把创建用户的配置写好：</p>
+
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.10/quick_start_user_group.html">https://docs.puppet.com/puppet/4.10/quick_start_user_group.html</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 ~]# puppet resource -e group hadoop
+</span><span class='line'>group { 'hadoop':
+</span><span class='line'>  ensure =&gt; 'present',
+</span><span class='line'>  gid    =&gt; '501',
+</span><span class='line'>}
+</span><span class='line'>[root@hadoop-master1 ~]# puppet resource -e user hadoop
+</span><span class='line'>user { 'hadoop':
+</span><span class='line'>  ensure           =&gt; 'present',
+</span><span class='line'>  gid              =&gt; '501',
+</span><span class='line'>  groups           =&gt; ['wheel'],
+</span><span class='line'>  home             =&gt; '/home/hadoop',
+</span><span class='line'>  password         =&gt; '$6$AfnA...uIhHC9I.',
+</span><span class='line'>  password_max_age =&gt; '99999',
+</span><span class='line'>  password_min_age =&gt; '0',
+</span><span class='line'>  shell            =&gt; '/bin/bash',
+</span><span class='line'>  uid              =&gt; '501',
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>添加require、groups，然后删除uid、gid。最后需要添加 managehome => true, 否则用户目录就不会自动创建：</p>
+
+<ul>
+<li><a href="http://www.dbalex.com/category/devops/puppet">http://www.dbalex.com/category/devops/puppet</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 默认不创建用户目录
+</span><span class='line'>[root@hadoop-slaver200 ~]# su - hadoop
+</span><span class='line'>su: warning: cannot change directory to /home/hadoop: No such file or directory
+</span><span class='line'>-bash-4.1$ 
+</span><span class='line'>
+</span><span class='line'># 创建用户配置成品
+</span><span class='line'>group { 'hadoop':
+</span><span class='line'>  ensure =&gt; 'present',
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>user { 'hadoop':
+</span><span class='line'>  ensure           =&gt; 'present',
+</span><span class='line'>  groups           =&gt; ['hadoop', 'wheel'],
+</span><span class='line'>  home             =&gt; '/home/hadoop',
+</span><span class='line'>  password         =&gt; '$6$Af...IhHC9I.',
+</span><span class='line'>  password_max_age =&gt; '99999',
+</span><span class='line'>  password_min_age =&gt; '0',
+</span><span class='line'>  shell            =&gt; '/bin/bash',
+</span><span class='line'>  managehome       =&gt; true,
+</span><span class='line'>  require          =&gt; Group['hadoop'],
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><a href="https://ask.puppet.com/question/15753/how-can-i-chown-directories-recursivley/">https://ask.puppet.com/question/15753/how-can-i-chown-directories-recursivley/</a></li>
+<li><a href="https://serverfault.com/questions/542947/issue-with-changing-permission-and-owner-recursively-on-files-with-puppet-and-va">https://serverfault.com/questions/542947/issue-with-changing-permission-and-owner-recursively-on-files-with-puppet-and-va</a></li>
+<li><a href="https://serverfault.com/questions/416254/adding-an-existing-user-to-a-group-with-puppet">https://serverfault.com/questions/416254/adding-an-existing-user-to-a-group-with-puppet</a></li>
+</ul>
+
+
+<p>添加好用户后，就是把无密钥登录也让PUPPET来弄。其实就是把 id_rsa.pub 的内容写入都行机器的 authorized_keys ，PUPPET已经自带了这个类：ssh_authorized_key。把id_ras.pub的内容（中间的内容）赋值给 key 属性即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh_authorized_key {'root@hadoop-master1':
+</span><span class='line'>  user =&gt; 'root',
+</span><span class='line'>  type =&gt; 'ssh-rsa',
+</span><span class='line'>  key =&gt; 'AAAAB3NzaC1y...O1Q==',
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>ssh_authorized_key {'hadoop@hadoop-master1':
+</span><span class='line'>  user =&gt; 'hadoop',
+</span><span class='line'>  type =&gt; 'ssh-rsa',
+</span><span class='line'>  key =&gt; 'AAAAB3Nza...IZYPw==',
+</span><span class='line'>  require  =&gt; User['hadoop'],
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>无密钥登录比较容易，没有涉及到收集节点信息。仅仅把公钥写入新机器还不够，还得把 known_hosts 也处理好，不然第一次连接新机器都需要输入一下yes。内容如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-slaver200 ~]$ ssh hadoop-slaver202
+</span><span class='line'>The authenticity of host 'hadoop-slaver202 (192.168.36.59)' can't be established.
+</span><span class='line'>RSA key fingerprint is fe:7e:26:c4:56:ea:f4:21:61:82:6d:9b:4a:72:93:a4.
+</span><span class='line'>Are you sure you want to continue connecting (yes/no)? </span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_virtual.html">https://docs.puppet.com/puppet/4.4/lang_virtual.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_collectors.html">https://docs.puppet.com/puppet/4.4/lang_collectors.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_exported.html">https://docs.puppet.com/puppet/4.4/lang_exported.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_resources_advanced.html#amending-attributes-with-a-collector">https://docs.puppet.com/puppet/4.4/lang_resources_advanced.html#amending-attributes-with-a-collector</a></li>
+<li><a href="https://docs.puppet.com/puppet/latest/types/ssh_authorized_key.html">https://docs.puppet.com/puppet/latest/types/ssh_authorized_key.html</a></li>
+<li><a href="https://www.puppetcookbook.com/posts/install-package.html">https://www.puppetcookbook.com/posts/install-package.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.10/lang_conditional.html">https://docs.puppet.com/puppet/4.10/lang_conditional.html</a></li>
+</ul>
+
+
+<p>正如上面官网介绍的，需要用到虚拟资源，自动把新机器指纹（fingerprint）写入到机器需要PUPPETDB的支持，安装配置又需要PGSQL的配合。需要耗费一番功夫，但是还是划得来的（具体安装步骤查看puppet分类下的文章）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>if $hostname =~ /^hadoop-/ {
+</span><span class='line'>
+</span><span class='line'>  $host_aliases = [ $ipaddress, $hostname ]
+</span><span class='line'>  
+</span><span class='line'>  # Export hostkeys from all hosts.
+</span><span class='line'>  @@sshkey { $::fqdn:
+</span><span class='line'>    ensure =&gt; present,
+</span><span class='line'>    host_aliases =&gt; $host_aliases,
+</span><span class='line'>    type =&gt; 'ssh-rsa',
+</span><span class='line'>    key =&gt; $sshrsakey,
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  if $hostname =~ /^hadoop-master/ {
+</span><span class='line'>    # realize all exported
+</span><span class='line'>    Sshkey &lt;&lt;| |&gt;&gt;
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>先在所有slaver机器运行一遍 puppet agent -t ，然后再在master节点把收集的指纹写入到 /etc/ssh/ssh_known_hosts 。</p>
+
+<p>这里说个插曲：机器的hosts和hostname是通过 FOR&amp;SSH 命令来统一修改的，有些可能没有配置好导致机器的主机名有重复。通过执行配置known_hosts竟然帮我找出了hostname重复的机器，意外的收获。该问题的处理我是直接登录到PGSQL改了对应表的数据处理的。</p>
+
+<p>到这里机器基本能用了。主机名、hosts、时间同步、hadoop用户以及master到该用户的无密钥登录都已经配置好了。</p>
+
+<p>接下来把实战过程中安装gmond的步骤帖出来：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$$ cd /etc/puppetlabs/code/environments/production/manifests/
+</span><span class='line'>
+</span><span class='line'>$$ vi change_site.sh
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>## Usage:
+</span><span class='line'>##  ./change_site.sh nrpe.site
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>[[ $# != 1 ]] && exit 1
+</span><span class='line'>
+</span><span class='line'>cd $(cd $(dirname $0); pwd)
+</span><span class='line'>
+</span><span class='line'>rm -rf site.pp
+</span><span class='line'>ln -s $1 site.pp
+</span><span class='line'>
+</span><span class='line'>$$ vi pexec.sh
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>## Usage:
+</span><span class='line'>##   ./pexec.sh /cu-ud/ sudo_revert.site 
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>case $# in
+</span><span class='line'>1)
+</span><span class='line'>  FUNC="$1"
+</span><span class='line'>  HOST_PARAM=
+</span><span class='line'>  ;;
+</span><span class='line'>2)
+</span><span class='line'>  FUNC="$2"
+</span><span class='line'>  HOST_PARAM="-I $1"
+</span><span class='line'>  ;;
+</span><span class='line'>*)
+</span><span class='line'>  while [ $# -gt 1 ] ; do 
+</span><span class='line'>    HOST_PARAM="$HOST_PARAM -I $1"
+</span><span class='line'>    shift
+</span><span class='line'>  done
+</span><span class='line'>  FUNC=$1
+</span><span class='line'>  ;;
+</span><span class='line'>esac
+</span><span class='line'>
+</span><span class='line'>cd $(cd $(dirname $0); pwd)
+</span><span class='line'>
+</span><span class='line'>./change_site.sh "$FUNC"
+</span><span class='line'>
+</span><span class='line'>if [[ "$HOST_PARAM" != "" && ! "$HOST_PARAM" =~ */* ]] ; then
+</span><span class='line'>  mco shell $HOST_PARAM run -- `which puppet` agent -t
+</span><span class='line'>else
+</span><span class='line'>  mco puppet $HOST_PARAM runall 20
+</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
+
+
+<p>由于机器增加比较多，且网络环境变的复杂化。把原来的2个分组修改成4个。不同的网络段和功能分别设置不同的广播端口。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ ./pexec.sh /hadoop-slaver.$/ gmond.site 
+</span><span class='line'>
+</span><span class='line'># 采集数据的节点重启后，其他发送数据的节点貌似都需要重启。
+</span><span class='line'>$ screen
+</span><span class='line'>$ for ((i=1;i&lt;=53;i++)); do  mco shell -I /hadoop-slaver${i}.$/ run -- ' service gmond restart ' ; done 
+</span><span class='line'># 这个确认搞的很麻烦，
+</span><span class='line'># 想通过ganglia-web获取数据然后判断是否有数据进行重启。</span></code></pre></td></tr></table></div></figure>
+
+
+<p>Ganglia删除某节点后，如果要从rrds上去掉改节点的信息，需要：重启对应收集的gmond，对应集群的rrds目录，然后重启gmetad。</p>
+
+<h2>总结</h2>
+
+<p>现在添加机器，直接连上puppetserver机器然后执行几个命令就可以搞定；</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>HOST=new-host-name 
+</span><span class='line'># 无密钥登录和puppet/mco
+</span><span class='line'>PASSWD=new-host-root-password ./prepare.sh $HOST
+</span><span class='line'>
+</span><span class='line'>./pexec.sh $HOST new-hadoop.site
+</span><span class='line'>./pexec.sh $HOST gmond.site # 当前需要到web界面确认新节点的数据是否被采集</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[K8s Hadoop Deploy]]></title>
@@ -54,6 +549,48 @@
 </span><span class='line'>./prepare.sh
 </span><span class='line'>kubectl create -f hadoop-master2.yaml
 </span><span class='line'>kubectl create -f hadoop-slaver.yaml </span></code></pre></td></tr></table></div></figure>
+
+
+<p>Tip：使用一套配置就可以启动多个集群，在 <code>kubectl create</code> 后面加上 <code>-n namespace</code> 即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 kubenetes]# kubectl create namespace hd1
+</span><span class='line'>[root@cu2 kubenetes]# kubectl create namespace hd2
+</span><span class='line'>
+</span><span class='line'>[root@cu2 kubenetes]# ./prepare.sh hd1
+</span><span class='line'>[root@cu2 kubenetes]# kubectl create -f hadoop-master2.yaml -n hd1
+</span><span class='line'>[root@cu2 kubenetes]# kubectl create -f hadoop-slaver.yaml -n hd1
+</span><span class='line'>[root@cu2 kubenetes]# ./prepare.sh hd2
+</span><span class='line'>[root@cu2 kubenetes]# kubectl create -f hadoop-master2.yaml -n hd2
+</span><span class='line'>[root@cu2 kubenetes]# kubectl create -f hadoop-slaver.yaml -n hd2
+</span><span class='line'>
+</span><span class='line'>[root@cu2 kubenetes]# kubectl get pods --all-namespaces
+</span><span class='line'>NAMESPACE     NAME                                    READY     STATUS    RESTARTS   AGE
+</span><span class='line'>hd1           hadoop-master2                          1/1       Running   0          28s
+</span><span class='line'>hd1           slaver-rc-fdcsw                         1/1       Running   0          18s
+</span><span class='line'>hd1           slaver-rc-qv964                         1/1       Running   0          18s
+</span><span class='line'>hd2           hadoop-master2                          1/1       Running   0          26s
+</span><span class='line'>hd2           slaver-rc-0vdfk                         1/1       Running   0          17s
+</span><span class='line'>hd2           slaver-rc-r7g84                         1/1       Running   0          17s
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
 
 
 <p>现在想来其实就是 <strong> dockerd &ndash;ip-masq=false </strong>的问题（所有涉及的dockerd都需要加）。 还有就是一台机器单机下的容器互相访问，源IP都错也是安装了openvpn所导致对所有过eth0的都加了MASQUERADE。</p>
@@ -315,10 +852,14 @@
 <span class='line-number'>2</span>
 <span class='line-number'>3</span>
 <span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'># yum安装flanneld后停止 https://kubernetes.io/docs/getting-started-guides/scratch/
 </span><span class='line'>ip link set flannel.1 down
 </span><span class='line'>ip link delete flannel.1
-</span><span class='line'>route -n</span></code></pre></td></tr></table></div></figure>
+</span><span class='line'>route -n
+</span><span class='line'>
+</span><span class='line'>rm /usr/lib/systemd/system/docker.service.d/flannel.conf </span></code></pre></td></tr></table></div></figure>
 
 
 <p>开了防火墙的话，把容器的端加入到信任列表：</p>
@@ -7114,290 +7655,6 @@ error_page 497 <a href="https://$host:$server_port$request_uri;">https://$host:$
 </span><span class='line'>UsePAM no（反正要确认pam，或者看看/etc/pam.d/sshd是否满足要求）
 </span></code></pre></td></tr></table></div></figure>
 
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[SparkSQL查看调试生成代码]]></title>
-    <link href="http://winseliu.com/blog/2016/10/12/sparksql-view-and-debug-generatecode/"/>
-    <updated>2016-10-12T19:48:58+08:00</updated>
-    <id>http://winseliu.com/blog/2016/10/12/sparksql-view-and-debug-generatecode</id>
-    <content type="html"><![CDATA[<p>网站和一些书籍都有介绍SparkSQL（DataFrame）会根据相应的操作生成最终运行的语句。这里从一个简单的、低级的问题入手到最后通过查看生成的代码查找问题的根源，并简单介绍怎么来调试SparkSQL。</p>
-
-<p>问题来源：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>case class Access(id:String,url:String,time:String){
-</span><span class='line'>def compute():(String, Int)
-</span><span class='line'>}
-</span><span class='line'>Object Access {
-</span><span class='line'>def apply(row:Row): Option[Access]
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'># main
-</span><span class='line'>df.map(Access(_)).filter(!_.isEmpty).map(_.get).map(_.compute)</span></code></pre></td></tr></table></div></figure>
-
-
-<p>运行之后 compute 总是报 NullPointerException 异常。按RDD以及Scala的操作都是没法理解的，怎么就变成 <code>Access(null,null,null)</code> 了呢？后面尽管改成 <code>df.flatMap(Access(_)).map(_.compute)</code> 后运行正常了，但是还是想看看SparkSQL到底干了啥！！！</p>
-
-<h2>SparkSQL干了什么</h2>
-
-<p>Spark RDD是在 RDD#compute 中明确定义好了操作的。而SparkSQL的操作最终转换成了LogicalPlan，看不出它做了什么东东。</p>
-
-<p>其实，与数据库SQL的explain看执行计划类似，SparkSQL也有explain的方法来查看程序的执行计划。（这里代码全部贴出来了，根据情况自己去掉注释啊）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>object AccessAnalyser {
-</span><span class='line'>
-</span><span class='line'>  def main(args: Array[String]): Unit = {
-</span><span class='line'>
-</span><span class='line'>    // conf
-</span><span class='line'>
-</span><span class='line'>    // clean
-</span><span class='line'>    new File("target/generated-sources").listFiles().filter(_.isFile()).foreach(_.delete)
-</span><span class='line'>
-</span><span class='line'>    sys.props("org.codehaus.janino.source_debugging.enable") = "true"
-</span><span class='line'>    sys.props("org.codehaus.janino.source_debugging.dir") = "target/generated-sources"
-</span><span class='line'>
-</span><span class='line'>    val input = "r:/match10.dat"
-</span><span class='line'>    val output = "r:/output"
-</span><span class='line'>    def delete(f: File): Unit = {
-</span><span class='line'>      if (f.isDirectory) f.listFiles().foreach(delete)
-</span><span class='line'>      f.delete()
-</span><span class='line'>    }
-</span><span class='line'>    delete(new File(output))
-</span><span class='line'>
-</span><span class='line'>    // program
-</span><span class='line'>
-</span><span class='line'>    val conf = new SparkConf().setAppName("DPI Analyser").setMaster("local[10]")
-</span><span class='line'>    // fix windows path.
-</span><span class='line'>    conf.set(/*SQLConf.WAREHOUSE_PATH*/ "spark.sql.warehouse.dir", "spark-warehouse")
-</span><span class='line'>
-</span><span class='line'>    val sc = new SparkContext(conf)
-</span><span class='line'>    val sqlContext = new SQLContext(sc)
-</span><span class='line'>
-</span><span class='line'>    import sqlContext.implicits._
-</span><span class='line'>    import org.apache.spark.sql.functions._
-</span><span class='line'>
-</span><span class='line'>    val df = sqlContext.read
-</span><span class='line'>      .format("com.databricks.spark.csv")
-</span><span class='line'>      .option("header", "false") // Use first line of all files as header
-</span><span class='line'>      .option("quote", "'")
-</span><span class='line'>      .option("escape", "'")
-</span><span class='line'>      .option("delimiter", ",")
-</span><span class='line'>      .load(input)
-</span><span class='line'>
-</span><span class='line'>    df
-</span><span class='line'>      .flatMap(Access(_))
-</span><span class='line'>      //      .map(Access(_)).filter((t: Option[Access]) =&gt; !t.isEmpty).map(_.get) // sparksql不合适用Option
-</span><span class='line'>      .map(_.compute)
-</span><span class='line'>      .explain(true)
-</span><span class='line'>      //      .toDF("id", "score")
-</span><span class='line'>      //      .groupBy("id").agg(sum("score") as "score")
-</span><span class='line'>      //      .sort("score", "id")
-</span><span class='line'>      //      .repartition(1)
-</span><span class='line'>      //      .write.format("com.databricks.spark.csv").save(output)
-</span><span class='line'>
-</span><span class='line'>    sc.stop()
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
-
-
-<p>运行上面的代码，在console窗口输出了任务的执行计划：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>== Parsed Logical Plan ==
-</span><span class='line'>'SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._1, true) AS _1#20, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._2 AS _2#21]
-</span><span class='line'>+- 'MapElements &lt;function1&gt;, obj#19: scala.Tuple2
-</span><span class='line'>   +- 'DeserializeToObject unresolveddeserializer(newInstance(class com.github.winse.spark.access.Access)), obj#18: com.github.winse.spark.access.Access
-</span><span class='line'>      +- SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).id, true) AS id#12, staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).url, true) AS url#13, staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, com.github.winse.spark.access.Access, true], top level non-flat input object).time, true) AS time#14]
-</span><span class='line'>         +- MapPartitions &lt;function1&gt;, obj#11: com.github.winse.spark.access.Access
-</span><span class='line'>            +- DeserializeToObject createexternalrow(_c0#0.toString, _c1#1.toString, _c2#2.toString, StructField(_c0,StringType,true), StructField(_c1,StringType,true), StructField(_c2,StringType,true)), obj#10: org.apache.spark.sql.Row
-</span><span class='line'>               +- Relation[_c0#0,_c1#1,_c2#2] csv
-</span><span class='line'>
-</span><span class='line'>== Physical Plan ==
-</span><span class='line'>*SerializeFromObject [staticinvoke(class org.apache.spark.unsafe.types.UTF8String, StringType, fromString, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._1, true) AS _1#20, assertnotnull(input[0, scala.Tuple2, true], top level non-flat input object)._2 AS _2#21]
-</span><span class='line'>+- *MapElements &lt;function1&gt;, obj#19: scala.Tuple2
-</span><span class='line'>   +- MapPartitions &lt;function1&gt;, obj#11: com.github.winse.spark.access.Access
-</span><span class='line'>      +- DeserializeToObject createexternalrow(_c0#0.toString, _c1#1.toString, _c2#2.toString, StructField(_c0,StringType,true), StructField(_c1,StringType,true), StructField(_c2,StringType,true)), obj#10: org.apache.spark.sql.Row
-</span><span class='line'>         +- *Scan csv [_c0#0,_c1#1,_c2#2] Format: CSV, InputPaths: file:/r:/match10.dat, PushedFilters: [], ReadSchema: struct&lt;_c0:string,_c1:string,_c2:string&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>OK，看到执行计划了，那生成的代码长什么样呢？以及怎么调试这些生成的代码呢？</p>
-
-<h2>Hack 源码</h2>
-
-<p>在进行调试之前，先改一下代码重新编译下catalyst用于调试，并替换maven下面的spark-catalyst_2.11 ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@Lenovo-PC ~/git/spark/sql/catalyst
-</span><span class='line'>$ git diff .
-</span><span class='line'>diff --git a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala b/sql/catalyst/                                                                                          src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
-</span><span class='line'>index 16fb1f6..56bfbf7 100644
-</span><span class='line'>--- a/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
-</span><span class='line'>+++ b/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/codegen/CodeGenerator.scala
-</span><span class='line'>@@ -854,7 +854,7 @@ object CodeGenerator extends Logging {
-</span><span class='line'>     val parentClassLoader = new ParentClassLoader(Utils.getContextOrSparkClassLoader)
-</span><span class='line'>     evaluator.setParentClassLoader(parentClassLoader)
-</span><span class='line'>     // Cannot be under package codegen, or fail with java.lang.InstantiationException
-</span><span class='line'>-    evaluator.setClassName("org.apache.spark.sql.catalyst.expressions.GeneratedClass")
-</span><span class='line'>     evaluator.setDefaultImports(Array(
-</span><span class='line'>       classOf[Platform].getName,
-</span><span class='line'>       classOf[InternalRow].getName,
-</span><span class='line'>@@ -875,12 +875,14 @@ object CodeGenerator extends Logging {
-</span><span class='line'>
-</span><span class='line'>     logDebug({
-</span><span class='line'>       // Only add extra debugging info to byte code when we are going to print the source code.
-</span><span class='line'>-      evaluator.setDebuggingInformation(true, true, false)
-</span><span class='line'>+      evaluator.setDebuggingInformation(true, true, true)
-</span><span class='line'>       s"\n$formatted"
-</span><span class='line'>     })
-</span><span class='line'>
-</span><span class='line'>     try {
-</span><span class='line'>-      evaluator.cook("generated.java", code.body)
-</span><span class='line'>+      evaluator.cook(code.body)
-</span><span class='line'>       recordCompilationStats(evaluator)
-</span><span class='line'>     } catch {
-</span><span class='line'>       case e: Exception =&gt;
-</span><span class='line'>
-</span><span class='line'>E:\git\spark\sql\catalyst&gt;mvn clean package -DskipTests -Dmaven.test.skip=true
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>SparkSQL生成代码用的是janino，官网文档有提供debugging的资料：<a href="http://janino-compiler.github.io/janino/#debugging">http://janino-compiler.github.io/janino/#debugging</a> 。简单说明下三处修改：</p>
-
-<ul>
-<li>查看org.codehaus.janino.Scanner构造方法，如果配置了debugging以及optionalFileName==null就会把源码保存到临时文件。</li>
-<li>一开始没想到要注释掉setClassName的，后面把CodeGenerator#doCompile拷贝出来慢慢和官网提供的例子对，就把setClassName换成setExtendedClass竟然成了弹出了源码页面。又看到下面就setExtendedClass就注释掉setClassName就ok了。</li>
-<li>源代码里面的参数不能查看的，就是编译的时刻把这个选项去掉了。把debugVars设置为true。</li>
-</ul>
-
-
-<h2>运行调试</h2>
-
-<p>先做好调试准备工作：</p>
-
-<ul>
-<li>在compute方法里面打一个断点然后调试运行</li>
-<li>修改log4j日志级别: log4j.logger.org.apache.spark.sql.catalyst.expressions.codegen=DEBUG</li>
-<li>把项目导入eclipse（IDEA弹不出源代码）</li>
-</ul>
-
-
-<p>然后运行。点击Debug视图的GeneratedIterator，在弹出的代码视图点击查找源码按钮，再弹出的添加源代码对话框（Edit Source Lookup Path）添加路径target/generated-sources（注意这里要用绝对路径）！接下来就一步步的调就行了。</p>
-
-<p><img src="http://winseliu.com/images/blogs/sparksql-debug.png" alt="" /></p>
-
-<p>调试着生成的代码能更好的理解前面explain的执行计划。看到代码就好理解最开始的Access(null,null,null)了：对象到字段反序列化的问题。</p>
 
 <p>&ndash;END</p>
 ]]></content>

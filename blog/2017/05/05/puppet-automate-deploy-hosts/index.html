@@ -1,0 +1,985 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>Puppet批量自动化部署实战 - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="断断续续使用Puppet近一年，多次体验到Puppet的强大：SSH更新、需ROOT权限批量处理等等。这次集群新上架了又爽了一把。把整个过程记录下来，方便今后参考。 运维的同事也想了解puppet，在docker容器上安装了一遍，把具体的内容附上：expect+puppet.txt &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winseliu.com/blog/2017/05/05/puppet-automate-deploy-hosts">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="http://maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="http://cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winseliu.com" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+  <li><a href="https://yunpan.cn/cuYhpFBPgQYgT" >Books[5aee]</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">Puppet批量自动化部署实战</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-05-05T08:33:37+08:00" pubdate data-updated="true">Fri 2017-05-05 08:33</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><p>断断续续使用Puppet近一年，多次体验到Puppet的强大：SSH更新、需ROOT权限批量处理等等。这次集群新上架了又爽了一把。把整个过程记录下来，方便今后参考。</p>
+
+<p>运维的同事也想了解puppet，在docker容器上安装了一遍，把具体的内容附上：<a href="/files/expect+puppet.txt">expect+puppet.txt</a></p>
+
+<p>这次操作是对以前零零碎碎积累的一次检验和温习。需要用到的工具比较多：</p>
+
+<ul>
+<li>RPM打包、本地YUM仓库 - RPMBUILD、CREATEREPO</li>
+<li>SSH无密钥登录 - EXPECT&amp;FOR</li>
+<li>时间同步、host配置 - SCP、SSH&amp;FOR</li>
+<li>创建用户、新用户无密钥等 - PUPPET</li>
+<li>ssh_known_hosts - PUPPETDB</li>
+<li>rhel.repo、gmond、时区设置 - PUPPET</li>
+</ul>
+
+
+<p>远程配置机器首先当然是进行无密钥登录的设置，这样才能进行批量操作，不然几百台机器每次都需要干预太烦人、工作量太大。无密钥登录使用原来写好的EXPECT脚本，使用FOR循环执行，等待结果即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 ~]# cat ssh-copy-id.expect 
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 [user@]host password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set password [lrange $argv 1 1] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>spawn ssh-copy-id $host ;
+</span><span class='line'>
+</span><span class='line'>expect {
+</span><span class='line'>  "(yes/no)?" { send yes\n; exp_continue; }
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;
+</span><span class='line'>
+</span><span class='line'># 用for，不要用while
+</span><span class='line'>for h in `cat /etc/hosts | grep -v '^#' | grep slaver | grep -E '\.36\.|\.37\.' | awk '{print $2}' ` ; do 
+</span><span class='line'>  ./ssh-copy-id.expect $h 'PASSWD';
+</span><span class='line'>done
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>做好无密钥登录，拷贝 /etc/hosts, /etc/cron.daily/ntp.cron, /etc/yum.repos.d/puppet.repo 到全部的新机器。这里puppet.repo是自己编译搭建的私有仓库（具体编译配置步骤查看puppet分类下的文章），通过 <code>yum install mcollective-plugins-simple</code> 就可以把mcolletive和puppet-agent安装好。把所有步骤封装到一个prepare.sh脚本，内容如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'># must be hostname!!
+</span><span class='line'>HOSTS="$@"
+</span><span class='line'>PASSWD=${PASSWD:-'root'}
+</span><span class='line'>PUPPETSERVER="hadoop-master1"
+</span><span class='line'>
+</span><span class='line'>for h in $HOSTS ; do ./ssh-copy-id.expect $h "$PASSWD" ; done
+</span><span class='line'>
+</span><span class='line'>for h in $HOSTS ; do
+</span><span class='line'>scp /etc/hosts $h:/etc ;
+</span><span class='line'>scp /etc/yum.repos.d/puppet.repo $h:/etc/yum.repos.d/ ;
+</span><span class='line'>scp /etc/cron.daily/ntp.cron $h:/etc/cron.daily/ ;
+</span><span class='line'>
+</span><span class='line'>ssh $h '
+</span><span class='line'>#ntpdate cu-omc1 #着重注意
+</span><span class='line'>rm -rf /etc/yum.repos.d/CentOS-*
+</span><span class='line'>yum install mcollective-plugins-simple -y
+</span><span class='line'>' ;
+</span><span class='line'>
+</span><span class='line'>scp /etc/puppetlabs/mcollective/server.cfg $h:/etc/puppetlabs/mcollective/
+</span><span class='line'>ssh $h "
+</span><span class='line'>sed -i '/HOSTNAME/ {
+</span><span class='line'>i \
+</span><span class='line'>HOSTNAME=$h
+</span><span class='line'>d
+</span><span class='line'>} ' /etc/sysconfig/network
+</span><span class='line'>hostname $h
+</span><span class='line'>
+</span><span class='line'>echo -e '\n\n[agent]\nserver = $PUPPETSERVER\ncertname=$h' &gt; /etc/puppetlabs/puppet/puppet.conf
+</span><span class='line'>chkconfig mcollective on
+</span><span class='line'>service mcollective start
+</span><span class='line'>"
+</span><span class='line'>
+</span><span class='line'>done
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后执行 <code>./prepare.sh hadoop-slaver{200..500}</code> 就可以了。</p>
+
+<p>接下来重点讲讲PUPPET配置的编写。</p>
+
+<p>首先根据当前需要创建的用户、组把创建用户的配置写好：</p>
+
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.10/quick_start_user_group.html">https://docs.puppet.com/puppet/4.10/quick_start_user_group.html</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 ~]# puppet resource -e group hadoop
+</span><span class='line'>group { 'hadoop':
+</span><span class='line'>  ensure =&gt; 'present',
+</span><span class='line'>  gid    =&gt; '501',
+</span><span class='line'>}
+</span><span class='line'>[root@hadoop-master1 ~]# puppet resource -e user hadoop
+</span><span class='line'>user { 'hadoop':
+</span><span class='line'>  ensure           =&gt; 'present',
+</span><span class='line'>  gid              =&gt; '501',
+</span><span class='line'>  groups           =&gt; ['wheel'],
+</span><span class='line'>  home             =&gt; '/home/hadoop',
+</span><span class='line'>  password         =&gt; '$6$AfnA...uIhHC9I.',
+</span><span class='line'>  password_max_age =&gt; '99999',
+</span><span class='line'>  password_min_age =&gt; '0',
+</span><span class='line'>  shell            =&gt; '/bin/bash',
+</span><span class='line'>  uid              =&gt; '501',
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>添加require、groups，然后删除uid、gid。最后需要添加 managehome => true, 否则用户目录就不会自动创建：</p>
+
+<ul>
+<li><a href="http://www.dbalex.com/category/devops/puppet">http://www.dbalex.com/category/devops/puppet</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 默认不创建用户目录
+</span><span class='line'>[root@hadoop-slaver200 ~]# su - hadoop
+</span><span class='line'>su: warning: cannot change directory to /home/hadoop: No such file or directory
+</span><span class='line'>-bash-4.1$ 
+</span><span class='line'>
+</span><span class='line'># 创建用户配置成品
+</span><span class='line'>group { 'hadoop':
+</span><span class='line'>  ensure =&gt; 'present',
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>user { 'hadoop':
+</span><span class='line'>  ensure           =&gt; 'present',
+</span><span class='line'>  groups           =&gt; ['hadoop', 'wheel'],
+</span><span class='line'>  home             =&gt; '/home/hadoop',
+</span><span class='line'>  password         =&gt; '$6$Af...IhHC9I.',
+</span><span class='line'>  password_max_age =&gt; '99999',
+</span><span class='line'>  password_min_age =&gt; '0',
+</span><span class='line'>  shell            =&gt; '/bin/bash',
+</span><span class='line'>  managehome       =&gt; true,
+</span><span class='line'>  require          =&gt; Group['hadoop'],
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><a href="https://ask.puppet.com/question/15753/how-can-i-chown-directories-recursivley/">https://ask.puppet.com/question/15753/how-can-i-chown-directories-recursivley/</a></li>
+<li><a href="https://serverfault.com/questions/542947/issue-with-changing-permission-and-owner-recursively-on-files-with-puppet-and-va">https://serverfault.com/questions/542947/issue-with-changing-permission-and-owner-recursively-on-files-with-puppet-and-va</a></li>
+<li><a href="https://serverfault.com/questions/416254/adding-an-existing-user-to-a-group-with-puppet">https://serverfault.com/questions/416254/adding-an-existing-user-to-a-group-with-puppet</a></li>
+</ul>
+
+
+<p>添加好用户后，就是把无密钥登录也让PUPPET来弄。其实就是把 id_rsa.pub 的内容写入都行机器的 authorized_keys ，PUPPET已经自带了这个类：ssh_authorized_key。把id_ras.pub的内容（中间的内容）赋值给 key 属性即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh_authorized_key {'root@hadoop-master1':
+</span><span class='line'>  user =&gt; 'root',
+</span><span class='line'>  type =&gt; 'ssh-rsa',
+</span><span class='line'>  key =&gt; 'AAAAB3NzaC1y...O1Q==',
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>ssh_authorized_key {'hadoop@hadoop-master1':
+</span><span class='line'>  user =&gt; 'hadoop',
+</span><span class='line'>  type =&gt; 'ssh-rsa',
+</span><span class='line'>  key =&gt; 'AAAAB3Nza...IZYPw==',
+</span><span class='line'>  require  =&gt; User['hadoop'],
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>无密钥登录比较容易，没有涉及到收集节点信息。仅仅把公钥写入新机器还不够，还得把 known_hosts 也处理好，不然第一次连接新机器都需要输入一下yes。内容如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-slaver200 ~]$ ssh hadoop-slaver202
+</span><span class='line'>The authenticity of host 'hadoop-slaver202 (192.168.36.59)' can't be established.
+</span><span class='line'>RSA key fingerprint is fe:7e:26:c4:56:ea:f4:21:61:82:6d:9b:4a:72:93:a4.
+</span><span class='line'>Are you sure you want to continue connecting (yes/no)? </span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_virtual.html">https://docs.puppet.com/puppet/4.4/lang_virtual.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_collectors.html">https://docs.puppet.com/puppet/4.4/lang_collectors.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_exported.html">https://docs.puppet.com/puppet/4.4/lang_exported.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_resources_advanced.html#amending-attributes-with-a-collector">https://docs.puppet.com/puppet/4.4/lang_resources_advanced.html#amending-attributes-with-a-collector</a></li>
+<li><a href="https://docs.puppet.com/puppet/latest/types/ssh_authorized_key.html">https://docs.puppet.com/puppet/latest/types/ssh_authorized_key.html</a></li>
+<li><a href="https://www.puppetcookbook.com/posts/install-package.html">https://www.puppetcookbook.com/posts/install-package.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.10/lang_conditional.html">https://docs.puppet.com/puppet/4.10/lang_conditional.html</a></li>
+</ul>
+
+
+<p>正如上面官网介绍的，需要用到虚拟资源，自动把新机器指纹（fingerprint）写入到机器需要PUPPETDB的支持，安装配置又需要PGSQL的配合。需要耗费一番功夫，但是还是划得来的（具体安装步骤查看puppet分类下的文章）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>if $hostname =~ /^hadoop-/ {
+</span><span class='line'>
+</span><span class='line'>  $host_aliases = [ $ipaddress, $hostname ]
+</span><span class='line'>  
+</span><span class='line'>  # Export hostkeys from all hosts.
+</span><span class='line'>  @@sshkey { $::fqdn:
+</span><span class='line'>    ensure =&gt; present,
+</span><span class='line'>    host_aliases =&gt; $host_aliases,
+</span><span class='line'>    type =&gt; 'ssh-rsa',
+</span><span class='line'>    key =&gt; $sshrsakey,
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  if $hostname =~ /^hadoop-master/ {
+</span><span class='line'>    # realize all exported
+</span><span class='line'>    Sshkey &lt;&lt;| |&gt;&gt;
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>先在所有slaver机器运行一遍 puppet agent -t ，然后再在master节点把收集的指纹写入到 /etc/ssh/ssh_known_hosts 。</p>
+
+<p>这里说个插曲：机器的hosts和hostname是通过 FOR&amp;SSH 命令来统一修改的，有些可能没有配置好导致机器的主机名有重复。通过执行配置known_hosts竟然帮我找出了hostname重复的机器，意外的收获。该问题的处理我是直接登录到PGSQL改了对应表的数据处理的。</p>
+
+<p>到这里机器基本能用了。主机名、hosts、时间同步、hadoop用户以及master到该用户的无密钥登录都已经配置好了。</p>
+
+<p>接下来把实战过程中安装gmond的步骤帖出来：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$$ cd /etc/puppetlabs/code/environments/production/manifests/
+</span><span class='line'>
+</span><span class='line'>$$ vi change_site.sh
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>## Usage:
+</span><span class='line'>##  ./change_site.sh nrpe.site
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>[[ $# != 1 ]] && exit 1
+</span><span class='line'>
+</span><span class='line'>cd $(cd $(dirname $0); pwd)
+</span><span class='line'>
+</span><span class='line'>rm -rf site.pp
+</span><span class='line'>ln -s $1 site.pp
+</span><span class='line'>
+</span><span class='line'>$$ vi pexec.sh
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>## Usage:
+</span><span class='line'>##   ./pexec.sh /cu-ud/ sudo_revert.site 
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>case $# in
+</span><span class='line'>1)
+</span><span class='line'>  FUNC="$1"
+</span><span class='line'>  HOST_PARAM=
+</span><span class='line'>  ;;
+</span><span class='line'>2)
+</span><span class='line'>  FUNC="$2"
+</span><span class='line'>  HOST_PARAM="-I $1"
+</span><span class='line'>  ;;
+</span><span class='line'>*)
+</span><span class='line'>  while [ $# -gt 1 ] ; do 
+</span><span class='line'>    HOST_PARAM="$HOST_PARAM -I $1"
+</span><span class='line'>    shift
+</span><span class='line'>  done
+</span><span class='line'>  FUNC=$1
+</span><span class='line'>  ;;
+</span><span class='line'>esac
+</span><span class='line'>
+</span><span class='line'>cd $(cd $(dirname $0); pwd)
+</span><span class='line'>
+</span><span class='line'>./change_site.sh "$FUNC"
+</span><span class='line'>
+</span><span class='line'>if [[ "$HOST_PARAM" != "" && ! "$HOST_PARAM" =~ */* ]] ; then
+</span><span class='line'>  mco shell $HOST_PARAM run -- `which puppet` agent -t
+</span><span class='line'>else
+</span><span class='line'>  mco puppet $HOST_PARAM runall 20
+</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
+
+
+<p>由于机器增加比较多，且网络环境变的复杂化。把原来的2个分组修改成4个。不同的网络段和功能分别设置不同的广播端口。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ ./pexec.sh /hadoop-slaver.$/ gmond.site 
+</span><span class='line'>
+</span><span class='line'># 采集数据的节点重启后，其他发送数据的节点貌似都需要重启。
+</span><span class='line'>$ screen
+</span><span class='line'>$ for ((i=1;i&lt;=53;i++)); do  mco shell -I /hadoop-slaver${i}.$/ run -- ' service gmond restart ' ; done 
+</span><span class='line'># 这个确认搞的很麻烦，
+</span><span class='line'># 想通过ganglia-web获取数据然后判断是否有数据进行重启。</span></code></pre></td></tr></table></div></figure>
+
+
+<p>Ganglia删除某节点后，如果要从rrds上去掉改节点的信息，需要：重启对应收集的gmond，对应集群的rrds目录，然后重启gmetad。</p>
+
+<h2>总结</h2>
+
+<p>现在添加机器，直接连上puppetserver机器然后执行几个命令就可以搞定；</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>HOST=new-host-name 
+</span><span class='line'># 无密钥登录和puppet/mco
+</span><span class='line'>PASSWD=new-host-root-password ./prepare.sh $HOST
+</span><span class='line'>
+</span><span class='line'>./pexec.sh $HOST new-hadoop.site
+</span><span class='line'>./pexec.sh $HOST gmond.site # 当前需要到web界面确认新节点的数据是否被采集</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-05-05T08:33:37+08:00" pubdate data-updated="true">Fri 2017-05-05 08:33</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/puppet/'>puppet</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2017-05-05-puppet-automate-deploy-hosts.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2017/04/14/k8s-hadoop-deploy/" title="Previous Post: k8s hadoop deploy">&laquo; k8s hadoop deploy</a>
+      
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+	
+<!-- 多说评论框 start -->
+	<div class="ds-thread" data-thread-key="/blog/2017/05/05/puppet-automate-deploy-hosts/" data-title="Puppet批量自动化部署实战" data-url="http://winseliu.com/blog/2017/05/05/puppet-automate-deploy-hosts/"></div>
+<!-- 多说评论框 end -->
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/01/23/install-and-config-ganglia-on-redhat-2/">安装配置Ganglia(2)</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2017/05/05/puppet-automate-deploy-hosts/">Puppet批量自动化部署实战</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/04/14/k8s-hadoop-deploy/">K8s Hadoop Deploy</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/03/30/k8s-harbor-config/">K8s Harbor Config</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/03/23/codis-usage2/">Codis使用进阶</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/03/12/k8s-harbor-config-on-centos6/">K8s Harbor Config on Centos6</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/03/05/k8s-docker-multinode-on-centos6/">k8s在Centos6部署实践</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/02/25/k8s-docker-multinode/">K8s集群部署</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/02/08/k8s-minikube-on-windows/">K8s Minikube on Windows</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/bigdata/'>bigdata</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (10) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (43) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (44) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/zookeeper/'>zookeeper</a> (1) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (169)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2017 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+<!-- 多说公共JS代码 start (一个网页只需插入一次) -->
+<script type="text/javascript">
+var duoshuoQuery = {short_name:"winseliu"};
+	(function() {
+		var ds = document.createElement('script');
+		ds.type = 'text/javascript';ds.async = true;
+		ds.src = (document.location.protocol == 'https:' ? 'https:' : 'http:') + '//static.duoshuo.com/embed.js';
+		ds.charset = 'UTF-8';
+		(document.getElementsByTagName('head')[0] 
+		 || document.getElementsByTagName('body')[0]).appendChild(ds);
+	})();
+	</script>
+<!-- 多说公共JS代码 end -->
+
+
+
+
+
+
+
+
+
+
+</body>
+</html>

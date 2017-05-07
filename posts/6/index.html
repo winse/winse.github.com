@@ -9,7 +9,22 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="紧接上一篇优化的文章，在生产进行shard分库/分片操作后，部分大量zsort键值对拆散到多个redis实例。原来统计总量的命令现在需要汇总后才行。 今天就来说说Redis里面的批量操作，批量操作其实就是循环，把大部分的工作让机器做了。逻辑比较复杂的用比较实现，功能简单的用脚本即可。 &hellip;">
+  <meta name="description" content="为了节约网络带宽，一般在发布项目时对资源(js/css)文件进行压缩（去掉空行、精简代码等）。但是要做到兼容开发与生产还是的下一番功夫才行。 1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+$ ls -l src/main/webapp/static/assets/js &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +98,421 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/08/19/j2ee-maven-resources-compress/">Maven压缩js/css功能实践</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-08-19T16:34:28+08:00" pubdate data-updated="true">Fri 2016-08-19 16:34</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>为了节约网络带宽，一般在发布项目时对资源(js/css)文件进行压缩（去掉空行、精简代码等）。但是要做到兼容开发与生产还是的下一番功夫才行。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ ls -l src/main/webapp/static/assets/js/ | head
+</span><span class='line'>total 3120
+</span><span class='line'>-rwxrwxr--+ 1 winse None  24804 Aug 10 17:40 bootbox.js
+</span><span class='line'>-rwxrwxr--+ 1 winse None  71315 Aug 10 17:40 bootstrap.js
+</span><span class='line'>-rwxrwxr--+ 1 winse None  13905 Aug 10 17:40 bootstrap-colorpicker.js
+</span><span class='line'>-rwxrwxr--+ 1 winse None  49319 Aug 10 17:40 bootstrap-multiselect.js
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'>$ ls -l target/dist/js/ | head
+</span><span class='line'>total 1368
+</span><span class='line'>-rwxrwx---+ 1 winse None   8943 Aug 19 16:53 bootbox-min.js
+</span><span class='line'>-rwxrwx---+ 1 winse None   8057 Aug 19 16:53 bootstrap-colorpicker-min.js
+</span><span class='line'>-rwxrwx---+ 1 winse None  38061 Aug 19 16:53 bootstrap-min.js
+</span><span class='line'>-rwxrwx---+ 1 winse None  18232 Aug 19 16:53 bootstrap-multiselect-min.js
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>项目中原本使用dist(压缩)、assets目录放置js/css等资源，在部署的时刻替换dist为assets，有点麻烦。首先想到的<strong>用nginx进行url重写</strong>，但是需要增加一个服务有点麻烦，能不能直接用spring来实现呢？</p>
+
+<ul>
+<li>自定义一个handler类</li>
+</ul>
+
+
+<p>查看Spring的 <code>mvc:resources</code> 实现，相当于注册了一个 <code>location -&gt; ResourceHttpRequestHandler</code> 的映射。
+第一种尝试自动化的方式就是自定义handler类来进行资源的定位。增加 StaticRequestHandler 的处理类，增加配置 location 和 compressLocation 的配置：首先去查找压缩文件([NAME]-min.js)，找不到然后再找源文件([NAME].js)位置。</p>
+
+<p>主要修改 getResource 方法，具体完整代码如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## java
+</span><span class='line'>public class StaticRequestHandler extends ResourceHttpRequestHandler {
+</span><span class='line'>
+</span><span class='line'>  private final static Log logger = LogFactory.getLog(ResourceHttpRequestHandler.class);
+</span><span class='line'>
+</span><span class='line'>  private String location;
+</span><span class='line'>  private String compressLocation;
+</span><span class='line'>
+</span><span class='line'>  private Resource locationResource;
+</span><span class='line'>  private Resource compressLocationResource;
+</span><span class='line'>
+</span><span class='line'>  public void setLocation(String location) {
+</span><span class='line'>      this.location = location;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public void setCompressLocation(String compressLocation) {
+</span><span class='line'>      this.compressLocation = compressLocation;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public void afterPropertiesSet() throws Exception {
+</span><span class='line'>      super.afterPropertiesSet();
+</span><span class='line'>
+</span><span class='line'>      this.locationResource = getWebApplicationContext().getResource(location);
+</span><span class='line'>      super.setLocations(Collections.singletonList(this.locationResource));
+</span><span class='line'>
+</span><span class='line'>      this.compressLocationResource = getWebApplicationContext().getResource(compressLocation);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  protected Resource getResource(HttpServletRequest request) {
+</span><span class='line'>      String path = (String) request.getAttribute(HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE);
+</span><span class='line'>      if (path == null) {
+</span><span class='line'>          throw new IllegalStateException("Required request attribute '"
+</span><span class='line'>                  + HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE + "' is not set");
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      if (!StringUtils.hasText(path) || isInvalidPath(path)) {
+</span><span class='line'>          if (logger.isDebugEnabled()) {
+</span><span class='line'>              logger.debug("Ignoring invalid resource path [" + path + "]");
+</span><span class='line'>          }
+</span><span class='line'>          return null;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      Resource res = null;
+</span><span class='line'>      if (path.endsWith(".css")) {
+</span><span class='line'>          res = findResource(compressLocationResource, path.substring(0, path.length() - 4) + ".min.css");
+</span><span class='line'>      } else if (path.endsWith(".js")) {
+</span><span class='line'>          res = findResource(compressLocationResource, path.substring(0, path.length() - 3) + ".min.js");
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      if (res == null) {
+</span><span class='line'>          res = findResource(locationResource, path);
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      return res;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private Resource findResource(Resource location, String path) {
+</span><span class='line'>      try {
+</span><span class='line'>          if (logger.isDebugEnabled()) {
+</span><span class='line'>              logger.debug("Trying relative path [" + path + "] against base location: " + location);
+</span><span class='line'>          }
+</span><span class='line'>          Resource resource = location.createRelative(path);
+</span><span class='line'>          if (resource.exists() && resource.isReadable()) {
+</span><span class='line'>              if (logger.isDebugEnabled()) {
+</span><span class='line'>                  logger.debug("Found matching resource: " + resource);
+</span><span class='line'>              }
+</span><span class='line'>              return resource;
+</span><span class='line'>          } else if (logger.isTraceEnabled()) {
+</span><span class='line'>              logger.trace("Relative resource doesn't exist or isn't readable: " + resource);
+</span><span class='line'>          }
+</span><span class='line'>      } catch (IOException ex) {
+</span><span class='line'>          logger.debug("Failed to create relative resource - trying next resource location", ex);
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      return null;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>## spring config
+</span><span class='line'>  &lt;!-- 静态资源 --&gt;
+</span><span class='line'>  &lt;!-- &lt;mvc:resources mapping="/static/**" location="/static/" /&gt; --&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;bean class="org.springframework.web.servlet.handler.SimpleUrlHandlerMapping"&gt;
+</span><span class='line'>      &lt;property name="mappings"&gt;
+</span><span class='line'>          &lt;value&gt;
+</span><span class='line'>              /static/assets/**=staticRequestHandler
+</span><span class='line'>          &lt;/value&gt;
+</span><span class='line'>      &lt;/property&gt;
+</span><span class='line'>  &lt;/bean&gt;
+</span><span class='line'>  &lt;bean id="staticRequestHandler" class="com.hotel.servlet.resource.StaticRequestHandler"&gt;
+</span><span class='line'>      &lt;property name="location" value="/static/assets/" /&gt;
+</span><span class='line'>      &lt;property name="compressLocation" value="/static/dist/" /&gt;
+</span><span class='line'>  &lt;/bean&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>这种方式实现了自动定位压缩资源 <code>min.js</code> 的功能，但是压缩还是不能自动化而且不能实时的更新（min要单独压缩产生），并且调试和生产环境还是需要手动的修改配置来切换。</p>
+
+<p>有没有更好的自动化的实现开发环境和生产环境分开呢？</p>
+
+<ul>
+<li>Maven打包时压缩然后替换源文件</li>
+</ul>
+
+
+<p>使用 <strong>yuicompressor-maven-plugin</strong> 插件压缩资源，然后把压缩资源<strong>先</strong>打包放置到assets目录下。</p>
+
+<p>注意： yuicomressor 插件的 nosuffix 配置为 true ! 这样压缩后的文件名和源文件名称才一样。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## spring config
+</span><span class='line'>  &lt;!-- 静态资源 --&gt;
+</span><span class='line'>  &lt;mvc:resources mapping="/static/**" location="/static/" /&gt;
+</span><span class='line'>
+</span><span class='line'>## maven pom.xml
+</span><span class='line'>      &lt;profile&gt;
+</span><span class='line'>          &lt;id&gt;release&lt;/id&gt;
+</span><span class='line'>
+</span><span class='line'>          &lt;build&gt;
+</span><span class='line'>              &lt;plugins&gt;
+</span><span class='line'>                  &lt;!-- http://alchim.sourceforge.net/yuicompressor-maven-plugin/compress-mojo.html --&gt;
+</span><span class='line'>                  &lt;plugin&gt;
+</span><span class='line'>                      &lt;groupId&gt;net.alchim31.maven&lt;/groupId&gt;
+</span><span class='line'>                      &lt;artifactId&gt;yuicompressor-maven-plugin&lt;/artifactId&gt;
+</span><span class='line'>                      &lt;version&gt;1.3.2&lt;/version&gt;
+</span><span class='line'>                      &lt;executions&gt;
+</span><span class='line'>                          &lt;execution&gt;
+</span><span class='line'>                              &lt;id&gt;compress_js_css&lt;/id&gt;
+</span><span class='line'>                              &lt;phase&gt;process-resources&lt;/phase&gt;
+</span><span class='line'>                              &lt;goals&gt;
+</span><span class='line'>                                  &lt;goal&gt;compress&lt;/goal&gt;
+</span><span class='line'>                              &lt;/goals&gt;
+</span><span class='line'>                          &lt;/execution&gt;
+</span><span class='line'>                      &lt;/executions&gt;
+</span><span class='line'>                      &lt;configuration&gt;
+</span><span class='line'>                          &lt;encoding&gt;UTF-8&lt;/encoding&gt;
+</span><span class='line'>                          &lt;nosuffix&gt;true&lt;/nosuffix&gt;
+</span><span class='line'>                          &lt;skip&gt;false&lt;/skip&gt;
+</span><span class='line'>
+</span><span class='line'>                          &lt;jswarn&gt;false&lt;/jswarn&gt;
+</span><span class='line'>                          &lt;nomunge&gt;false&lt;/nomunge&gt;
+</span><span class='line'>                          &lt;preserveAllSemiColons&gt;false&lt;/preserveAllSemiColons&gt;
+</span><span class='line'>
+</span><span class='line'>                          &lt;sourceDirectory&gt;src/main/webapp/static/assets&lt;/sourceDirectory&gt;
+</span><span class='line'>                          &lt;outputDirectory&gt;${project.build.directory}/dist&lt;/outputDirectory&gt;
+</span><span class='line'>                      &lt;/configuration&gt;
+</span><span class='line'>                  &lt;/plugin&gt;
+</span><span class='line'>
+</span><span class='line'>                  &lt;plugin&gt;
+</span><span class='line'>                      &lt;artifactId&gt;maven-war-plugin&lt;/artifactId&gt;
+</span><span class='line'>                      &lt;version&gt;2.6&lt;/version&gt;
+</span><span class='line'>                      &lt;configuration&gt;
+</span><span class='line'>                          &lt;webResources&gt;
+</span><span class='line'>                              &lt;resource&gt;
+</span><span class='line'>                                  &lt;directory&gt;${project.build.directory}/dist&lt;/directory&gt;
+</span><span class='line'>                                  &lt;targetPath&gt;static/assets&lt;/targetPath&gt;
+</span><span class='line'>                                  &lt;filtering&gt;false&lt;/filtering&gt;
+</span><span class='line'>                              &lt;/resource&gt;
+</span><span class='line'>                          &lt;/webResources&gt;
+</span><span class='line'>                      &lt;/configuration&gt;
+</span><span class='line'>                  &lt;/plugin&gt;
+</span><span class='line'>                  
+</span><span class='line'>              &lt;/plugins&gt;
+</span><span class='line'>          &lt;/build&gt;
+</span><span class='line'>      &lt;/profile&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>war插件添加了自定义webResources资源，首先把压缩的文件拷贝到对应目录，maven发现文件已经存在就不会再拷贝同名的文件。这样源文件就相当于被替换成压缩的资源了。</p>
+
+<h2>总结</h2>
+
+<p>使用maven插件压缩打包，完美的解决js/css压缩导致的开发和生产不兼容问题。</p>
+
+<h2>后记</h2>
+
+<p>jsp使用了tag的地方总是会产生很多的空行，看着挺烦的。其实可以通过在jsp开头添加 trimDirectiveWhitespaces 属性来去掉空行：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;%@ page language="java" trimDirectiveWhitespaces="true" contentType="text/html; charset=utf-8" pageEncoding="utf-8"%&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2017,391 +2447,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/06/28/flume-kafka-elasticsearch-for-analyse/">使用 Flume+kafka+elasticsearch 处理数据</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-06-28T09:50:05+08:00" pubdate data-updated="true">Tue 2016-06-28 09:50</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>flume-1.6依赖的kafka、elasticsearch的版本与我这使用程序的版本不一致，部分jar依赖需要替换，flume-elasticsearch-sink源码需要进行一些修改来适配elasticsearch-2.2。</p>
-
-<ul>
-<li>flume-1.6.0</li>
-<li>kafka_2.11-0.9.0.1(可以与0.8.2客户端通信, flume-kafka-channel-1.6.0不改)</li>
-<li>elasticsearch-2.2.0</li>
-</ul>
-
-
-<p>由于版本的差异，需要替换/添加以下jar到 <code>flume/lib</code> 下：</p>
-
-<p>使用 <code>mvn dependecy:copy-dependencies</code> 导出所需依赖的包</p>
-
-<p>jackson一堆，hppc-0.7.1.jar，t-digest-3.0.jar，jsr166e-1.1.0.jar，guava-18.0.jar，lucene一堆，elasticsearch-2.2.0.jar。</p>
-
-<p>远程调试配置：</p>
-
-<p>source由于项目上的一些特殊规则，需要自己编写。通过远程DEBUG来打断点来排查BUG。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flume]$ vi conf/flume-env.sh
-</span><span class='line'>export JAVA_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8092"</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>实战1</h2>
-
-<p>KafkaChannel：考虑到其他功能也需要用到这些数据。</p>
-
-<p>先写一个配置把flume自带功能跑通，这里用 netcat 作为输入运行：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 flumebin]$ cat dta.flume 
-</span><span class='line'>dta.sources=s1
-</span><span class='line'>dta.channels=c1
-</span><span class='line'>dta.sinks=k1
-</span><span class='line'>
-</span><span class='line'>dta.channels.c1.type=org.apache.flume.channel.kafka.KafkaChannel
-</span><span class='line'>dta.channels.c1.capacity=10000
-</span><span class='line'>dta.channels.c1.transactionCapacity=1000
-</span><span class='line'>dta.channels.c1.brokerList=cu5:9093
-</span><span class='line'>dta.channels.c1.topic=flume_cmdid_1234
-</span><span class='line'>dta.channels.c1.groupId=flume_dta
-</span><span class='line'>dta.channels.c1.zookeeperConnect=cu3:2181/kafka_0_9
-</span><span class='line'>dta.channels.c1.parseAsFlumeEvent=false
-</span><span class='line'>
-</span><span class='line'>dta.sources.s1.channels=c1
-</span><span class='line'>dta.sources.s1.type=netcat
-</span><span class='line'>dta.sources.s1.bind=0.0.0.0
-</span><span class='line'>dta.sources.s1.port=6666
-</span><span class='line'>dta.sources.s1.max-line-length=88888888
-</span><span class='line'>
-</span><span class='line'>dta.sinks.k1.channel=c1
-</span><span class='line'>dta.sinks.k1.type=elasticsearch
-</span><span class='line'>dta.sinks.k1.hostNames=cu2:9300
-</span><span class='line'>dta.sinks.k1.indexName=foo_index
-</span><span class='line'>dta.sinks.k1.indexType=idcisp
-</span><span class='line'>dta.sinks.k1.clusterName=eshore-cu
-</span><span class='line'>dta.sinks.k1.batchSize=500
-</span><span class='line'>dta.sinks.k1.ttl=5d
-</span><span class='line'>dta.sinks.k1.serializer=com.eshore.zhfx.collector.InfoSecurityLogIndexRequestBuilderFactory
-</span><span class='line'>dta.sinks.k1.serializer.idcispUrlBase64=true
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 flumebin]$ bin/flume-ng agent --classpath flume-dta-source-2.1.jar  -n dta -c conf -f dta.flume
-</span><span class='line'>
-</span><span class='line'># 新开一个窗口
-</span><span class='line'>[hadoop@cu2 ~]$ nc localhost 6666
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>kafka的主题、ES的索引可以不要手动建，当然为了更好的控制ES索引创建可以添加一个索引名的template。</p>
-
-<p>InfoSecurityLogIndexRequestBuilderFactory 实现 ElasticSearchIndexRequestBuilderFactory 把原始记录转换成 ES 的JSON对象。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  private Counter allRecordMetric = MetricManager.getInstance().counter("all_infosecurity");
-</span><span class='line'>  private Counter errorRecordMetric = MetricManager.getInstance().counter("error_infosecurity");
-</span><span class='line'>  
-</span><span class='line'>  public IndexRequestBuilder createIndexRequest(Client client, String indexPrefix, String indexType, Event event)
-</span><span class='line'>      throws IOException {
-</span><span class='line'>    allRecordMetric.inc();
-</span><span class='line'>
-</span><span class='line'>    String record = new String(event.getBody(), outputCharset);
-</span><span class='line'>
-</span><span class='line'>    context.put(ElasticSearchSinkConstants.INDEX_NAME, indexPrefix);
-</span><span class='line'>    indexNameBuilder.configure(context);
-</span><span class='line'>    IndexRequestBuilder indexRequestBuilder = client.prepareIndex(indexNameBuilder.getIndexName(event), indexType);
-</span><span class='line'>
-</span><span class='line'>    try {
-</span><span class='line'>      Gson gson = new Gson();
-</span><span class='line'>      IdcIspLog log = parseRecord(record);
-</span><span class='line'>      BytesArray data = new BytesArray(gson.toJson(log));
-</span><span class='line'>
-</span><span class='line'>      indexRequestBuilder.setSource(data);
-</span><span class='line'>      indexRequestBuilder.setRouting(log.commandld);
-</span><span class='line'>    } catch (Exception e) {
-</span><span class='line'>      LOG.error(e.getMessage(), e);
-</span><span class='line'>      errorRecordMetric.inc();
-</span><span class='line'>
-</span><span class='line'>      indexRequestBuilder.setSource(record.getBytes(outputCharset));
-</span><span class='line'>      // 保留错误的数据
-</span><span class='line'>      indexRequestBuilder.setRouting("error");
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    return indexRequestBuilder;
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>实战2</h2>
-
-<p>测试自定义的Source：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>dta.sources=s1
-</span><span class='line'>dta.channels=c1
-</span><span class='line'>dta.sinks=k1
-</span><span class='line'>
-</span><span class='line'>dta.channels.c1.type=memory
-</span><span class='line'>dta.channels.c1.capacity=1000000
-</span><span class='line'>dta.channels.c1.transactionCapacity=1000000
-</span><span class='line'>dta.channels.c1.byteCapacity=7000000000
-</span><span class='line'>
-</span><span class='line'>dta.sources.s1.channels=c1
-</span><span class='line'>dta.sources.s1.type=com.eshore.zhfx.collector.CollectSource
-</span><span class='line'>dta.sources.s1.spoolDir=/home/hadoop/flume/data/
-</span><span class='line'>dta.sources.s1.trackerDir=/tmp/dtaspool
-</span><span class='line'>
-</span><span class='line'>dta.sinks.k1.channel=c1
-</span><span class='line'>dta.sinks.k1.type=logger</span></code></pre></td></tr></table></div></figure>
-
-
-<p>CollectSource 实现PollableSource 继承AbstractSource类。参考Flume开发文档: <a href="http://flume.apache.org/FlumeDeveloperGuide.html#source">http://flume.apache.org/FlumeDeveloperGuide.html#source</a>  <code>org.apache.flume.source.SequenceGeneratorSource</code> 类。</p>
-
-<p>方法process主逻辑代码如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  public Status process() throws EventDeliveryException {
-</span><span class='line'>    Status status = Status.READY;
-</span><span class='line'>
-</span><span class='line'>    try {
-</span><span class='line'>      List&lt;Event&gt; events = readEvent(batchSize);
-</span><span class='line'>      if (!events.isEmpty()) {
-</span><span class='line'>        sourceCounter.addToEventReceivedCount(events.size());
-</span><span class='line'>        sourceCounter.incrementAppendBatchReceivedCount();
-</span><span class='line'>
-</span><span class='line'>        getChannelProcessor().processEventBatch(events);
-</span><span class='line'>        // 记录文件已经处理的位置
-</span><span class='line'>        commit();
-</span><span class='line'>
-</span><span class='line'>        sourceCounter.addToEventAcceptedCount(events.size());
-</span><span class='line'>        sourceCounter.incrementAppendBatchAcceptedCount();
-</span><span class='line'>      }
-</span><span class='line'>    } catch (ChannelException | IOException e) {
-</span><span class='line'>      status = Status.BACKOFF;
-</span><span class='line'>      Throwables.propagate(e);
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    return status;
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>实例：Flume+Kafka+ES</h2>
-
-<p>把两个实例整合起来，把实例1的Source替换下即可。</p>
-
-<h2>附-kafka基本操作</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-server-start.sh config/server1.properties 
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ cat config/server1.properties 
-</span><span class='line'>listeners=PLAINTEXT://:9093
-</span><span class='line'>log.dirs=/tmp/kafka-logs1
-</span><span class='line'>num.partitions=1
-</span><span class='line'>zookeeper.connect=cu3,cu4,cu5/kafka_0_9
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --create --zookeeper cu3:2181/kafka_0_9 --replication 1 --partitions 1 --topic flume
-</span><span class='line'>Created topic "flume".
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --list --zookeeper cu3:2181/kafka_0_9
-</span><span class='line'>flume
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-producer.sh --broker-list cu5:9093 --topic flume
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu5 kafka_2.11-0.9.0.1]$ bin/kafka-console-consumer.sh --zookeeper cu3:2181/kafka_0_9 --topic flume --from-beginning
-</span><span class='line'>
-</span><span class='line'>##添加kafka-manager：
-</span><span class='line'>
-</span><span class='line'>启动kafka添加JMX
-</span><span class='line'>export JMX_PORT=19999
-</span><span class='line'>nohup bin/kafka-server-start.sh config/server.properties &
-</span><span class='line'>
-</span><span class='line'># https://github.com/yahoo/kafka-manager/tree/1.3.1.8
-</span><span class='line'>nohup bin/kafka-manager -Dhttp.port=9090 &
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>附-Flume操作</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>https://flume.apache.org/FlumeUserGuide.html#fan-out-flow
-</span><span class='line'>
-</span><span class='line'>#conf/flume-env.sh
-</span><span class='line'>export FLUME_JAVA_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8092"
-</span><span class='line'>bin/flume-ng agent --classpath "flume-dta-libs/*" -Dflume.root.logger=DEBUG,console  -n dta -c conf -f accesslog.flume
-</span><span class='line'>
-</span><span class='line'># with ganglia
-</span><span class='line'>[ud@cu-ud1 apache-flume-1.6.0-bin]$ bin/flume-ng agent --classpath "/home/ud/collector/common-lib/*"  -Dflume.root.logger=Debug,console -Dflume.monitoring.type=ganglia -Dflume.monitoring.hosts=239.2.11.71:8649 -n dta -c conf -f accesslog.flume 
-</span><span class='line'>
-</span><span class='line'># windows
-</span><span class='line'>bin\flume-ng.cmd agent -n agent -c conf -f helloworld.flume -property "flume.root.logger=INFO,console"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/7">&larr; Older</a>
@@ -2478,6 +2523,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/05/05/puppet-automate-deploy-hosts/">Puppet批量自动化部署实战</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/04/14/k8s-hadoop-deploy/">K8s Hadoop Deploy</a>
       </li>
     
@@ -2503,10 +2552,6 @@
     
       <li class="post">
         <a href="/blog/2017/02/08/k8s-minikube-on-windows/">K8s Minikube on Windows</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/02/06/docker-http-proxy-and-save-reload/">Docker代理配置以及导入导出</a>
       </li>
     
   </ul>
@@ -2599,7 +2644,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/puppet/'>puppet</a> (10) 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2644,7 +2689,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (168)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (169)</li>
 	</ul>
 	
 </section>
