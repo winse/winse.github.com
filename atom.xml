@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winseliu.com/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-05-07T07:43:23+08:00</updated>
+  <updated>2017-05-23T21:02:24+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,346 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Hive on Spark预测性执行BUG一枚]]></title>
+    <link href="http://winseliu.com/blog/2017/05/23/spark-on-hive-speculation-shit-bug/"/>
+    <updated>2017-05-23T20:11:49+08:00</updated>
+    <id>http://winseliu.com/blog/2017/05/23/spark-on-hive-speculation-shit-bug</id>
+    <content type="html"><![CDATA[<p>为了平复难以平复的痛苦，难以掩饰的激动，把这次遇到并解决的记录下。尽管最终解决的patch是官网的: <a href="https://issues.apache.org/jira/browse/HIVE-13066">Hive on Spark gives incorrect results when speculation is on</a>。</p>
+
+<p>版本说明下：
+* hive-1.2.1
+* spark-1.3.1</p>
+
+<p>在没有启动spark.speculation前，有个别任务执行非常慢，非常之讨厌。而启用预测性执行后，时不时任务会有些会失败，让人很烦躁。但是吧，也不算故障，说来也奇怪，重启下后再次查询问题就不出现了，也就没太在意。</p>
+
+<p>今天数据量比较大，并且是上头检查。妈蛋，搞成了故障，没得办法，必须把原因找出来了。下来就帖日志了：</p>
+
+<p>应用SQL查询报错日志：啥也看不到，就知道Hive查询报错，只能拿着时间去查Hive日志</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ERROR] 14:19:56.685 [RMI TCP Connection(7)-192.168.31.11] c.e.z.h.s.BaseHiveQueryService | Error while processing statement: FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+</span><span class='line'>java.sql.SQLException: Error while processing statement: FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+</span><span class='line'>        at org.apache.hive.jdbc.HiveStatement.execute(HiveStatement.java:296)
+</span><span class='line'>        at org.apache.hive.jdbc.HiveStatement.executeQuery(HiveStatement.java:392)
+</span><span class='line'>        at org.apache.hive.jdbc.HivePreparedStatement.executeQuery(HivePreparedStatement.java:109)
+</span><span class='line'>        at org.apache.commons.dbcp.DelegatingPreparedStatement.executeQuery(DelegatingPreparedStatement.java:96)
+</span><span class='line'>        at org.apache.commons.dbcp.DelegatingPreparedStatement.executeQuery(DelegatingPreparedStatement.java:96)
+</span><span class='line'>        at com.eshore.zhfx.hbase.service.BaseHiveQueryService.listIteratorInternal(BaseHiveQueryService.java:101)
+</span><span class='line'>        at com.eshore.zhfx.hbase.service.BaseHiveQueryService.listIterator(BaseHiveQueryService.java:80)
+</span><span class='line'>        at com.eshore.zhfx.hbase.QueryService.getAccessLogIterator(QueryService.java:140)
+</span><span class='line'>        at com.eshore.zhfx.hbase.QueryService$$FastClassByCGLIB$$a60bf6f7.invoke(&lt;generated&gt;)
+</span><span class='line'>        at net.sf.cglib.proxy.MethodProxy.invoke(MethodProxy.java:191)
+</span><span class='line'>        at org.springframework.aop.framework.Cglib2AopProxy$CglibMethodInvocation.invokeJoinpoint(Cglib2AopProxy.java:688)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+</span><span class='line'>        at org.springframework.aop.framework.adapter.AfterReturningAdviceInterceptor.invoke(AfterReturningAdviceInterceptor.java:50)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+</span><span class='line'>        at org.springframework.aop.framework.adapter.MethodBeforeAdviceInterceptor.invoke(MethodBeforeAdviceInterceptor.java:50)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+</span><span class='line'>        at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:89)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+</span><span class='line'>        at org.springframework.aop.framework.Cglib2AopProxy$DynamicAdvisedInterceptor.intercept(Cglib2AopProxy.java:621)
+</span><span class='line'>        at com.eshore.zhfx.hbase.QueryService$$EnhancerByCGLIB$$9a4ab584.getAccessLogIterator(&lt;generated&gt;)
+</span><span class='line'>        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+</span><span class='line'>        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+</span><span class='line'>        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+</span><span class='line'>        at java.lang.reflect.Method.invoke(Method.java:601)
+</span><span class='line'>        at org.springframework.aop.support.AopUtils.invokeJoinpointUsingReflection(AopUtils.java:309)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.invokeJoinpoint(ReflectiveMethodInvocation.java:183)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+</span><span class='line'>        at org.springframework.remoting.support.RemoteInvocationTraceInterceptor.invoke(RemoteInvocationTraceInterceptor.java:77)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+</span><span class='line'>        at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:202)
+</span><span class='line'>        at com.sun.proxy.$Proxy22.getAccessLogIterator(Unknown Source)
+</span><span class='line'>        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+</span><span class='line'>        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>HIVE服务日志：rename错了，但是也好像看不到啥。知道那个节点有问题了，去查节点日志</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2017-05-23 14:19:20,509 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - 2017-05-23 14:19:20,508 WARN  [task-result-getter-1] scheduler.TaskSetManager: Lost task 2199.1 in stage 2.0 (TID 4517, hadoop-slaver41): java.lang.IllegalStateException: Hit error while closing operators - failing tree: org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+</span><span class='line'>2017-05-23 14:19:20,509 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:195)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.HiveMapFunctionResultList.closeRecordProcessor(HiveMapFunctionResultList.java:58)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.HiveBaseFunctionResultList$ResultIterator.hasNext(HiveBaseFunctionResultList.java:106)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.convert.Wrappers$JIteratorWrapper.hasNext(Wrappers.scala:41)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.Iterator$class.foreach(Iterator.scala:727)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.AbstractIterator.foreach(Iterator.scala:1157)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:61)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.scheduler.Task.run(Task.scala:64)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:203)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.lang.Thread.run(Thread.java:722)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - Caused by: org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.commit(FileSinkOperator.java:237)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.access$200(FileSinkOperator.java:143)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator.closeOp(FileSinkOperator.java:1051)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:616)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:172)
+</span><span class='line'>2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  ... 15 more
+</span><span class='line'>2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - </span></code></pre></td></tr></table></div></figure>
+
+
+<p>Task错误节点错误日志：这日志没查。重名，那名称去namenode的日志是啥子呢？</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>17/05/23 14:19:18 INFO exec.FileSinkOperator: FS[24]: records written - 0
+</span><span class='line'>17/05/23 14:19:18 INFO exec.FileSinkOperator: Final Path: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0
+</span><span class='line'>17/05/23 14:19:18 INFO exec.FileSinkOperator: Writing to temp file: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0
+</span><span class='line'>17/05/23 14:19:18 INFO exec.FileSinkOperator: New Final Path: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+</span><span class='line'>17/05/23 14:19:19 INFO compress.CodecPool: Got brand-new compressor [.snappy]
+</span><span class='line'>org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.commit(FileSinkOperator.java:237)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.access$200(FileSinkOperator.java:143)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.FileSinkOperator.closeOp(FileSinkOperator.java:1051)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:616)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:172)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.spark.HiveMapFunctionResultList.closeRecordProcessor(HiveMapFunctionResultList.java:58)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.spark.HiveBaseFunctionResultList$ResultIterator.hasNext(HiveBaseFunctionResultList.java:106)
+</span><span class='line'>        at scala.collection.convert.Wrappers$JIteratorWrapper.hasNext(Wrappers.scala:41)
+</span><span class='line'>        at scala.collection.Iterator$class.foreach(Iterator.scala:727)
+</span><span class='line'>        at scala.collection.AbstractIterator.foreach(Iterator.scala:1157)
+</span><span class='line'>        at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+</span><span class='line'>        at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+</span><span class='line'>        at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+</span><span class='line'>        at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+</span><span class='line'>        at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:61)
+</span><span class='line'>        at org.apache.spark.scheduler.Task.run(Task.scala:64)
+</span><span class='line'>        at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:203)
+</span><span class='line'>        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+</span><span class='line'>        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+</span><span class='line'>        at java.lang.Thread.run(Thread.java:722)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>Namenode日志：有点点线索了，分配了两次，导致了第二个任务写入的时刻报错！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ grep '_tmp.002199' hadoop/logs/hadoop-hadoop-namenode-hadoop-master2.log.1
+</span><span class='line'>2017-05-23 14:19:01,591 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0. BP-1414312971-192.168.32.11-1392479369615 blk_1219124858_145508182{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-ad2eac59-1e38-4019-a5ac-64c465366186:NORMAL:192.168.32.93:50010|RBW], ReplicaUnderConstruction[[DISK]DS-90c8cbe3-fd70-4ad7-938a-4248b4435df7:NORMAL:192.168.32.136:50010|RBW], ReplicaUnderConstruction[[DISK]DS-9da76df9-47f0-4e25-b375-e1bf32f4cf52:NORMAL:192.168.36.58:50010|RBW]]}
+</span><span class='line'>2017-05-23 14:19:14,939 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 is closed by DFSClient_attempt_201705231411_0000_m_001585_0_1316598676_51
+</span><span class='line'>2017-05-23 14:19:20,368 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0. BP-1414312971-192.168.32.11-1392479369615 blk_1219125517_145508841{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-4d4c90f0-1ddf-4800-b33a-e776e58dc744:NORMAL:192.168.32.61:50010|RBW], ReplicaUnderConstruction[[DISK]DS-948cd823-5a4c-4673-8ace-99f02a26522b:NORMAL:192.168.32.52:50010|RBW], ReplicaUnderConstruction[[DISK]DS-7818addb-3881-446e-abb3-2c178be6bb63:NORMAL:192.168.32.176:50010|RBW]]}
+</span><span class='line'>2017-05-23 14:19:20,478 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 is closed by DFSClient_attempt_201705231411_0000_m_001345_1_1292482540_51
+</span><span class='line'>2017-05-23 14:19:20,480 WARN org.apache.hadoop.hdfs.StateChange: DIR* FSDirectory.unprotectedRenameTo: failed to rename /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy because destination exists</span></code></pre></td></tr></table></div></figure>
+
+
+<p>好了，看到这里，驴脑袋还没怀疑到是预测性执行导致的问题。当时想为啥会出现同一个文件名呢：</p>
+
+<p>MAP太多了000000又循环了一轮？看了执行的map数也就2600啊，不应该啊。</p>
+
+<p>哪这个文件名是哪里产生的呢？然后就搞了下远程调试：没啥用，错误是在task上发生了，调试hive-driver没啥用，但是有意外收获</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hive]$ DEBUG=true bin/hive
+</span><span class='line'>Listening for transport dt_socket at address: 8000
+</span><span class='line'>
+</span><span class='line'>Logging initialized using configuration in file:/home/hadoop/apache-hive-1.2.1-bin/conf/hive-log4j.properties
+</span><span class='line'>hive&gt; set hive.execution.engine=spark; '查询之前需要设置下引擎，故障得先处理。搞成默认的mr跑是成功的
+</span><span class='line'>hive&gt; SQLSQLSQL...执行刚报错的SQL
+</span><span class='line'>Query ID = hadoop_20170523173748_7660d9fb-9683-4792-8315-a51f6dcc270b
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 48a8668b-1c59-4cbf-b1e2-e19612ee77d0
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[0] stages:
+</span><span class='line'>0
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[0])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2017-05-23 17:38:15,730 Stage-0_0: 0/2609
+</span><span class='line'>2017-05-23 17:38:16,739 Stage-0_0: 0(+159)/2609
+</span><span class='line'>...
+</span><span class='line'>2017-05-23 17:39:23,182 Stage-0_0: 2162(+447)/2609
+</span><span class='line'>2017-05-23 17:39:24,188 Stage-0_0: 2167(+608)/2609
+</span><span class='line'>2017-05-23 17:39:25,195 Stage-0_0: 2201(+836,-1)/2609
+</span><span class='line'>2017-05-23 17:39:26,201 Stage-0_0: 2215(+832,-2)/2609
+</span><span class='line'>2017-05-23 17:39:27,207 Stage-0_0: 2227(+820,-2)/2609
+</span><span class='line'>2017-05-23 17:39:28,213 Stage-0_0: 2250(+797,-2)/2609
+</span><span class='line'>2017-05-23 17:39:29,219 Stage-0_0: 2280(+767,-2)/2609
+</span><span class='line'>2017-05-23 17:39:30,224 Stage-0_0: 2338(+709,-2)/2609
+</span><span class='line'>2017-05-23 17:39:31,230 Stage-0_0: 2350(+696,-3)/2609
+</span><span class='line'>2017-05-23 17:39:32,236 Stage-0_0: 2359(+684,-6)/2609
+</span><span class='line'>2017-05-23 17:39:33,243 Stage-0_0: 2363(+676,-10)/2609
+</span><span class='line'>2017-05-23 17:39:34,249 Stage-0_0: 2365(+673,-12)/2609
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>有报错了，赶紧去web页面看了下结果，好家伙，全部是Speculation的报错：</p>
+
+<p><img src="http://winseliu.com/images/blogs/hive-on-spark-speculation.jpg" alt="" /></p>
+
+<p>在结合前面的namenode的日志，基本就走到正道上面。然后 <strong> hive spark speculation </strong> 一股沟，没错第一条就是hive官网的bug啊。</p>
+
+<ul>
+<li><a href="https://issues.apache.org/jira/browse/HIVE-13066">https://issues.apache.org/jira/browse/HIVE-13066</a></li>
+</ul>
+
+
+<p>然后就是打patch修改HivePairFlatMapFunction，验证是OK的。至少原来出错的语句完美跑完。</p>
+
+<h2>总结下</h2>
+
+<p>就是前段集成攻城狮把网络回环的问题处理了，导致网络状态好的不要不要的啊！把那些有备用10M网卡全部停了，集群的机器的网络好了N倍。第二个就是数据量实在大，其实speculation有启动，但是最先完成的还是先启动的，又没有把预测执行kill掉并且还运行完了最终还保存到同名文件。最后让我又一次体验了一把找开源软件BUG激情四射的半天。</p>
+
+<p>记录聊以慰藉！！</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Puppet批量自动化部署实战]]></title>
@@ -484,7 +824,7 @@
 </span><span class='line'># 想通过ganglia-web获取数据然后判断是否有数据进行重启。</span></code></pre></td></tr></table></div></figure>
 
 
-<p>Ganglia删除某节点后，如果要从rrds上去掉改节点的信息，需要：重启对应收集的gmond，对应集群的rrds目录，然后重启gmetad。</p>
+<p>Ganglia删除某节点后，如果要从rrds上去掉改节点的信息，需要：重启对应收集的gmond，对应集群的rrds目录，然后重启gmetad。或者等够一段时间，gmetad会自动去掉。</p>
 
 <h2>总结</h2>
 
@@ -7184,477 +7524,6 @@ error_page 497 <a href="https://$host:$server_port$request_uri;">https://$host:$
 <p>然后导入已经存在的项目即可。看最终效果图：</p>
 
 <p><img src="http://winseliu.com/images/blogs/play2-dev.jpg" alt="" /></p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[红帽6升级SSH]]></title>
-    <link href="http://winseliu.com/blog/2016/10/20/ssh-upgrade-on-centos6/"/>
-    <updated>2016-10-20T19:29:50+08:00</updated>
-    <id>http://winseliu.com/blog/2016/10/20/ssh-upgrade-on-centos6</id>
-    <content type="html"><![CDATA[<p>安全检查报告SSH版本太低存在漏洞需要进行升级，但是红帽没有现成的高版本打包好SSH的rpm。自己动手丰衣足食，没有网上一些朋友遇到那么多的问题，但是也是这纠结过程。</p>
-
-<p>搞一台身边的机器测试安装，如果远程机器搞不好就连不上了！！先手动编译安装一遍，把编译需要的依赖都安装好，然后再rpmbuild就会比较顺利。</p>
-
-<h2>运维同事编译安装的步骤</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>加载光盘的packages
-</span><span class='line'># mount -o loop disk1.iso /mnt/disk
-</span><span class='line'># vi /etc/yum.repo.d/local.repo
-</span><span class='line'>
-</span><span class='line'>[root@localhost SOURCES]# ll *.tar.gz
-</span><span class='line'>-rw-r--r--. 1 root   root   1499808 3月  10 2016 openssh-7.2p2.tar.gz
-</span><span class='line'>-rw-r--r--. 1 root   root   5489494 10月 20 16:41 openssl-1.0.2j.tar.gz
-</span><span class='line'>-rw-r--r--. 1 root   root     29229 6月  26 2004 x11-ssh-askpass-1.2.4.1.tar.gz
-</span><span class='line'>
-</span><span class='line'>一、升级 Zlib
-</span><span class='line'>1、下载最新版本 Zlib
-</span><span class='line'># ./configure --prefix=/usr/local/zlib
-</span><span class='line'>本次遇到GCC未安装
-</span><span class='line'>yum -y install gcc
-</span><span class='line'>./configure --prefix=/usr/local/zlib
-</span><span class='line'># make
-</span><span class='line'># make install
-</span><span class='line'>这样，就把 zlib 编译安装在 /usr/local/zilib 中了。
-</span><span class='line'>二、升级 OpenSSL
-</span><span class='line'>1、下载最新版本 OpenSSL
-</span><span class='line'>which openssl    查看到当前是在/usr/bin/openssl
-</span><span class='line'># ./config --prefix=/usr --shared
-</span><span class='line'>本次遇到系统时间不对的，修改好系统时间后config正常。
-</span><span class='line'># make
-</span><span class='line'># make test （这一步很重要哦！是进行 SSL 加密协议的完整测试，如果出现错误就要一定先找出哪里的原因，否则一味继续可能导致最终 SSH 不能使用，后果很严重哦！）
-</span><span class='line'># make install
-</span><span class='line'>三、升级 OpenSSH
-</span><span class='line'>1、下载最新版本 OpenSSH
-</span><span class='line'>#  ./configure --prefix=/usr --sysconfdir=/etc/ssh --with-pam --with-zlib=/usr/local/zlib --with-ssl-dir=/usr/bin/openssl --with-md5-passwords 
-</span><span class='line'>（注意，如果 configure 时提示 PAM 有错误，那一般是因为系统中没有安装 pam-devel RPM 包，找到安装光盘，安装 pam-devel 就可以解决啦）如果是sshkeygen提示错误，需要make  clean再重新编译
-</span><span class='line'>本次安装过程提示了pam问题,cd /opt/cdrom-mirror/Packages
-</span><span class='line'>rpm -ivh pam-devel-1.1.1-10.el6_2.1.x86_64.rpm
-</span><span class='line'>./configure --prefix=/usr --sysconfdir=/etc/ssh --with-pam --with-zlib=/usr/local/zlib --with-ssl-dir=/usr/bin/openssl --with-md5-passwords 
-</span><span class='line'># make
-</span><span class='line'># make install
-</span><span class='line'>ssh -V 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>编译RPM包</h2>
-
-<p>机器太多，不太可能一台台的编译安装。首先用rpmbuild打包，然后用createrepo制作本地私有仓库。主要是openssl打包比较纠结！OpenSSH完全依赖OpenSSL的，所以OpenSSL的版本一定要先编译安装好，然后再编译OpenSSH。相应的包下面都有对应的spec文件。</p>
-
-<p>实际操作过程是先打包OpenSSH的：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'> cd
-</span><span class='line'> mkdir rpmbuild
-</span><span class='line'> cd rpmbuild/
-</span><span class='line'> mkdir -pv {BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
-</span><span class='line'>
-</span><span class='line'> cd SOURCES/
-</span><span class='line'> cd ../SPECS/
-</span><span class='line'> cp ~/updatessh/openssh-7.2p2/contrib/redhat/openssh.spec ./
-</span><span class='line'> cd ..
-</span><span class='line'> cd SOURCES/
-</span><span class='line'> vi /etc/resolv.conf
-</span><span class='line'> wget http://pkgs.fedoraproject.org/repo/pkgs/openssh/x11-ssh-askpass-1.2.4.1.tar.gz/8f2e41f3f7eaa8543a2440454637f3c3/x11-ssh-askpass-1.2.4.1.tar.gz
-</span><span class='line'> wget http://pkgs.fedoraproject.org/repo/pkgs/openssh/openssh-7.2p2.tar.gz/13009a9156510d8f27e752659075cced/openssh-7.2p2.tar.gz
-</span><span class='line'> cd ..
-</span><span class='line'> yum groupinstall "X Window System" "Desktop" "Desktop Platform" "General Purpose Desktop"
-</span><span class='line'> yum -y install libX11-devel
-</span><span class='line'> yum install imake
-</span><span class='line'> yum provides \*/Intrinsic.h
-</span><span class='line'> yum install libXt-devel
-</span><span class='line'> yum search gtk
-</span><span class='line'> yum install gtk2 gtk2-devel
-</span><span class='line'> vi SPECS/openssh.spec
-</span><span class='line'> rpmbuild -bb SPECS/openssh.spec</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后坑就摆在那里了：重启sshd失败。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 在rpmbuild\RPMS\x86_64目录下面创建createrepo私有仓库
-</span><span class='line'># /etc/yum.repo.d/local.repo增加节点
-</span><span class='line'>
-</span><span class='line'># yum install openssh 
-</span><span class='line'>
-</span><span class='line'># 重启
-</span><span class='line'>[root@localhost ~]# service sshd restart
-</span><span class='line'>然后启动了[失败]（具体错没记下来）</span></code></pre></td></tr></table></div></figure>
-
-
-<p>感觉是OpenSSL的问题了。然后打包好OpenSSL后安装竟然报错：找不到libssl的动态链接库</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Error: Package: wget-1.12-1.4.el6.x86_64 (@anaconda-RedHatEnterpriseLinux-201206132210.x86_64/6.3)
-</span><span class='line'>           Requires: libcrypto.so.10()(64bit)
-</span><span class='line'>           Removing: openssl-1.0.0-20.el6_2.5.x86_64 (@cdrom)
-</span><span class='line'>               libcrypto.so.10()(64bit)
-</span><span class='line'>           Updated By: openssl-1.0.2j-1.x86_64 (upgrade)
-</span><span class='line'>               Not found
-</span><span class='line'>Error: Package: 1:wpa_supplicant-0.7.3-3.el6.x86_64 (@cdrom)
-</span><span class='line'>           Requires: libssl.so.10()(64bit)
-</span><span class='line'>           Removing: openssl-1.0.0-20.el6_2.5.x86_64 (@cdrom)
-</span><span class='line'>               libssl.so.10()(64bit)
-</span><span class='line'>           Updated By: openssl-1.0.2j-1.x86_64 (upgrade)
-</span><span class='line'>               Not found</span></code></pre></td></tr></table></div></figure>
-
-
-<p>官方的出的spec打包的rpm安装后竟然会少东西。百思不得其解，通过查看cdrom openssl-1.0.0-20.el6_2.5.x86_64.rpm与rpmbuild openssl-1.0.2j-1.x86_64.rpm的确还不同：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# rpm -qlp /opt/cdrom/Packages/openssl-1.0.0-20.el6_2.5.x86_64.rpm | grep libssl
-</span><span class='line'>...
-</span><span class='line'>/usr/lib64/libssl.so.1.0.0
-</span><span class='line'>/usr/lib64/libssl.so.10
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# rpm -qlp /opt/cdrom/Packages/openssl-1.0.0-20.el6_2.5.x86_64.rpm | grep libssl
-</span><span class='line'>...
-</span><span class='line'>/usr/lib64/libssl.so.1.0.0</span></code></pre></td></tr></table></div></figure>
-
-
-<p>在spec里面增加libssl.so.10软链接也没用。rpm并没有提供libssl.so.10的 <strong> provide </strong> 服务（可以通过<a href="http://stackoverflow.com/questions/25638461/how-can-i-make-rpm-tell-what-libraries-are-provided-inside-it">rpm -qip &ndash;provides RPM</a>查看）。</p>
-
-<p>实在想不出办法了，只能先看下官网怎么打包的。最后通过查看 openssl-1.0.0-20.el6_2.5.src.rpm 的打包spec是进行定制了的，把原来编译生成的动态链接库so.$(SHLIB_MAJOR).$(SHLIB_MINOR)文件名改成so.$(SHLIB_SONAMEVER)。主要的两个patch为：</p>
-
-<ul>
-<li>openssl-1.0.0-beta3-soversion.patch</li>
-<li>openssl-1.0.0-beta4-redhat.patch</li>
-</ul>
-
-
-<p>参考修改如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>修改Makefile
-</span><span class='line'>diff -u openssl-1.0.2j/Makefile.org rpmbuild/SOURCES/openssl-1.0.2j/Makefile.org
-</span><span class='line'>--- openssl-1.0.2j/Makefile.org 2016-09-26 17:49:07.000000000 +0800
-</span><span class='line'>+++ rpmbuild/SOURCES/openssl-1.0.2j/Makefile.org        2016-10-20 15:28:32.000000000 +0800
-</span><span class='line'>@@ -10,6 +10,7 @@
-</span><span class='line'> SHLIB_MAJOR=
-</span><span class='line'> SHLIB_MINOR=
-</span><span class='line'> SHLIB_EXT=
-</span><span class='line'>+SHLIB_SONAMEVER=10
-</span><span class='line'> PLATFORM=dist
-</span><span class='line'> OPTIONS=
-</span><span class='line'> CONFIGURE_ARGS=
-</span><span class='line'>@@ -342,10 +343,9 @@
-</span><span class='line'> link-shared:
-</span><span class='line'>        @ set -e; for i in $(SHLIBDIRS); do \
-</span><span class='line'>                $(MAKE) -f $(HERE)/Makefile.shared -e $(BUILDENV) \
-</span><span class='line'>-                       LIBNAME=$$i LIBVERSION=$(SHLIB_MAJOR).$(SHLIB_MINOR) \
-</span><span class='line'>+                       LIBNAME=$$i LIBVERSION=$(SHLIB_SONAMEVER) \
-</span><span class='line'>                        LIBCOMPATVERSIONS=";$(SHLIB_VERSION_HISTORY)" \
-</span><span class='line'>                        symlink.$(SHLIB_TARGET); \
-</span><span class='line'>-               libs="$$libs -l$$i"; \
-</span><span class='line'>        done
-</span><span class='line'> 
-</span><span class='line'> build-shared: do_$(SHLIB_TARGET) link-shared
-</span><span class='line'>@@ -356,7 +356,7 @@
-</span><span class='line'>                        libs="$(LIBKRB5) $$libs"; \
-</span><span class='line'>                fi; \
-</span><span class='line'>                $(CLEARENV) && $(MAKE) -f Makefile.shared -e $(BUILDENV) \
-</span><span class='line'>-                       LIBNAME=$$i LIBVERSION=$(SHLIB_MAJOR).$(SHLIB_MINOR) \
-</span><span class='line'>+                       LIBNAME=$$i LIBVERSION=$(SHLIB_SONAMEVER) \
-</span><span class='line'>                        LIBCOMPATVERSIONS=";$(SHLIB_VERSION_HISTORY)" \
-</span><span class='line'>                        LIBDEPS="$$libs $(EX_LIBS)" \
-</span><span class='line'>                        link_a.$(SHLIB_TARGET); \
-</span><span class='line'>
-</span><span class='line'>修改Configure1
-</span><span class='line'>diff -u openssl-1.0.2j/Configure rpmbuild/SOURCES/openssl-1.0.2j/Configure
-</span><span class='line'>--- openssl-1.0.2j/Configure    2016-09-26 17:49:07.000000000 +0800
-</span><span class='line'>+++ rpmbuild/SOURCES/openssl-1.0.2j/Configure   2016-10-20 16:40:33.000000000 +0800
-</span><span class='line'>@@ -1781,7 +1781,7 @@
-</span><span class='line'>        elsif ($shared_extension ne "" && $shared_extension =~ /^\.s([ol])\.[^\.]*\.[^\.]*$/)
-</span><span class='line'>                {
-</span><span class='line'>                my $sotmp = $1;
-</span><span class='line'>-               s/^SHARED_LIBS_LINK_EXTS=.*/SHARED_LIBS_LINK_EXTS=.s$sotmp.\$(SHLIB_MAJOR) .s$sotmp/;
-</span><span class='line'>+               s/^SHARED_LIBS_LINK_EXTS=.*/SHARED_LIBS_LINK_EXTS=.s$sotmp.\$(SHLIB_SONAMEVER) .s$sotmp/;
-</span><span class='line'>                }
-</span><span class='line'>        elsif ($shared_extension ne "" && $shared_extension =~ /^\.[^\.]*\.[^\.]*\.dylib$/)
-</span><span class='line'>                {
-</span><span class='line'>
-</span><span class='line'>修改Configure2
-</span><span class='line'>rpmbuild/SOURCES/openssl-1.0.2j/Configure 文件中 so.\$(SHLIB_MAJOR).\$(SHLIB_MINOR) 替换成 so.\$(SHLIB_SONAMEVER)
-</span><span class='line'>
-</span><span class='line'>修改spec
-</span><span class='line'>[root@localhost ~]# diff openssl-1.0.2j/openssl.spec rpmbuild/SPECS/openssl.spec
-</span><span class='line'>110a111,121
-</span><span class='line'>&gt; version=%{version}
-</span><span class='line'>&gt; soversion=10
-</span><span class='line'>&gt; rename so.${soversion} so.${version} $RPM_BUILD_ROOT%{_libdir}/*.so.${soversion}
-</span><span class='line'>&gt; for lib in $RPM_BUILD_ROOT/usr/lib64/*.so.${version} ; do
-</span><span class='line'>&gt;         chmod 755 ${lib}
-</span><span class='line'>&gt;         ln -s -f `basename ${lib}` $RPM_BUILD_ROOT/usr/lib64/`basename ${lib} .${version}`
-</span><span class='line'>&gt;         ln -s -f `basename ${lib}` $RPM_BUILD_ROOT/usr/lib64/`basename ${lib} .${version}`.${soversion}
-</span><span class='line'>&gt; 
-</span><span class='line'>&gt; done
-</span><span class='line'>&gt; </span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后打包OpenSSL，用Yum更新OpenSSL；再打包OpenSSH，最后再用Yum安装OpenSSH。</p>
-
-<h2>配置</h2>
-
-<p>打包好完成后完成大半的任务了，但是重启过程出现了一些问题：</p>
-
-<ol>
-<li>error while loading shared libraries: libcrypto.so.10: cannot enable executable stack as shared object requires: Permission denied</li>
-</ol>
-
-
-<p>运行： <code>execstack -c libcrypto.so.10</code> 解决。 <a href="http://www.linuxquestions.org/questions/linux-kernel-70/longterm-and-grsec-on-slackware-13-0-a-903612/">http://www.linuxquestions.org/questions/linux-kernel-70/longterm-and-grsec-on-slackware-13-0-a-903612/</a></p>
-
-<ol>
-<li>重启后远程密码登录上不，但是机器重启是可以登录的，而且su通过密码也是可以切换的。</li>
-</ol>
-
-
-<p>由于su切换没问题，应该不是加解密的问题。最后经常是selinux的问题： <code>setenforce 0 ; vi /etc/selinux/config</code> 完成配置。</p>
-
-<p>到此纠结的SSH升级告一段落。后面上百台机器通过puppet就可以搞定了。</p>
-
-<p>最后分享一个牛逼到不能再牛逼升级配置的文章： <a href="http://www.tsingfun.com/html/2016/env_0330/1332.html">http://www.tsingfun.com/html/2016/env_0330/1332.html</a> 包括了升级过程中你遇到和没遇到的所有问题了。</p>
-
-<h2>再记</h2>
-
-<p>在测试机上面搞的都是默认的配置啊，安全级别本来就不高。但是到生产就不同了，本来加了防护的。需要特别注意！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>#centos6.8
-</span><span class='line'>#直接用openssl-1.0.1e-48.el6
-</span><span class='line'>[root@localhost yum.repos.d]# mount -o loop CentOS-6.8-x86_64-bin-DVD1.iso /opt/cdrom
-</span><span class='line'>[root@localhost yum.repos.d]# vi local.repo
-</span><span class='line'>
-</span><span class='line'>[root@localhost rpmbuild]#  yum groupinstall "X Window System" "Desktop" "Desktop Platform" "General Purpose Desktop"
-</span><span class='line'>
-</span><span class='line'>[root@localhost yum.repos.d]# yum install -y libX11-devel imake libXt-devel gtk2 gtk2-devel 
-</span><span class='line'>
-</span><span class='line'>[root@localhost rpmbuild]# yum install -y rpm-build
-</span><span class='line'>[root@localhost rpmbuild]# yum install -y openssl-devel   krb5-devel pam-devel 
-</span><span class='line'>
-</span><span class='line'>[root@localhost rpmbuild]# yum install gcc
-</span><span class='line'>
-</span><span class='line'>[root@localhost rpmbuild]# rpmbuild -bb SPEC/openssh.spec
-</span><span class='line'>
-</span><span class='line'>自己做的repo：
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master1 ssh]# ll
-</span><span class='line'>total 6192
-</span><span class='line'>-rw-r--r-- 1 root root  439708 Oct 21 17:53 openssh-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root   41752 Oct 21 17:53 openssh-askpass-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root   22684 Oct 21 17:53 openssh-askpass-gnome-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root  581836 Oct 21 17:53 openssh-clients-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root   16948 Oct 21 17:53 openssh-debuginfo-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root  391544 Oct 21 17:53 openssh-server-7.2p2-1.x86_64.rpm
-</span><span class='line'>-rw-r--r-- 1 root root 3226970 Oct 21 17:23 openssl-1.0.1e-48.el6.src.rpm
-</span><span class='line'>-rw-r--r-- 1 root root 1595916 May 12 18:49 openssl-1.0.1e-48.el6.x86_64.rpm
-</span><span class='line'>drwxr-xr-x 2 root root    4096 Oct 21 18:47 repodata
-</span><span class='line'>
-</span><span class='line'>注意点：
-</span><span class='line'>
-</span><span class='line'>1 selinux关掉
-</span><span class='line'>
-</span><span class='line'>2 开个telnet以防万一
-</span><span class='line'>
-</span><span class='line'>yum install telnet-server
-</span><span class='line'>chkconfig telnet on
-</span><span class='line'>service xinetd restart
-</span><span class='line'>
-</span><span class='line'>3 PAM
-</span><span class='line'>vi /etc/ssh/sshd_config
-</span><span class='line'>UsePAM no（反正要确认pam，或者看看/etc/pam.d/sshd是否满足要求）
-</span></code></pre></td></tr></table></div></figure>
-
 
 <p>&ndash;END</p>
 ]]></content>
