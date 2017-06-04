@@ -9,23 +9,12 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="计算出从1到100之间所有奇数的平方之和，代码50字符内（QQ群的验证框长度限制为50）。 如题，题目没啥难度，这50字符的条件莫名的增添压迫感。其实java写也不用50个字符就能搞定的 ！ 1
+  <meta name="description" content="在安装部署Hadoop集群的首要步骤就是配置SSH的无密钥登陆。 1
 2
 3
 4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-// (1 to 50) &hellip;">
+ssh-keygen -t rsa -P '' -f ~/.ssh/id_rsa
+cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys ssh-copy-id -i ~/.ssh/ &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -99,6 +88,965 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/09/07/expect-automate-and-batch-config-ssh/">Expect-批量实现SSH无密钥登录</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-09-07T16:11:18+08:00" pubdate data-updated="true">Sun 2014-09-07 16:11</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>在安装部署Hadoop集群的首要步骤就是配置SSH的无密钥登陆。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh-keygen -t rsa -P '' -f ~/.ssh/id_rsa
+</span><span class='line'>cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys
+</span><span class='line'>
+</span><span class='line'>ssh-copy-id -i ~/.ssh/id_rsa.pub root@$ip</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后，可以通过ssh命令来进行批量的操作。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh root@$ip 'cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys'
+</span><span class='line'>scp -o StrictHostKeyChecking=no /etc/hosts root@${ip}:/etc/</span></code></pre></td></tr></table></div></figure>
+
+
+<p>但是，一些需要密码的dialogue形式的输入时，部署N台datanode就需要输入N遍！同时新建用户也是需要输入用户密码的操作！！</p>
+
+<p>Linux Expect就是用来自动化处理这些需求的。Except能根据提示来实现相应的输入。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ ssh-copy-id localhost
+</span><span class='line'>The authenticity of host 'localhost (::1)' can't be established.
+</span><span class='line'>RSA key fingerprint is 4e:fe:7a:0a:98:6e:9a:ab:af:e4:65:51:9b:3d:e0:99.
+</span><span class='line'>Are you sure you want to continue connecting (yes/no)? yes
+</span><span class='line'>Warning: Permanently added 'localhost' (RSA) to the list of known hosts.
+</span><span class='line'>hadoop@localhost's password: 
+</span><span class='line'>Now try logging into the machine, with "ssh 'localhost'", and check in:
+</span><span class='line'>
+</span><span class='line'>  .ssh/authorized_keys
+</span><span class='line'>
+</span><span class='line'>to make sure we haven't added extra keys that you weren't expecting.</span></code></pre></td></tr></table></div></figure>
+
+
+<p>根据需要<strong>提示信息</strong>，以及需要<strong>输入的信息</strong>，可以编写对应expect脚本来进行自动化。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ cat bin/ssh-copy-id.expect 
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 [user@]host password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set password [lrange $argv 1 1] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>spawn ssh-copy-id $host ;
+</span><span class='line'>
+</span><span class='line'>expect {
+</span><span class='line'>  "(yes/no)?" { send yes\n; exp_continue; }
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>同样新建用户初始化密码的操作一样可以使用expect来使用：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ cat bin/passwd.expect
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 host username password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set username [lrange $argv 1 1];
+</span><span class='line'>set password [lrange $argv 2 2] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>spawn ssh $host useradd $username ;
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;
+</span><span class='line'>
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>spawn ssh $host passwd $username ;
+</span><span class='line'>
+</span><span class='line'>## password and repasswd all use this
+</span><span class='line'>expect {
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>有了上面的脚本，预定义每台机器的root密码，使用ssh-copy-id.expect建立到各台datanode机器的无密钥登录；然后passwd.expect脚本分发给各台机器，然后使用ssh进行运行脚本建立用户初始化密码。</p>
+
+<p>Expect仅在master机器上安装就可以。安装程序的如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>yum install expect</span></code></pre></td></tr></table></div></figure>
+
+
+<p>or</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>rpm -ivh tcl-8.5.7-6.el6.x86_64.rpm
+</span><span class='line'>rpm -ivh expect-5.44.1.15-5.el6_4.x86_64.rpm</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/09/05/read-hadoop-balancer-source-part3/">[读码] Hadoop2 Balancer磁盘空间平衡（下）</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-09-05T16:31:15+08:00" pubdate data-updated="true">Fri 2014-09-05 16:31</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>前面讲到了节点的初始化，根据节点使用率与集群dfs使用率比较分为
+<code>overUtilizedDatanodes</code>，<code>aboveAvgUtilizedDatanodes</code>，<code>belowAvgUtilizedDatanodes</code>，<code>underUtilizedDatanodes</code>，同时进行了节点数据量从Source到Target的配对。</p>
+
+<p>接下来就是最后的数据移动部分了。</p>
+
+<p>5.3 移动数据</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private ReturnStatus run(int iteration, Formatter formatter,
+</span><span class='line'>      Configuration conf) {
+</span><span class='line'>      ...
+</span><span class='line'>      if (!this.nnc.shouldContinue(dispatchBlockMoves())) {
+</span><span class='line'>        return ReturnStatus.NO_MOVE_PROGRESS;
+</span><span class='line'>      }
+</span><span class='line'>      ...
+</span><span class='line'>  }    </span></code></pre></td></tr></table></div></figure>
+
+
+<p>针对一个namenode如果连续5次没有移动数据，就会退出平衡操作，是在<code>NameNodeConnector#shouldContinue(long)</code>中处理的。</p>
+
+<p>由于这里需要进行大量计算，以及耗时的文件传输等操作，这里使用了executorservice，分别为moverExecutor和dispatcherExecutor，有两个配置<code>dfs.balancer.moverThreads</code>（1000）和<code>dfs.balancer.dispatcherThreads</code>（200）来设置线程池的大小。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  Balancer(NameNodeConnector theblockpool, Parameters p, Configuration conf) {
+</span><span class='line'>      ...
+</span><span class='line'>    this.moverExecutor = Executors.newFixedThreadPool(
+</span><span class='line'>            conf.getInt(DFSConfigKeys.DFS_BALANCER_MOVERTHREADS_KEY,
+</span><span class='line'>                        DFSConfigKeys.DFS_BALANCER_MOVERTHREADS_DEFAULT));
+</span><span class='line'>    this.dispatcherExecutor = Executors.newFixedThreadPool(
+</span><span class='line'>            conf.getInt(DFSConfigKeys.DFS_BALANCER_DISPATCHERTHREADS_KEY,
+</span><span class='line'>                        DFSConfigKeys.DFS_BALANCER_DISPATCHERTHREADS_DEFAULT));
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>其中<code>dispatchBlockMoves()</code>包装了数据移动的操作，把source的块移动到target节点中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private long dispatchBlockMoves() throws InterruptedException {
+</span><span class='line'>    long bytesLastMoved = bytesMoved.get();
+</span><span class='line'>    Future&lt;?&gt;[] futures = new Future&lt;?&gt;[sources.size()];
+</span><span class='line'>    int i=0;
+</span><span class='line'>    for (Source source : sources) {
+</span><span class='line'>       // / 新线程来执行块的分发
+</span><span class='line'>      futures[i++] = dispatcherExecutor.submit(source.new BlockMoveDispatcher());
+</span><span class='line'>    }
+</span><span class='line'>    
+</span><span class='line'>    // wait for all dispatcher threads to finish
+</span><span class='line'>    // / 等待分发操作完成
+</span><span class='line'>    for (Future&lt;?&gt; future : futures) { 
+</span><span class='line'>        future.get(); 
+</span><span class='line'>    }
+</span><span class='line'>    
+</span><span class='line'>    // wait for all block moving to be done
+</span><span class='line'>    // / 等待块的数据移动完成，相当于等待moverExecutor的Future完成
+</span><span class='line'>    waitForMoveCompletion(); 
+</span><span class='line'>    
+</span><span class='line'>    return bytesMoved.get()-bytesLastMoved;
+</span><span class='line'>  }
+</span><span class='line'>  private void waitForMoveCompletion() {
+</span><span class='line'>    boolean shouldWait;
+</span><span class='line'>    do {
+</span><span class='line'>      shouldWait = false;
+</span><span class='line'>      for (BalancerDatanode target : targets) {
+</span><span class='line'>          // / 块从source移动到target完成后,会从Pending的列表中移除 @see PendingBlockMove#dispatch()
+</span><span class='line'>        if (!target.isPendingQEmpty()) { 
+</span><span class='line'>          shouldWait = true;
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>      if (shouldWait) {
+</span><span class='line'>        try {
+</span><span class='line'>          Thread.sleep(blockMoveWaitTime);
+</span><span class='line'>        } catch (InterruptedException ignored) {
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    } while (shouldWait);
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>上面是分发功能主程序执行的代码，调用分发线程和等待执行结果的代码。主要业务逻辑在线程中调用执行。</p>
+
+<p>分发线程dispatcher先获取Source上指定大小的block块，对应到<code>getBlockList()</code>方法。除了用于<strong>块同步</strong>的globalBlockList变量、以及记录当前Source获取的srcBlockList、最重要的当属用于判断获取的块是否符合条件的方法<code>isGoodBlockCandidate(block)</code>。在移动块的选择也会用到该方法，单独拿出来在后面讲。</p>
+
+<p>然后选择Source下哪些块将移动到Targets目标节点。在<code>chooseNodes</code>步骤中把移动和接收<strong>数据</strong>的流向确定了，相关信息存储在Source的nodeTasks列表对象中。这里<code>PendingBlockMove.chooseBlockAndProxy()</code>把Sources需要移动的<strong>块</strong>确定下来，把从Source获取到的srcBlockList分配给Target。然后交给moverExecutor去执行。</p>
+
+<p>其中通过<code>isGoodBlockCandidate</code>和<code>chooseProxySource</code>（选择从那个目标获取block的真实数据，不一定是Source节点哦！）方法筛选合适的符合条件的块，并加入到movedBlocks对象。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/FA/wKhkA1QLCqqASDGHAAMJbC1ZgZQ339.png" alt="" /></p>
+
+<p>调用的dispatchBlocks方法第一次循环是不会有数据移动的，此时Source对象中srcBlockList可移动块为空，从Source中获取块后再进行块的移动操作<code>chooseNextBlockToMove()</code>。</p>
+
+<p>先讲下Source类属性blocksToReceive，初始值为2*scheduledSize，有三个地方：dispatchBlocks初始化大小，getBlockList从Source节点获取block的量同时减去获取到的block的字节数，还有就是shouldFetchMoreBlocks用于判断是否还有数据需要获取或者移动dispatchBlocks。这个属性其实也就是<strong>设置一个阀</strong>，不管block是否为最终移动的block，获取到块的信息后就会从blocksToReceive减去相应的字节数。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/D7/wKhkA1QJjnGAT2T-AACHmpdgZc0077.png" alt="" /></p>
+
+<p>前面获取Source block和分配到Target block都使用了isGoodBlockCandidate方法，这里涉及到怎么去评估<strong>块</strong>获取和分配是否合理的问题。需同时满足下面三个条件：</p>
+
+<ul>
+<li>当前选中的移动的块，不在已移动块的名单中<code>movedBlocks.contains</code></li>
+<li>移动的块在目的机器上没有备份</li>
+<li>移动的块不减少含有该数据的机架数量
+
+<ul>
+<li>多机架的情况下<code>cluster.isNodeGroupAware()</code>，移动的块在目的机器的机架上没有备份</li>
+<li>YES source和target在同一个机架上。</li>
+<li>YES source和target不在同一机架上，且该块没有一个备份在target的机架上</li>
+<li>YES source和target不在同一机架上，且该块有另一个备份和source在同一机架上</li>
+</ul>
+</li>
+</ul>
+
+
+<h2>疑问</h2>
+
+<p>一个Datanode只能同时移动/接收5个Block（即MAX_NUM_CONCURRENT_MOVES值），结合<code>chooseProxySource</code>的代码的addTo调用，看的很是辛苦！如block-A所有块都在A机架上，在选择proxySource时，会把该块的<strong>两个</strong>datanode都加上一个pendingBlock，显然这不大合理！！</p>
+
+<p>如果备用的proxySource节点恰好还是target的话，waitForMoveCompletion方法永远不能结束！！应该把没有找到同机架的源情况移到for循环外面进行处理。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>private boolean chooseProxySource() {
+</span><span class='line'>  final DatanodeInfo targetDN = target.getDatanode();
+</span><span class='line'>  boolean find = false;
+</span><span class='line'>  for (BalancerDatanode loc : block.getLocations()) {
+</span><span class='line'>    // check if there is replica which is on the same rack with the target
+</span><span class='line'>    if (cluster.isOnSameRack(loc.getDatanode(), targetDN) && addTo(loc)) {
+</span><span class='line'>      find = true;
+</span><span class='line'>      // if cluster is not nodegroup aware or the proxy is on the same 
+</span><span class='line'>      // nodegroup with target, then we already find the nearest proxy
+</span><span class='line'>      if (!cluster.isNodeGroupAware() 
+</span><span class='line'>          || cluster.isOnSameNodeGroup(loc.getDatanode(), targetDN)) {
+</span><span class='line'>        return true;
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>    
+</span><span class='line'>    if (!find) {
+</span><span class='line'>    // 这里的non-busy指的是，pendingBlock小于5份节点
+</span><span class='line'>      // find out a non-busy replica out of rack of target
+</span><span class='line'>      find = addTo(loc);
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  return find;
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p><img src="http://file.bmob.cn/M00/0D/06/wKhkA1QLuziAKEZdAAA8zGjPMGQ901.png" alt="" /></p>
+
+<p>不过无需庸人自扰，一般都在一个rack上，这种问题就不存在了！同时这个也不是能一步到位，加了很多限制（一次迭代一个datanode最多处理10G，获取一次srcBlockList仅2G还限制就一次迭代就5个block），会执行很多次。</p>
+
+<h2>总结</h2>
+
+<p>总体的代码大致就是这样子了。根据集群使用率和阀值，计算需要进行数据接收和移动的节点（初始化），然后进行配对（选择），再进行块的选取和接收节点进行配对（分发），最后就是数据的移动（理解为socket数据传递就好了，调用了HDFS的协议代码。表示看不明），并等待该轮操作结束。</p>
+
+<h2>举例</h2>
+
+<p>除了指定threshold为5，其他是默认参数。由于仅单namenode和单rack，所以直接分析第五部分的namenode平衡处理。</p>
+
+<p>根据所给的数据，（initNodes）第一步计算使用率，得出需要移动的数据量，把datanodes对号入座到over/above/below/under四个分类中。</p>
+
+<p><img src="http://file.bmob.cn/M00/0D/08/wKhkA1QLwxiAOEV3AAAu5v9zggc374.png" alt="" /></p>
+
+<p>（chooseNodes）第二步进行Source到Target节点的计划移动数据量计算。</p>
+
+<p>在初始化BalancerDatanode的时刻，就计算出了节点的maxSize2Move。从给出的数据，只有一个节点超过阀值，另外两个是都在阀值内，一个高于平均值一个低于平均值。</p>
+
+<p>这里就是把A1超出部分的数据（小于10G）移到A2，计算Source和Target的scheduledSize的大小。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>chooseDatanodes(overUtilizedDatanodes, belowAvgUtilizedDatanodes, matcher);
+</span><span class='line'>chooseForOneDatanode(datanode, candidates, matcher)
+</span><span class='line'>chooseCandidate(dn, i, matcher)
+</span><span class='line'>// 把所有A1超出部分全部移到A2，并NodeTask(A2, 8428571.429)存储到Source：A1的nodeTaskList对象中
+</span><span class='line'>matchSourceWithTargetToMove((Source)dn, chosen);</span></code></pre></td></tr></table></div></figure>
+
+
+<p>（dispatchBlockMoves）第三步就是分发进行块的转移。</p>
+
+<p>先设置blocksToReceive（2*scheduledSize=16857142.86）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>chooseNextBlockToMove
+</span><span class='line'>chooseBlockAndProxy
+</span><span class='line'>markMovedIfGoodBlock
+</span><span class='line'>isGoodBlockCandidate
+</span><span class='line'>chooseProxySource
+</span><span class='line'>
+</span><span class='line'>scheduleBlockMove
+</span><span class='line'>
+</span><span class='line'>getBlockList</span></code></pre></td></tr></table></div></figure>
+
+
+<p>从Source获取块时，可能在A2上已经有了，会通过isGoodBlockCandidate来进行过滤。然后就是把它交给moverExecutor执行数据块的移动，完成后修改处理的数据量byteMoved，把移动的块从target和proxySource的pendingBlockList中删除。</p>
+
+<p>重复进行以上步骤，直到全部所有节点的使用率都在阀值内，顺利结束本次平衡处理。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/09/05/read-hadoop-balancer-source-part2/">[读码] Hadoop2 Balancer磁盘空间平衡（中）</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-09-05T14:57:25+08:00" pubdate data-updated="true">Fri 2014-09-05 14:57</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>code</h2>
+
+<p>执行<code>hadoop-2.2.0/bin/hadoop balancer -h</code>查看可以设置的参数（和sbin/start-balancer.sh一样）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Usage: java Balancer
+</span><span class='line'>  [-policy &lt;policy&gt;]    the balancing policy: datanode or blockpool
+</span><span class='line'>  [-threshold &lt;threshold&gt;]  Percentage of disk capacity</span></code></pre></td></tr></table></div></figure>
+
+
+<p>main方法入口，可以接受threshold（大于等于1小于等于100， 默认值10）和policy（可取datanode[dfsused]/blockpool[
+blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇中的javadoc的描述。</p>
+
+<h3>获取初始化参数</h3>
+
+<p>然后通过ToolRunner解析参数，并运行Cli工具类来执行HDFS的平衡。</p>
+
+<p>1 设置检查</p>
+
+<p><code>WIN_WIDTH</code>(默认1.5h) 已移动的数据会记录movedBlocks（list）变量中，在移动成功的数据<code>CUR_WIN</code>的值经过该时间后会被移动到<code>OLD_WIN</code>&mdash;现在感觉作用不大，为了减少map的大小？</p>
+
+<p><code>checkReplicationPolicyCompatibility()</code>检查配置<code>dfs.block.replicator.classname</code>是否为BlockPlacementPolicyDefault子类，即是否满足3份备份的策略（1st本地，2nd另一个rack，3rd和第二份拷贝不同rack的节点）？</p>
+
+<p>2 获取nameserviceuris</p>
+
+<p>通过<code>DFSUtil#getNsServiceRpcUris()</code>来获取namenodes，调用<code>getNameServiceUris()</code>来得到一个URI的结果集：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>+ nsId &lt;- dfs.nameservices
+</span><span class='line'>  ? ha  &lt;- dfs.namenode.rpc-address + [dfs.nameservices] + [dfs.ha.namenodes]
+</span><span class='line'>    Y+ =&gt; hdfs://nsId
+</span><span class='line'>    N+ =&gt; hdfs://[dfs.namenode.servicerpc-address.[nsId]] 或 hdfs://[dfs.namenode.rpc-address.[nsId]] 第二个满足条件的加入到nonPreferredUris
+</span><span class='line'>+ hdfs://[dfs.namenode.servicerpc-address] 或 hdfs://[dfs.namenode.rpc-address]  第二个满足条件的加入到nonPreferredUris
+</span><span class='line'>? [fs.defaultFs] 以hfds开头，且不在nonPreferredUris集合中是加入结果集</span></code></pre></td></tr></table></div></figure>
+
+
+<p>HA情况下的地址相关配置项可以查看<a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/HDFSHighAvailabilityWithQJM.html">官网的文档</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>dfs.nameservices
+</span><span class='line'>dfs.ha.namenodes.[nameservice ID]
+</span><span class='line'>dfs.namenode.rpc-address.[nameservice ID].[name node ID] </span></code></pre></td></tr></table></div></figure>
+
+
+<p>3 解析threshold和policy参数</p>
+
+<p>默认值: <strong>BalancingPolicy.Node.INSTANCE, 10.0</strong>。运行打印的日志如下，INFO日志中包括了初始化的参数信息。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2014-09-05 10:55:12,183 INFO Balancer: Using a threshold of 1.0
+</span><span class='line'>2014-09-05 10:55:12,186 INFO Balancer: namenodes = [hdfs://umcc97-44:9000]
+</span><span class='line'>2014-09-05 10:55:12,186 INFO Balancer: p         = Balancer.Parameters[BalancingPolicy.Node, threshold=1.0]
+</span><span class='line'>2014-09-05 10:55:13,744 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>2014-09-05 10:55:18,154 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.142:50010
+</span><span class='line'>2014-09-05 10:55:18,249 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.144:50010
+</span><span class='line'>2014-09-05 10:55:18,311 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.143:50010
+</span><span class='line'>2014-09-05 10:55:18,319 INFO Balancer: 2 over-utilized: [Source[10.18.97.144:50010, utilization=8.288283273062705], Source[10.18.97.143:50010, utilization=8.302032354001554]]
+</span><span class='line'>2014-09-05 10:55:18,320 INFO Balancer: 1 underutilized: [BalancerDatanode[10.18.97.142:50010, utilization=4.716543864576553]]
+</span><span class='line'>2014-09-05 10:55:33,918 INFO Balancer: Need to move 3.86 GB to make the cluster balanced.
+</span><span class='line'>2014-09-05 11:21:16,875 INFO Balancer: Decided to move 2.43 GB bytes from 10.18.97.144:50010 to 10.18.97.142:50010
+</span><span class='line'>2014-09-05 11:24:16,712 INFO Balancer: Decided to move 1.84 GB bytes from 10.18.97.143:50010 to 10.18.97.142:50010
+</span><span class='line'>2014-09-05 11:25:55,726 INFO Balancer: Will move 4.27 GB in this iteration</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>执行Balancer</h3>
+
+<p>4 调用Balancer#run执行</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'> # 调试命令
+</span><span class='line'> export HADOOP_OPTS=" -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8087 "
+</span><span class='line'> sbin/start-balancer.sh </span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>Balancer的静态方法run，循环处理所有namenodes。在实例化namenode的NameNodeConnector对象时，会把当前运行balancer程序的hostname写入到HDFS的<code>/system/balancer.id</code>文件中，可以用来控制同时只有一个balancer运行。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/96/wKhkA1QJJNqAXxeaAAAho0g2bEU520.png" alt="" /></p>
+
+<p>在循环处理的时刻使用<code>Collections.shuffle(connectors)</code>打乱了namenodes的顺序。</p>
+
+<p>Balancer的静态方法run中是一个双层循环，实例化Balancer并调用实例方法run来处理每个namenode的平衡。运行后要么<strong>出错</strong>要么就是平衡<strong>顺利完成</strong>才算结束。平衡的返回状态值及其含义可以查看javadoc（上）篇。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  static int run(Collection&lt;URI&gt; namenodes, final Parameters p,
+</span><span class='line'>      Configuration conf) throws IOException, InterruptedException {
+</span><span class='line'>    ...
+</span><span class='line'>      for (URI uri : namenodes) {
+</span><span class='line'>        connectors.add(new NameNodeConnector(uri, conf));
+</span><span class='line'>      }
+</span><span class='line'>    
+</span><span class='line'>      boolean done = false;
+</span><span class='line'>      for(int iteration = 0; !done; iteration++) {
+</span><span class='line'>        done = true;
+</span><span class='line'>        Collections.shuffle(connectors);
+</span><span class='line'>        for(NameNodeConnector nnc : connectors) {
+</span><span class='line'>          final Balancer b = new Balancer(nnc, p, conf);
+</span><span class='line'>          final ReturnStatus r = b.run(iteration, formatter, conf);
+</span><span class='line'>          // clean all lists
+</span><span class='line'>          b.resetData(conf);
+</span><span class='line'>          if (r == ReturnStatus.IN_PROGRESS) {
+</span><span class='line'>            done = false;
+</span><span class='line'>          } else if (r != ReturnStatus.SUCCESS) {
+</span><span class='line'>            //must be an error statue, return.
+</span><span class='line'>            return r.code;
+</span><span class='line'>          }
+</span><span class='line'>        }
+</span><span class='line'>
+</span><span class='line'>        if (!done) {
+</span><span class='line'>          Thread.sleep(sleeptime);
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    ...
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5 <strong>针对每个namenode的平衡处理</strong></p>
+
+<p>针对每个namenode的每次迭代，又可以分出初始化节点、选择移动节点、移动数据三个部分。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private ReturnStatus run(int iteration, Formatter formatter, Configuration conf) {
+</span><span class='line'>      ...
+</span><span class='line'>      final long bytesLeftToMove = initNodes(nnc.client.getDatanodeReport(DatanodeReportType.LIVE));
+</span><span class='line'>      if (bytesLeftToMove == 0) {
+</span><span class='line'>        System.out.println("The cluster is balanced. Exiting...");
+</span><span class='line'>        return ReturnStatus.SUCCESS;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      final long bytesToMove = chooseNodes();
+</span><span class='line'>      if (bytesToMove == 0) {
+</span><span class='line'>        System.out.println("No block can be moved. Exiting...");
+</span><span class='line'>        return ReturnStatus.NO_MOVE_BLOCK;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      if (!this.nnc.shouldContinue(dispatchBlockMoves())) {
+</span><span class='line'>        return ReturnStatus.NO_MOVE_PROGRESS;
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      return ReturnStatus.IN_PROGRESS;
+</span><span class='line'>      ...
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>获取集群Live Datanode节点的信息，和通过50070查看的信息差不多，然后调用initNode()方法。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/8F/wKhkA1QJFgaAAsSNAAD4HDo1RfA678.png" alt="" /></p>
+
+<p>5.1 初始化节点</p>
+
+<p><code>initNodes()</code>中获取每个Datanode的capacity和dfsUsed数据，计算整个集群dfs的平均使用率avgUtilization。
+然后根据每个节点的使用率与集群使用率，以及阀值进行比较划分为4种情况：
+<code>overUtilizedDatanodes</code>，<code>aboveAvgUtilizedDatanodes</code>，<code>belowAvgUtilizedDatanodes</code>，<code>underUtilizedDatanodes</code>。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/95/wKhkA1QJH2uAa8UEAABq7RCSLQ0452.png" alt="" /></p>
+
+<p>同时取超出<strong>平均+阀值</strong>和<strong>低于平均-阀值</strong>的字节数最大值，即集群达到平衡需要移动的字节数。</p>
+
+<p>为了测试，如果集群已经平衡，可以搞点数据让集群不平衡，方便查看调试。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>bin/hadoop fs -D dfs.replication=1 -put XXXXX /abc
+</span><span class='line'>
+</span><span class='line'>sbin/start-balancer.sh -threshold 1</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5.2 选择节点</p>
+
+<p>初始化节点后，计算出了需要移动的数据量。接下来就是选择移动数据的节点<code>chooseNodes</code>，以及接收对应数据的节点。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private long chooseNodes() {
+</span><span class='line'>    // First, match nodes on the same node group if cluster is node group aware
+</span><span class='line'>    if (cluster.isNodeGroupAware()) {
+</span><span class='line'>      chooseNodes(SAME_NODE_GROUP);
+</span><span class='line'>    }
+</span><span class='line'>    
+</span><span class='line'>    chooseNodes(SAME_RACK);
+</span><span class='line'>    chooseNodes(ANY_OTHER);
+</span><span class='line'>
+</span><span class='line'>    long bytesToMove = 0L;
+</span><span class='line'>    for (Source src : sources) {
+</span><span class='line'>      bytesToMove += src.scheduledSize;
+</span><span class='line'>    }
+</span><span class='line'>    return bytesToMove;
+</span><span class='line'>  }
+</span><span class='line'>  private void chooseNodes(final Matcher matcher) {
+</span><span class='line'>    chooseDatanodes(overUtilizedDatanodes, underUtilizedDatanodes, matcher);
+</span><span class='line'>    chooseDatanodes(overUtilizedDatanodes, belowAvgUtilizedDatanodes, matcher);
+</span><span class='line'>    chooseDatanodes(underUtilizedDatanodes, aboveAvgUtilizedDatanodes, matcher);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt; void 
+</span><span class='line'>      chooseDatanodes(Collection&lt;D&gt; datanodes, Collection&lt;C&gt; candidates,
+</span><span class='line'>          Matcher matcher) {
+</span><span class='line'>    for (Iterator&lt;D&gt; i = datanodes.iterator(); i.hasNext();) {
+</span><span class='line'>      final D datanode = i.next();
+</span><span class='line'>      for(; chooseForOneDatanode(datanode, candidates, matcher); );
+</span><span class='line'>      if (!datanode.hasSpaceForScheduling()) {
+</span><span class='line'>        i.remove(); // “超出”部分全部有去处了
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;C extends BalancerDatanode&gt; boolean chooseForOneDatanode(
+</span><span class='line'>      BalancerDatanode dn, Collection&lt;C&gt; candidates, Matcher matcher) {
+</span><span class='line'>    final Iterator&lt;C&gt; i = candidates.iterator();
+</span><span class='line'>    final C chosen = chooseCandidate(dn, i, matcher);
+</span><span class='line'>
+</span><span class='line'>    if (chosen == null) {
+</span><span class='line'>      return false;
+</span><span class='line'>    }
+</span><span class='line'>    if (dn instanceof Source) {
+</span><span class='line'>      matchSourceWithTargetToMove((Source)dn, chosen);
+</span><span class='line'>    } else {
+</span><span class='line'>      matchSourceWithTargetToMove((Source)chosen, dn);
+</span><span class='line'>    }
+</span><span class='line'>    if (!chosen.hasSpaceForScheduling()) {
+</span><span class='line'>      i.remove(); // 可用的空间已经全部分配出去了
+</span><span class='line'>    }
+</span><span class='line'>    return true;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt;
+</span><span class='line'>      C chooseCandidate(D dn, Iterator&lt;C&gt; candidates, Matcher matcher) {
+</span><span class='line'>    if (dn.hasSpaceForScheduling()) {
+</span><span class='line'>      for(; candidates.hasNext(); ) {
+</span><span class='line'>        final C c = candidates.next();
+</span><span class='line'>        if (!c.hasSpaceForScheduling()) {
+</span><span class='line'>          candidates.remove();
+</span><span class='line'>        } else if (matcher.match(cluster, dn.getDatanode(), c.getDatanode())) {
+</span><span class='line'>          return c;
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>    return null;
+</span><span class='line'>  }  </span></code></pre></td></tr></table></div></figure>
+
+
+<p>选择到<strong>接收节点</strong>后，接下来计算可以移动的数据量（取双方的available的最大值），然后把<strong>接收节点</strong>和<strong>数据量</strong>的信息NodeTask存储到Source的NodeTasks对象中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private void matchSourceWithTargetToMove(
+</span><span class='line'>      Source source, BalancerDatanode target) {
+</span><span class='line'>    long size = Math.min(source.availableSizeToMove(), target.availableSizeToMove());
+</span><span class='line'>    NodeTask nodeTask = new NodeTask(target, size);
+</span><span class='line'>    source.addNodeTask(nodeTask);
+</span><span class='line'>    target.incScheduledSize(nodeTask.getSize());
+</span><span class='line'>    sources.add(source);
+</span><span class='line'>    targets.add(target);
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>5.3 移动数据</p>
+
+<p>（待）</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -301,624 +1249,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/09/01/hadoop2-mapreduce-compress/">Hadoop2 Mapreduce输入输出压缩</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-09-01T16:05:13+08:00" pubdate data-updated="true">Mon 2014-09-01 16:05</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>当数据达到一定量时，自然就想到了对数据进行压缩来降低存储压力。在Hadoop的任务中提供了5个参数来控制输入输出的数据的压缩格式。添加map输出数据压缩可以降低集群间的网络传输，最终reduce输出压缩可以减低hdfs的集群存储空间。</p>
-
-<p>如果是使用hive等工具的话，效果会更加明显。因为hive的查询结果是临时存储在hdfs中，然后再通过一个<strong>Fetch Operator</strong>来获取数据，最后清理掉，压缩存储临时的数据可以减少磁盘的读写。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;Should the job outputs be compressed?
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress.type&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;RECORD&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;If the job outputs are to compressed as SequenceFiles, how should
-</span><span class='line'>               they be compressed? Should be one of NONE, RECORD or BLOCK.
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress.codec&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;org.apache.hadoop.io.compress.DefaultCodec&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;If the job outputs are compressed, how should they be compressed?
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.map.output.compress&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;Should the outputs of the maps be compressed before being
-</span><span class='line'>               sent across the network. Uses SequenceFile compression.
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.map.output.compress.codec&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;org.apache.hadoop.io.compress.DefaultCodec&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;If the map outputs are compressed, how should they be 
-</span><span class='line'>               compressed?
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>上面5个属性弄好，在core-sitem.xml加下<code>io.compression.codecs</code>基本就完成配置了。</p>
-
-<p>这里主要探究下mapreduce（下面全部简称MR）过程中自动解压缩。刚刚接触Hadoop一般都不会去了解什么压缩不压缩的，先把hdfs-api，MR-api弄一遭。配置的TextInputFormat竟然能正确的读取tar.gz文件的内容，觉得不可思议，TextInputFormat不是直接读取txt行记录的输入嘛？难道还能读取压缩文件，先解压再&hellip;？？</p>
-
-<p>先说下OutputFormat，在MR中调用context.write写入数据的方法时，最终使用OutputFormat创建的RecordWriter进行持久化。在TextOutputFormat创建RecordWriter时，如果使用压缩会在结果文件名上<strong>加对应压缩库的后缀</strong>，如gzip压缩对应的后缀gz、snappy压缩对应后缀snappy等。对应下面代码的<code>getDefaultWorkFile</code>。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/03/wKhkA1QEjD2ASHiZAAExjXuQ25Y062.png" alt="" /></p>
-
-<p>同样对应的TextInputFormat的RecordReader也进行类似的处理：根据<strong>文件的后缀</strong>来判定该文件是否使用压缩，并使用对应的输入流InputStream来解码。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/03/wKhkA1QEjZaAdBeJAAEvRVMKVWY059.png" alt="" /></p>
-
-<p>此处的关键代码为<code>CompressionCodec codec = new CompressionCodecFactory(job).getCodec(file);</code>，根据分块（split）的文件名来判断使用的压缩算法。
-初始化Codec实现、以及根据文件名来获取压缩算法的实现还是挺有意思的：通过反转字符串然后最近匹配（headMap）来获取对应的结果。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  private void addCodec(CompressionCodec codec) {
-</span><span class='line'>    String suffix = codec.getDefaultExtension();
-</span><span class='line'>    codecs.put(new StringBuilder(suffix).reverse().toString(), codec);
-</span><span class='line'>    codecsByClassName.put(codec.getClass().getCanonicalName(), codec);
-</span><span class='line'>
-</span><span class='line'>    String codecName = codec.getClass().getSimpleName();
-</span><span class='line'>    codecsByName.put(codecName.toLowerCase(), codec);
-</span><span class='line'>    if (codecName.endsWith("Codec")) {
-</span><span class='line'>      codecName = codecName.substring(0, codecName.length() - "Codec".length());
-</span><span class='line'>      codecsByName.put(codecName.toLowerCase(), codec);
-</span><span class='line'>    }
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  public CompressionCodec getCodec(Path file) {
-</span><span class='line'>    CompressionCodec result = null;
-</span><span class='line'>    if (codecs != null) {
-</span><span class='line'>      String filename = file.getName();
-</span><span class='line'>      String reversedFilename = new StringBuilder(filename).reverse().toString();
-</span><span class='line'>      SortedMap&lt;String, CompressionCodec&gt; subMap = 
-</span><span class='line'>        codecs.headMap(reversedFilename);
-</span><span class='line'>      if (!subMap.isEmpty()) {
-</span><span class='line'>        String potentialSuffix = subMap.lastKey();
-</span><span class='line'>        if (reversedFilename.startsWith(potentialSuffix)) {
-</span><span class='line'>          result = codecs.get(potentialSuffix);
-</span><span class='line'>        }
-</span><span class='line'>      }
-</span><span class='line'>    }
-</span><span class='line'>    return result;
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<p></p>
-
-<p>了解了这些，MR（TextInputFormat）的输入文件可以比较随意些：各种压缩文件、原始文件都可以，只要文件有对应压缩算法的后缀即可。hive的解压缩功能也很容易了，如果使用hive存储text形式的文件，进行压缩无需进行额外的程序代码修改，仅仅修改MR的配置即可，注意下<strong>文件后缀</strong>！！</p>
-
-<p>如，在MR中生成了snappy压缩的文件，此时<strong>不能</strong>在文件的后面添加东西。否则在hive查询时，根据<strong>后缀</strong>进行解压会导致结果乱码/不正确。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;hive.exec.compress.output&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt; This controls whether the final outputs of a query (to a local/hdfs file or a hive table) is compressed. The compression codec and other options are determined from hadoop config variables mapred.output.compress* &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;hive.exec.compress.intermediate&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt; This controls whether intermediate files produced by hive between multiple map-reduce jobs are compressed. The compression codec and other options are determined from hadoop config variables mapred.output.compress* &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>hive也弄了两个参数来控制它自己的MR的输出输入压缩控制属性。其他的配置使用mapred-site.xml的配置即可。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/1D/wKhkA1QFQLmAfyZSAAIOx4UEIbY016.png" alt="" /></p>
-
-<p>网上一些资料有<code>hive.intermediate.compression.codec</code>和<code>hive.intermediate.compression.type</code>两个参数能调整中间过程的压缩算法。其实和mapreduce的参数功能是一样的。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/1F/wKhkA1QFQWyAUDMLAAGyNqR_X-c417.png" alt="" /></p>
-
-<p>附上解压缩的全部配置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$#core-site.xml
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;io.compression.codecs&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;
-</span><span class='line'>  org.apache.hadoop.io.compress.GzipCodec,
-</span><span class='line'>  org.apache.hadoop.io.compress.DefaultCodec,
-</span><span class='line'>  org.apache.hadoop.io.compress.BZip2Codec,
-</span><span class='line'>  org.apache.hadoop.io.compress.SnappyCodec
-</span><span class='line'>      &lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>$#mapred-site.xml
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.map.output.compress&lt;/name&gt; 
-</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.map.output.compress.codec&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.output.fileoutputformat.compress&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.output.fileoutputformat.compress.codec&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapred.output.compression.codec&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>$#hive-site.xml
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;hive.exec.compress.output&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>运行hive后，临时存储在HDFS的结果数据，注意文件的后缀。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/20/wKhkA1QFRjSACnLfAABVdoK0f1c803.png" alt="" /></p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://www.geek521.com/?p=4814">深入学习《Programing Hive》：数据压缩</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/08/29/xamarin-application-use-adt-eclipse-debug-java-code/">用ADT调试Xamarin程序中的Java库</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-08-29T12:08:11+08:00" pubdate data-updated="true">Fri 2014-08-29 12:08</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>在编写SDK的时刻，有用户需要使用Xamarin来开发应用。我们这边暂时没有这个方面的经验，有点瞎扯扯意味，路是崎岖的前进是痛苦的。</p>
-
-<h2>封装Android-SDK</h2>
-
-<p>Xamarin是使用C#语言来编写代码的，所以需要先把Android的jar库包装成为C#的代码。<a href="http://developer.xamarin.com/guides/android/advanced_topics/java_integration_overview/">可选方式有3种</a>)，这里选用Wrapper的形式，不过多讲解，看文章<a href="http://developer.xamarin.com/guides/android/advanced_topics/java_integration_overview/binding_a_java_library_(.jar">Binding a Java Library - Consuming .JARs from C#</a>/)。</p>
-
-<p>建立Binding项目，把依赖的包加入到Jars目录下。由于Bmob-Android官方的包是进行混淆的，有些代码不会用到的/没有必要Wrapper生成jni代码调用的，可以通过removenote去掉不生成C#的wrapper类。第二点就是java的泛型是会被抹掉的，而C#的是会编入程序中的，遇到Comparable这种类型的方法时，需要进行参数强制转换下。第三点就是接口回调，有多个方法时会导致名称冲突，需要为每个接口的方法都配置一个Args的节点属性。这些都是官网的例子中有说明，有需要可以具体参考上面链接的文章内容。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;metadata&gt;
-</span><span class='line'>  &lt;remove-node path="/api/package[@name='cn.bmob.im.db']" /&gt;
-</span><span class='line'>
-</span><span class='line'>  &lt;attr path="/api/package[@name='cn.bmob.im.inteface']/interface[@name='DownloadListener']/method[@name='onError']" name="argsType"&gt;DownloadListenerErrorEventArgs&lt;/attr&gt;
-</span><span class='line'>&lt;/metadata&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;enum-method-mappings&gt;
-</span><span class='line'>  &lt;mapping jni-class="cn/bmob/im/bean/BmobRecent"&gt;
-</span><span class='line'>    &lt;method jni-name="compareTo" parameter="p0" clr-enum-type="Java.Lang.Object" /&gt;
-</span><span class='line'>  &lt;/mapping&gt;
-</span><span class='line'>  &lt;mapping jni-class="cn/bmob/im/BmobDownloadManager"&gt;
-</span><span class='line'>    &lt;method jni-name="doInBackground" parameter="p0" clr-enum-type="Java.Lang.Object[]" /&gt;
-</span><span class='line'>  &lt;/mapping&gt;
-</span><span class='line'>&lt;/enum-method-mappings&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>还有另一个坑是，混淆后内部类会被扁平化，导致jar2xml执行时获取类的getSimpleName名称会抛异常，我这里直接反编译源码改成getName就好了，仅仅是代码中全路径和仅类名的却别，暂时来看没啥印象。</p>
-
-<p>然后编译，加入到主项目的依赖中就可以使用该库的Java功能了。名称可能并不能全部对应上，与Java中的方法名和常量名大小写、下划线的不同罢了。</p>
-
-<h2>调试</h2>
-
-<p>下面是重点，但是很简短。</p>
-
-<p>作为写SDK的，肯定不仅仅要用特定的工具，还的把中间的过程也扭顺，即既要做一个好点（example），又得实现连接的线（SDK）。</p>
-
-<p>如果Android SDK的代码没有执行，该怎么办？Xamarin中都是C#的代码并不能用于调试java啊！问题自然归结到怎么用两个工具（Xamarin和Eclipse）来同时调试一个Xamarin Android应用的问题？！</p>
-
-<p>先讲讲我遇到的坑，由于是开发者发给我的应用，不知道结构是怎么样的。我直接用Xamarin打开，是没有带可执行属性的，在Run-With菜单中是能看到我的实体机器的，但是就是不能把程序发布上去！提示【执行失败。未将对象引用设置到对象的实例。】然后就没了。最终在stackoverflow中找到了类型问题的解决方法，需要设置运行属性。</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QAAt6AVtg6AALZEEiP4tQ304.png" alt="" /></p>
-
-<p>配置如下，在解决方案属性中【构建-配置-ConfigurationMappings】把项目添加为构建项。</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QAA4uAT9qmAAKI8-zKAn8494.png" alt="" /></p>
-
-<p>可能还会遇到的问题是版本的问题，报错【java.lang.RuntimeException: Unable to get provider mono.MonoRuntimeProvider: java.lang.RuntimeException: Unable to find application Mono.Android.DebugRuntime or Mono.Android.Platform.ApiLevel_19!】需要在csproj的配置中修改AndroidUseLatestPlatformSdk属性为false。</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QAC4KAOV-HAAFU6knDvFQ527.png" alt="" /></p>
-
-<p>下面的步骤才是本文的关键：</p>
-
-<p>首先，在MainActivity的onCreate方法开始出打个断点，便于初始化功能调试，点击左上角的开始运行按钮。这样就能把代码发布到机器，且运行后会停留在onCreate处。</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QACtCAHOqDAAELanVrybU938.png" alt="" /></p>
-
-<p>Xamarin调试效果图</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QAC_yAYqbpAAHBQT48VSA253.png" alt="" /></p>
-
-<p>再，打开ecilpse导入<code>obj\Debug\android</code>目录下的项目【Import-Android-Existing Android Code Into Workspace】，错误什么的无所谓。这个项目只是用了ADT能识别而已。然后再java包的代码里面打上断点。</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QADTuAd3cyAACtJUn8Pdk976.png" alt="" /></p>
-
-<p>最后，起到定乾坤作用的就是DDMS的Devices试图的小爬虫，选择你要调试的程序，然后点击它就可以了。切换到Xamarin继续运行程序，接下来就会运行停留到eclipse中的java包中的断点程序出。</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QADnWAJQyIAABt1LtWjUA456.png" alt="" /></p>
-
-<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QADueALec-AAEQhd4vxMY835.png" alt="" /></p>
-
-<p>OK，接下来就按照eclipse的调试技巧弄就好了。</p>
-
-<p>步骤很简单，查询的路子却是艰辛的。第一次尝试成本总是昂贵的，第二步自然会慢慢顺起来。fighting&hellip;</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-08-25T21:12:13+08:00" pubdate data-updated="true">Mon 2014-08-25 21:12</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>类C语言，继C++之后的最辉煌耀眼的明星都属Java，其中最突出的又数内存管理。JVM对运行在其上的程序进行内存自动化分配和管理，减少开发人员的工作量之外便于统一的维护和管理。JDK提供了各种各样的工具来让开发实施人员了解运行的运行状态。</p>
-
-<ul>
-<li>jps -l -v -m</li>
-<li>jstat -gcutil 2000 100</li>
-<li>jmap</li>
-<li>jinfo <a href="http://file.bmob.cn/M00/03/AD/wKhkA1PE2MGAB4-fAAGTqUeu-cE940.png">查看参数例子</a></li>
-<li>jstack</li>
-<li>jvisualvm/jconsole</li>
-<li>mat(MemoryAnalyzer)</li>
-<li>btrace</li>
-<li>jclasslib（查看局部变量表）</li>
-</ul>
-
-
-<p>前段时间，接手(前面已经有成型的东西)使用Hadoop存储转换的项目，但是生产环境的程序总是隔三差五的OOM，同时使用的hive0.12.0也偶尔出现内存异常。这对于运维来说就是灭顶之灾！搞不好什么时刻程序就挂了！！必须咬咬牙把这个问题处理解决，开始把老古董们请出来，翻来基本不看的后半部分&ndash;Java内存管理。</p>
-
-<ul>
-<li>《Java程序性能优化-让你的Java程序更快、更稳定》第5章JVM调优/第6章Java性能调优工具</li>
-<li>《深入理解Java虚拟机-JVM高级特性与最佳实践》第二部分自动内存管理机制</li>
-</ul>
-
-
-<p>这里用到的理论知识比较少。主要用Java自带的工具，加上内存堆分析工具（mat/jvisualvm）找出大对象，同时结合源代码定位问题。</p>
-
-<p>下面主要讲讲实践，查找问题的思路。在本地进行测试的话，我们可以打断点，可以通过jvisualvm来查看整个运行过程内存的变化趋势图。但是到了linux服务器，并且还是生产环境的话，想要有本地一样的图形化工具来监控是比较困难的！一般服务器的内存都设置的比较大，而windows设置的内存又有限！所以内存达到1G左右，立马dump一个堆的内存快照然后下载到本地进行来分析（可以通过<code>-J-Xmx</code><a href="http://file.bmob.cn/M00/09/83/wKhkA1P7TV-ABDnOAAB-OnVBQic050.png">调整jvisualvm的内存</a>）。</p>
-
-<ul>
-<li>首先，由于报错是在Configuration加载配置文件时抛出OOM，第一反应肯定Configuraiton对象太多导致！同时查看dump的堆内存也佐证了这一点。直接把程序中的Configuration改成单例。</li>
-</ul>
-
-
-<p>程序对象内存占比排行（<code>jmap -histo PID</code>）：</p>
-
-<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7S8yARYSkAAiFW9cVN5w526.png" alt="" /></p>
-
-<p>使用mat或者jvisualvm查看堆，确实Configuration对象过多（<code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code>）：</p>
-
-<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TbmAIdDEAAq3ktPBs6Q266.png" alt="" /></p>
-
-<ul>
-<li><p>修改后再次运行，但是没多大用！还是OOM！！</p></li>
-<li><p>进一步分析，发现在Configuration中的属性/缓冲的都是弱引用是weakhashmap。</p></li>
-</ul>
-
-
-<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TfaAf4nwAAbcdgFiyXs804.png" alt="" /></p>
-
-<p>OOM最终问题不在Configuration对象中的属性，哪谁hold住了Configuration对象呢？？</p>
-
-<ul>
-<li>再次从根源开始查找问题。程序中FileSystem对象使用<code>FileSystem.get(URI, Configuration, String)</code>获取，然后调用<code>get(URI,Configuration)</code>方法，其中的<strong>CACHE</strong>很是刺眼啊！</li>
-</ul>
-
-
-<p><img src="http://file.bmob.cn/M00/09/8D/wKhkA1P72pmAAMdnAAEYMjHFUAI853.png" alt="" /></p>
-
-<p>缓冲FileSystem的Cache对象的Key是URI和UserGroupInformation两个属性来判断是否相等的。对于一个程序来说一般就读取一个HDFS的数据即URI前部分是确定的，重点在UserGroupInformation是通过<code>UserGroupInformation.getCurrentUser()</code>来获取的。</p>
-
-<p>即获取在get时<code>UserGroupInformation.getBestUGI</code>得到的对象。而这个对象在UnSecure情况下每次都是调用<code>createRemoteUser</code>创建新的对象！也就是每调用一次<code>FileSystem.get(URI, Configuration, String)</code>就会缓存一个FileSystem对象，以及其hold住的Configuration都会被保留在内存中。
-<img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TBSAaYEoAAhzUA5j5MI991.png" alt="" /></p>
-
-<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TJ2AfwJzAAhEVFjK7Ek367.png" alt="" /></p>
-
-<p>只消耗不释放终究会坐吃山空啊！到最后也就必然OOM了。从mat的UserGroupInformation的个数查询，以及Cache对象的总量可以印证。</p>
-
-<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TNeAB7JAAAdMg-udeR8285.png" alt="" /></p>
-
-<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TU-ACoaCAApK4n-52hI027.png" alt="" /></p>
-
-<h2>问题处理</h2>
-
-<p>把程序涉及到FileSystem.get调用去掉user参数，使两个参数的方法。由于都使用getCurrentUser获取对象，也就是说程序整个运行过程中就一个FileSystem对象，但是与此同时就不能关闭获取到的FileSystem，如果当前运行的用户与集群所属用户不同，需要设置环境变量指定当前操作的用户！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>System.setProperty("HADOOP_USER_NAME", "hadoop");</span></code></pre></td></tr></table></div></figure>
-
-
-<p>查找代码中调用了FileSystem#close是一个痛苦的过程，由于FileSystem实现的是Closeable的close方法，用<strong>Open Call Hierarchy</strong>基本是大海捞中啊，根本不知道那个代码是自己的！！这里用btrace神器让咋也高大上一把。。。</p>
-
-<p>当时操作的步骤找不到了，下图是调用Cache#getInternal方法监控代码<a href="https://gist.github.com/winse/161f6fe9120f2ec6b024">GIST</a>：</p>
-
-<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7UD2AFk2cAAXRQWzniL0296.png" alt="" /></p>
-
-<h2>hive0.12内存溢出问题</h2>
-
-<p>hive0.12.0查询程序MR内容溢出</p>
-
-<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7StSAOgX1AAoW9v-Fd4s439.png" alt="" /></p>
-
-<p>在hive-0.13前官网文档中有提到内存溢出这一点，可以对应到FileSystem中代码的判断。</p>
-
-<p><img src="http://file.bmob.cn/M00/09/85/wKhkA1P7UP-ACRVdAAJHBKNTq94580.png" alt="" /></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>String disableCacheName = String.format("fs.%s.impl.disable.cache", scheme);
-</span><span class='line'>if (conf.getBoolean(disableCacheName, false)) {
-</span><span class='line'>  return createFileSystem(uri, conf);
-</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
-
-
-<p></p>
-
-<p>hive0.13.1处理</p>
-
-<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T_CAcxVqAARr7CGiDvY177.png" alt="" /></p>
-
-<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T6KAKoUiAAvODPwh1po815.png" alt="" /></p>
-
-<p>新版本在每次查询（session）结束后都会把本次涉及到的FileSystem关闭掉。</p>
-
-<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T9uAQQB3AAWrj_efwZU495.png" alt="" /></p>
-
-<h2>理论知识</h2>
-
-<p>从GC类型开始讲，对自动化内存的垃圾收集有个整体的感知： 新生代/s0（survivor space0、from space）/s1（survivor space1、to space）/永久代。虚拟机参数<code>-Xmx</code>,<code>-Xms</code>,<code>-Xmn</code>（<code>-Xss</code>）来调节各个代的大小和比例。</p>
-
-<ul>
-<li><code>-Xss</code> 参数来设置栈的大小。栈的大小直接决定了函数的调用可达深度</li>
-<li><code>-XX:PrintGCDetails -XX:SurvivorRatio=8 -XX:MaxTenuringThreshold=15 -Xms40m -Xmx40m -Xmn20m</code></li>
-<li><code>-XX:NewSize</code>和<code>-XX:MaxNewSize</code></li>
-<li><code>-XX:NewRatio</code>和<code>-XX:SurvivorRatio</code></li>
-<li><code>-XX:PermSize=2m -XX:MaxPermSize=4m -XX:+PrintGCDetails</code></li>
-<li><code>-verbose:gc</code></li>
-<li><code>-XX:+PrintGC</code></li>
-<li><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/bug.hprof -XX:OnOutOfMemoryError=/reset.sh</code></li>
-<li><code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code></li>
-<li><code>jmap -histo PID &gt; /tmp/s.txt</code></li>
-<li><code>jstack -l PID</code></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/25">&larr; Older</a>
@@ -995,6 +1325,18 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/06/04/wechat-images-export/">导出微信照片</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/06/04/jenkins-start-guide/">Jenkins Start Guide</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/06/01/optimize-java-on-production-environment/">追生产的一次优化</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
       </li>
     
@@ -1012,18 +1354,6 @@
     
       <li class="post">
         <a href="/blog/2017/03/23/codis-usage2/">Codis使用进阶</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/03/12/k8s-harbor-config-on-centos6/">K8s Harbor Config on Centos6</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/03/05/k8s-docker-multinode-on-centos6/">k8s在Centos6部署实践</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/02/25/k8s-docker-multinode/">K8s集群部署</a>
       </li>
     
   </ul>
@@ -1048,7 +1378,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/blabla/'>blabla</a> (4) 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1148,7 +1478,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (44) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (45) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1161,7 +1491,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (170)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (173)</li>
 	</ul>
 	
 </section>
