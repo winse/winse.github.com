@@ -9,24 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="折磨了一个多星期，最后还是调通了。折磨源于不自知，源于孤单，源于自负，后来通过扩展、查阅资料、请教同事顺利解决。简单部署可以查看README.md 。 1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-17
-yum install docker-engine-1.12. &hellip;">
+  <meta name="description" content="断断续续使用Puppet近一年，多次体验到Puppet的强大：SSH更新、需ROOT权限批量处理等等。这次集群新上架了又爽了一把。把整个过程记录下来，方便今后参考。 运维的同事也想了解puppet，在docker容器上安装了一遍，把具体的内容附上：expect+puppet.txt &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -106,6 +89,528 @@ yum install docker-engine-1.12. &hellip;">
       
   <header>
     
+      <h1 class="entry-title"><a href="/blog/2017/05/05/puppet-automate-deploy-hosts/">Puppet批量自动化部署实战</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-05-05T00:33:37+00:00" pubdate data-updated="true">Fri 2017-05-05 00:33</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>断断续续使用Puppet近一年，多次体验到Puppet的强大：SSH更新、需ROOT权限批量处理等等。这次集群新上架了又爽了一把。把整个过程记录下来，方便今后参考。</p>
+
+<p>运维的同事也想了解puppet，在docker容器上安装了一遍，把具体的内容附上：<a href="/files/expect+puppet.txt">expect+puppet.txt</a></p>
+
+<p>这次操作是对以前零零碎碎积累的一次检验和温习。需要用到的工具比较多：</p>
+
+<ul>
+<li>RPM打包、本地YUM仓库 - RPMBUILD、CREATEREPO</li>
+<li>SSH无密钥登录 - EXPECT&amp;FOR</li>
+<li>时间同步、host配置 - SCP、SSH&amp;FOR</li>
+<li>创建用户、新用户无密钥等 - PUPPET</li>
+<li>ssh_known_hosts - PUPPETDB</li>
+<li>rhel.repo、gmond、时区设置 - PUPPET</li>
+</ul>
+
+
+<p>远程配置机器首先当然是进行无密钥登录的设置，这样才能进行批量操作，不然几百台机器每次都需要干预太烦人、工作量太大。无密钥登录使用原来写好的EXPECT脚本，使用FOR循环执行，等待结果即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 ~]# cat ssh-copy-id.expect 
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 [user@]host password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set password [lrange $argv 1 1] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>spawn ssh-copy-id $host ;
+</span><span class='line'>
+</span><span class='line'>expect {
+</span><span class='line'>  "(yes/no)?" { send yes\n; exp_continue; }
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;
+</span><span class='line'>
+</span><span class='line'># 用for，不要用while
+</span><span class='line'>for h in `cat /etc/hosts | grep -v '^#' | grep slaver | grep -E '\.36\.|\.37\.' | awk '{print $2}' ` ; do 
+</span><span class='line'>  ./ssh-copy-id.expect $h 'PASSWD';
+</span><span class='line'>done
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>做好无密钥登录，拷贝 /etc/hosts, /etc/cron.daily/ntp.cron, /etc/yum.repos.d/puppet.repo 到全部的新机器。这里puppet.repo是自己编译搭建的私有仓库（具体编译配置步骤查看puppet分类下的文章），通过 <code>yum install mcollective-plugins-simple</code> 就可以把mcolletive和puppet-agent安装好。把所有步骤封装到一个prepare.sh脚本，内容如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'># must be hostname!!
+</span><span class='line'>HOSTS="$@"
+</span><span class='line'>PASSWD=${PASSWD:-'root'}
+</span><span class='line'>PUPPETSERVER="hadoop-master1"
+</span><span class='line'>
+</span><span class='line'>for h in $HOSTS ; do ./ssh-copy-id.expect $h "$PASSWD" ; done
+</span><span class='line'>
+</span><span class='line'>for h in $HOSTS ; do
+</span><span class='line'>scp /etc/hosts $h:/etc ;
+</span><span class='line'>scp /etc/yum.repos.d/puppet.repo $h:/etc/yum.repos.d/ ;
+</span><span class='line'>scp /etc/cron.daily/ntp.cron $h:/etc/cron.daily/ ;
+</span><span class='line'>
+</span><span class='line'>ssh $h '
+</span><span class='line'>#ntpdate cu-omc1 #着重注意
+</span><span class='line'>rm -rf /etc/yum.repos.d/CentOS-*
+</span><span class='line'>yum install mcollective-plugins-simple -y
+</span><span class='line'>' ;
+</span><span class='line'>
+</span><span class='line'>scp /etc/puppetlabs/mcollective/server.cfg $h:/etc/puppetlabs/mcollective/
+</span><span class='line'>ssh $h "
+</span><span class='line'>sed -i '/HOSTNAME/ {
+</span><span class='line'>i \
+</span><span class='line'>HOSTNAME=$h
+</span><span class='line'>d
+</span><span class='line'>} ' /etc/sysconfig/network
+</span><span class='line'>hostname $h
+</span><span class='line'>
+</span><span class='line'>echo -e '\n\n[agent]\nserver = $PUPPETSERVER\ncertname=$h' &gt; /etc/puppetlabs/puppet/puppet.conf
+</span><span class='line'>chkconfig mcollective on
+</span><span class='line'>service mcollective start
+</span><span class='line'>"
+</span><span class='line'>
+</span><span class='line'>done
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后执行 <code>./prepare.sh hadoop-slaver{200..500}</code> 就可以了。</p>
+
+<p>接下来重点讲讲PUPPET配置的编写。</p>
+
+<p>首先根据当前需要创建的用户、组把创建用户的配置写好：</p>
+
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.10/quick_start_user_group.html">https://docs.puppet.com/puppet/4.10/quick_start_user_group.html</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 ~]# puppet resource -e group hadoop
+</span><span class='line'>group { 'hadoop':
+</span><span class='line'>  ensure =&gt; 'present',
+</span><span class='line'>  gid    =&gt; '501',
+</span><span class='line'>}
+</span><span class='line'>[root@hadoop-master1 ~]# puppet resource -e user hadoop
+</span><span class='line'>user { 'hadoop':
+</span><span class='line'>  ensure           =&gt; 'present',
+</span><span class='line'>  gid              =&gt; '501',
+</span><span class='line'>  groups           =&gt; ['wheel'],
+</span><span class='line'>  home             =&gt; '/home/hadoop',
+</span><span class='line'>  password         =&gt; '$6$AfnA...uIhHC9I.',
+</span><span class='line'>  password_max_age =&gt; '99999',
+</span><span class='line'>  password_min_age =&gt; '0',
+</span><span class='line'>  shell            =&gt; '/bin/bash',
+</span><span class='line'>  uid              =&gt; '501',
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>添加require、groups，然后删除uid、gid。最后需要添加 managehome => true, 否则用户目录就不会自动创建：</p>
+
+<ul>
+<li><a href="http://www.dbalex.com/category/devops/puppet">http://www.dbalex.com/category/devops/puppet</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 默认不创建用户目录
+</span><span class='line'>[root@hadoop-slaver200 ~]# su - hadoop
+</span><span class='line'>su: warning: cannot change directory to /home/hadoop: No such file or directory
+</span><span class='line'>-bash-4.1$ 
+</span><span class='line'>
+</span><span class='line'># 创建用户配置成品
+</span><span class='line'>group { 'hadoop':
+</span><span class='line'>  ensure =&gt; 'present',
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>user { 'hadoop':
+</span><span class='line'>  ensure           =&gt; 'present',
+</span><span class='line'>  groups           =&gt; ['hadoop', 'wheel'],
+</span><span class='line'>  home             =&gt; '/home/hadoop',
+</span><span class='line'>  password         =&gt; '$6$Af...IhHC9I.',
+</span><span class='line'>  password_max_age =&gt; '99999',
+</span><span class='line'>  password_min_age =&gt; '0',
+</span><span class='line'>  shell            =&gt; '/bin/bash',
+</span><span class='line'>  managehome       =&gt; true,
+</span><span class='line'>  require          =&gt; Group['hadoop'],
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><a href="https://ask.puppet.com/question/15753/how-can-i-chown-directories-recursivley/">https://ask.puppet.com/question/15753/how-can-i-chown-directories-recursivley/</a></li>
+<li><a href="https://serverfault.com/questions/542947/issue-with-changing-permission-and-owner-recursively-on-files-with-puppet-and-va">https://serverfault.com/questions/542947/issue-with-changing-permission-and-owner-recursively-on-files-with-puppet-and-va</a></li>
+<li><a href="https://serverfault.com/questions/416254/adding-an-existing-user-to-a-group-with-puppet">https://serverfault.com/questions/416254/adding-an-existing-user-to-a-group-with-puppet</a></li>
+</ul>
+
+
+<p>添加好用户后，就是把无密钥登录也让PUPPET来弄。其实就是把 id_rsa.pub 的内容写入都行机器的 authorized_keys ，PUPPET已经自带了这个类：ssh_authorized_key。把id_ras.pub的内容（中间的内容）赋值给 key 属性即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh_authorized_key {'root@hadoop-master1':
+</span><span class='line'>  user =&gt; 'root',
+</span><span class='line'>  type =&gt; 'ssh-rsa',
+</span><span class='line'>  key =&gt; 'AAAAB3NzaC1y...O1Q==',
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>ssh_authorized_key {'hadoop@hadoop-master1':
+</span><span class='line'>  user =&gt; 'hadoop',
+</span><span class='line'>  type =&gt; 'ssh-rsa',
+</span><span class='line'>  key =&gt; 'AAAAB3Nza...IZYPw==',
+</span><span class='line'>  require  =&gt; User['hadoop'],
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>无密钥登录比较容易，没有涉及到收集节点信息。仅仅把公钥写入新机器还不够，还得把 known_hosts 也处理好，不然第一次连接新机器都需要输入一下yes。内容如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-slaver200 ~]$ ssh hadoop-slaver202
+</span><span class='line'>The authenticity of host 'hadoop-slaver202 (192.168.36.59)' can't be established.
+</span><span class='line'>RSA key fingerprint is fe:7e:26:c4:56:ea:f4:21:61:82:6d:9b:4a:72:93:a4.
+</span><span class='line'>Are you sure you want to continue connecting (yes/no)? </span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_virtual.html">https://docs.puppet.com/puppet/4.4/lang_virtual.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_collectors.html">https://docs.puppet.com/puppet/4.4/lang_collectors.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_exported.html">https://docs.puppet.com/puppet/4.4/lang_exported.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.4/lang_resources_advanced.html#amending-attributes-with-a-collector">https://docs.puppet.com/puppet/4.4/lang_resources_advanced.html#amending-attributes-with-a-collector</a></li>
+<li><a href="https://docs.puppet.com/puppet/latest/types/ssh_authorized_key.html">https://docs.puppet.com/puppet/latest/types/ssh_authorized_key.html</a></li>
+<li><a href="https://www.puppetcookbook.com/posts/install-package.html">https://www.puppetcookbook.com/posts/install-package.html</a></li>
+<li><a href="https://docs.puppet.com/puppet/4.10/lang_conditional.html">https://docs.puppet.com/puppet/4.10/lang_conditional.html</a></li>
+</ul>
+
+
+<p>正如上面官网介绍的，需要用到虚拟资源，自动把新机器指纹（fingerprint）写入到机器需要PUPPETDB的支持，安装配置又需要PGSQL的配合。需要耗费一番功夫，但是还是划得来的（具体安装步骤查看puppet分类下的文章）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>if $hostname =~ /^hadoop-/ {
+</span><span class='line'>
+</span><span class='line'>  $host_aliases = [ $ipaddress, $hostname ]
+</span><span class='line'>  
+</span><span class='line'>  # Export hostkeys from all hosts.
+</span><span class='line'>  @@sshkey { $::fqdn:
+</span><span class='line'>    ensure =&gt; present,
+</span><span class='line'>    host_aliases =&gt; $host_aliases,
+</span><span class='line'>    type =&gt; 'ssh-rsa',
+</span><span class='line'>    key =&gt; $sshrsakey,
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  if $hostname =~ /^hadoop-master/ {
+</span><span class='line'>    # realize all exported
+</span><span class='line'>    Sshkey &lt;&lt;| |&gt;&gt;
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>先在所有slaver机器运行一遍 puppet agent -t ，然后再在master节点把收集的指纹写入到 /etc/ssh/ssh_known_hosts 。</p>
+
+<p>这里说个插曲：机器的hosts和hostname是通过 FOR&amp;SSH 命令来统一修改的，有些可能没有配置好导致机器的主机名有重复。通过执行配置known_hosts竟然帮我找出了hostname重复的机器，意外的收获。该问题的处理我是直接登录到PGSQL改了对应表的数据处理的。</p>
+
+<p>到这里机器基本能用了。主机名、hosts、时间同步、hadoop用户以及master到该用户的无密钥登录都已经配置好了。</p>
+
+<p>接下来把实战过程中安装gmond的步骤帖出来：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$$ cd /etc/puppetlabs/code/environments/production/manifests/
+</span><span class='line'>
+</span><span class='line'>$$ vi change_site.sh
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>## Usage:
+</span><span class='line'>##  ./change_site.sh nrpe.site
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>[[ $# != 1 ]] && exit 1
+</span><span class='line'>
+</span><span class='line'>cd $(cd $(dirname $0); pwd)
+</span><span class='line'>
+</span><span class='line'>rm -rf site.pp
+</span><span class='line'>ln -s $1 site.pp
+</span><span class='line'>
+</span><span class='line'>$$ vi pexec.sh
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>## Usage:
+</span><span class='line'>##   ./pexec.sh /cu-ud/ sudo_revert.site 
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>case $# in
+</span><span class='line'>1)
+</span><span class='line'>  FUNC="$1"
+</span><span class='line'>  HOST_PARAM=
+</span><span class='line'>  ;;
+</span><span class='line'>2)
+</span><span class='line'>  FUNC="$2"
+</span><span class='line'>  HOST_PARAM="-I $1"
+</span><span class='line'>  ;;
+</span><span class='line'>*)
+</span><span class='line'>  while [ $# -gt 1 ] ; do 
+</span><span class='line'>    HOST_PARAM="$HOST_PARAM -I $1"
+</span><span class='line'>    shift
+</span><span class='line'>  done
+</span><span class='line'>  FUNC=$1
+</span><span class='line'>  ;;
+</span><span class='line'>esac
+</span><span class='line'>
+</span><span class='line'>cd $(cd $(dirname $0); pwd)
+</span><span class='line'>
+</span><span class='line'>./change_site.sh "$FUNC"
+</span><span class='line'>
+</span><span class='line'>if [[ "$HOST_PARAM" != "" && ! "$HOST_PARAM" =~ */* ]] ; then
+</span><span class='line'>  mco shell $HOST_PARAM run -- `which puppet` agent -t
+</span><span class='line'>else
+</span><span class='line'>  mco puppet $HOST_PARAM runall 20
+</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
+
+
+<p>由于机器增加比较多，且网络环境变的复杂化。把原来的2个分组修改成4个。不同的网络段和功能分别设置不同的广播端口。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ ./pexec.sh /hadoop-slaver.$/ gmond.site 
+</span><span class='line'>
+</span><span class='line'># 采集数据的节点重启后，其他发送数据的节点貌似都需要重启。
+</span><span class='line'>$ screen
+</span><span class='line'>$ for ((i=1;i&lt;=53;i++)); do  mco shell -I /hadoop-slaver${i}.$/ run -- ' service gmond restart ' ; done 
+</span><span class='line'># 这个确认搞的很麻烦，
+</span><span class='line'># 想通过ganglia-web获取数据然后判断是否有数据进行重启。</span></code></pre></td></tr></table></div></figure>
+
+
+<p>Ganglia删除某节点后，如果要从rrds上去掉改节点的信息，需要：重启对应收集的gmond，对应集群的rrds目录，然后重启gmetad。或者等够一段时间，gmetad会自动去掉。</p>
+
+<h2>总结</h2>
+
+<p>现在添加机器，直接连上puppetserver机器然后执行几个命令就可以搞定；</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>HOST=new-host-name 
+</span><span class='line'># 无密钥登录和puppet/mco
+</span><span class='line'>PASSWD=new-host-root-password ./prepare.sh $HOST
+</span><span class='line'>
+</span><span class='line'>./pexec.sh $HOST new-hadoop.site
+</span><span class='line'>./pexec.sh $HOST gmond.site # 当前需要到web界面确认新节点的数据是否被采集</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
       <h1 class="entry-title"><a href="/blog/2017/04/14/k8s-hadoop-deploy/">K8s Hadoop Deploy</a></h1>
     
     
@@ -122,7 +627,7 @@ yum install docker-engine-1.12. &hellip;">
   
 
 
-<time datetime="2017-04-14T10:56:39+08:00" pubdate data-updated="true">Fri 2017-04-14 10:56</time>
+<time datetime="2017-04-14T02:56:39+00:00" pubdate data-updated="true">Fri 2017-04-14 02:56</time>
         
       </p>
     
@@ -521,7 +1026,7 @@ yum install docker-engine-1.12. &hellip;">
   
 
 
-<time datetime="2017-03-30T14:21:50+08:00" pubdate data-updated="true">Thu 2017-03-30 14:21</time>
+<time datetime="2017-03-30T06:21:50+00:00" pubdate data-updated="true">Thu 2017-03-30 06:21</time>
         
       </p>
     
@@ -913,7 +1418,7 @@ yum install docker-engine-1.12. &hellip;">
   
 
 
-<time datetime="2017-03-23T17:48:55+08:00" pubdate data-updated="true">Thu 2017-03-23 17:48</time>
+<time datetime="2017-03-23T09:48:55+00:00" pubdate data-updated="true">Thu 2017-03-23 09:48</time>
         
       </p>
     
@@ -977,11 +1482,18 @@ yum install docker-engine-1.12. &hellip;">
 <span class='line-number'>34</span>
 <span class='line-number'>35</span>
 <span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>tar zxvf go1.6.2.linux-amd64.tar.gz 
 </span><span class='line'>
 </span><span class='line'>/etc/profile
-</span><span class='line'>export GOROOT=/usr/local/go
-</span><span class='line'>export GOPATH=/opt/go
+</span><span class='line'>export GOROOT=/opt/go
+</span><span class='line'>export GOPATH=/opt/gopath
 </span><span class='line'>export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
 </span><span class='line'>
 </span><span class='line'>-
@@ -989,10 +1501,17 @@ yum install docker-engine-1.12. &hellip;">
 </span><span class='line'>[root@cu2 CodisLabs]# pwd
 </span><span class='line'>/opt/go/src/github.com/CodisLabs
 </span><span class='line'>
+</span><span class='line'># @2017-06-05
+</span><span class='line'># 如果下载的是tar.gz，直接在CodisLabs目录下解压，然后做个软链接
+</span><span class='line'># cd $GOPATH ; mkdir -p src/github.com/CodisLabs/
+</span><span class='line'># cd src/github.com/CodisLabs/; ln -s codis-3.2-rc2 codis
 </span><span class='line'>[root@cu2 CodisLabs]# git clone --branch release3.2  https://github.com/CodisLabs/codis.git 
 </span><span class='line'>
 </span><span class='line'>[root@cu2 CodisLabs]# cd codis/
 </span><span class='line'>
+</span><span class='line'># 安装一些依赖
+</span><span class='line'># # ./autogen.sh: line 5: autoconf: command not found
+</span><span class='line'># yum install autoconf 
 </span><span class='line'>[root@cu2 codis]# make 
 </span><span class='line'>
 </span><span class='line'>[root@cu2 codis]# ll bin/
@@ -1018,7 +1537,7 @@ yum install docker-engine-1.12. &hellip;">
 
 <h2>生产部署</h2>
 
-<p>把测试环境的GOPATH和GOROOT全部拷贝到生产即可。</p>
+<p>把测试环境的GOPATH和GOROOT全部拷贝到生产即可。这里上面已经生成了dashboard和proxy的配置了哦！！</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -1388,7 +1907,7 @@ yum install docker-engine-1.12. &hellip;">
   
 
 
-<time datetime="2017-03-12T23:21:30+08:00" pubdate data-updated="true">Sun 2017-03-12 23:21</time>
+<time datetime="2017-03-12T15:21:30+00:00" pubdate data-updated="true">Sun 2017-03-12 15:21</time>
         
       </p>
     
@@ -2211,907 +2730,6 @@ yum install docker-engine-1.12. &hellip;">
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2017/03/05/k8s-docker-multinode-on-centos6/">k8s在Centos6部署实践</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2017-03-05T08:49:29+08:00" pubdate data-updated="true">Sun 2017-03-05 08:49</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>2017-3-17 08:33:56 折腾了大半个月，写点小结。在centos6 + docker-1.7 + k8s-1.2 是能用起来，安装了dashboard、nexus2、harbor，但是对于一些新的东西不能用，并且k8s官网文档不分版本并且没讲明白docker兼容的版本（至少官网文档），感觉人家就是行到自己这里就不行，各种折腾然后到后面是版本问题。docker和k8s在容器大热的当前，版本更新太快了，docker都到1.17了。综上，如果在centos6上面玩玩了解了k8s的概况还是好的，但是真的要用还是升级centos7吧。</p>
-
-<p>configmap-volumes真是好东西，没办法docker-1.7不支持shared volume。</p>
-
-<p>&ndash;</p>
-
-<p>centos6系统比较&#8221;老&#8221;啊，既没有systemd，也没有docker-engine。网上各种资料要么是原始安装（非bootstrap docker），要么就是在centos7上装的。不太想在系统上做安装，按照kube-deploy的docker-multinode的脚本来进行修改安装，版本不兼容需要开推土机填坑啊，centos6上面的docker才1.7还不能用kubernetes-1.3，dashboard也需要自己安装。</p>
-
-<p>环境描述：</p>
-
-<ul>
-<li>cu2: bootstrap(etcd, flannel), main(hyperkube, pause, kubernetes-dashboard)</li>
-<li>cu4、cu5: bootstrap(flannel), main(hyperkube, pause)</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# docker -H unix:///var/run/docker-bootstrap.sock ps | grep -v IMAGE | awk '{print $2}' | sort -u
-</span><span class='line'>gcr.io/google_containers/etcd-amd64:3.0.4
-</span><span class='line'>quay.io/coreos/flannel:v0.6.1-amd64
-</span><span class='line'>[root@cu4 ~]# docker -H unix:///var/run/docker-bootstrap.sock ps | grep -v IMAGE | awk '{print $2}' | sort -u
-</span><span class='line'>quay.io/coreos/flannel:v0.6.1-amd64
-</span><span class='line'>
-</span><span class='line'>[root@cu2 kubernetes]# docker images
-</span><span class='line'>REPOSITORY                                            TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-</span><span class='line'>bigdata                                               v1                  9e30d146824b        38 hours ago        457.2 MB
-</span><span class='line'>gcr.io/google_containers/heapster-grafana-amd64       v4.0.2              74d2c72849cc        6 weeks ago         131.5 MB
-</span><span class='line'>gcr.io/google_containers/heapster-influxdb-amd64      v1.1.1              55d63942e2eb        6 weeks ago         11.59 MB
-</span><span class='line'>gcr.io/google_containers/heapster-amd64               v1.3.0-beta.1       026fb02eca65        6 weeks ago         101.3 MB
-</span><span class='line'>gcr.io/google_containers/kubernetes-dashboard-amd64   v1.5.1              9af7d5c61ccf        7 weeks ago         103.6 MB
-</span><span class='line'>gcr.io/google_containers/hyperkube-amd64              v1.2.7              1dd7250ed1b3        4 months ago        231.4 MB
-</span><span class='line'>quay.io/coreos/flannel                                v0.6.1-amd64        ef86f3a53de0        6 months ago        27.89 MB
-</span><span class='line'>gcr.io/google_containers/etcd-amd64                   3.0.4               ef5e89d609f1        6 months ago        39.62 MB
-</span><span class='line'>gcr.io/google_containers/kube2sky-amd64               1.15                f93305484d65        10 months ago       29.16 MB
-</span><span class='line'>gcr.io/google_containers/etcd-amd64                   2.2.5               a6752fb962b5        10 months ago       30.45 MB
-</span><span class='line'>gcr.io/google_containers/skydns-amd64                 1.0                 a925f95d080a        11 months ago       15.57 MB
-</span><span class='line'>gcr.io/google_containers/exechealthz-amd64            1.0                 5b9ac190b20c        11 months ago       7.116 MB
-</span><span class='line'>gcr.io/google_containers/pause                        2.0                 9981ca1bbdb5        17 months ago       350.2 kB
-</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>etcd，flannel，和kubernetes-dashboard用的是docker-multinode时的版本。</li>
-<li>kubelet是1.2的最新版v1.2.7。</li>
-<li>pause:2.0是启动apiserver、controller容器时自动下载的版本。</li>
-<li>新增DNS镜像（2017-3-6 02:07:14）</li>
-<li>新增heapster镜像（2017-3-6 17:00:48）</li>
-</ul>
-
-
-<p>最好每台机器都load所有镜像。</p>
-
-<h2>准备</h2>
-
-<ul>
-<li>安装docker，<a href="https://wiki.centos.org/zh/Cloud/Docker">Docker</a> <a href="/blog/2014/09/27/docker-start-guide-on-centos/">Docker入门</a></li>
-<li>代理，<a href="/blog/2017/02/04/privoxy-http-proxy-for-shadowsocks/">Privoxy</a></li>
-<li>镜像导入导出，<a href="/blog/2017/02/06/docker-http-proxy-and-save-reload/">Docker save/load</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8"
-</span><span class='line'>export https_proxy=http://localhost:8118/
-</span><span class='line'>export http_proxy=http://localhost:8118/</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>先看操作和效果（看了菜单再看吃不吃）</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>## 下载部署脚本 
-</span><span class='line'># https://github.com/winse/docker-hadoop/tree/master/k8s-centos6/docker-multinode
-</span><span class='line'>
-</span><span class='line'>## 防火墙，关闭selinux
-</span><span class='line'># 或者最后面增加 iptables -A INPUT -s 10.0.0.0/8 -j ACCEPT
-</span><span class='line'>iptables -I INPUT 1 -s 10.0.0.0/8 -j ACCEPT
-</span><span class='line'>
-</span><span class='line'>## 先把镜像全部下载下来 git pull ...
-</span><span class='line'>* 在master节点
-</span><span class='line'>[root@cu2 ~]# docker images
-</span><span class='line'>REPOSITORY                                            TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-</span><span class='line'>bigdata                                               v1                  9e30d146824b        2 days ago          457.2 MB
-</span><span class='line'>redis                                                 3.2.8               c30a7507ec4d        6 days ago          182.9 MB
-</span><span class='line'>gcr.io/google_containers/heapster-grafana-amd64       v4.0.2              74d2c72849cc        6 weeks ago         131.5 MB
-</span><span class='line'>gcr.io/google_containers/heapster-influxdb-amd64      v1.1.1              55d63942e2eb        6 weeks ago         11.59 MB
-</span><span class='line'>gcr.io/google_containers/heapster-amd64               v1.3.0-beta.1       026fb02eca65        6 weeks ago         101.3 MB
-</span><span class='line'>gcr.io/google_containers/kubernetes-dashboard-amd64   v1.5.1              9af7d5c61ccf        7 weeks ago         103.6 MB
-</span><span class='line'>gcr.io/google_containers/hyperkube-amd64              v1.2.7              1dd7250ed1b3        4 months ago        231.4 MB
-</span><span class='line'>quay.io/coreos/flannel                                v0.6.1-amd64        ef86f3a53de0        6 months ago        27.89 MB
-</span><span class='line'>gcr.io/google_containers/etcd-amd64                   3.0.4               ef5e89d609f1        6 months ago        39.62 MB
-</span><span class='line'>gcr.io/google_containers/kube2sky-amd64               1.15                f93305484d65        10 months ago       29.16 MB
-</span><span class='line'>gcr.io/google_containers/etcd-amd64                   2.2.5               a6752fb962b5        10 months ago       30.45 MB
-</span><span class='line'>gcr.io/google_containers/skydns-amd64                 1.0                 a925f95d080a        11 months ago       15.57 MB
-</span><span class='line'>gcr.io/google_containers/exechealthz-amd64            1.0                 5b9ac190b20c        11 months ago       7.116 MB
-</span><span class='line'>gcr.io/google_containers/pause                        2.0                 9981ca1bbdb5        17 months ago       350.2 kB
-</span><span class='line'>
-</span><span class='line'>## 下载kubectl
-</span><span class='line'>https://storage.googleapis.com/kubernetes-release/release/v1.2.7/bin/linux/amd64/kubectl 
-</span><span class='line'># https://kubernetes.io/docs/user-guide/prereqs/
-</span><span class='line'># https://kubernetes.io/docs/user-guide/kubectl/kubectl_version/
-</span><span class='line'>
-</span><span class='line'>## 环境变量
-</span><span class='line'># https://kubernetes.io/docs/user-guide/kubeconfig-file/
-</span><span class='line'>export KUBECONFIG=/var/lib/kubelet/kubeconfig/kubeconfig.yaml
-</span><span class='line'>export PATH=...加kubectl所在文件夹
-</span><span class='line'>
-</span><span class='line'>## 启动MASTER
-</span><span class='line'>./master.sh
-</span><span class='line'>
-</span><span class='line'>## 测试效果
-</span><span class='line'>curl -fsSL http://localhost:2379/health
-</span><span class='line'>curl -s http://localhost:8080/healthz
-</span><span class='line'>curl -s http://localhost:8080/api
-</span><span class='line'>kubectl get ns
-</span><span class='line'>kubectl create namespace kube-system
-</span><span class='line'>
-</span><span class='line'>* 在worker节点
-</span><span class='line'>[root@cu3 ~]# docker images
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>## 启动WORKER
-</span><span class='line'>MASTER_IP=cu2 ./worker.sh
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>小状况：在第一次启动master脚本可能会有点问题：setup-files容器运行可能不正常，需要从googleapi下载easy-rsa.tar.gz，可以先手动下载到/root/kube目录，然后运行setup-files。sh脚本。如果不急的话等上一段时间多run几次后好像也能跑起来（囧）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# docker exec -ti kube_kubelet_624b2 bash
-</span><span class='line'>root@cu2:/# /setup-files.sh IP:10.0.0.1,DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc,DNS:kubernetes.default.svc.cluster.local
-</span><span class='line'>
-</span><span class='line'>然后再次提交dashboard：
-</span><span class='line'>[root@cu2 docker-multinode-centos6]# ./dashboard.sh 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后启动应用，测试多节点的情况下启动的容器网络能否互通：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>## 运行查看容器
-</span><span class='line'>[root@cu2 ~]# kubectl run redis --image=bigdata:v1 -r 5 --command -- /usr/sbin/sshd -D
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# kubectl get pods -o wide
-</span><span class='line'>NAME                       READY     STATUS    RESTARTS   AGE       NODE
-</span><span class='line'>k8s-master-192.168.0.214   4/4       Running   22         1h        192.168.0.214
-</span><span class='line'>k8s-proxy-192.168.0.214    1/1       Running   0          1h        192.168.0.214
-</span><span class='line'>redis-2212193268-1789v     1/1       Running   0          1h        192.168.0.174
-</span><span class='line'>redis-2212193268-1j4ej     1/1       Running   0          1h        192.168.0.174
-</span><span class='line'>redis-2212193268-8dbmq     1/1       Running   0          1h        192.168.0.30
-</span><span class='line'>redis-2212193268-a447n     1/1       Running   0          1h        192.168.0.30
-</span><span class='line'>redis-2212193268-tu5fl     1/1       Running   0          1h        192.168.0.214
-</span><span class='line'>
-</span><span class='line'>https://kubernetes.io/docs/user-guide/jsonpath/
-</span><span class='line'>[root@cu2 ~]# kubectl get pods -o wide -l run=redis -o jsonpath={..podIP}
-</span><span class='line'>10.1.75.2 10.1.75.3 10.1.58.3 10.1.58.2 10.1.33.3
-</span><span class='line'>
-</span><span class='line'>## 登录容器
-</span><span class='line'># 用ssh登录
-</span><span class='line'>[root@cu2 ~]# kubectl describe pods redis-2212193268-tu5fl | grep IP
-</span><span class='line'>IP:             10.1.33.3
-</span><span class='line'>[root@cu2 ~]# ssh 10.1.33.3
-</span><span class='line'>The authenticity of host '10.1.33.3 (10.1.33.3)' can't be established.
-</span><span class='line'>RSA key fingerprint is e5:58:ae:3b:54:c9:bb:0d:4c:9b:bc:fd:04:fe:be:cc.
-</span><span class='line'>Are you sure you want to continue connecting (yes/no)? yes
-</span><span class='line'>Warning: Permanently added '10.1.33.3' (RSA) to the list of known hosts.
-</span><span class='line'>root@10.1.33.3's password: 
-</span><span class='line'>Last login: Sat Mar  4 18:17:51 2017 from 10.1.61.1
-</span><span class='line'>[root@redis-2212193268-tu5fl ~]# exit
-</span><span class='line'>logout
-</span><span class='line'>Connection to 10.1.33.3 closed.
-</span><span class='line'>
-</span><span class='line'># exec登录
-</span><span class='line'>[root@cu2 ~]# kubectl exec -ti redis-2212193268-tu5fl bash
-</span><span class='line'>[root@redis-2212193268-tu5fl /]# 
-</span><span class='line'>
-</span><span class='line'>## ping五台机器全部节点的机器都是互通的
-</span><span class='line'>[root@redis-2212193268-tu5fl /]# ping 10.1.75.2
-</span><span class='line'>PING 10.1.75.2 (10.1.75.2) 56(84) bytes of data.
-</span><span class='line'>64 bytes from 10.1.75.2: icmp_seq=1 ttl=60 time=1.15 ms
-</span><span class='line'>...
-</span><span class='line'>[root@redis-2212193268-tu5fl /]# ping 10.1.75.3
-</span><span class='line'>PING 10.1.75.3 (10.1.75.3) 56(84) bytes of data.
-</span><span class='line'>64 bytes from 10.1.75.3: icmp_seq=1 ttl=60 time=1.23 ms
-</span><span class='line'>...
-</span><span class='line'>[root@redis-2212193268-tu5fl /]# ping 10.1.58.3
-</span><span class='line'>PING 10.1.58.3 (10.1.58.3) 56(84) bytes of data.
-</span><span class='line'>64 bytes from 10.1.58.3: icmp_seq=1 ttl=60 time=1.60 ms
-</span><span class='line'>...
-</span><span class='line'>[root@redis-2212193268-tu5fl /]# ping 10.1.58.2
-</span><span class='line'>PING 10.1.58.2 (10.1.58.2) 56(84) bytes of data.
-</span><span class='line'>64 bytes from 10.1.58.2: icmp_seq=1 ttl=60 time=1.39 ms
-</span><span class='line'>...
-</span><span class='line'>[root@redis-2212193268-tu5fl /]# ping 10.1.33.3         
-</span><span class='line'>PING 10.1.33.3 (10.1.33.3) 56(84) bytes of data.
-</span><span class='line'>64 bytes from 10.1.33.3: icmp_seq=1 ttl=64 time=0.036 ms
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<p>全部启动好后dashboard的效果图：</p>
-
-<p><img src="/images/blogs/k8s-dashboard.jpg" alt="" /></p>
-
-<h2>从脚本中学习</h2>
-
-<p>官网这份<a href="https://kubernetes.io/docs/getting-started-guides/scratch/#starting-cluster-services">Creating a Custom Cluster from Scratch</a> 看的糊里糊涂，真不是给入门级的同学看的。需要有一定的实践经验才能看的懂。</p>
-
-<p>另辟蹊径，根据docker-multi的启动脚本来拆分学习然后模拟动手实践。在根据 <a href="https://kubernetes.io/docs/getting-started-guides/docker-multinode/">Portable Multi-Node Cluster</a> 文档学习操作的时刻不理解bootstrap docker以及main docker的含义。</p>
-
-<p>这次通过单独运行提取每个函数运行后才理解，其实就相当于跑两个docker应用程序，互相不影响。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# ps aux|grep docker
-</span><span class='line'>root      5310  0.0  0.2 645128 19180 pts/1    Sl   13:14   0:01 docker -d -H unix:///var/run/docker-bootstrap.sock -p /var/run/docker-bootstrap.pid --iptables=false --ip-masq=false --bridge=none --graph=/var/lib/docker-bootstrap --exec-root=/var/run/docker-bootstrap
-</span><span class='line'>root      5782  1.1  0.5 2788284 43620 pts/1   Sl   13:14   0:23 /usr/bin/docker -d --mtu=1464 --bip=10.1.33.1/24
-</span><span class='line'>root     10935  0.0  0.0 103316   896 pts/1    S+   13:47   0:00 grep docker
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>bootstrap docker启动后，容器etcd和flannel启动都很顺利。</p>
-
-<p>以下的问题都是在自己虚拟机试，弄好后再放到测试环境的。</p>
-
-<ul>
-<li>问题1： 执行docker0网卡重置失败</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bigdata1 data]# ip link set docker0 down
-</span><span class='line'>[root@bigdata1 data]# ip link del docker0
-</span><span class='line'>RTNETLINK answers: Operation not supported
-</span><span class='line'>
-</span><span class='line'>[root@bigdata1 data]# ip addr 
-</span><span class='line'>
-</span><span class='line'>删不掉，但是可以修改ip地址来实现相似的效果
-</span><span class='line'>
-</span><span class='line'>ifconfig docker0 ${FLANNEL_SUBNET}
-</span><span class='line'>或者 
-</span><span class='line'>[root@bigdata1 data]# ip link set dev docker0 mtu 1460
-</span><span class='line'>[root@bigdata1 data]# ip addr del 172.17.42.1/16 dev docker0
-</span><span class='line'>[root@bigdata1 data]# ip addr add ${FLANNEL_SUBNET} dev docker0
-</span><span class='line'>[root@bigdata1 data]# ip link set dev docker0 up
-</span><span class='line'>[root@bigdata1 data]# ifconfig # 查看重新分配的IP
-</span><span class='line'>
-</span><span class='line'>先添加参数在前端运行
-</span><span class='line'>[root@bigdata1 data]# docker -d --mtu=1472 --bip=10.1.42.1/24
-</span><span class='line'>
-</span><span class='line'>启动
-</span><span class='line'>[root@bigdata1 data]# sed -i 's/other_args=/other_args="--mtu=1472 --bip=10.1.42.1/24"/' /etc/sysconfig/docker
-</span><span class='line'>[root@bigdata1 data]# service docker start
-</span><span class='line'>Starting docker:                                           [确定]
-</span><span class='line'>[root@bigdata1 data]# service docker status
-</span><span class='line'>docker (pid  4542) 正在运行...</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>问题2：volumns mount不支持shared</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bigdata1 data]# echo $KUBELET_MOUNTS
-</span><span class='line'>-v /sys:/sys:rw -v /var/run:/var/run:rw -v /run:/run:rw -v /var/lib/docker:/var/lib/docker:rw -v /var/lib/kubelet:/var/lib/kubelet:shared -v /var/log/containers:/var/log/containers:rw
-</span><span class='line'>
-</span><span class='line'>[root@bigdata1 data]# mkdir -p /var/lib/kubelet
-</span><span class='line'>[root@bigdata1 data]# mount --bind /var/lib/kubelet /var/lib/kubelet
-</span><span class='line'>[root@bigdata1 data]# mount --make-shared /var/lib/kubelet
-</span><span class='line'>
-</span><span class='line'>[root@bigdata1 data]# docker run -d \
-</span><span class='line'>&gt;     --net=host \
-</span><span class='line'>&gt;     --pid=host \
-</span><span class='line'>&gt;     --privileged \
-</span><span class='line'>&gt;     --name kube_kubelet_$(kube::helpers::small_sha) \
-</span><span class='line'>&gt;     ${KUBELET_MOUNTS} \
-</span><span class='line'>&gt;     gcr.io/google_containers/hyperkube-${ARCH}:${K8S_VERSION} \
-</span><span class='line'>&gt;     /hyperkube kubelet \
-</span><span class='line'>&gt;       --allow-privileged \
-</span><span class='line'>&gt;       --api-servers=http://localhost:8080 \
-</span><span class='line'>&gt;       --config=/etc/kubernetes/manifests-multi \
-</span><span class='line'>&gt;       --cluster-dns=10.0.0.10 \
-</span><span class='line'>&gt;       --cluster-domain=cluster.local \
-</span><span class='line'>&gt;       ${CNI_ARGS} \
-</span><span class='line'>&gt;       ${CONTAINERIZED_FLAG} \
-</span><span class='line'>&gt;       --hostname-override=${IP_ADDRESS} \
-</span><span class='line'>&gt;       --v=2
-</span><span class='line'>Error response from daemon: invalid mode for volumes-from: shared
-</span><span class='line'>
-</span><span class='line'># 改成z -- 2017-3-16 19:15:57不支持shared，后面会遇到volume的问题！
-</span><span class='line'>    KUBELET_MOUNT="-v /var/lib/kubelet:/var/lib/kubelet:z"
-</span><span class='line'>  
-</span><span class='line'>[root@bigdata1 ~]# echo $KUBELET_MOUNTS
-</span><span class='line'>-v /sys:/sys:rw -v /var/run:/var/run:rw -v /run:/run:rw -v /var/lib/docker:/var/lib/docker:rw -v /var/lib/kubelet:/var/lib/kubelet:z -v /var/log/containers:/var/log/containers:rw</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>问题3：cgroup问题</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Error: failed to run Kubelet: failed to get mounted cgroup subsystems: failed to find cgroup mounts
-</span><span class='line'>failed to run Kubelet: failed to get mounted cgroup subsystems: failed to find cgroup mounts
-</span><span class='line'>
-</span><span class='line'>centos7 
-</span><span class='line'>[root@k8s docker.service.d]# ll /sys/fs/cgroup/
-</span><span class='line'>blkio/            cpuacct/          cpuset/           freezer/          memory/           net_cls,net_prio/ perf_event/       systemd/          
-</span><span class='line'>cpu/              cpu,cpuacct/      devices/          hugetlb/          net_cls/          net_prio/         pids/             
-</span><span class='line'>
-</span><span class='line'>centos6
-</span><span class='line'>http://wushank.blog.51cto.com/3489095/1203545
-</span><span class='line'>[root@bigdata1 bin]# ls /cgroup/
-</span><span class='line'>blkio  cpu  cpuacct  cpuset  devices  freezer  memory  net_cls
-</span><span class='line'>
-</span><span class='line'>把/cgroup加入到卷映射路径
-</span><span class='line'>  KUBELET_MOUNTS="\
-</span><span class='line'>    ${ROOTFS_MOUNT} \
-</span><span class='line'>    -v /sys:/sys:rw \
-</span><span class='line'>    -v /cgroup:/cgroup:rw \
-</span><span class='line'>    -v /var/run:/var/run:rw \
-</span><span class='line'>    -v /run:/run:rw \
-</span><span class='line'>    -v /var/lib/docker:/var/lib/docker:rw \
-</span><span class='line'>    ${KUBELET_MOUNT} \
-</span><span class='line'>    -v /var/log/containers:/var/log/containers:rw"</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>问题4：再说版本，v1.3+的版本在centos6上运行kubelet报错：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bigdata1 ~]# docker logs 7a2f7aec2239
-</span><span class='line'>...
-</span><span class='line'>E0228 10:56:05.408129    2516 kubelet.go:2049] Container runtime sanity check failed: container runtime version is older than 1.21</span></code></pre></td></tr></table></div></figure>
-
-
-<p>1.3以上的版本都会报这个错。kubernetes用1.2.7的版本即可。</p>
-
-<ul>
-<li><p>问题5：dashboard/dns配置注意点</p></li>
-<li><p>imagePullPolicy 就是个坑啊！改成IfNotPresent <a href="https://kubernetes.io/docs/user-guide/images/">https://kubernetes.io/docs/user-guide/images/</a></p></li>
-<li>namespace 也不能改，好像会写数据库然后指定的namespace就是kube-system</li>
-<li>apiserver 由于没有addon-manager的支持，暂时使用http获取数据（DNS的问题确认了很久，kube2sky容器日志有报错，修改server地址有http方式才解决）</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 docker-multinode-centos6]# docker exec -ti 193863bc646b bash
-</span><span class='line'>[root@redis-2212193268-0ovu7 /]# nslookup kubernetes.default
-</span><span class='line'>Server:         10.0.0.10
-</span><span class='line'>Address:        10.0.0.10#53
-</span><span class='line'>
-</span><span class='line'>Name:   kubernetes.default.svc.cluster.local
-</span><span class='line'>Address: 10.0.0.1</span></code></pre></td></tr></table></div></figure>
-
-
-<p>处理完以上问题，K8S集群就跑起来了，然后整合成开始用的脚本。当然后续还有很多工作，不仅仅是怎么用，还有一些其他辅助的软件需要配置和安装。</p>
-
-<h2>监控</h2>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/user-guide/monitoring/">Resource Usage Monitoring</a></li>
-<li><a href="https://github.com/kubernetes/heapster/blob/master/docs/influxdb.md">Run Heapster in a Kubernetes cluster with an InfluxDB backend and a Grafana UI</a></li>
-<li><a href="http://codingwater.org/2016/08/18/Kubernetes%E9%9B%86%E7%BE%A4%E6%80%A7%E8%83%BD%E7%9B%91%E6%8E%A7-Heapster/">Kubernetes集群性能监控&ndash;Heapster</a></li>
-<li><a href="http://www.pangxie.space/docker/727">Kubernetes部署监控(Heapster+Influxdb+Grafana)-centos7</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>可以通过4194访问cAdvisor  &lt;http://www.dockone.io/article/page-46&gt;
-</span><span class='line'>http://cu2:4194/containers/
-</span><span class='line'>
-</span><span class='line'>[root@cu2 influxdb]# kubectl create -f ./
-</span><span class='line'>deployment "monitoring-grafana" created
-</span><span class='line'>service "monitoring-grafana" created
-</span><span class='line'>deployment "heapster" created
-</span><span class='line'>service "heapster" created
-</span><span class='line'>deployment "monitoring-influxdb" created
-</span><span class='line'>service "monitoring-influxdb" created
-</span><span class='line'>
-</span><span class='line'>[root@cu2 influxdb]# kubectl get pods --namespace=kube-system -o wide
-</span><span class='line'>NAME                                    READY     STATUS             RESTARTS   AGE       NODE
-</span><span class='line'>heapster-2621086088-s77cl               0/1       CrashLoopBackOff   2          37s       192.168.0.148
-</span><span class='line'>kube-dns-v8-00p5h                       4/4       Running            1          5h        192.168.0.174
-</span><span class='line'>kubernetes-dashboard-2845140353-l7o8o   1/1       Running            0          5h        192.168.0.30
-</span><span class='line'>monitoring-grafana-1501214244-kw3im     1/1       Running            0          37s       192.168.0.148
-</span><span class='line'>monitoring-influxdb-3498630124-241tx    1/1       Running            0          37s       192.168.0.30
-</span><span class='line'>
-</span><span class='line'>第一次启动heapster失败，定位机器查看日志
-</span><span class='line'>[root@cu3 ~]# docker logs aad68dd07ff8
-</span><span class='line'>I0306 09:06:25.611251       1 heapster.go:71] /heapster --source=kubernetes:https://kubernetes.default --sink=influxdb:http://monitoring-influxdb:8086
-</span><span class='line'>I0306 09:06:25.611523       1 heapster.go:72] Heapster version v1.3.0-beta.1
-</span><span class='line'>F0306 09:06:25.611555       1 heapster.go:174] Failed to create source provide: open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory
-</span><span class='line'>
-</span><span class='line'>https://github.com/kubernetes/heapster/blob/master/docs/source-configuration.md 改成http
-</span><span class='line'>
-</span><span class='line'>重新加载
-</span><span class='line'>[root@cu2 influxdb]# for file in * ; do sed -e "s|MASTER_IP|${IP_ADDRESS}|g" $file | kubectl apply -f - ; done
-</span><span class='line'>deployment "monitoring-grafana" configured
-</span><span class='line'>service "monitoring-grafana" configured
-</span><span class='line'>deployment "heapster" configured
-</span><span class='line'>service "heapster" configured
-</span><span class='line'>deployment "monitoring-influxdb" configured
-</span><span class='line'>service "monitoring-influxdb" configured
-</span><span class='line'>
-</span><span class='line'>[root@cu2 influxdb]# kubectl get service --namespace=kube-system -o wide
-</span><span class='line'>NAME                   CLUSTER-IP   EXTERNAL-IP   PORT(S)         AGE       SELECTOR
-</span><span class='line'>heapster               10.0.0.54    &lt;none&gt;        80/TCP          8m        k8s-app=heapster
-</span><span class='line'>kube-dns               10.0.0.10    &lt;none&gt;        53/UDP,53/TCP   6h        k8s-app=kube-dns
-</span><span class='line'>kubernetes-dashboard   10.0.0.181   nodes         80/TCP          6h        app=kubernetes-dashboard
-</span><span class='line'>monitoring-grafana     10.0.0.220   &lt;none&gt;        80/TCP          8m        k8s-app=grafana
-</span><span class='line'>monitoring-influxdb    10.0.0.223   &lt;none&gt;        8086/TCP        8m        k8s-app=influxdb
-</span><span class='line'>
-</span><span class='line'>浏览器访问grafana 登录：admin/admin
-</span><span class='line'>http://10.0.0.220/
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>安装好监控后，dashboard也有图标了。</p>
-
-<p><img src="/images/blogs/k8s-dashboard-pro.jpg" alt="" /></p>
-
-<h4>某机器数据不显示问题定位</h4>
-
-<p>原来是三台机器的，后面增加了148的机器进来。添加heapster监控后，就148机器图形显示不出来。并且dashboard的 148 Node 页面的 <strong> Conditions - Last heartbeat time </strong> 没显示内容。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# kubectl get services --all-namespaces
-</span><span class='line'>NAMESPACE     NAME                   CLUSTER-IP   EXTERNAL-IP   PORT(S)         AGE
-</span><span class='line'>default       kubernetes             10.0.0.1     &lt;none&gt;        443/TCP         1d
-</span><span class='line'>kube-system   heapster               10.0.0.196   &lt;none&gt;        80/TCP          12m
-</span><span class='line'>kube-system   kube-dns               10.0.0.10    &lt;none&gt;        53/UDP,53/TCP   21h
-</span><span class='line'>kube-system   kubernetes-dashboard   10.0.0.181   nodes         80/TCP          21h
-</span><span class='line'>kube-system   monitoring-grafana     10.0.0.215   &lt;none&gt;        80/TCP          12m
-</span><span class='line'>kube-system   monitoring-influxdb    10.0.0.226   &lt;none&gt;        8086/TCP        12m
-</span><span class='line'>
-</span><span class='line'>查看接口
-</span><span class='line'>https://github.com/kubernetes/heapster/blob/master/docs/debugging.md
-</span><span class='line'>
-</span><span class='line'>  http://10.0.0.196/metrics
-</span><span class='line'>
-</span><span class='line'>  这里没有148机器的key
-</span><span class='line'>  http://10.0.0.196/api/v1/model/debug/allkeys
-</span><span class='line'>
-</span><span class='line'>  http://192.168.0.30:10255/stats/container/
-</span><span class='line'>
-</span><span class='line'>https://github.com/kubernetes/heapster/blob/master/docs/sink-configuration.md
-</span><span class='line'>
-</span><span class='line'>等到heapster机器运行命令，改下端口，日志输出详细点
-</span><span class='line'>/ # /heapster --source=kubernetes:http://192.168.0.214:8080?inClusterConfig=false --sink=log --heapster-port=8083 -v 10
-</span><span class='line'>
-</span><span class='line'>  http://192.168.0.214:8080/api/v1/nodes
-</span><span class='line'>  Node
-</span><span class='line'>  Pod
-</span><span class='line'>  Namespace
-</span><span class='line'>  
-</span><span class='line'>148机器的10255和4194端口都正常运行，heapster从148也获取到数据了。但是最后log输出的时刻没有148机器。系统时间？抱着尝试的心态改了一下，148的机器快了几分钟。
-</span><span class='line'>
-</span><span class='line'>果不其然啊！！同步时间后监控图就显示出来了。</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>后续学习操作</h2>
-
-<ul>
-<li>安全HTTPS <a href="https://kubernetes.io/docs/admin/authentication/#creating-certificates">https://kubernetes.io/docs/admin/authentication/#creating-certificates</a></li>
-<li>register <a href="http://www.pangxie.space/docker/643">http://www.pangxie.space/docker/643</a> k8s版本旧的话很麻烦</li>
-<li><a href="https://kubernetes.io/docs/tasks/">https://kubernetes.io/docs/tasks/</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/redis/redis-controller.yaml">https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/redis/redis-controller.yaml</a></li>
-</ul>
-
-
-<p>阿里云的镜像加速还是很赞的，由于我域名是在万网注册的本来就有账号，登录就能看到加速的地址，非常的方便。科技大学的加速镜像也很赞！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu1 ~]# cat /etc/sysconfig/docker
-</span><span class='line'>...
-</span><span class='line'>#other_args=" --registry-mirror=https://us69kjun.mirror.aliyuncs.com "
-</span><span class='line'>other_args=" --registry-mirror=https://docker.mirrors.ustc.edu.cn "
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<p>有趣的命令：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>https://kubernetes.io/docs/user-guide/jsonpath/
-</span><span class='line'>[root@cu2 ~]# kubectl get pods -o wide -l run=redis -o jsonpath={..podIP}
-</span><span class='line'>10.1.75.2 10.1.75.3 10.1.58.3 10.1.58.2 10.1.33.3
-</span><span class='line'>
-</span><span class='line'>修改启动entry，以及网络共用
-</span><span class='line'>docker run -ti --entrypoint=sh --net=container:8e9f21956469f4ef7e5b9d91798788ab83f380795d2825cdacae0ed28f5ba03b gcr.io/google_containers/skydns-amd64:1.0
-</span><span class='line'>
-</span><span class='line'>https://kubernetes.io/docs/tasks/kubectl/list-all-running-container-images/
-</span><span class='line'>[root@cu2 ~]# kubectl get pods --all-namespaces -o jsonpath="{..image}" |\
-</span><span class='line'>&gt; tr -s '[[:space:]]' '\n' |\
-</span><span class='line'>&gt; sort |\
-</span><span class='line'>&gt; uniq -c
-</span><span class='line'>      2 gcr.io/google_containers/etcd-amd64:2.2.5
-</span><span class='line'>      2 gcr.io/google_containers/exechealthz-amd64:1.0
-</span><span class='line'>      2 gcr.io/google_containers/heapster-amd64:v1.3.0-beta.1
-</span><span class='line'>      2 gcr.io/google_containers/heapster-grafana-amd64:v4.0.2
-</span><span class='line'>      2 gcr.io/google_containers/heapster-influxdb-amd64:v1.1.1
-</span><span class='line'>     10 gcr.io/google_containers/hyperkube-amd64:v1.2.7
-</span><span class='line'>      2 gcr.io/google_containers/kube2sky-amd64:1.15
-</span><span class='line'>      2 gcr.io/google_containers/kubernetes-dashboard-amd64:v1.5.1
-</span><span class='line'>      2 gcr.io/google_containers/skydns-amd64:1.0
-</span><span class='line'>      2 redis:3.2.8
-</span><span class='line'>
-</span><span class='line'>kubectl get pods --all-namespaces -o jsonpath="{.items[*].spec.containers[*].image}"
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ~]# export POD_COL="custom-columns=NAME:.metadata.name,RESTARTS:.status.containerStatuses[*].restartCount,CONTAINERS:.spec.containers[*].name,IP:.status.podIP,HOST:.spec.nodeName"
-</span><span class='line'>[root@cu2 ~]# kubectl get pods -o $POD_COL 
-</span><span class='line'>
-</span><span class='line'># 加label
-</span><span class='line'>[root@cu2 ~]# cat /etc/hosts | grep -E "\scu[0-9]\s" | awk '{print "kubectl label nodes "$1" hostname="$2}' | while read line ; do sh -c "$line" ; done
-</span><span class='line'>
-</span><span class='line'>[root@cu2 kubernetes]# kubectl run redis --image=redis:3.2.8 
-</span><span class='line'>[root@cu2 kubernetes]# kubectl scale --replicas=9 deployment/redis</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>其他参考</h2>
-
-<p>纯手动安装，所有应用都作为服务启动
-* <a href="http://chenguomin.blog.51cto.com/8794192/1828905">http://chenguomin.blog.51cto.com/8794192/1828905</a> 网络使用flannel、DNS的安装配置
-* <a href="http://www.pangxie.space/docker/618">http://www.pangxie.space/docker/618</a>
-* <a href="https://xuxinkun.github.io/2016/03/27/k8s-service/">https://xuxinkun.github.io/2016/03/27/k8s-service/</a> service是在防火墙做的跳转 => iptables -S -t nat</p>
-
-<p>介绍
-* <a href="http://www.infoq.com/cn/articles/kubernetes-and-cloud-native-applications-part01">http://www.infoq.com/cn/articles/kubernetes-and-cloud-native-applications-part01</a>
-* <a href="http://www.codingwater.org/2016/08/25/Docker-Kubernetes-Intro/">http://www.codingwater.org/2016/08/25/Docker-Kubernetes-Intro/</a>
-* <a href="https://github.com/kubernetes/kubernetes/tree/v1.0.1/cluster/addons/dns">https://github.com/kubernetes/kubernetes/tree/v1.0.1/cluster/addons/dns</a></p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/3">&larr; Older</a>
@@ -3158,11 +2776,11 @@ yum install docker-engine-1.12. &hellip;">
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+				<a href="/blog/2014/07/29/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+				<a href="/blog/2014/07/26/start-redis/">[读读书]Redis入门指南</a>
 			</li>
 		
 			<li class="post">
@@ -3174,7 +2792,7 @@ yum install docker-engine-1.12. &hellip;">
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+				<a href="/blog/2014/03/17/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
 			</li>
 		
 			<li class="post">
@@ -3186,6 +2804,10 @@ yum install docker-engine-1.12. &hellip;">
 <section>
   <h1>Recent Posts</h1>
   <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+      </li>
     
       <li class="post">
         <a href="/blog/2017/06/04/wechat-images-export/">导出微信照片</a>
@@ -3213,10 +2835,6 @@ yum install docker-engine-1.12. &hellip;">
     
       <li class="post">
         <a href="/blog/2017/03/30/k8s-harbor-config/">K8s Harbor Config</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/03/23/codis-usage2/">Codis使用进阶</a>
       </li>
     
   </ul>
@@ -3341,7 +2959,7 @@ yum install docker-engine-1.12. &hellip;">
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (45) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (46) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3354,7 +2972,7 @@ yum install docker-engine-1.12. &hellip;">
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (173)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (174)</li>
 	</ul>
 	
 </section>
