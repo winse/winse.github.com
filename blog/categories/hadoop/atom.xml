@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-07-09T14:52:33+00:00</updated>
+  <updated>2017-08-05T12:01:16+00:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -25,6 +25,7 @@
 cd kube-deploy
 vi hosts
 vi k8s.profile
+# 把deploy同步到其他实体机，同时把k8s.profile映射到/etc/profile.d
 ./rsync-deploy.sh
 
 cd docker-multinode/
@@ -39,7 +40,9 @@ kubectl create -f hadoop-master2.yaml
 kubectl create -f hadoop-slaver.yaml 
 </code></pre>
 
-<p>Tip：使用一套配置就可以启动多个集群，在 <code>kubectl create</code> 后面加上 <code>-n namespace</code> 即可。</p>
+<p>Tip：其实使用一套配置就可以启动多个集群，在 <code>kubectl create</code> 后面加上 <code>-n namespace</code> 即可。</p>
+
+<p>比如：</p>
 
 <pre><code>[root@cu2 kubenetes]# kubectl create namespace hd1
 [root@cu2 kubenetes]# kubectl create namespace hd2
@@ -62,7 +65,7 @@ hd2           slaver-rc-r7g84                         1/1       Running   0     
 ...
 </code></pre>
 
-<p>现在想来其实就是 <strong> dockerd &ndash;ip-masq=false </strong>的问题（所有涉及的dockerd都需要加）。 还有就是一台机器单机下的容器互相访问，源IP都错也是安装了openvpn所导致对所有过eth0的都加了MASQUERADE。</p>
+<p>现在想来其实就是 <strong> dockerd &ndash;ip-masq=false </strong>的问题（所有涉及的dockerd都需要加）。 还有就是一台机器单机下的容器互相访问，源IP都错也是安装了openvpn所导致，对所有过eth0的都加了MASQUERADE。</p>
 
 <p>根源就在于请求的源地址被替换，也就是iptables的转发进行了SNAT。关于iptables转发这篇文章讲的非常清晰；<a href="http://fancyxinyu.blog.163.com/blog/static/18232136620136185434661/">IPtables之四：NAT原理和配置  </a> 。</p>
 
@@ -142,11 +145,17 @@ hd2           slaver-rc-r7g84                         1/1       Running   0     
 
 <h2>中间过程步骤记录</h2>
 
-<p>记录下中间通过yum安装etcd和flanneld的过程。物理机安装flanneld会把配置docker环境变量（/run/flannel/subnet.env）加入启动脚本。</p>
+<p>主要就是记录心路历程，如果以后遇到同样的问题能让自己快速回想起来。如果仅仅为了部署，可以跳过该部分，直接后最后的常用命令。</p>
+
+<p>记录下中间 <strong>通过yum安装etcd和flanneld</strong> 的过程。物理机安装flanneld会把配置docker环境变量（/run/flannel/subnet.env）加入启动脚本。</p>
 
 <pre><code>安装docker-v1.12
 https://docs.docker.com/v1.12/
 https://docs.docker.com/v1.12/engine/installation/linux/centos/
+
+# 删掉原来的
+yum-config-manager --disable docker-ce*
+yum remove -y docker-ce*
 
 sudo tee /etc/yum.repos.d/docker.repo &lt;&lt;-'EOF'
 [dockerrepo]
@@ -158,7 +167,11 @@ gpgkey=https://yum.dockerproject.org/gpg
 EOF
 
 https://yum.dockerproject.org/repo/main/centos/7/Packages/
+[root@cu3 ~]# yum --showduplicates list docker-engine | expand
+docker-engine.x86_64             1.12.6-1.el7.centos                  dockerrepo
+
 [root@cu3 yum.repos.d]# yum install docker-engine-1.12.6 docker-engine-selinux-1.12.6
+
 
 https://kubernetes.io/docs/getting-started-guides/centos/centos_manual_config/
 
@@ -231,6 +244,184 @@ firewall-cmd --zone=trusted --add-source=10.0.0.0/8 --permanent
 firewall-cmd --zone=trusted --add-source=192.168.0.0/16 --permanent 
 firewall-cmd --reload
 </code></pre>
+
+<h2>一些有趣的命令</h2>
+
+<pre><code>查看用了哪些镜像
+
+[root@cu2 /]# kubectl get pods --all-namespaces -o jsonpath="{..image}" |\
+ tr -s '[[:space:]]' '\n' |\
+ sort |\
+ uniq -c
+      2 gcr.io/google_containers/dnsmasq-metrics-amd64:1.0
+      2 gcr.io/google_containers/exechealthz-amd64:1.2
+     12 gcr.io/google_containers/hyperkube-amd64:v1.5.5
+      2 gcr.io/google_containers/kube-addon-manager-amd64:v6.1
+      2 gcr.io/google_containers/kubedns-amd64:1.9
+      2 gcr.io/google_containers/kube-dnsmasq-amd64:1.4
+      2 gcr.io/google_containers/kubernetes-dashboard-amd64:v1.5.0
+
+
+修改默认kubectl的配置
+
+[root@cu2 ~]# vi $KUBECONFIG 
+apiVersion: v1
+kind: Config
+preferences: {}
+current-context: default
+clusters:
+- cluster:
+    server: http://localhost:8080
+  name: default
+contexts:
+- context:
+    cluster: default
+    user: ""
+    namespace: kube-system
+  name: default
+users: {}
+
+如果kubectl没有下载，可以从镜像启动的容器里面获取
+
+[root@cu2 docker-multinode]# docker exec -ti 0c0360bcc2c3 bash
+root@cu2:/# cp kubectl /var/run/
+
+[root@cu2 run]# mv kubectl /data/kubernetes/kube-deploy/docker-multinode/
+
+获取容器IP
+
+https://kubernetes.io/docs/user-guide/jsonpath/
+[root@cu2 ~]# kubectl get pods -o wide -l run=redis -o jsonpath={..podIP}
+10.1.75.2 10.1.75.3 10.1.58.3 10.1.58.2 10.1.33.3
+
+网络共用: --net
+
+docker run -ti --entrypoint=sh --net=container:8e9f21956469f4ef7e5b9d91798788ab83f380795d2825cdacae0ed28f5ba03b gcr.io/google_containers/skydns-amd64:1.0
+
+
+格式化输出
+
+kubectl get pods --all-namespaces -o jsonpath="{.items[*].spec.containers[*].image}"  
+
+[root@cu2 ~]# export POD_COL="custom-columns=NAME:.metadata.name,RESTARTS:.status.containerStatuses[*].restartCount,CONTAINERS:.spec.containers[*].name,IP:.status.podIP,HOST:.spec.nodeName"
+[root@cu2 ~]# kubectl get pods -o $POD_COL 
+
+kubectl get po -l k8s-app=kube-dns -o=custom-columns=NAME:.metadata.name,CONTAINERS:.spec.containers[*].name
+
+[root@cu2 kubernetes]# kubectl get po --all-namespaces -o=custom-columns=NAME:.metadata.name,CONTAINERS:.spec.containers[*].name
+
+kubectl get po --all-namespaces {range .items[*]}{.metadata.name}{“\t”}{end}
+
+备份
+
+echo "$(docker ps  | grep -v IMAGE | awk '{print $2}' )
+$(docker-bs ps | grep -v IMAGE | awk '{print $2}' )" | sort -u | while read image ; do docker save $image&gt;$(echo $image | tr '[/:]' _).tar ; done
+
+加Label
+
+cat /etc/hosts | grep -E "\scu[0-9]\s" | awk '{print "kubectl label nodes "$1" hostname="$2}' | while read line ; do sh -c "$line" ; done
+
+扩容
+
+[root@cu2 kubernetes]# kubectl run redis --image=redis:3.2.8 
+[root@cu2 kubernetes]# kubectl scale --replicas=9 deployment/redis
+
+ echo " $( kubectl describe pods hadoop-master2 | grep -E "Node|Container ID" | awk -F/ '{print $NF}' | tr '\n' ' ' | awk '{print "ssh "$1" \rdocker exec -ti "$2" bash"}' ) "
+</code></pre>
+
+<p>测试DNS是否成功：</p>
+
+<pre><code>[root@cu2 kube-deploy]# vi busybox.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox
+  namespace: default
+spec:
+  containers:
+  - image: busybox
+    command:
+      - sleep
+      - "3600"
+    imagePullPolicy: IfNotPresent
+    name: busybox
+  restartPolicy: Always
+
+[root@cu3 kube-deploy]# kubectl create -f busybox.yaml 
+pod "busybox" created
+[root@cu3 kube-deploy]# kubectl get pods 
+NAME      READY     STATUS              RESTARTS   AGE
+busybox   0/1       ContainerCreating   0          11s
+[root@cu3 kube-deploy]# kubectl get pods 
+NAME      READY     STATUS    RESTARTS   AGE
+busybox   1/1       Running   0          1m
+[root@cu3 kube-deploy]# kubectl exec -ti busybox -- nslookup kubernetes.default
+Server:    10.0.0.10
+Address 1: 10.0.0.10 kube-dns.kube-system.svc.cluster.local
+
+Name:      kubernetes.default
+Address 1: 10.0.0.1 kubernetes.default.svc.cluster.local
+
+用容器的MYSQL的做客户端
+
+kubectl run -it --rm --image=mysql:5.6 mysql-client -- mysql -h mysql -ppassword
+</code></pre>
+
+<p>小结一点：日志的重要性！</p>
+
+<pre><code>[root@cu2 kubenetes]# docker ps -a | grep kubelet
+[root@cu2 kubenetes]# docker logs --tail=200 7432da457558
+
+E0417 11:39:40.194844   22528 configmap.go:174] Couldn't get configMap hadoop/dta-hadoop-config: configmaps "dta-hadoop-config" not found
+E0417 11:39:40.194910   22528 configmap.go:174] Couldn't get configMap hadoop/dta-bin-config: configmaps "dta-bin-config" not found
+</code></pre>
+
+<p>监控heapster的一些错误，还没调好</p>
+
+<pre><code>[root@cu2 ~]# kubectl exec -ti heapster-564189836-shn2q -n kube-system -- sh
+/ # 
+/ # 
+没pod的数据
+/ # /heapster --source=https://kubernetes.default --sink=log --heapster-port=8083 -v 10
+
+E0329 10:11:53.823641       1 reflector.go:203] k8s.io/heapster/metrics/processors/node_autoscaling_enricher.go:100: Failed to list *api.Node: Get https://kubernetes.default/api/v1/nodes?resourceVersion=0: dial tcp 10.0.0.1:443: i/o timeout
+
+
+$heapster/metrics
+$heapster/api/v1/model/debug/allkeys
+</code></pre>
+
+<p>其他一些配置</p>
+
+<pre><code>
+other_args=" --registry-mirror=https://docker.mirrors.ustc.edu.cn "
+
+--insecure-registry gcr.io 
+
+iptables -S -t nat
+</code></pre>
+
+<h2>其他一些资源</h2>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/concepts/cluster-administration/resource-usage-monitoring/">https://kubernetes.io/docs/concepts/cluster-administration/resource-usage-monitoring/</a></li>
+<li><p><a href="https://github.com/kubernetes/heapster/tree/v1.3.0/deploy/kube-config/influxdb">https://github.com/kubernetes/heapster/tree/v1.3.0/deploy/kube-config/influxdb</a></p></li>
+<li><p><a href="https://github.com/kubernetes/heapster/blob/master/docs/debugging.md">https://github.com/kubernetes/heapster/blob/master/docs/debugging.md</a></p></li>
+<li><p><a href="https://docs.docker.com/v1.12/engine/installation/linux/centos/">https://docs.docker.com/v1.12/engine/installation/linux/centos/</a></p></li>
+<li><p><a href="https://github.com/CodisLabs/codis/blob/release3.2/Dockerfile">https://github.com/CodisLabs/codis/blob/release3.2/Dockerfile</a></p></li>
+<li><a href="https://github.com/sporkmonger/redis-k8s/blob/master/redis.yaml">https://github.com/sporkmonger/redis-k8s/blob/master/redis.yaml</a></li>
+<li><a href="https://github.com/sobotklp/kubernetes-redis-cluster/blob/master/redis-cluster.yml">https://github.com/sobotklp/kubernetes-redis-cluster/blob/master/redis-cluster.yml</a></li>
+</ul>
+
+
+<p>statefulset</p>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/">https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/</a></li>
+<li><a href="https://kubernetes.io/docs/tutorials/stateful-application/run-stateful-application/">https://kubernetes.io/docs/tutorials/stateful-application/run-stateful-application/</a></li>
+<li><a href="https://kubernetes.io/docs/tutorials/stateful-application/run-replicated-stateful-application/">https://kubernetes.io/docs/tutorials/stateful-application/run-replicated-stateful-application/</a></li>
+</ul>
+
 
 <p>&ndash;END</p>
 ]]></content>
@@ -525,7 +716,7 @@ BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallb
 <li><a href="/blog/2016/04/08/snappy-centos5-on-hive-on-spark/">Hive-on-spark Snappy on Centos5</a></li>
 </ul>
 </li>
-<li><a href="/blog/2016/05/05/hdfs-heterogeneous-storage.markdown">HDFS RamDisk内存缓冲</a></li>
+<li><a href="/blog/2016/05/05/hdfs-heterogeneous-storage">HDFS RamDisk内存缓冲</a></li>
 </ul>
 
 
@@ -643,7 +834,7 @@ BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallb
 
 <ul>
 <li><a href="/blog/2013/02/26/linux-top-command-mannual/">top</a></li>
-<li>nagios
+<li><del>nagios</del>
 
 <ul>
 <li><a href="/blog/2015/09/25/nagios-start-guide/">Nagios监控主机</a></li>
@@ -652,8 +843,8 @@ BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallb
 <li><del>cacti</del>    Ganglia更简单
 
 <ul>
-<li><a href="/blog/2015/09/22/cacti-start-guide/">Cacti监控主机</a></li>
-<li><a href="/blog/2015/10/13/cacti-batch-adding-configurations/">Cacti批量添加配置</a></li>
+<li><a href="/blog/2015/09/22/cacti-start-guide/"><del>Cacti监控主机</del></a></li>
+<li><a href="/blog/2015/10/13/cacti-batch-adding-configurations/"><del>Cacti批量添加配置</del></a></li>
 </ul>
 </li>
 <li>ganglia
@@ -661,6 +852,7 @@ BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallb
 <ul>
 <li><a href="/blog/2014/07/18/install-ganglia-on-redhat/"><del>Install Ganglia on Redhat5+</del></a> 手动安装依赖太麻烦了！</li>
 <li><a href="/blog/2016/01/23/install-and-config-ganglia-on-redhat-2/">安装配置Ganglia(2)</a></li>
+<li><a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a></li>
 <li><a href="/blog/2016/02/01/ganglia-python-extension/">Ganglia扩展-Python</a></li>
 <li><a href="/blog/2016/02/25/ganglia-web-ui-views/">Ganglia页自定义视图</a></li>
 </ul>

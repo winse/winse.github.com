@@ -4,7 +4,7 @@
   <title><![CDATA[Category: K8s | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/k8s/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-07-09T14:52:33+00:00</updated>
+  <updated>2017-08-05T12:01:16+00:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,810 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Kubeadm部署kubernetes]]></title>
+    <link href="http://winseliu.com/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/"/>
+    <updated>2017-07-30T12:18:33+00:00</updated>
+    <id>http://winseliu.com/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7</id>
+    <content type="html"><![CDATA[<p>官网文档差，删文档倒是不手软。使用脚本启动、安装的文档（docker-multinode）已经删掉了，现在都推荐使用kubeadm来进行安装。</p>
+
+<p>本文使用代理在master上安装并缓冲rpm、以及下载docker镜像，然后做本地YUM仓库和拷贝镜像到其他worker节点的方式来部署集群。下一篇再介绍在拥有kubelet/kubeadm rpm、以及k8s docker镜像的情况下怎么去部署一个新的k8s集群。</p>
+
+<p>这里使用两台虚拟机做测试：</p>
+
+<ul>
+<li>k8s kube-master : 192.168.191.138</li>
+<li>woker1 : 192.168.191.139</li>
+</ul>
+
+
+<h2>修改主机名，改时间、时区，防火墙</h2>
+
+<pre><code>hostnamectl --static set-hostname k8s 
+hostname k8s 
+
+rm -rf /etc/localtime 
+ln -s /usr/share/zoneinfo/Asia/Shanghai /etc/localtime 
+
+systemctl disable firewalld ; service firewalld stop
+</code></pre>
+
+<h2>安装docker</h2>
+
+<ul>
+<li><a href="https://docs.docker.com/v1.12/engine/installation/linux/rhel/">https://docs.docker.com/v1.12/engine/installation/linux/rhel/</a></li>
+<li><a href="https://yum.dockerproject.org/repo/main/centos/7/Packages/">https://yum.dockerproject.org/repo/main/centos/7/Packages/</a> 打开看下1.12的具体版本</li>
+<li><a href="https://docs.docker.com/v1.12/engine/admin/systemd/">https://docs.docker.com/v1.12/engine/admin/systemd/</a>  *</li>
+</ul>
+
+
+<pre><code>
+tee /etc/yum.repos.d/docker.repo &lt;&lt;-'EOF'
+[dockerrepo]
+name=Docker Repository
+baseurl=https://yum.dockerproject.org/repo/main/centos/7/
+enabled=1
+gpgcheck=1
+gpgkey=https://yum.dockerproject.org/gpg
+EOF
+
+yum list docker-engine --showduplicates
+
+yum install docker-engine-1.12.6 docker-engine-selinux-1.12.6 -y
+systemctl enable docker ; systemctl start docker
+</code></pre>
+
+<h2>翻墙安装配置</h2>
+
+<p>具体操作参考 <a href="/blog/2017/02/04/privoxy-http-proxy-for-shadowsocks">使用Privoxy把shadowsocks转换为Http代理</a></p>
+
+<p></p>
+
+<pre><code>[root@k8s ~]# yum install -y epel-release ; yum install -y python-pip 
+[root@k8s ~]# pip install shadowsocks
+[root@k8s ~]# vi /etc/shadowsocks.json 
+[root@k8s ~]# sslocal -c /etc/shadowsocks.json 
+[root@k8s ~]# curl --socks5-hostname 127.0.0.1:1080 www.google.com
+
+[root@k8s ~]# yum install privoxy -y
+[root@k8s ~]# vi /etc/privoxy/config 
+...
+forward-socks5 / 127.0.0.1:1080 .
+listen-address 192.168.191.138:8118
+
+[root@k8s ~]# systemctl enable privoxy
+[root@k8s ~]# systemctl start privoxy
+
+[root@k8s ~]# curl -x 192.168.191.138:8118 www.google.com
+
+等k8s安装启动好后，把privoxy的服务disable掉
+[root@k8s ~]# systemctl disable privoxy.service
+</code></pre>
+
+<h2>下载kubectl（怪了，这个竟然可以直接下载）</h2>
+
+<p>变化好快，现在都1.7.2了！ <a href="https://kubernetes.io/docs/tasks/tools/install-kubectl/">https://kubernetes.io/docs/tasks/tools/install-kubectl/</a></p>
+
+<p>在master机器（常用的操作机器）安装即可。</p>
+
+<pre><code>curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+chmod +x ./kubectl
+mv ./kubectl /usr/local/bin/kubectl
+
+# 启用shell的提示/自动完成autocompletion
+echo "source &lt;(kubectl completion bash)" &gt;&gt; ~/.bashrc
+
+[root@k8s ~]# kubectl version 
+Client Version: version.Info{Major:"1", Minor:"7", GitVersion:"v1.7.2", GitCommit:"922a86cfcd65915a9b2f69f3f193b8907d741d9c", GitTreeState:"clean", BuildDate:"2017-07-21T08:23:22Z", GoVersion:"go1.8.3", Compiler:"gc", Platform:"linux/amd64"}
+The connection to the server localhost:8080 was refused - did you specify the right host or port?
+</code></pre>
+
+<p></p>
+
+<h2>通过VPN安装kubelet和kubeadm</h2>
+
+<p>参考 <a href="https://kubernetes.io/docs/setup/independent/install-kubeadm/#installing-kubelet-and-kubeadm">https://kubernetes.io/docs/setup/independent/install-kubeadm/#installing-kubelet-and-kubeadm</a></p>
+
+<p>You will install these packages on all of your machines:</p>
+
+<ul>
+<li>kubelet: the component that runs on all of the machines in your cluster and does things like starting pods and containers.</li>
+<li>kubeadm: the command to bootstrap the cluster.</li>
+</ul>
+
+
+<p>所有机器都要安装的，我们先在master节点上通过代理安装这两个软件，并把安装的所有rpm缓冲起来。</p>
+
+<ul>
+<li>配置kubernetes的仓库源：</li>
+</ul>
+
+
+<pre><code>cat &lt;&lt;EOF &gt; /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
+        https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOF
+
+sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config 
+setenforce 0
+
+yum-config-manager --enable kubernetes
+</code></pre>
+
+<ul>
+<li>YUM配置socks5代理： <a href="https://unix.stackexchange.com/questions/43654/how-to-use-socks-proxy-with-yum">https://unix.stackexchange.com/questions/43654/how-to-use-socks-proxy-with-yum</a></li>
+</ul>
+
+
+<p></p>
+
+<p>修改yum的配置，增加代理，并缓冲（用于其他机器安装）</p>
+
+<pre><code>[root@k8s ~]# vi /etc/yum.conf 
+keepcache=1
+...
+proxy=socks5://127.0.0.1:1080
+</code></pre>
+
+<ul>
+<li>安装并启动kubelet：</li>
+</ul>
+
+
+<pre><code>yum install -y kubelet kubeadm
+
+[root@k8s ~]# systemctl enable kubelet &amp;&amp; systemctl start kubelet
+Created symlink from /etc/systemd/system/multi-user.target.wants/kubelet.service to /etc/systemd/system/kubelet.service.
+[root@k8s ~]# 
+</code></pre>
+
+<h2>通过VPN安装初始化集群（主要是配置代理下载docker容器）</h2>
+
+<p>由于是直接docker去获取镜像的，首先需要修改docker的配置。</p>
+
+<p>参考 <a href="https://docs.docker.com/v1.12/engine/admin/systemd/#/http-proxy">https://docs.docker.com/v1.12/engine/admin/systemd/#/http-proxy</a></p>
+
+<ul>
+<li>配置代理并重启docker、kubelet</li>
+</ul>
+
+
+<pre><code>[root@k8s ~]# systemctl enable docker
+
+[root@k8s ~]# mkdir -p /etc/systemd/system/docker.service.d/
+[root@k8s ~]# vi /etc/systemd/system/docker.service.d/http-proxy.conf
+[Service]
+Environment="HTTP_PROXY=http://192.168.191.138:8118/" "HTTPS_PROXY=http://192.168.191.138:8118/" "NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,192.168.191.138"
+
+[root@k8s ~]# systemctl daemon-reload
+[root@k8s ~]# systemctl restart docker
+</code></pre>
+
+<p>docker和kubelet的cgroup驱动方式不同，需要修复配置：<a href="https://github.com/kubernetes/kubeadm/issues/103">https://github.com/kubernetes/kubeadm/issues/103</a></p>
+
+<pre><code>前面已经启动了kubelet，有如下的错误日志
+[root@k8s ~]# journalctl -xeu kubelet
+Jul 29 09:11:24 k8s kubelet[48557]: error: failed to run Kubelet: failed to create kubelet: misconfiguration: kubelet cgroup driver: "systemd" is different from docker cgroup driver: "cgr
+
+修改配置
+[root@k8s ~]# vi /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+Environment="KUBELET_CGROUP_ARGS=--cgroup-driver=cgroupfs"
+
+[root@k8s ~]# systemctl daemon-reload
+[root@k8s ~]# service kubelet restart
+Redirecting to /bin/systemctl restart  kubelet.service
+</code></pre>
+
+<ul>
+<li>使用kubeadm进行初始化</li>
+</ul>
+
+
+<p><a href="https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/">https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/</a> （可以使用 &ndash;kubernetes-version 来指定k8s的版本）</p>
+
+<pre><code># 配置代理，kubeadm有部分请求应该也是需要走代理的（前面用脚本安装过multinode on docker的经历猜测的）
+
+export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8,192.168.191.138"
+export https_proxy=http://192.168.191.138:8118/
+export http_proxy=http://192.168.191.138:8118/
+
+# 使用reset重置，网络代理的配置修改了多次（kubeadm初始换过程失败过），还有前几次的初始化没有配置pod地址段
+
+[root@k8s ~]# kubeadm reset
+[preflight] Running pre-flight checks
+[reset] Stopping the kubelet service
+[reset] Unmounting mounted directories in "/var/lib/kubelet"
+[reset] Removing kubernetes-managed containers
+[reset] Deleting contents of stateful directories: [/var/lib/kubelet /etc/cni/net.d /var/lib/dockershim /var/lib/etcd]
+[reset] Deleting contents of config directories: [/etc/kubernetes/manifests /etc/kubernetes/pki]
+[reset] Deleting files: [/etc/kubernetes/admin.conf /etc/kubernetes/kubelet.conf /etc/kubernetes/controller-manager.conf /etc/kubernetes/scheduler.conf]
+
+# 使用flannel需要指定pod的网卡地址段（文档要整体看一遍才能少踩坑，囧）
+
+[root@k8s ~]# kubeadm init --skip-preflight-checks --pod-network-cidr=10.244.0.0/16
+[kubeadm] WARNING: kubeadm is in beta, please do not use it for production clusters.
+[init] Using Kubernetes version: v1.7.2
+[init] Using Authorization modes: [Node RBAC]
+[preflight] Skipping pre-flight checks
+[kubeadm] WARNING: starting in 1.8, tokens expire after 24 hours by default (if you require a non-expiring token use --token-ttl 0)
+[certificates] Generated CA certificate and key.
+[certificates] Generated API server certificate and key.
+[certificates] API Server serving cert is signed for DNS names [k8s kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local] and IPs [10.96.0.1 192.168.191.138]
+[certificates] Generated API server kubelet client certificate and key.
+[certificates] Generated service account token signing key and public key.
+[certificates] Generated front-proxy CA certificate and key.
+[certificates] Generated front-proxy client certificate and key.
+[certificates] Valid certificates and keys now exist in "/etc/kubernetes/pki"
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/scheduler.conf"
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/admin.conf"
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/kubelet.conf"
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/controller-manager.conf"
+[apiclient] Created API client, waiting for the control plane to become ready  
+&lt;-&gt; 这里会停的比较久，要去下载镜像，然后还得启动容器
+[apiclient] All control plane components are healthy after 293.004469 seconds
+[token] Using token: 2af779.b803df0b1effb3d9
+[apiconfig] Created RBAC rules
+[addons] Applied essential addon: kube-proxy
+[addons] Applied essential addon: kube-dns
+
+Your Kubernetes master has initialized successfully!
+
+To start using your cluster, you need to run (as a regular user):
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  http://kubernetes.io/docs/admin/addons/
+
+You can now join any number of machines by running the following on each node
+as root:
+
+  kubeadm join --token 2af779.b803df0b1effb3d9 192.168.191.138:6443
+
+[root@k8s ~]# 
+</code></pre>
+
+<p>监控安装情况命令有： <code>docker ps</code>, <code>docker images</code>, <code>journalctl -xeu kubelet</code> (/var/log/messages) 。</p>
+
+<p>如果有镜像下载和容器新增，说明安装过程在进行中。否则得检查下你的代理是否正常工作了！</p>
+
+<p>初始化完成后，配置kubectl的kubeconfig。一般都是主节点了，直接在节点执行下面命令：</p>
+
+<pre><code>[root@k8s ~]# mkdir -p $HOME/.kube
+[root@k8s ~]# cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+[root@k8s ~]# chown $(id -u):$(id -g) $HOME/.kube/config
+[root@k8s ~]# 
+[root@k8s ~]# ll ~/.kube/
+total 8
+drwxr-xr-x. 3 root root   23 Jul 29 21:39 cache
+-rw-------. 1 root root 5451 Jul 29 22:57 config
+</code></pre>
+
+<p></p>
+
+<p><a href="http://tonybai.com/2016/12/30/install-kubernetes-on-ubuntu-with-kubeadm/">使用Kubeadm安装Kubernetes</a> 介绍了很多作者自己安装过程，以及遇到的问题，非常详细。安装的差不多才发现这篇文章，感觉好迟，如果早点找到，至少安装的时刻心安一点啊。</p>
+
+<p>OK，服务启动了，但是 dns容器 还没有正常启动。由于我们的网络组建还没有安装好啊。其实官网也有说明，但是这安装的顺序也是醉了。</p>
+
+<p> <a href="https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/">https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/</a></p>
+
+<h2>安装flannel</h2>
+
+<p>参考： <a href="https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/#pod-network">https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/#pod-network</a></p>
+
+<pre><code>kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel-rbac.yml
+</code></pre>
+
+<p>flannel启动了后，再等一阵，dns才会启动好。</p>
+
+<h2>安装dashboard</h2>
+
+<pre><code>现在就一台机器，得让master也能跑pods。 
+https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/#master-isolation
+
+[root@k8s ~]# kubectl taint nodes --all node-role.kubernetes.io/master-
+node "k8s" untainted
+
+# https://lukemarsden.github.io/docs/user-guide/ui/
+# 部署dashboard
+
+[root@k8s ~]# kubectl create -f https://rawgit.com/kubernetes/dashboard/master/src/deploy/kubernetes-dashboard.yaml
+
+[root@k8s ~]# kubectl get pods --all-namespaces 看看dashboard的情况
+
+[root@k8s ~]# kubectl get services --all-namespaces
+NAMESPACE     NAME                   CLUSTER-IP      EXTERNAL-IP   PORT(S)         AGE
+default       kubernetes             10.96.0.1       &lt;none&gt;        443/TCP         1h
+kube-system   kube-dns               10.96.0.10      &lt;none&gt;        53/UDP,53/TCP   1h
+kube-system   kubernetes-dashboard   10.107.103.17   &lt;none&gt;        80/TCP          9m
+</code></pre>
+
+<p>用 <a href="https://master:6443/ui">https://master:6443/ui</a> 访问不了，可以直接用k8s的service地址访问 <a href="http://10.107.103.17/#!/overview?namespace=kube-system">http://10.107.103.17/#!/overview?namespace=kube-system</a></p>
+
+<p></p>
+
+<p>或者通过 <strong> proxy </strong> 访问UI：<a href="https://github.com/kubernetes/kubernetes/issues/44275">https://github.com/kubernetes/kubernetes/issues/44275</a></p>
+
+<p>先运行proxy，启动代理程序：</p>
+
+<pre><code>[root@k8s ~]# kubectl proxy
+Starting to serve on 127.0.0.1:8001
+</code></pre>
+
+<p>然后访问： <a href="http://localhost:8001/ui">http://localhost:8001/ui</a></p>
+
+<h2>所有的pods、镜像、容器</h2>
+
+<p>基本的东西都跑起来，还是挺激动啊！！第N次安装部署K8S了啊，每次都还是得像坐过山车一样啊！</p>
+
+<p></p>
+
+<pre><code>[root@k8s ~]# kubectl get pods --all-namespaces -o wide
+NAMESPACE     NAME                                    READY     STATUS    RESTARTS   AGE       IP                NODE
+kube-system   etcd-k8s                                1/1       Running   0          9h        192.168.191.138   k8s
+kube-system   kube-apiserver-k8s                      1/1       Running   0          9h        192.168.191.138   k8s
+kube-system   kube-controller-manager-k8s             1/1       Running   0          9h        192.168.191.138   k8s
+kube-system   kube-dns-2425271678-qwx9f               3/3       Running   0          9h        10.244.0.2        k8s
+kube-system   kube-flannel-ds-s5f63                   2/2       Running   0          9h        192.168.191.138   k8s
+kube-system   kube-proxy-4pjkg                        1/1       Running   0          9h        192.168.191.138   k8s
+kube-system   kube-scheduler-k8s                      1/1       Running   0          9h        192.168.191.138   k8s
+kube-system   kubernetes-dashboard-3313488171-xl25m   1/1       Running   0          8h        10.244.0.3        k8s
+[root@k8s ~]# docker images
+REPOSITORY                                               TAG                 IMAGE ID            CREATED             SIZE
+gcr.io/google_containers/kubernetes-dashboard-amd64      v1.6.3              691a82db1ecd        35 hours ago        139 MB
+gcr.io/google_containers/kube-apiserver-amd64            v1.7.2              4935105a20b1        8 days ago          186.1 MB
+gcr.io/google_containers/kube-proxy-amd64                v1.7.2              13a7af96c7e8        8 days ago          114.7 MB
+gcr.io/google_containers/kube-controller-manager-amd64   v1.7.2              2790e95830f6        8 days ago          138 MB
+gcr.io/google_containers/kube-scheduler-amd64            v1.7.2              5db1f9874ae0        8 days ago          77.18 MB
+quay.io/coreos/flannel                                   v0.8.0-amd64        9db3bab8c19e        2 weeks ago         50.73 MB
+gcr.io/google_containers/k8s-dns-sidecar-amd64           1.14.4              38bac66034a6        4 weeks ago         41.81 MB
+gcr.io/google_containers/k8s-dns-kube-dns-amd64          1.14.4              a8e00546bcf3        4 weeks ago         49.38 MB
+gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64     1.14.4              f7f45b9cb733        4 weeks ago         41.41 MB
+gcr.io/google_containers/etcd-amd64                      3.0.17              243830dae7dd        5 months ago        168.9 MB
+gcr.io/google_containers/pause-amd64                     3.0                 99e59f495ffa        15 months ago       746.9 kB
+[root@k8s ~]# docker ps 
+CONTAINER ID        IMAGE                                                                                                                            COMMAND                  CREATED             STATUS              PORTS               NAMES
+631dc2cab02e        gcr.io/google_containers/kubernetes-dashboard-amd64@sha256:2c4421ed80358a0ee97b44357b6cd6dc09be6ccc27dfe9d50c9bfc39a760e5fe      "/dashboard --insecur"   7 hours ago         Up 7 hours                              k8s_kubernetes-dashboard_kubernetes-dashboard-3313488171-xl25m_kube-system_0e41b8ce-747a-11e7-befb-000c2944b96c_0
+8f5e4d044a6e        gcr.io/google_containers/pause-amd64:3.0                                                                                         "/pause"                 8 hours ago         Up 8 hours                              k8s_POD_kubernetes-dashboard-3313488171-xl25m_kube-system_0e41b8ce-747a-11e7-befb-000c2944b96c_0
+65881f9dd2dd        gcr.io/google_containers/k8s-dns-sidecar-amd64@sha256:97074c951046e37d3cbb98b82ae85ed15704a290cce66a8314e7f846404edde9           "/sidecar --v=2 --log"   9 hours ago         Up 9 hours                              k8s_sidecar_kube-dns-2425271678-qwx9f_kube-system_ebffa28d-746d-11e7-befb-000c2944b96c_0
+994c2ec99663        gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64@sha256:aeeb994acbc505eabc7415187cd9edb38cbb5364dc1c2fc748154576464b3dc2     "/dnsmasq-nanny -v=2 "   9 hours ago         Up 9 hours                              k8s_dnsmasq_kube-dns-2425271678-qwx9f_kube-system_ebffa28d-746d-11e7-befb-000c2944b96c_0
+5b181a0ed809        gcr.io/google_containers/k8s-dns-kube-dns-amd64@sha256:40790881bbe9ef4ae4ff7fe8b892498eecb7fe6dcc22661402f271e03f7de344          "/kube-dns --domain=c"   9 hours ago         Up 9 hours                              k8s_kubedns_kube-dns-2425271678-qwx9f_kube-system_ebffa28d-746d-11e7-befb-000c2944b96c_0
+a0d3f166e992        gcr.io/google_containers/pause-amd64:3.0                                                                                         "/pause"                 9 hours ago         Up 9 hours                              k8s_POD_kube-dns-2425271678-qwx9f_kube-system_ebffa28d-746d-11e7-befb-000c2944b96c_0
+9cc7d6faf0b0        quay.io/coreos/flannel@sha256:a8116d095a1a2c4e5a47d5fea20ef82bd556bafe15bb2e6aa2c79f8f22f9586f                                   "/bin/sh -c 'set -e -"   9 hours ago         Up 9 hours                              k8s_install-cni_kube-flannel-ds-s5f63_kube-system_7ba88f5a-7470-11e7-befb-000c2944b96c_0
+2f41276df8e1        quay.io/coreos/flannel@sha256:a8116d095a1a2c4e5a47d5fea20ef82bd556bafe15bb2e6aa2c79f8f22f9586f                                   "/opt/bin/flanneld --"   9 hours ago         Up 9 hours                              k8s_kube-flannel_kube-flannel-ds-s5f63_kube-system_7ba88f5a-7470-11e7-befb-000c2944b96c_0
+bc25b0c70264        gcr.io/google_containers/pause-amd64:3.0                                                                                         "/pause"                 9 hours ago         Up 9 hours                              k8s_POD_kube-flannel-ds-s5f63_kube-system_7ba88f5a-7470-11e7-befb-000c2944b96c_0
+dc3e5641c273        gcr.io/google_containers/kube-proxy-amd64@sha256:d455480e81d60e0eff3415675278fe3daec6f56c79cd5b33a9b76548d8ab4365                "/usr/local/bin/kube-"   9 hours ago         Up 9 hours                              k8s_kube-proxy_kube-proxy-4pjkg_kube-system_ebee4211-746d-11e7-befb-000c2944b96c_0
+6b8b9515f562        gcr.io/google_containers/pause-amd64:3.0                                                                                         "/pause"                 9 hours ago         Up 9 hours                              k8s_POD_kube-proxy-4pjkg_kube-system_ebee4211-746d-11e7-befb-000c2944b96c_0
+72418ca8e94f        gcr.io/google_containers/kube-apiserver-amd64@sha256:a9ccc205760319696d2ef0641de4478ee90fb0b75fbe6c09b1d64058c8819f97            "kube-apiserver --ser"   9 hours ago         Up 9 hours                              k8s_kube-apiserver_kube-apiserver-k8s_kube-system_b69ae39bcc54d7b75c2e7325359f8f87_0
+9c9a3f5d8919        gcr.io/google_containers/pause-amd64:3.0                                                                                         "/pause"                 9 hours ago         Up 9 hours                              k8s_POD_kube-apiserver-k8s_kube-system_b69ae39bcc54d7b75c2e7325359f8f87_0
+43a1751ff2bb        gcr.io/google_containers/etcd-amd64@sha256:d83d3545e06fb035db8512e33bd44afb55dea007a3abd7b17742d3ac6d235940                      "etcd --listen-client"   9 hours ago         Up 9 hours                              k8s_etcd_etcd-k8s_kube-system_9fb4ea9ba2043e46f75eec93827c4ce3_0
+b110fff29f66        gcr.io/google_containers/pause-amd64:3.0                                                                                         "/pause"                 9 hours ago         Up 9 hours                              k8s_POD_etcd-k8s_kube-system_9fb4ea9ba2043e46f75eec93827c4ce3_0
+66ae85500128        gcr.io/google_containers/kube-scheduler-amd64@sha256:b2e897138449e7a00508dc589b1d4b71e56498a4d949ff30eb07b1e9d665e439            "kube-scheduler --add"   9 hours ago         Up 9 hours                              k8s_kube-scheduler_kube-scheduler-k8s_kube-system_16c371efb8946190c917cd90c2ede8ca_0
+d4343be2f2d0        gcr.io/google_containers/pause-amd64:3.0                                                                                         "/pause"                 9 hours ago         Up 9 hours                              k8s_POD_kube-scheduler-k8s_kube-system_16c371efb8946190c917cd90c2ede8ca_0
+9934cd83f6b3        gcr.io/google_containers/kube-controller-manager-amd64@sha256:2b268ab9017fadb006ee994f48b7222375fe860dc7bd14bf501b98f0ddc2961b   "kube-controller-mana"   9 hours ago         Up 9 hours                              k8s_kube-controller-manager_kube-controller-manager-k8s_kube-system_6b826c4e872a9635472113953c4538f0_0
+acc1d7d90180        gcr.io/google_containers/pause-amd64:3.0                                                                                         "/pause"                 9 hours ago         Up 9 hours                              k8s_POD_kube-controller-manager-k8s_kube-system_6b826c4e872a9635472113953c4538f0_0
+[root@k8s ~]# 
+</code></pre>
+
+<h2>Woker节点部署</h2>
+
+<p>时间，主机名，/etc/hosts，防火墙，selinux, 无密钥登录，安装docker-1.12.6就不再赘述了。</p>
+
+<p>直接用master的yum缓冲，还有docker镜像直接拷贝：</p>
+
+<pre><code># master机器已安装httpd服务
+
+[root@k8s html]# ln -s /var/cache/yum/x86_64/7/kubernetes/packages/ k8s 
+[root@k8s k8s]# createrepo .          
+
+# 把镜像全部拷到worker节点
+
+[root@k8s ~]# docker save $( echo $( docker images | grep -v REPOSITORY | awk '{print $1}' ) ) | ssh worker1 docker load 
+
+# 配置私有仓库源
+
+[root@worker1 yum.repos.d]# vi k8s.repo
+[k8s]
+name=Kubernetes
+baseurl=http://master/k8s
+enabled=1
+gpgcheck=0
+[root@worker1 yum.repos.d]# yum list | grep k8s 
+kubeadm.x86_64                             1.7.2-0                     k8s      
+kubectl.x86_64                             1.7.2-0                     k8s      
+kubelet.x86_64                             1.7.2-0                     k8s      
+kubernetes-cni.x86_64                      0.5.1-0                     k8s      
+
+[root@worker1 yum.repos.d]# yum install -y kubelet kubeadm                          
+
+# 修改cgroup-driver
+
+[root@worker1 yum.repos.d]# vi /etc/systemd/system/kubelet.service.d/10-kubeadm.conf  
+[root@worker1 yum.repos.d]# 
+[root@worker1 yum.repos.d]# service docker restart
+Redirecting to /bin/systemctl restart  docker.service
+
+[root@worker1 yum.repos.d]# systemctl daemon-reload
+[root@worker1 yum.repos.d]# systemctl enable kubelet.service
+[root@worker1 yum.repos.d]# service kubelet restart
+Redirecting to /bin/systemctl restart  kubelet.service
+
+# worker节点加入集群（初始化）
+
+[root@worker1 yum.repos.d]# kubeadm join --token 2af779.b803df0b1effb3d9 192.168.191.138:6443 --skip-preflight-checks
+[kubeadm] WARNING: kubeadm is in beta, please do not use it for production clusters.
+[preflight] Skipping pre-flight checks
+[discovery] Trying to connect to API Server "192.168.191.138:6443"
+[discovery] Created cluster-info discovery client, requesting info from "https://192.168.191.138:6443"
+[discovery] Cluster info signature and contents are valid, will use API Server "https://192.168.191.138:6443"
+[discovery] Successfully established connection with API Server "192.168.191.138:6443"
+[bootstrap] Detected server version: v1.7.2
+[bootstrap] The server supports the Certificates API (certificates.k8s.io/v1beta1)
+[csr] Created API client to obtain unique certificate for this node, generating keys and certificate signing request
+[csr] Received signed certificate from the API server, generating KubeConfig...
+[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/kubelet.conf"
+
+Node join complete:
+* Certificate signing request sent to master and response
+  received.
+* Kubelet informed of new secure connection details.
+
+Run 'kubectl get nodes' on the master to see this machine join.
+
+[root@k8s ~]# kubectl get nodes
+NAME      STATUS    AGE       VERSION
+k8s       Ready     10h       v1.7.2
+worker1   Ready     57s       v1.7.2
+</code></pre>
+
+<p>主节点运行的flannel网络组件是个 daemonset 的pod，只要加入到集群就会在每个节点上启动。不需要额外的操作。</p>
+
+<h2>关于重启：</h2>
+
+<p>使用RPM安装的好处是：程序系统都帮你管理了：</p>
+
+<ul>
+<li>worker节点重启后，kubelet会把所有的服务都带起来。</li>
+<li>master重启后，需要等一段时间，因为pods启动有顺序/依赖：dns需要等flannel，dashboard需要等dns。</li>
+</ul>
+
+
+<h2>POD间连通性测试</h2>
+
+<pre><code>[root@k8s ~]# kubectl run hello-nginx --image=nginx --port=80
+deployment "hello-nginx" created
+[root@k8s ~]# kubectl get pods
+NAME                           READY     STATUS              RESTARTS   AGE
+hello-nginx-1507731416-qh3fx   0/1       ContainerCreating   0          8s
+
+# 脚本启动新的dockerd并配置加速器，下载好然后save导入都本地docker实例
+# https://github.com/winse/docker-hadoop/blob/master/kube-deploy/hadoop/docker-download-mirror.sh
+
+[root@k8s ~]# ./docker-download-mirror.sh nginx 
+Using default tag: latest
+latest: Pulling from library/nginx
+
+94ed0c431eb5: Pull complete 
+9406c100a1c3: Pull complete 
+aa74daafd50c: Pull complete 
+Digest: sha256:788fa27763db6d69ad3444e8ba72f947df9e7e163bad7c1f5614f8fd27a311c3
+Status: Downloaded newer image for nginx:latest
+eb78099fbf7f: Loading layer [==================================================&gt;] 58.42 MB/58.42 MB
+29f11c413898: Loading layer [==================================================&gt;] 52.74 MB/52.74 MB
+af5bd3938f60: Loading layer [==================================================&gt;] 3.584 kB/3.584 kB
+Loaded image: nginx:latest
+
+# 拷贝镜像到其他的worker节点，就几台机器搭建register服务感觉太重了
+
+[root@k8s ~]# docker save nginx | ssh worker1 docker load
+Loaded image: nginx:latest
+
+# 查看效果
+
+[root@k8s ~]# kubectl get pods
+NAME                           READY     STATUS    RESTARTS   AGE
+hello-nginx-1507731416-qh3fx   1/1       Running   0          1m
+
+# 扩容
+
+[root@k8s ~]# kubectl scale --replicas=4 deployment/hello-nginx  
+deployment "hello-nginx" scaled
+[root@k8s ~]# kubectl get pods -o wide
+NAME                           READY     STATUS    RESTARTS   AGE       IP           NODE
+hello-nginx-1507731416-h39f0   1/1       Running   0          34s       10.244.0.6   k8s
+hello-nginx-1507731416-mnj3m   1/1       Running   0          34s       10.244.1.3   worker1
+hello-nginx-1507731416-nsdr2   1/1       Running   0          34s       10.244.0.7   k8s
+hello-nginx-1507731416-qh3fx   1/1       Running   0          5m        10.244.1.2   worker1
+[root@k8s ~]# kubectl delete deployment hello-nginx
+
+这容器太简洁了，PING都没有啊！！搞个熟悉的linux版本，再跑一遍
+
+kubectl run centos --image=centos:centos6 --command -- vi 
+kubectl scale --replicas=4 deployment/centos
+
+[root@k8s ~]# kubectl get pods  -o wide 
+NAME                      READY     STATUS    RESTARTS   AGE       IP            NODE
+centos-3024873821-4490r   1/1       Running   0          49s       10.244.1.6    worker1
+centos-3024873821-k74gn   1/1       Running   0          11s       10.244.0.11   k8s
+centos-3024873821-l27xs   1/1       Running   0          11s       10.244.0.10   k8s
+centos-3024873821-pbg52   1/1       Running   0          11s       10.244.1.7    worker1
+
+[root@k8s ~]# kubectl exec -ti centos-3024873821-4490r bash
+[root@centos-3024873821-4490r /]# yum install -y iputils
+[root@centos-3024873821-4490r /]# ping 10.244.0.11 -c 1
+
+以上IP都是互通的，从master节点PING这些IP也是通的。
+
+# 查看pod状态的命令
+kubectl -n ${NAMESPACE} describe pod ${POD_NAME}
+kubectl -n ${NAMESPACE} logs ${POD_NAME} -c ${CONTAINER_NAME}
+</code></pre>
+
+<h2>源IP问题</h2>
+
+<p>原来部署hadoop的时刻，已经遇到过了。知道根源所在，但是这次使用的cni（直接改 <code>dockerd --ip-masq=false</code> 配置仅修改的是docker0）。</p>
+
+<p>先来重现下源ip问题：</p>
+
+<pre><code>./pod_bash centos-3024873821-t3k3r 
+
+yum install epel-release -y ; yum install nginx -y ;
+service nginx start
+
+ifconfig
+
+# nginx安装后，访问查看access_log
+
+less /var/log/nginx/access.log 
+</code></pre>
+
+<p>在 kube-flannel.yml 中添加 cni-conf.json 网络配置为 <code>"ipMasq": false,</code>，没啥效果，在iptables上面还是有cni的cbr0的MASQUERADE（SNAT）。</p>
+
+<p></p>
+
+<p>用比较极端点的方式，删掉docker0，替换成cni0。 <a href="https://kubernetes.io/docs/getting-started-guides/scratch/#docker">https://kubernetes.io/docs/getting-started-guides/scratch/#docker</a></p>
+
+<p></p>
+
+<p>把docker的网卡设置成cni0 :</p>
+
+<pre><code>iptables -t nat -F
+ip link set docker0 down
+ip link delete docker0
+
+[root@worker1 ~]# cat /usr/lib/systemd/system/docker.service  | grep dockerd
+ExecStart=/usr/bin/dockerd --bridge=cni0 --ip-masq=false 
+</code></pre>
+
+<p>但是机器重启后cni0这个网卡设备就没有了，导致机器重启后docker启动失败！TODO：这个问题还挺麻烦，以后再针对性的处理！！</p>
+
+<pre><code>&gt; Aug 01 08:36:10 k8s dockerd[943]: time="2017-08-01T08:36:10.017266292+08:00" level=fatal msg="Error starting daemon: Error initializing network controller: Error creating default \"bridge\" network: bridge device with non default name cni0 must be created manually"
+
+ip link add name cni0 type bridge
+ip link set dev cni0 mtu 1460
+# 让flannel来设置IP地址
+# ip addr add $NODE_X_BRIDGE_ADDR dev cni0
+ip link set dev cni0 up
+
+systemctl restart docker kubelet
+</code></pre>
+
+<p></p>
+
+<h2>DNS</h2>
+
+<p><a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/">https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/</a></p>
+
+<pre><code># cat busybox.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox
+  namespace: default
+spec:
+  containers:
+  - image: busybox
+    command:
+      - sleep
+      - "3600"
+    imagePullPolicy: IfNotPresent
+    name: busybox
+  restartPolicy: Always
+
+kubectl create -f busybox.yaml
+kubectl exec -ti busybox -- nslookup kubernetes.default
+kubectl exec busybox cat /etc/resolv.conf
+</code></pre>
+
+<p></p>
+
+<h2>DNS问题</h2>
+
+<p>在master节点上的POD容器内访问DNS（service）服务，但是返回数据却是域名服务内部POD的IP，而不是Service服务的IP地址。</p>
+
+<pre><code>[root@k8s ~]# kubectl describe services kube-dns -n kube-system
+Name:                   kube-dns
+Namespace:              kube-system
+Labels:                 k8s-app=kube-dns
+                        kubernetes.io/cluster-service=true
+                        kubernetes.io/name=KubeDNS
+Annotations:            &lt;none&gt;
+Selector:               k8s-app=kube-dns
+Type:                   ClusterIP
+IP:                     10.96.0.10
+Port:                   dns     53/UDP
+Endpoints:              10.244.0.30:53
+Port:                   dns-tcp 53/TCP
+Endpoints:              10.244.0.30:53
+Session Affinity:       None
+Events:                 &lt;none&gt;
+
+[root@k8s ~]# kubectl exec -ti centos-3024873821-b6d48 -- nslookup kubernetes.default
+;; reply from unexpected source: 10.244.0.30#53, expected 10.96.0.10#53
+;; reply from unexpected source: 10.244.0.30#53, expected 10.96.0.10#53
+</code></pre>
+
+<p></p>
+
+<h4>相关问题的一些资源：</h4>
+
+<ul>
+<li>*<a href="https://stackoverflow.com/questions/41574846/kubernetes-pods-replying-with-unexpected-source-for-dns-queries">kubernetes pods replying with unexpected source for DNS queries</a></li>
+<li><a href="https://stackoverflow.com/questions/34001758/kube-proxy-in-iptables-mode-is-not-working/34008477#34008477">https://stackoverflow.com/questions/34001758/kube-proxy-in-iptables-mode-is-not-working/34008477#34008477</a></li>
+<li><p><a href="https://github.com/coreos/coreos-kubernetes/issues/572">cni plugin + flannel on v1.3: pods can&rsquo;t route to service IPs</a></p></li>
+<li><p><a href="https://www.slideshare.net/kubecon/container-network-interface-network-plugins-for-kubernetes-and-beyond">Container Network Interface: Network Plugins for Kubernetes and beyond</a></p></li>
+<li><a href="http://www.dasblinkenlichten.com/understanding-cni-container-networking-interface/">Understanding CNI (Container Networking Interface)</a></li>
+<li><a href="https://feisky.gitbooks.io/kubernetes/network/flannel/">Kubernetes指南 - flannel</a></li>
+</ul>
+
+
+<h4>解决方法：</h4>
+
+<p><strong> kube-proxy加上 &ndash;masquerade-all 解决了。</strong></p>
+
+<h4>处理方法：</h4>
+
+<blockquote><p><a href="https://kubernetes.io/docs/admin/kubeadm/">https://kubernetes.io/docs/admin/kubeadm/</a>
+kubeadm installs add-on components via the API server. Right now this is the internal DNS server and the kube-proxy DaemonSet.</p></blockquote>
+
+<p>修改有技巧，由于kube-proxy是内部容器启动的。也没找到yaml配置，不能直接改配置文件，这里有如下两种方式修改：</p>
+
+<ul>
+<li>通过Dashboard页面的编辑对配置进行修改</li>
+<li>通过edit命令对配置进行修改：<code>kubectl edit daemonset kube-proxy -n=kube-system</code> 命令添加 <code>- --masquerade-all</code></li>
+</ul>
+
+
+<h2>Heapster</h2>
+
+<p>参考</p>
+
+<ul>
+<li><a href="https://github.com/kubernetes/heapster/blob/master/docs/influxdb.md">https://github.com/kubernetes/heapster/blob/master/docs/influxdb.md</a></li>
+<li><a href="https://kubernetes.io/docs/tasks/debug-application-cluster/resource-usage-monitoring/">https://kubernetes.io/docs/tasks/debug-application-cluster/resource-usage-monitoring/</a></li>
+</ul>
+
+
+<pre><code>[root@k8s ~]# git clone https://github.com/kubernetes/heapster.git
+Cloning into 'heapster'...
+remote: Counting objects: 26084, done.
+remote: Total 26084 (delta 0), reused 0 (delta 0), pack-reused 26084
+Receiving objects: 100% (26084/26084), 36.33 MiB | 2.66 MiB/s, done.
+Resolving deltas: 100% (13084/13084), done.
+Checking out files: 100% (2531/2531), done.
+
+[root@k8s ~]# cd heapster/
+[root@k8s heapster]# kubectl create -f deploy/kube-config/influxdb/
+deployment "monitoring-grafana" created
+service "monitoring-grafana" created
+serviceaccount "heapster" created
+deployment "heapster" created
+service "heapster" created
+deployment "monitoring-influxdb" created
+service "monitoring-influxdb" created
+[root@k8s heapster]# kubectl create -f deploy/kube-config/rbac/heapster-rbac.yaml 
+clusterrolebinding "heapster" created
+</code></pre>
+
+<p>其他资源：</p>
+
+<ul>
+<li><a href="http://codingwater.org/2016/08/18/Kubernetes%E9%9B%86%E7%BE%A4%E6%80%A7%E8%83%BD%E7%9B%91%E6%8E%A7-Heapster/">http://codingwater.org/2016/08/18/Kubernetes%E9%9B%86%E7%BE%A4%E6%80%A7%E8%83%BD%E7%9B%91%E6%8E%A7-Heapster/</a></li>
+<li><a href="http://www.pangxie.space/docker/727">http://www.pangxie.space/docker/727</a></li>
+<li><a href="http://jerrymin.blog.51cto.com/3002256/1904460">http://jerrymin.blog.51cto.com/3002256/1904460</a></li>
+<li><a href="http://blog.takipi.com/graphite-vs-grafana-build-the-best-monitoring-architecture-for-your-application/?utm_content=buffer607cd&amp;utm_medium=social&amp;utm_source=twitter.com&amp;utm_campaign=buffer">http://blog.takipi.com/graphite-vs-grafana-build-the-best-monitoring-architecture-for-your-application/?utm_content=buffer607cd&amp;utm_medium=social&amp;utm_source=twitter.com&amp;utm_campaign=buffer</a></li>
+</ul>
+
+
+<p>DNS的问题耗了比较多的时间。弄好了DNS后，以及docker镜像的下载都OK的话，就万事俱备了。最后重新启动下dashboard就行了：</p>
+
+<pre><code>[root@k8s ~]# kubectl delete -f kubernetes-dashboard.yaml 
+[root@k8s ~]# kubectl create -f kubernetes-dashboard.yaml 
+</code></pre>
+
+<p>然后就可以在dashboard上看到美美的曲线图了。</p>
+
+<h2>harbor</h2>
+
+<p>参考 <a href="https://github.com/vmware/harbor/blob/master/docs/kubernetes_deployment.md">https://github.com/vmware/harbor/blob/master/docs/kubernetes_deployment.md</a></p>
+
+<p>日新月异啊，1.1.2版本了！！ 用迅雷直接下载 <a href="https://github.com/vmware/harbor/releases/download/v1.1.2/harbor-offline-installer-v1.1.2.tgz">https://github.com/vmware/harbor/releases/download/v1.1.2/harbor-offline-installer-v1.1.2.tgz</a>  这个地址。</p>
+
+<p>操作方式还是和原来的版本一样。也就是说可以用原来简化的脚本来安装！</p>
+
+<p>搭建好了后，会基本的使用就差不多了。测试环境资源有限，并且其实用save和load也能解决（咔咔）。</p>
+
+<h2>参考</h2>
+
+<p>官方的一些资源</p>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/getting-started-guides/scratch/#kube-proxy">https://kubernetes.io/docs/getting-started-guides/scratch/#kube-proxy</a></li>
+<li><a href="https://kubernetes.io/docs/admin/kubeadm/">https://kubernetes.io/docs/admin/kubeadm/</a></li>
+<li><a href="https://kubernetes.io/docs/setup/independent/install-kubeadm/">https://kubernetes.io/docs/setup/independent/install-kubeadm/</a></li>
+<li><a href="https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/">https://kubernetes.io/docs/setup/independent/create-cluster-kubeadm/</a></li>
+<li><a href="https://lukemarsden.github.io/docs/getting-started-guides/kubeadm/">https://lukemarsden.github.io/docs/getting-started-guides/kubeadm/</a></li>
+<li><a href="https://kubernetes.io/docs/admin/kubeadm/#running-kubeadm-without-an-internet-connection">https://kubernetes.io/docs/admin/kubeadm/#running-kubeadm-without-an-internet-connection</a></li>
+<li><a href="https://kubernetes.io/docs/admin/kubeadm/#environment-variables">https://kubernetes.io/docs/admin/kubeadm/#environment-variables</a></li>
+<li><a href="https://kubernetes.io/docs/tasks/administer-cluster/kubeadm-upgrade-1-7/">https://kubernetes.io/docs/tasks/administer-cluster/kubeadm-upgrade-1-7/</a> 怎么升级，以及如何制定特定的k8s版本</li>
+</ul>
+
+
+<p>使用kubeadm安装集群</p>
+
+<ul>
+<li><a href="http://tonybai.com/2016/12/30/install-kubernetes-on-ubuntu-with-kubeadm/">http://tonybai.com/2016/12/30/install-kubernetes-on-ubuntu-with-kubeadm/</a></li>
+<li><a href="http://tonybai.com/2016/12/30/install-kubernetes-on-ubuntu-with-kubeadm-2/">http://tonybai.com/2016/12/30/install-kubernetes-on-ubuntu-with-kubeadm-2/</a>  weave net网络</li>
+<li><a href="https://www.kubernetes.org.cn/1165.html">https://www.kubernetes.org.cn/1165.html</a> 就是上面第一篇，但是排版看起来跟舒服点</li>
+<li><a href="http://hairtaildai.com/blog/11">http://hairtaildai.com/blog/11</a> 安装似乎太顺利了，都没有遇到啥问题？</li>
+<li><a href="https://my.oschina.net/xdatk/blog/895645">https://my.oschina.net/xdatk/blog/895645</a> 这篇不推荐，太繁琐了，可以作为参考。很多贴的是内容，不知道改过啥！</li>
+</ul>
+
+
+<p>DNS问题参考</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/41574846/kubernetes-pods-replying-with-unexpected-source-for-dns-queries">https://stackoverflow.com/questions/41574846/kubernetes-pods-replying-with-unexpected-source-for-dns-queries</a></li>
+<li><a href="https://kubernetes.io/docs/admin/kube-proxy/">https://kubernetes.io/docs/admin/kube-proxy/</a></li>
+<li><p><a href="https://docs.docker.com/engine/admin/systemd/#httphttps-proxy">https://docs.docker.com/engine/admin/systemd/#httphttps-proxy</a></p></li>
+<li><p><a href="https://coreos.com/matchbox/docs/latest/bootkube-upgrades.html">https://coreos.com/matchbox/docs/latest/bootkube-upgrades.html</a> 命令行编辑的方法在这里看到的
+$ kubectl edit deployments kube-scheduler -n=kube-system
+$ kubectl edit deployments kube-controller-manager -n=kube-system
+$ kubectl edit daemonset kubelet -n=kube-system  &lt;===
+$ kubectl get nodes -o yaml | grep &lsquo;kubeletVersion|kubeProxyVersion&rsquo;</p></li>
+<li><p><a href="https://github.com/kubernetes/kubernetes/issues/34101">https://github.com/kubernetes/kubernetes/issues/34101</a>
+Ok, so it turns out that this flag is not enough, we still have an issue reaching kubernetes service IP. The simplest solution to this is to run kube-proxy with &ndash;proxy-mode=userspace. To enable this, you can use kubectl -n kube-system edit ds kube-proxy-amd64 &amp;&amp; kubectl -n kube-system delete pods -l name=kube-proxy-amd64.</p></li>
+<li><p><a href="https://github.com/kubernetes/kubernetes/issues/36835">https://github.com/kubernetes/kubernetes/issues/36835</a> To enable off-cluster bridging when &ndash;proxy-mode=iptables, also set &ndash;cluster-cidr.</p></li>
+<li><a href="https://github.com/kubernetes/kubeadm/issues/102">https://github.com/kubernetes/kubeadm/issues/102</a> proxy: clusterCIDR not specified, unable to distinguish between internal and external traffic</li>
+</ul>
+
+
+<p>其他一些资源</p>
+
+<ul>
+<li><a href="https://github.com/cookeem/kubeadm-ha/blob/master/README_CN.md">https://github.com/cookeem/kubeadm-ha/blob/master/README_CN.md</a></li>
+<li><p><a href="https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/">https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/</a>
+kubectl get pod -l app=nginx -o jsonpath=&lsquo;{range .items[*]}{.metadata.name}{&ldquo;\t&rdquo;}{.spec.containers[0].image}{&ldquo;\n&rdquo;}{end}&rsquo;
+kubectl patch statefulset web -p &lsquo;{&ldquo;spec&rdquo;:{&ldquo;updateStrategy&rdquo;:{&ldquo;type&rdquo;:&ldquo;RollingUpdate&rdquo;}}}</p></li>
+<li><p><a href="https://kubernetes.io/docs/concepts/workloads/controllers/jobs-run-to-completion/">https://kubernetes.io/docs/concepts/workloads/controllers/jobs-run-to-completion/</a> Replication Controllers</p></li>
+<li><a href="https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#restart-policy">https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#restart-policy</a> RestartPolicy</li>
+</ul>
+
+
+<p>&mdash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[K8s Hadoop Deploy]]></title>
@@ -25,6 +829,7 @@
 cd kube-deploy
 vi hosts
 vi k8s.profile
+# 把deploy同步到其他实体机，同时把k8s.profile映射到/etc/profile.d
 ./rsync-deploy.sh
 
 cd docker-multinode/
@@ -39,7 +844,9 @@ kubectl create -f hadoop-master2.yaml
 kubectl create -f hadoop-slaver.yaml 
 </code></pre>
 
-<p>Tip：使用一套配置就可以启动多个集群，在 <code>kubectl create</code> 后面加上 <code>-n namespace</code> 即可。</p>
+<p>Tip：其实使用一套配置就可以启动多个集群，在 <code>kubectl create</code> 后面加上 <code>-n namespace</code> 即可。</p>
+
+<p>比如：</p>
 
 <pre><code>[root@cu2 kubenetes]# kubectl create namespace hd1
 [root@cu2 kubenetes]# kubectl create namespace hd2
@@ -62,7 +869,7 @@ hd2           slaver-rc-r7g84                         1/1       Running   0     
 ...
 </code></pre>
 
-<p>现在想来其实就是 <strong> dockerd &ndash;ip-masq=false </strong>的问题（所有涉及的dockerd都需要加）。 还有就是一台机器单机下的容器互相访问，源IP都错也是安装了openvpn所导致对所有过eth0的都加了MASQUERADE。</p>
+<p>现在想来其实就是 <strong> dockerd &ndash;ip-masq=false </strong>的问题（所有涉及的dockerd都需要加）。 还有就是一台机器单机下的容器互相访问，源IP都错也是安装了openvpn所导致，对所有过eth0的都加了MASQUERADE。</p>
 
 <p>根源就在于请求的源地址被替换，也就是iptables的转发进行了SNAT。关于iptables转发这篇文章讲的非常清晰；<a href="http://fancyxinyu.blog.163.com/blog/static/18232136620136185434661/">IPtables之四：NAT原理和配置  </a> 。</p>
 
@@ -142,11 +949,17 @@ hd2           slaver-rc-r7g84                         1/1       Running   0     
 
 <h2>中间过程步骤记录</h2>
 
-<p>记录下中间通过yum安装etcd和flanneld的过程。物理机安装flanneld会把配置docker环境变量（/run/flannel/subnet.env）加入启动脚本。</p>
+<p>主要就是记录心路历程，如果以后遇到同样的问题能让自己快速回想起来。如果仅仅为了部署，可以跳过该部分，直接后最后的常用命令。</p>
+
+<p>记录下中间 <strong>通过yum安装etcd和flanneld</strong> 的过程。物理机安装flanneld会把配置docker环境变量（/run/flannel/subnet.env）加入启动脚本。</p>
 
 <pre><code>安装docker-v1.12
 https://docs.docker.com/v1.12/
 https://docs.docker.com/v1.12/engine/installation/linux/centos/
+
+# 删掉原来的
+yum-config-manager --disable docker-ce*
+yum remove -y docker-ce*
 
 sudo tee /etc/yum.repos.d/docker.repo &lt;&lt;-'EOF'
 [dockerrepo]
@@ -158,7 +971,11 @@ gpgkey=https://yum.dockerproject.org/gpg
 EOF
 
 https://yum.dockerproject.org/repo/main/centos/7/Packages/
+[root@cu3 ~]# yum --showduplicates list docker-engine | expand
+docker-engine.x86_64             1.12.6-1.el7.centos                  dockerrepo
+
 [root@cu3 yum.repos.d]# yum install docker-engine-1.12.6 docker-engine-selinux-1.12.6
+
 
 https://kubernetes.io/docs/getting-started-guides/centos/centos_manual_config/
 
@@ -231,6 +1048,184 @@ firewall-cmd --zone=trusted --add-source=10.0.0.0/8 --permanent
 firewall-cmd --zone=trusted --add-source=192.168.0.0/16 --permanent 
 firewall-cmd --reload
 </code></pre>
+
+<h2>一些有趣的命令</h2>
+
+<pre><code>查看用了哪些镜像
+
+[root@cu2 /]# kubectl get pods --all-namespaces -o jsonpath="{..image}" |\
+ tr -s '[[:space:]]' '\n' |\
+ sort |\
+ uniq -c
+      2 gcr.io/google_containers/dnsmasq-metrics-amd64:1.0
+      2 gcr.io/google_containers/exechealthz-amd64:1.2
+     12 gcr.io/google_containers/hyperkube-amd64:v1.5.5
+      2 gcr.io/google_containers/kube-addon-manager-amd64:v6.1
+      2 gcr.io/google_containers/kubedns-amd64:1.9
+      2 gcr.io/google_containers/kube-dnsmasq-amd64:1.4
+      2 gcr.io/google_containers/kubernetes-dashboard-amd64:v1.5.0
+
+
+修改默认kubectl的配置
+
+[root@cu2 ~]# vi $KUBECONFIG 
+apiVersion: v1
+kind: Config
+preferences: {}
+current-context: default
+clusters:
+- cluster:
+    server: http://localhost:8080
+  name: default
+contexts:
+- context:
+    cluster: default
+    user: ""
+    namespace: kube-system
+  name: default
+users: {}
+
+如果kubectl没有下载，可以从镜像启动的容器里面获取
+
+[root@cu2 docker-multinode]# docker exec -ti 0c0360bcc2c3 bash
+root@cu2:/# cp kubectl /var/run/
+
+[root@cu2 run]# mv kubectl /data/kubernetes/kube-deploy/docker-multinode/
+
+获取容器IP
+
+https://kubernetes.io/docs/user-guide/jsonpath/
+[root@cu2 ~]# kubectl get pods -o wide -l run=redis -o jsonpath={..podIP}
+10.1.75.2 10.1.75.3 10.1.58.3 10.1.58.2 10.1.33.3
+
+网络共用: --net
+
+docker run -ti --entrypoint=sh --net=container:8e9f21956469f4ef7e5b9d91798788ab83f380795d2825cdacae0ed28f5ba03b gcr.io/google_containers/skydns-amd64:1.0
+
+
+格式化输出
+
+kubectl get pods --all-namespaces -o jsonpath="{.items[*].spec.containers[*].image}"  
+
+[root@cu2 ~]# export POD_COL="custom-columns=NAME:.metadata.name,RESTARTS:.status.containerStatuses[*].restartCount,CONTAINERS:.spec.containers[*].name,IP:.status.podIP,HOST:.spec.nodeName"
+[root@cu2 ~]# kubectl get pods -o $POD_COL 
+
+kubectl get po -l k8s-app=kube-dns -o=custom-columns=NAME:.metadata.name,CONTAINERS:.spec.containers[*].name
+
+[root@cu2 kubernetes]# kubectl get po --all-namespaces -o=custom-columns=NAME:.metadata.name,CONTAINERS:.spec.containers[*].name
+
+kubectl get po --all-namespaces {range .items[*]}{.metadata.name}{“\t”}{end}
+
+备份
+
+echo "$(docker ps  | grep -v IMAGE | awk '{print $2}' )
+$(docker-bs ps | grep -v IMAGE | awk '{print $2}' )" | sort -u | while read image ; do docker save $image&gt;$(echo $image | tr '[/:]' _).tar ; done
+
+加Label
+
+cat /etc/hosts | grep -E "\scu[0-9]\s" | awk '{print "kubectl label nodes "$1" hostname="$2}' | while read line ; do sh -c "$line" ; done
+
+扩容
+
+[root@cu2 kubernetes]# kubectl run redis --image=redis:3.2.8 
+[root@cu2 kubernetes]# kubectl scale --replicas=9 deployment/redis
+
+ echo " $( kubectl describe pods hadoop-master2 | grep -E "Node|Container ID" | awk -F/ '{print $NF}' | tr '\n' ' ' | awk '{print "ssh "$1" \rdocker exec -ti "$2" bash"}' ) "
+</code></pre>
+
+<p>测试DNS是否成功：</p>
+
+<pre><code>[root@cu2 kube-deploy]# vi busybox.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox
+  namespace: default
+spec:
+  containers:
+  - image: busybox
+    command:
+      - sleep
+      - "3600"
+    imagePullPolicy: IfNotPresent
+    name: busybox
+  restartPolicy: Always
+
+[root@cu3 kube-deploy]# kubectl create -f busybox.yaml 
+pod "busybox" created
+[root@cu3 kube-deploy]# kubectl get pods 
+NAME      READY     STATUS              RESTARTS   AGE
+busybox   0/1       ContainerCreating   0          11s
+[root@cu3 kube-deploy]# kubectl get pods 
+NAME      READY     STATUS    RESTARTS   AGE
+busybox   1/1       Running   0          1m
+[root@cu3 kube-deploy]# kubectl exec -ti busybox -- nslookup kubernetes.default
+Server:    10.0.0.10
+Address 1: 10.0.0.10 kube-dns.kube-system.svc.cluster.local
+
+Name:      kubernetes.default
+Address 1: 10.0.0.1 kubernetes.default.svc.cluster.local
+
+用容器的MYSQL的做客户端
+
+kubectl run -it --rm --image=mysql:5.6 mysql-client -- mysql -h mysql -ppassword
+</code></pre>
+
+<p>小结一点：日志的重要性！</p>
+
+<pre><code>[root@cu2 kubenetes]# docker ps -a | grep kubelet
+[root@cu2 kubenetes]# docker logs --tail=200 7432da457558
+
+E0417 11:39:40.194844   22528 configmap.go:174] Couldn't get configMap hadoop/dta-hadoop-config: configmaps "dta-hadoop-config" not found
+E0417 11:39:40.194910   22528 configmap.go:174] Couldn't get configMap hadoop/dta-bin-config: configmaps "dta-bin-config" not found
+</code></pre>
+
+<p>监控heapster的一些错误，还没调好</p>
+
+<pre><code>[root@cu2 ~]# kubectl exec -ti heapster-564189836-shn2q -n kube-system -- sh
+/ # 
+/ # 
+没pod的数据
+/ # /heapster --source=https://kubernetes.default --sink=log --heapster-port=8083 -v 10
+
+E0329 10:11:53.823641       1 reflector.go:203] k8s.io/heapster/metrics/processors/node_autoscaling_enricher.go:100: Failed to list *api.Node: Get https://kubernetes.default/api/v1/nodes?resourceVersion=0: dial tcp 10.0.0.1:443: i/o timeout
+
+
+$heapster/metrics
+$heapster/api/v1/model/debug/allkeys
+</code></pre>
+
+<p>其他一些配置</p>
+
+<pre><code>
+other_args=" --registry-mirror=https://docker.mirrors.ustc.edu.cn "
+
+--insecure-registry gcr.io 
+
+iptables -S -t nat
+</code></pre>
+
+<h2>其他一些资源</h2>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/concepts/cluster-administration/resource-usage-monitoring/">https://kubernetes.io/docs/concepts/cluster-administration/resource-usage-monitoring/</a></li>
+<li><p><a href="https://github.com/kubernetes/heapster/tree/v1.3.0/deploy/kube-config/influxdb">https://github.com/kubernetes/heapster/tree/v1.3.0/deploy/kube-config/influxdb</a></p></li>
+<li><p><a href="https://github.com/kubernetes/heapster/blob/master/docs/debugging.md">https://github.com/kubernetes/heapster/blob/master/docs/debugging.md</a></p></li>
+<li><p><a href="https://docs.docker.com/v1.12/engine/installation/linux/centos/">https://docs.docker.com/v1.12/engine/installation/linux/centos/</a></p></li>
+<li><p><a href="https://github.com/CodisLabs/codis/blob/release3.2/Dockerfile">https://github.com/CodisLabs/codis/blob/release3.2/Dockerfile</a></p></li>
+<li><a href="https://github.com/sporkmonger/redis-k8s/blob/master/redis.yaml">https://github.com/sporkmonger/redis-k8s/blob/master/redis.yaml</a></li>
+<li><a href="https://github.com/sobotklp/kubernetes-redis-cluster/blob/master/redis-cluster.yml">https://github.com/sobotklp/kubernetes-redis-cluster/blob/master/redis-cluster.yml</a></li>
+</ul>
+
+
+<p>statefulset</p>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/">https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/</a></li>
+<li><a href="https://kubernetes.io/docs/tutorials/stateful-application/run-stateful-application/">https://kubernetes.io/docs/tutorials/stateful-application/run-stateful-application/</a></li>
+<li><a href="https://kubernetes.io/docs/tutorials/stateful-application/run-replicated-stateful-application/">https://kubernetes.io/docs/tutorials/stateful-application/run-replicated-stateful-application/</a></li>
+</ul>
+
 
 <p>&ndash;END</p>
 ]]></content>
@@ -1294,7 +2289,7 @@ E0228 10:56:05.408129    2516 kubelet.go:2049] Container runtime sanity check fa
 <li><p>问题5：dashboard/dns配置注意点</p></li>
 <li><p>imagePullPolicy 就是个坑啊！改成IfNotPresent <a href="https://kubernetes.io/docs/user-guide/images/">https://kubernetes.io/docs/user-guide/images/</a></p></li>
 <li>namespace 也不能改，好像会写数据库然后指定的namespace就是kube-system</li>
-<li>apiserver 由于没有addon-manager的支持，暂时使用http获取数据（DNS的问题确认了很久，kube2sky容器日志有报错，修改server地址有http方式才解决）</li>
+<li>apiserver 由于没有addon-manager的支持，暂时使用http获取数据（DNS的问题确认了很久，kube2sky容器日志有报错，修改server地址为http方式才解决）</li>
 </ul>
 
 
@@ -1476,467 +2471,6 @@ kubectl get pods --all-namespaces -o jsonpath="{.items[*].spec.containers[*].ima
 * <a href="http://www.infoq.com/cn/articles/kubernetes-and-cloud-native-applications-part01">http://www.infoq.com/cn/articles/kubernetes-and-cloud-native-applications-part01</a>
 * <a href="http://www.codingwater.org/2016/08/25/Docker-Kubernetes-Intro/">http://www.codingwater.org/2016/08/25/Docker-Kubernetes-Intro/</a>
 * <a href="https://github.com/kubernetes/kubernetes/tree/v1.0.1/cluster/addons/dns">https://github.com/kubernetes/kubernetes/tree/v1.0.1/cluster/addons/dns</a></p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[K8s集群部署]]></title>
-    <link href="http://winseliu.com/blog/2017/02/25/k8s-docker-multinode/"/>
-    <updated>2017-02-25T13:25:26+00:00</updated>
-    <id>http://winseliu.com/blog/2017/02/25/k8s-docker-multinode</id>
-    <content type="html"><![CDATA[<p>前面讲了在本机windows安装方式，最近在linux多机器上尝试部署并操作。</p>
-
-<p>先看官网的文档<a href="https://kubernetes.io/docs/getting-started-guides/docker-multinode/">Portable Multi-Node Cluster</a>。这里根据文章进行实际操作记录下来，k8s是真的好用管理起来很方便。</p>
-
-<h2>安装docker（on centos7）</h2>
-
-<h4>不正确的打开方式</h4>
-
-<p>不要用这种方式安装</p>
-
-<pre><code>[root@k8s ~]# yum install docker
-
-[root@k8s ~]# docker -v
-Docker version 1.12.5, build 047e51b/1.12.5
-</code></pre>
-
-<p>否则运行报错的daemon语句，报错：</p>
-
-<pre><code>[root@k8s docker-multinode]# docker daemon -H unix:///var/run/docker-bootstrap.sock -p /var/run/docker-bootstrap.pid --iptables=false --ip-masq=false --bridge=none --graph=/var/lib/docker-bootstrap --exec-root=/var/run/docker-bootstrap
-exec: "dockerd": executable file not found in $PATH
-</code></pre>
-
-<p>先清理旧的软件</p>
-
-<pre><code>yum remove docker -y
-yum remove container-selinux -y
-yum remove docker-common -y
-</code></pre>
-
-<h4>安装docker的正确姿势</h4>
-
-<ul>
-<li><a href="https://docs.docker.com/engine/installation/linux/centos/">Get Docker for CentOS</a></li>
-</ul>
-
-
-<p>变化很快，直接按官网的操作。</p>
-
-<pre><code>[root@k8s ~]# yum install -y yum-utils
-
-[root@k8s ~]# yum-config-manager --add-repo https://docs.docker.com/engine/installation/linux/repo_files/centos/docker.repo
-Loaded plugins: fastestmirror, langpacks
-Repository base is listed more than once in the configuration
-Repository updates is listed more than once in the configuration
-Repository extras is listed more than once in the configuration
-Repository centosplus is listed more than once in the configuration
-adding repo from: https://docs.docker.com/engine/installation/linux/repo_files/centos/docker.repo
-grabbing file https://docs.docker.com/engine/installation/linux/repo_files/centos/docker.repo to /etc/yum.repos.d/docker.repo
-repo saved to /etc/yum.repos.d/docker.repo
-
-[root@k8s ~]# yum makecache fast
-[root@k8s ~]# yum -y install docker-engine
-
-# 把保存数据的目录转移到大磁盘下面去
-先启动服务来产生docker目录
-[root@k8s ~]# service docker start
-[root@k8s ~]# service docker stop
-
-[root@k8s ~]# rm -rf /var/lib/docker/
-[root@k8s ~]# ln -s /data/var/lib/docker /var/lib/
-</code></pre>
-
-<h2>安装k8s</h2>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/getting-started-guides/docker-multinode/">Portable Multi-Node Cluster</a></li>
-</ul>
-
-
-<h4>准备</h4>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/user-guide/prereqs/">Installing and Setting up kubectl</a></li>
-<li><a href="https://kubernetes.io/docs/getting-started-guides/kubectl/">https://kubernetes.io/docs/getting-started-guides/kubectl/</a></li>
-</ul>
-
-
-<pre><code># 删除旧的容器
-[root@k8s docker-multinode]# docker rm -f `docker ps -a | grep -v IMAGE | awk '{print $1}'`
-[root@k8s docker-multinode]# docker ps -a
-
-# 下载部署的工具
-[root@k8s ~]# yum install git -y
-[root@k8s ~]# git clone https://github.com/kubernetes/kube-deploy
-
-# kubectl安装，需要代理你懂得 
-export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8"
-export https_proxy=http://k8s:8118/
-export http_proxy=http://k8s:8118/
-
-[root@k8s ~]# curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
-  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
-                                 Dload  Upload   Total   Spent    Left  Speed
-100 48.0M  100 48.0M    0     0  1692k      0  0:00:29  0:00:29 --:--:-- 2351k
-[root@k8s ~]# chmod +x kubectl 
-[root@k8s ~]# mkdir ~/bin
-[root@k8s ~]# mv ./kubectl ~/bin/
-
-[root@k8s ~]# source &lt;(kubectl completion bash)
-[root@k8s ~]# echo "source &lt;(kubectl completion bash)" &gt;&gt; ~/.bashrc
-== 修改成下面的语句，不然你scp、rsync就不能用了: https://my.oschina.net/leejun2005/blog/342865
-== export PATH=~/bin:$PATH
-== [[ $- == *i* ]] &amp;&amp; source &lt;(kubectl completion bash)
-</code></pre>
-
-<h4>启动master</h4>
-
-<pre><code>[root@k8s ~]# cd kube-deploy/docker-multinode/
-[root@k8s docker-multinode]# ./master.sh 
-+++ [0206 19:07:23] K8S_VERSION is set to: v1.5.2
-+++ [0206 19:07:23] ETCD_VERSION is set to: 3.0.4
-+++ [0206 19:07:23] FLANNEL_VERSION is set to: v0.6.1
-+++ [0206 19:07:23] FLANNEL_IPMASQ is set to: true
-+++ [0206 19:07:23] FLANNEL_NETWORK is set to: 10.1.0.0/16
-+++ [0206 19:07:23] FLANNEL_BACKEND is set to: udp
-+++ [0206 19:07:23] RESTART_POLICY is set to: unless-stopped
-+++ [0206 19:07:23] MASTER_IP is set to: localhost
-+++ [0206 19:07:23] ARCH is set to: amd64
-+++ [0206 19:07:23] IP_ADDRESS is set to: 192.168.1.112
-+++ [0206 19:07:23] USE_CNI is set to: false
-+++ [0206 19:07:23] USE_CONTAINERIZED is set to: false
-+++ [0206 19:07:23] --------------------------------------------
-+++ [0206 19:07:23] Killing docker bootstrap...
-+++ [0206 19:07:24] Killing all kubernetes containers...
-Do you want to clean /var/lib/kubelet? [Y/n] y
-+++ [0206 19:07:27] Launching docker bootstrap...
-+++ [0206 19:07:28] Launching etcd...
-3ff0f0fd7a08282930449b2f496f786b9857f6290698d612cebc2086d1a1765c
-+++ [0206 19:07:31] Launching flannel...
-{"action":"set","node":{"key":"/coreos.com/network/config","value":"{ \"Network\": \"10.1.0.0/16\", \"Backend\": {\"Type\": \"udp\"}}","modifiedIndex":4,"createdIndex":4}}
-3651d077f453900a898ce6ad9fe67a7422f0c8084ec86b6e6a1a2ab6b9b1c629
-+++ [0206 19:07:33] FLANNEL_SUBNET is set to: 10.1.42.1/24
-+++ [0206 19:07:33] FLANNEL_MTU is set to: 1472
-+++ [0206 19:07:33] Restarting main docker daemon...
-+++ [0206 19:07:38] Restarted docker with the new flannel settings
-+++ [0206 19:07:38] Launching Kubernetes master components...
-d10130677853022fe37742437e39b21b3fcfbb90b3f24075457f469e238b0712
-+++ [0206 19:07:42] Done. It may take about a minute before apiserver is up.
-
-[root@k8s docker-multinode]# docker ps -a
-...一堆容器列表
-</code></pre>
-
-<p>如果有问题基本就是防火墙的问题（我遇到过的啊，下载镜像和本地firewall设置的问题）。</p>
-
-<p>上面安装kubectl时已经配置了代理地址。如果部署master的时刻pull镜像出错，那还得需要给docker配置代理增加配置 <strong> /etc/systemd/system/docker.service.d/http-proxy.conf </strong> / <strong> /usr/lib/systemd/system/docker.service </strong> 参考 <a href="https://docs.docker.com/engine/admin/systemd/#http-proxy">https://docs.docker.com/engine/admin/systemd/#http-proxy</a> 。具体错误详情及处理查看下面的【问题及处理】部分</p>
-
-<p><strong>安装启动好</strong>后，就可以通过浏览器图形界面来管理集群了(dashboard启动有问题的话查看后面的问题处理)： <a href="http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default">http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default</a></p>
-
-<h4>启动worker</h4>
-
-<p>下载安装软件的工作这里就不帖了，和master一样的：安装git、clone kube-deploy、docker。</p>
-
-<p>防火墙配置，master/slaves之间互通</p>
-
-<pre><code>centos7 firewall的add-source不知道怎么用的，反正加了地址也没效果；后面通过rule规则来实现。
-[root@bigdata-dev ~]# vi /etc/firewalld/zones/public.xml
-&lt;?xml version="1.0" encoding="utf-8"?&gt;
-&lt;zone&gt;
-  &lt;rule family="ipv4"&gt;
-    &lt;source address="192.168.1.112/32"/&gt;
-    &lt;accept/&gt;
-  &lt;/rule&gt;
-  &lt;service name="ssh"/&gt;
-  &lt;port protocol="tcp" port="80"/&gt;
-  &lt;port protocol="tcp" port="6379"/&gt;
-  &lt;port protocol="tcp" port="8080"/&gt;
-&lt;/zone&gt;
-[root@bigdata-dev ~]# firewall-cmd --complete-reload
-success
-[root@bigdata-dev ~]# firewall-cmd --list-all
-public (active)
-  target: default
-  icmp-block-inversion: no
-  interfaces: p4p1
-  sources: 
-  services: ssh
-  ports: 80/tcp 6379/tcp 8080/tcp
-  protocols: 
-  masquerade: no
-  forward-ports: 
-  sourceports: 
-  icmp-blocks: 
-  rich rules: 
-        rule family="ipv4" source address="192.168.1.112/32" accept
-
-[root@k8s ~]# cat /etc/firewalld/zones/public.xml
-&lt;?xml version="1.0" encoding="utf-8"?&gt;
-&lt;zone&gt;
-  &lt;rule family="ipv4"&gt;
-    &lt;source address="192.168.1.248"/&gt;
-    &lt;accept/&gt;
-  &lt;/rule&gt;
-  &lt;service name="ssh"/&gt;
-  &lt;port protocol="tcp" port="6443"/&gt;
-  &lt;port protocol="tcp" port="2379"/&gt;
-  &lt;port protocol="tcp" port="8118"/&gt;
-&lt;/zone&gt;
-</code></pre>
-
-<p>加载已经下载的镜像。从master拷贝过来（save/load）不要浪费VPN流量啦：</p>
-
-<pre><code>[root@bigdata-dev docker-multinode]# docker load &lt;k8s.tar
-</code></pre>
-
-<p>运行worker启动脚本：</p>
-
-<pre><code># 设置代理。如果有docker镜像下载失败的话再配置docker环境变量
-export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8"
-export https_proxy=http://k8s:8118/
-export http_proxy=http://k8s:8118/
-
-[root@bigdata-dev docker-multinode]# export MASTER_IP=192.168.1.112 
-[root@bigdata-dev docker-multinode]# ./worker.sh 
-+++ [0208 08:59:37] K8S_VERSION is set to: v1.5.2
-+++ [0208 08:59:37] ETCD_VERSION is set to: 3.0.4
-+++ [0208 08:59:37] FLANNEL_VERSION is set to: v0.6.1
-+++ [0208 08:59:37] FLANNEL_IPMASQ is set to: true
-+++ [0208 08:59:37] FLANNEL_NETWORK is set to: 10.1.0.0/16
-+++ [0208 08:59:37] FLANNEL_BACKEND is set to: udp
-+++ [0208 08:59:37] RESTART_POLICY is set to: unless-stopped
-+++ [0208 08:59:37] MASTER_IP is set to: 192.168.1.112
-+++ [0208 08:59:37] ARCH is set to: amd64
-+++ [0208 08:59:37] IP_ADDRESS is set to: 192.168.1.248
-+++ [0208 08:59:37] USE_CNI is set to: false
-+++ [0208 08:59:37] USE_CONTAINERIZED is set to: false
-+++ [0208 08:59:37] --------------------------------------------
-+++ [0208 08:59:37] Killing all kubernetes containers...
-+++ [0208 08:59:37] Launching docker bootstrap...
-+++ [0208 08:59:38] Launching flannel...
-+++ [0208 08:59:39] FLANNEL_SUBNET is set to: 10.1.42.1/24
-+++ [0208 08:59:39] FLANNEL_MTU is set to: 1472
-+++ [0208 08:59:39] Restarting main docker daemon...
-+++ [0208 08:59:43] Restarted docker with the new flannel settings
-+++ [0208 08:59:43] Launching Kubernetes worker components...
-1ce6ee6af709485668c9f170b1bc234b34d55d18e53116295c887c88046ca231
-+++ [0208 08:59:44] Done. After about a minute the node should be ready.
-</code></pre>
-
-<h2>查看集群状态</h2>
-
-<p>安装好了后，需要学习基本的管理操作</p>
-
-<ul>
-<li>交互式的学习一些基本概念命令 <a href="https://kubernetes.io/docs/tutorials/kubernetes-basics/">Kubernetes Basics</a></li>
-<li>常用的kubectl命令册子 <a href="https://kubernetes.io/docs/user-guide/kubectl-cheatsheet/">kubectl Cheat Sheet</a></li>
-</ul>
-
-
-<pre><code>[root@k8s ~]# kubectl cluster-info
-Kubernetes master is running at http://localhost:8080
-KubeDNS is running at http://localhost:8080/api/v1/proxy/namespaces/kube-system/services/kube-dns
-kubernetes-dashboard is running at http://localhost:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard
-
-To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
-
-[root@k8s ~]# kubectl get service
-NAME         CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
-kubernetes   10.0.0.1     &lt;none&gt;        443/TCP   16d
-
-[root@k8s ~]# kubectl get nodes
-NAME            STATUS    AGE
-192.168.1.112   Ready     16d
-192.168.1.248   Ready     16d
-
-[root@k8s ~]# kubectl get pods --namespace=kube-system
-NAME                                    READY     STATUS    RESTARTS   AGE
-k8s-master-192.168.1.112                4/4       Running   9          1d
-k8s-proxy-v1-4hp8c                      1/1       Running   0          1d
-k8s-proxy-v1-htrrf                      1/1       Running   0          1d
-kube-addon-manager-192.168.1.112        2/2       Running   0          1d
-kube-dns-4101612645-q0kcw               4/4       Running   0          1d
-kubernetes-dashboard-3543765157-hsls9   1/1       Running   0          1d
-
-dashboard运行正常的话，就可以通过浏览器查看以及管理集群
-== https://kubernetes.io/docs/user-guide/ui/
-== 走socks5代理
-http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default
-</code></pre>
-
-<h2>问题及处理</h2>
-
-<p>镜像或者启动失败的问题可以 <strong>set -x</strong> 输出脚本调试信息，获取到出错位置的命令单独重新执行来定位。</p>
-
-<p>另一种情况，脚本启动完成后，服务不能正常运行。重启机器，再次运行master后就不能访问dashboard了，把master机器的防火墙关闭就行了。github上有同样的一个问题<a href="https://github.com/kubernetes/dashboard/issues/916">https://github.com/kubernetes/dashboard/issues/916</a></p>
-
-<p>处理定位问题步骤如下：</p>
-
-<p>清理所有重新弄，无济于事</p>
-
-<pre><code>docker kill $(docker ps -q)
-docker rm $(docker ps -aq)
-[reboot]
-sudo rm -R /var/lib/kubelet
-sudo rm -R /var/run/kubernetes
-
-./turndown.sh &amp; ./master.sh 
-kubectl get pods --namespace=kube-system # 显示的dashboard容器启动总是失败，可以通过kubectl logs/docker logs查看。
-</code></pre>
-
-<p>重新定位问题</p>
-
-<pre><code>既然关闭防火墙能正常运行，下面通过拦截日志查看封堵日志
-[root@k8s ~]# firewall-cmd --set-log-denied=all
-
-[root@k8s ~]# less /var/log/messages
-Feb 25 00:04:30 k8s kernel: XFS (dm-32): Unmounting Filesystem
-Feb 25 00:04:30 k8s kernel: XFS (dm-32): Mounting V5 Filesystem
-Feb 25 00:04:30 k8s kernel: XFS (dm-32): Ending clean mount
-Feb 25 00:04:32 k8s kernel: FINAL_REJECT: IN=docker0 OUT= PHYSIN=veth2fd9745 MAC=02:42:cf:c5:2c:da:02:42:0a:01:49:03:08:00 SRC=10.1.73.3 DST=192.168.1.112 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=11531 DF PROTO=TCP SPT=38734 DPT=6443 WINDOW=28640 RES=0x00 SYN URGP=0 
-Feb 25 00:04:33 k8s kernel: FINAL_REJECT: IN=docker0 OUT= PHYSIN=veth2fd9745 MAC=02:42:cf:c5:2c:da:02:42:0a:01:49:03:08:00 SRC=10.1.73.3 DST=192.168.1.112 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=11532 DF PROTO=TCP SPT=38734 DPT=6443 WINDOW=28640 RES=0x00 SYN URGP=0 
-Feb 25 00:04:33 k8s dockerd: time="2017-02-25T00:04:33.935301481+08:00" level=error msg="containerd: deleting container" error="exit status 1: \"container dcb4a44031b96470eaef50eb8ac4ee2b9f958906702d94645c3a45c4852b6335 does not exist\\none or more of the container deletions failed\\n\""
-Feb 25 00:04:34 k8s kernel: XFS (dm-32): Unmounting Filesystem
-Feb 25 00:04:35 k8s systemd-udevd: inotify_add_watch(7, /dev/dm-32, 10) failed: No such file or directory
-Feb 25 00:04:36 k8s systemd-udevd: inotify_add_watch(7, /dev/dm-32, 10) failed: No such file or directory
-Feb 25 00:04:36 k8s dockerd: time="2017-02-25T00:04:36.406470062+08:00" level=error msg="Handler for GET /v1.25/containers/5bd86339f0dcd513da632ec300d4235d8a09c3f9546f751ac8874de411de3c10/json returned error: No such container: 5bd86339f0dcd513da632ec300d4235d8a09c3f9546f751ac8874de411de3c10"
-可以看出访问的端口6443被拦截了
-</code></pre>
-
-<p>开放6443端口dashboard启动成功（直接把放开ip段也行）。通过浏览器能正常访问</p>
-
-<p></p>
-
-<pre><code>[root@k8s ~]# firewall-cmd --zone=public --add-port=6443/tcp --permanent
-success
-[root@k8s ~]# firewall-cmd --reload
-success
-
-[root@k8s ~]# kubectl get pods --namespace=kube-system
-NAME                                    READY     STATUS    RESTARTS   AGE
-k8s-master-192.168.1.112                4/4       Running   1          9m
-k8s-proxy-v1-nzkgt                      1/1       Running   0          9m
-kube-addon-manager-192.168.1.112        2/2       Running   0          8m
-kube-dns-4101612645-k4j0s               4/4       Running   4          9m
-kubernetes-dashboard-3543765157-h5g5f   1/1       Running   6          9m
-等所有都Running才能通过dashboard查看
-</code></pre>
-
-<h2>使用</h2>
-
-<p>使用已有镜像（网上、本地）</p>
-
-<pre><code>[root@k8s ~]# kubectl run hello-nginx --image=nginx --port=80
-
-[root@k8s ~]# kubectl get pods
-NAME                           READY     STATUS    RESTARTS   AGE
-hello-nginx-2471083592-94pm7   1/1       Running   0          19m
-[root@k8s ~]# kubectl describe pod hello-nginx-2471083592-94pm7
-Name:           hello-nginx-2471083592-94pm7
-Namespace:      default
-Node:           192.168.1.248/192.168.1.248
-Start Time:     Fri, 24 Feb 2017 12:37:30 +0800
-Labels:         pod-template-hash=2471083592
-                run=hello-nginx
-Status:         Running
-IP:             10.1.42.3
-Controllers:    ReplicaSet/hello-nginx-2471083592
-</code></pre>
-
-<p>查看到pod的ip，登录Node对应的机器就可以直接通过IP访问了。IP与flannel0网卡在同一网段。</p>
-
-<p>定制镜像</p>
-
-<pre><code>[root@k8s ~]# docker pull centos:centos5
-[root@k8s ~]# docker pull centos:centos6
-[root@k8s ~]# docker pull centos:centos7
-
-把最新的修改提交保存为行的镜像。
-登录centos6，安装sshd后，启动sshd服务（产生key）。清理yum缓冲、临时文件/tmp、以及history等。写Dockerfile减小镜像的大小： https://hui.lu/reduce-docker-image-size/  
-[root@k8s ~]# docker run -t -i centos:centos6 
-...yum install -y openssh-server openssh-clients ; service sshd start ; yum clean all ; history -c ; rm -rf /tmp/*
-
-提交的名字一定要打标签tag
-[root@k8s ~]# docker ps -a
-[root@k8s ~]# docker commit CONTAINER_ID bigdata:v1
-查看下版本的历史
-[root@k8s ~]# docker history bigdata:v1
-
-[root@k8s ~]# docker images
-[root@k8s ~]# docker save centos:centos5 centos:centos6 centos:centos7 bigdata:v1 &gt;bigdata.tar
-
-拷贝
-[root@bigdata-dev ~]# scp k8s:~/bigdata.tar ./
-centos.tar                                                                                                                                               100%  668MB  11.1MB/s   01:00    
-[root@bigdata-dev ~]# docker load &lt;bigdata.tar
-[root@bigdata-dev ~]# docker images
-
-真正的跑自己的镜像
-[root@k8s ~]# kubectl run hadoop --image=bigdata:v1 --command -- /usr/sbin/sshd -D
-deployment "hadoop" created
-</code></pre>
-
-<p>查看运行情况以及一些简单操作</p>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/user-guide/debugging-pods-and-replication-controllers/">https://kubernetes.io/docs/user-guide/debugging-pods-and-replication-controllers/</a></li>
-</ul>
-
-
-<pre><code>[root@k8s ~]# kubectl get pods
-NAME                      READY     STATUS    RESTARTS   AGE
-hadoop-2607718808-cqx2n   1/1       Running   0          2h
-[root@k8s ~]# kubectl describe pods hadoop-2607718808-cqx2n
-通过输出信息中Node和IP即可通过登录主机（IP与flannel0网卡在同一网段）
-
-也可以通过kubectl来登录
-[root@k8s ~]# kubectl exec hadoop-2607718808-cqx2n -i -t -- bash 
-[root@hadoop-2607718808-cqx2n /]# 
-[root@hadoop-2607718808-cqx2n /]# ifconfig 
-eth0      Link encap:Ethernet  HWaddr 02:42:0A:01:49:02  
-          inet addr:10.1.73.2  Bcast:0.0.0.0  Mask:255.255.255.0
-          inet6 addr: fe80::42:aff:fe01:4902/64 Scope:Link
-          UP BROADCAST RUNNING MULTICAST  MTU:1472  Metric:1
-          RX packets:8 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:8 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:0 
-          RX bytes:648 (648.0 b)  TX bytes:648 (648.0 b)
-
-lo        Link encap:Local Loopback  
-          inet addr:127.0.0.1  Mask:255.0.0.0
-          inet6 addr: ::1/128 Scope:Host
-          UP LOOPBACK RUNNING  MTU:65536  Metric:1
-          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:1 
-          RX bytes:0 (0.0 b)  TX bytes:0 (0.0 b)
-
-[root@k8s ~]# kubectl scale --replicas=4 deployment/hadoop
-[root@k8s ~]# kubectl get pods
-NAME                      READY     STATUS    RESTARTS   AGE
-hadoop-2607718808-0dzm6   1/1       Running   0          15s
-hadoop-2607718808-9twzq   1/1       Running   0          15s
-hadoop-2607718808-cqx2n   1/1       Running   0          6h
-hadoop-2607718808-k243d   1/1       Running   0          15s
-
-登上以及启动的机器
-[root@k8s ~]# kubectl exec hadoop-2607718808-cqx2n -i -t -- bash
-[root@hadoop-2607718808-cqx2n /]# 
-
-改变部署实例个数
-[root@k8s ~]# kubectl scale --replicas=2 deployment/hadoop
-deployment "hadoop" scaled
-[root@k8s ~]# kubectl get pods
-NAME                      READY     STATUS    RESTARTS   AGE
-hadoop-2607718808-cqx2n   1/1       Running   0          6h
-hadoop-2607718808-k243d   1/1       Running   0          9m
-</code></pre>
-
-<h2>小结</h2>
-
-<p>通过脚本来安装其实不难，就是要翻墙以及一些防火墙的设置需要特别的注意。</p>
 
 <p>&ndash;END</p>
 ]]></content>
