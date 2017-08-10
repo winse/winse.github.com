@@ -9,9 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="了解程序运行过程，除了一行行代码的扫射源代码。更快捷的方式是运行调试源码，通过F6/F7来一步步的带领我们熟悉程序。针对特定细节具体数据，打个断点调试则是水到渠成的方式。 Java远程调试 1
-2
-3 * JDK 1.3 or earlier -Xnoagent -Djava.compiler= &hellip;">
+  <meta name="description" content="初步了解 hadoop2自带的mapreduce任务中间只能传递一次，也即一个任务只能聚合一次（然后就的写入磁盘）。tez项目是对原有yarn架构的一个拓展，使用DAG（无环有向图）实现MRR的任务框架。 上图中，左边的MR任务完成一个步骤后，需要进行 数据存储 后再执行另一个任务来进行第二个 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +83,352 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/06/17/hadoop-tez-firststep/">Tez编译及使用</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-06-17T20:22:58+00:00" pubdate data-updated="true">Tue 2014-06-17 20:22</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>初步了解</h2>
+
+<p>hadoop2自带的mapreduce任务中间只能传递一次，也即一个任务只能聚合一次（然后就的写入磁盘）。tez项目是对原有yarn架构的一个拓展，使用DAG（无环有向图）实现MRR的任务框架。</p>
+
+<p><img src="http://farm6.staticflickr.com/5571/14256993179_4990fc86d5_o.png" alt="" /></p>
+
+<p>上图中，左边的MR任务完成一个步骤后，需要进行 <strong>数据存储</strong> 后再执行另一个任务来进行第二个 <strong>reduce</strong> ； 而tez则可以在reduce后继续执行reduce，减少了中间过程的IO以及mapreduce的启动时间。</p>
+
+<h2>环境整合</h2>
+
+<ul>
+<li><a href="http://tez.incubator.apache.org/install.html">Install/Deploy</a></li>
+<li>hadoop-2.2.0（umcc97-44：hdfs， umcc97-79：yarn）</li>
+<li>windows下使用Cygwin编译</li>
+</ul>
+
+
+<h3>下载编译tez</h3>
+
+<p>首先下载<a href="http://apache.fayea.com/apache-mirror/incubator/tez/tez-0.4.0-incubating/">tez-0.4.0-incubating.tar.gz</a>，同时还需要<a href="http://code.google.com/p/protobuf">protoc</a>的程序支持（可以参考<a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/SingleCluster.html">Hadoop源码编译</a>）。
+解压后，使用mvn编译。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
+</span><span class='line'>$ tar zxvf tez-0.4.0-incubating.tar.gz
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
+</span><span class='line'>$ cd tez-0.4.0-incubating/
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
+</span><span class='line'>$ mvn install -DskipTests -Dmaven.javadoc.skip
+</span><span class='line'>...
+</span><span class='line'>[INFO] Reactor Summary:
+</span><span class='line'>[INFO]
+</span><span class='line'>[INFO] tez ............................................... SUCCESS [1.518s]
+</span><span class='line'>[INFO] tez-api ........................................... SUCCESS [8.890s]
+</span><span class='line'>[INFO] tez-common ........................................ SUCCESS [0.725s]
+</span><span class='line'>[INFO] tez-runtime-internals ............................. SUCCESS [2.529s]
+</span><span class='line'>[INFO] tez-runtime-library ............................... SUCCESS [5.100s]
+</span><span class='line'>[INFO] tez-mapreduce ..................................... SUCCESS [3.666s]
+</span><span class='line'>[INFO] tez-mapreduce-examples ............................ SUCCESS [2.692s]
+</span><span class='line'>[INFO] tez-dag ........................................... SUCCESS [13.943s]
+</span><span class='line'>[INFO] tez-tests ......................................... SUCCESS [1.691s]
+</span><span class='line'>[INFO] tez-dist .......................................... SUCCESS [14.370s]
+</span><span class='line'>[INFO] Tez ............................................... SUCCESS [0.245s]
+</span><span class='line'>[INFO] ------------------------------------------------------------------------
+</span><span class='line'>[INFO] BUILD SUCCESS
+</span><span class='line'>[INFO] ------------------------------------------------------------------------
+</span><span class='line'>[INFO] Total time: 55.791s
+</span><span class='line'>[INFO] Finished at: Tue Jun 17 17:33:45 CST 2014
+</span><span class='line'>[INFO] Final Memory: 35M/151M
+</span><span class='line'>[INFO] ------------------------------------------------------------------------
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>上传tez程序的jars到HDFS</h3>
+
+<p>为了简单我直接把tez jars上传到开发环境的集群上面去测试了。放到本地集群环境应该也类似。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
+</span><span class='line'>$ cd tez-dist/
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist
+</span><span class='line'>$ cd target/
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
+</span><span class='line'>$ export HADOOP_USER_NAME=hadoop
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
+</span><span class='line'>$ hadoop dfs -put tez-0.4.0-incubating/tez-0.4.0-incubating/ hdfs://umcc97-44:9000/apps/ 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>配置集群环境</h3>
+
+<p>首先看下原来集群的classpath路径，路径中已经包括了 <code>etc/hadoop</code> 目录，所以这里我直接把 <code>tez-site.xml</code> 放到该目录下。同时把tez-lib复制到 <code>share/hadoop/tez</code> 目录下，并添加到 <code>HADOOP_CLASSPATH</code> 环境变量。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-79 hadoop]$ hadoop classpath
+</span><span class='line'>/home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
+</span><span class='line'>
+</span><span class='line'># 用于map/reduce
+</span><span class='line'>[hadoop@umcc97-79 hadoop]$ cat tez-site.xml 
+</span><span class='line'>&lt;?xml version="1.0"?&gt;
+</span><span class='line'>&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;configuration&gt;
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;tez.lib.uris&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>&lt;/configuration&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@umcc97-79 hadoop]$ cd ~/hadoop-2.2.0/share/hadoop/tez/
+</span><span class='line'>[hadoop@umcc97-79 tez]$ ll
+</span><span class='line'>total 9616
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  303139 Jun 17 17:33 avro-1.7.4.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   41123 Jun 17 17:33 commons-cli-1.2.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  610259 Jun 17 17:33 commons-collections4-4.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 1648200 Jun 17 17:33 guava-11.0.2.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  710492 Jun 17 17:33 guice-3.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  656365 Jun 17 17:33 hadoop-mapreduce-client-common-2.2.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 1455001 Jun 17 17:33 hadoop-mapreduce-client-core-2.2.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   21537 Jun 17 17:33 hadoop-mapreduce-client-shuffle-2.2.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   81743 Jun 17 17:33 jettison-1.3.4.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  533455 Jun 17 17:33 protobuf-java-2.5.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  995968 Jun 17 17:33 snappy-java-1.0.4.1.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  749917 Jun 17 17:33 tez-api-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   34049 Jun 17 17:33 tez-common-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  970987 Jun 17 17:33 tez-dag-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  246409 Jun 17 17:33 tez-mapreduce-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  199934 Jun 17 17:33 tez-mapreduce-examples-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  114692 Jun 17 17:33 tez-runtime-internals-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  352177 Jun 17 17:33 tez-runtime-library-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop    6845 Jun 17 17:33 tez-tests-0.4.0-incubating.jar
+</span><span class='line'>
+</span><span class='line'># MR配置，用于client任务提交
+</span><span class='line'>[hadoop@umcc97-79 hadoop]$ grep HADOOP_CLASSPATH hadoop-env.sh
+</span><span class='line'>export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
+</span><span class='line'>
+</span><span class='line'>[hadoop@umcc97-79 hadoop]$ sed -n 19,23p mapred-site.xml
+</span><span class='line'>&lt;configuration&gt;
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;mapreduce.framework.name&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;yarn-tez&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>同步，重启yarn</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>for h in `cat hadoop-2.2.0/etc/hadoop/slaves ` ; do 
+</span><span class='line'>  rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 $h:~/ ; 
+</span><span class='line'>done
+</span><span class='line'>
+</span><span class='line'># 同步到secondnamenode
+</span><span class='line'>rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 umcc97-44:~/</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>测试</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-79 ~]$ hadoop classpath
+</span><span class='line'>/home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/lib/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
+</span><span class='line'>
+</span><span class='line'>[hadoop@umcc97-79 ~]$ cd hadoop-2.2.0/share/hadoop/mapreduce/
+</span><span class='line'>[hadoop@umcc97-79 mapreduce]$ hadoop jar hadoop-mapreduce-client-jobclient-2.2.0-tests.jar sleep -mt 1 -rt 1 -m 1 -r 1
+</span><span class='line'>
+</span><span class='line'>cd hadoop-2.2.0/share/hadoop/tez/
+</span><span class='line'>
+</span><span class='line'>hadoop fs -put ~/hadoop-2.2.0/logs/yarn-hadoop-resourcemanager-umcc97-79.* /hello/in
+</span><span class='line'>hadoop fs -rmr /hello/out
+</span><span class='line'>hadoop jar tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount  /hello/in /hello/out
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>回滚，使用时临时修改环境变量即可</h3>
+
+<p>使用了tez后，导致hive-0.12.0不能运行。由于其他同事需要用hive，得把配置全部修改回去。【升级hive请查看<a href="/blog/2014/06/21/upgrade-hive/">hive-0.13中使用tez</a>】</p>
+
+<p>在配置文件中配置为yarn，要使用tez在 <strong>提交任务</strong> 时指定配置参数即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
+</span><span class='line'>hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount \
+</span><span class='line'>  -Dmapreduce.framework.name=yarn-tez  /hello/in /hello/out</span></code></pre></td></tr></table></div></figure>
+
+
+<p>org.apache.tez.mapreduce.examples.OrderedWordCount不仅计算出了结果，同时按个数大小进行了排序。</p>
+
+<p>问题： tez的任务的history还不知道怎么弄的，启动historyserver没作用？</p>
+
+<p>0.6版本已经有ui了。</p>
+
+<h3>持续更新</h3>
+
+<p>本来想编译好tez-0.6就往hive-0.13上面放，没想到遇到钉子了！！hive-0.13不支持！！</p>
+
+<p>在编译tez并想集成到hive，先下载hive的源码，看看pom.xml中使用的是到底是什么版本的tez，再编译tez不迟！！！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>apache-hive-1.1.0-src.tar.gz/pom.xml
+</span><span class='line'>    &lt;tez.version&gt;0.5.2&lt;/tez.version&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>tez-0.6在hadoop-2.2基础上编译：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\opt\bigdata\apache-tez-0.6.0-src&gt;mvn  package -Dhadoop.version=2.2.0 -DskipTests -Dmaven.javadoc.skip=true -DskipATS
+</span><span class='line'>
+</span><span class='line'>vi tez-dist/pom.xml
+</span><span class='line'>&lt;profile&gt;
+</span><span class='line'>      &lt;id&gt;hadoop26&lt;/id&gt;
+</span><span class='line'>      &lt;activation&gt;
+</span><span class='line'>        &lt;activeByDefault&gt;false&lt;/activeByDefault&gt;
+</span><span class='line'>      &lt;/activation&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2558,7 +2902,7 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 </tr>
 <tr>
 <td style="text-align:left;"> git archive &ndash;format tar &ndash;output <tar> master</td>
-<td style="text-align:left;"> 将 master以tar格式打包到指定文件</td>
+<td style="text-align:left;"> 将 master以tar格式打包到指定文件 $ git archive -o load.tar master</td>
 </tr>
 </tbody>
 </table>
@@ -3190,262 +3534,6 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/03/19/jekyll-tag-per-page/">Jekyll按照tag分页面</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-03-19T22:21:36+00:00" pubdate data-updated="true">Wed 2014-03-19 22:21</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>单页实现</h2>
-
-<p>从jekll-bootstrap检出的代码中，<code>tags.html</code>实现了标签的显示。但是所有的标签和日志列表都码在一个文件里面，总感觉有点太拥挤。</p>
-
-<pre><code>&lt;div class="page-header"&gt;
-    &lt;h1&gt;{{ page.title }} {% if page.tagline %} &lt;small&gt;{{ page.tagline }}&lt;/small&gt;{% endif %}&lt;/h1&gt;
-&lt;/div&gt;
-
-&lt;ul class="tag_box inline"&gt;
-    {% assign tags_list = site.tags %}  
-
-    {% if tags_list.first[0] == null %}
-        {% for tag in tags_list %} 
-        &lt;li&gt;&lt;a href="#{{ tag }}-ref"&gt;{{ tag }} &lt;span&gt;{{ site.tags[tag].size }}&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
-        {% endfor %}
-    {% else %}
-        {% for tag in tags_list %} 
-        &lt;li&gt;&lt;a href="#{{ tag[0] }}-ref"&gt;{{ tag[0] }} &lt;span&gt;{{ tag[1].size }}&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
-        {% endfor %}
-    {% endif %}
-
-    {% assign tags_list = nil %}
-&lt;/ul&gt;
-
-{% for tag in site.tags %} 
-&lt;h2 id="{{ tag[0] }}-ref"&gt;{{ tag[0] }}&lt;/h2&gt;
-&lt;ul class="index"&gt;
-    {% assign pages_list = tag[1] %}  
-
-    {% if site.JB.pages_list.provider == "custom" %}
-        {% include custom/pages_list %}
-    {% else %}
-        {% for node in pages_list %}
-            {% if node.title != null %}
-                {% if group == null or group == node.group %}
-                    {% if page.url == node.url %}
-                    &lt;li class="active"&gt;
-                        &lt;a href="{{ BASE_PATH }}{{ node.url }}" class="active"&gt;{{ node.title | xml_escape }}&lt;/a&gt;
-                        &lt;span&gt;&lt;time datetime="{{ node.date | date: "%Y-%m-%d" }}"&gt;{{ node.date | date: "%Y/%m/%d" }}&lt;/time&gt;&lt;/span&gt;
-                    &lt;/li&gt;
-                    {% else %}
-                    &lt;li&gt;
-                        &lt;a href="{{ BASE_PATH }}{{ node.url }}" class="active"&gt;{{ node.title | xml_escape }}&lt;/a&gt;
-                        &lt;span&gt;&lt;time datetime="{{ node.date | date: "%Y-%m-%d" }}"&gt;{{ node.date | date: "%Y/%m/%d" }}&lt;/time&gt;&lt;/span&gt;
-                    &lt;/li&gt;
-                    {% endif %}
-                {% endif %}
-            {% endif %}
-        {% endfor %}
-    {% endif %}
-
-    {% assign pages_list = nil %}
-    {% assign group = nil %}   
-&lt;/ul&gt;
-{% endfor %}
-</code></pre>
-
-<h2>插件实现分页面</h2>
-
-<p>找了一些资料，使用plugin的方式可以生成文件，以及页面的自定义标签。在<code>_plugins</code>目录下新增<code>jekyll-tag-page.rb</code> :</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>module Jekyll
-</span><span class='line'>
-</span><span class='line'>  class TagPage &lt; Page
-</span><span class='line'>      def initialize(site, base, dir, tag)
-</span><span class='line'>          @site = site
-</span><span class='line'>          @base = base
-</span><span class='line'>          @dir = dir
-</span><span class='line'>          @name = 'index.html'
-</span><span class='line'>
-</span><span class='line'>          self.process(@name)
-</span><span class='line'>          self.read_yaml(File.join(base, '_layouts'), 'tag_index.html')
-</span><span class='line'>
-</span><span class='line'>          self.data['tags'] = tag
-</span><span class='line'>      end
-</span><span class='line'>  end
-</span><span class='line'>
-</span><span class='line'>  class TagPageGenerator &lt; Generator
-</span><span class='line'>      safe true
-</span><span class='line'>
-</span><span class='line'>      def generate(site)
-</span><span class='line'>          if site.layouts.key? 'tag_index'
-</span><span class='line'>              dir = site.config['tag_dir'] || 'tags'
-</span><span class='line'>              site.tags.keys.each do |tag|
-</span><span class='line'>                  site.pages &lt;&lt; TagPage.new(site, site.source, File.join(dir, tag), tag)
-</span><span class='line'>              end
-</span><span class='line'>          end
-</span><span class='line'>      end
-</span><span class='line'>  end
-</span><span class='line'>end
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>生成插件为每个TAG生成了一个页面，<code>_layout</code>模板设置为tag_index.html，在模板中可以根据当前页面的tags过滤并只显示该tag的日志列表。文件默认保存到<code>tags/TAG</code>目录下。</p>
-
-<pre><code>{% for tag in site.tags %} 
-    {% if page.tags == tag[0] %}
-    &lt;h2&gt;{{ tag[0] }}&lt;/h2&gt;
-    &lt;ul class="index"&gt;
-        {% assign pages_list = tag[1] %}  
-
-        {% for node in pages_list %}
-            {% if node.title != null %}
-            &lt;li&gt;
-                &lt;a href="{{ BASE_PATH }}{{ node.url }}"&gt;{{ node.title | xml_escape }}&lt;/a&gt;
-                &lt;span&gt;&lt;time datetime="{{ node.date | date: "%Y-%m-%d" }}"&gt;{{ node.date | date: "%Y/%m/%d" }}&lt;/time&gt;&lt;/span&gt;
-            &lt;/li&gt;
-            {% endif %}
-        {% endfor %}
-
-        {% assign pages_list = nil %}
-    &lt;/ul&gt;
-    {% endif %}
-{% endfor %}
-</code></pre>
-
-<h2>使用脚本生成目录和md文件来实现</h2>
-
-<p>但是由于github不支持自定义插件功能，也就是说，就算我提交了<code>_plugin</code>的代码也是无效的。<strong>最终最后的实现</strong>，使用Shell脚本在tags目录下生成文件夹和内容：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>cd $tools/../tags
-</span><span class='line'>
-</span><span class='line'>find * -type d -exec rm -rf {} +
-</span><span class='line'>
-</span><span class='line'>for tag in `cat tags`; do 
-</span><span class='line'>mkdir $tag
-</span><span class='line'>cat &gt; $tag/index.md &lt;&lt;EOF
-</span><span class='line'>---
-</span><span class='line'>layout: tag
-</span><span class='line'>categories: [$tag]
-</span><span class='line'>---
-</span><span class='line'>
-</span><span class='line'>EOF
-</span><span class='line'>done;
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>脚本列表tags文件内容生成目录和index.md文件。</p>
-
-<p>layout模板tag.html页面代码如下：</p>
-
-<pre><code>&lt;h3&gt;Tag: {{ page.categories[-1] }}&lt;/h3&gt;
-&lt;ul class="archive-list"&gt;
-
-{% for tag in site.tags %}
-{% if page.categories[-1] == tag[0] %}
-
-{% assign pages_list = tag[1] %} 
-{% for node in pages_list %}
-    {% if node.title != null %}
-        &lt;li class="archive"&gt;
-            &lt;span&gt;
-                &lt;time datetime="{{ node.date | date: "%Y-%m-%d" }}"&gt;
-                    {{ node.date | date: "%Y/%m/%d" }}
-                &lt;/time&gt;
-            &lt;/span&gt;
-            &lt;a href="{{ BASE_PATH }}{{ node.url }}" class="archive-link"&gt;{{ node.title | xml_escape }}&lt;/a&gt;
-        &lt;/li&gt;
-    {% endif %}
-{% endfor %}
-{% assign pages_list = nil %} 
-
-{% endif %}
-{% endfor %}
-
-&lt;/ul&gt;
-</code></pre>
-
-<p>&ndash;END</p>
-
-<h1>参考</h1>
-
-<ul>
-<li><a href="https://github.com/shopify/liquid/wiki/liquid-for-designers">liquid页面渲染语言</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/30">&larr; Older</a>
@@ -3522,6 +3610,10 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/08/09/java-bytecode-security/">保护/加密JAVA代码</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/08/05/nfs-on-centos7/">Nfs on Centos7</a>
       </li>
     
@@ -3547,10 +3639,6 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
     
       <li class="post">
         <a href="/blog/2017/06/04/wechat-images-export/">导出微信照片</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/06/04/jenkins-start-guide/">Jenkins Start Guide</a>
       </li>
     
   </ul>
@@ -3679,7 +3767,7 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (50) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (51) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3692,7 +3780,7 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (179)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (180)</li>
 	</ul>
 	
 </section>
