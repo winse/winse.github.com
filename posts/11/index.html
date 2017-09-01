@@ -9,38 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="对于我这样的python小白来说，有网络来安装 puppetboard 还是比较容易的（离线安装依赖处理可能比较麻烦）。 1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-17
-18
-19
-20
-21
-22
-23
-24
-25
-26
-27
-28
-29
-30
-31
-32 &hellip;">
+  <meta name="description" content="[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.32.7.2）！ 我这里测试环境使用的是 2.6.3 Heterogeneous Storage: Archival Storage, SSD &amp; Memory 配置 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -114,6 +83,394 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/05/05/hdfs-heterogeneous-storage/">Hdfs异构存储实操</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-05-05T13:41:39+00:00" pubdate data-updated="true">Thu 2016-05-05 13:41</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.3<->2.7.2）！</p>
+
+<p>我这里测试环境使用的是 2.6.3 <a href="https://hadoop.apache.org/docs/r2.6.3/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html">Heterogeneous Storage: Archival Storage, SSD &amp; Memory</a></p>
+
+<h2>配置</h2>
+
+<p>直接把内存盘放到 /dev/shm 下，单独挂载一个 tmpfs 的效果也差不多。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/MemoryStorage.html">r2.7.2 Memory Storage Support in HDFS</a> 2.6.3没有这个文档 概念都适应的。</p>
+
+<p>1 调节系统参数</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>vi /etc/security/limits.conf
+</span><span class='line'>
+</span><span class='line'>  hadoop           -       nofile          65535
+</span><span class='line'>  hadoop           -       nproc           65535
+</span><span class='line'>  hadoop           -       memlock         268435456
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>需要调节memlock的大小，否则启动datanode报错。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-05-05 19:22:22,674 FATAL org.apache.hadoop.hdfs.server.datanode.DataNode: Exception in secureMain
+</span><span class='line'>java.lang.RuntimeException: Cannot start datanode because the configured max locked memory size (dfs.datanode.max.locked.memory) of 134217728 bytes is more than the datanode's available RLIMIT_MEMLOCK ulimit of 65536 bytes.
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.datanode.DataNode.startDataNode(DataNode.java:1067)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.datanode.DataNode.&lt;init&gt;(DataNode.java:417)
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>2 添加RAM_DISK</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>vi hdfs-site.xml
+</span><span class='line'>
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>  &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;/data/bigdata/hadoop/dfs/data,[RAM_DISK]/dev/shm/dfs/data&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>  &lt;name&gt;dfs.datanode.max.locked.memory&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;134217728&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>  </span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意内存盘的写法，<code>[RAM_DISK]</code> 必须这些写，不然datanode不知道指定路径的storage的类型(默认是 DISK )。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html#Storage_Types_and_Storage_Policies">Storage_Types_and_Storage_Policies</a></p>
+
+<blockquote><p>The default storage type of a datanode storage location will be DISK if it does not have a storage type tagged explicitly.</p></blockquote>
+
+<p>3 同步配置并重启dfs</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# scp /etc/security/limits.conf cu3:/etc/security/
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ rsync -vaz etc cu3:~/hadoop-2.6.3/ 
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3] sbin/stop-dfs.sh
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3] sbin/start-dfs.sh</span></code></pre></td></tr></table></div></figure>
+
+
+<p>可以去到datanode查看日志，可以看到 /dev/shm/dfs/data 路径 <strong>StorageType</strong> 为 <strong>RAM_DISK</strong> ：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /data/bigdata/hadoop/dfs/data/current
+</span><span class='line'>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /data/bigdata/hadoop/dfs/data/current, StorageType: DISK
+</span><span class='line'>2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /dev/shm/dfs/data/current
+</span><span class='line'>2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /dev/shm/dfs/data/current, StorageType: RAM_DISK</span></code></pre></td></tr></table></div></figure>
+
+
+<p>同时查看 内存盘 的路径内容：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ ssh cu3 tree /dev/shm/dfs
+</span><span class='line'>/dev/shm/dfs
+</span><span class='line'>└── data
+</span><span class='line'>    ├── current
+</span><span class='line'>    │   ├── BP-1108852639-192.168.0.148-1452322889531
+</span><span class='line'>    │   │   ├── current
+</span><span class='line'>    │   │   │   ├── finalized
+</span><span class='line'>    │   │   │   ├── rbw
+</span><span class='line'>    │   │   │   └── VERSION
+</span><span class='line'>    │   │   └── tmp
+</span><span class='line'>    │   └── VERSION
+</span><span class='line'>    └── in_use.lock
+</span><span class='line'>
+</span><span class='line'>7 directories, 3 files</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>测试使用</h2>
+
+<p>通过三个例子对比，简单描述下使用。首先，使用默认的方式(主要用于对比)，第二个例子写文件是添加参数，第三个设置目录的存储类型（目录/文件会继承父目录的存储类型）</p>
+
+<p>1 测试1</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /tmp/
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /tmp/README.txt -files -blocks -locations
+</span><span class='line'>...
+</span><span class='line'>/tmp/README.txt 1366 bytes, 1 block(s):  OK
+</span><span class='line'>0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752574_11776 len=1366 repl=1 [192.168.0.148:50010]
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu3 hadoop-2.6.3]$ find /data/bigdata/hadoop/dfs/data/ /dev/shm/dfs/data/ -name "*1073752574*"
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574_11776.meta
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574</span></code></pre></td></tr></table></div></figure>
+
+
+<p>2 写文件时添加 lazy_persist 标识</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 添加 -l 参数，后台代码会加上 LAZY_PERSIST 标识。
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -help put 
+</span><span class='line'>-put [-f] [-p] [-l] &lt;localsrc&gt; ... &lt;dst&gt; :
+</span><span class='line'>  Copy files from the local file system into fs. Copying fails if the file already
+</span><span class='line'>  exists, unless the -f flag is given.
+</span><span class='line'>  Flags:
+</span><span class='line'>                                                                       
+</span><span class='line'>  -p  Preserves access and modification times, ownership and the mode. 
+</span><span class='line'>  -f  Overwrites the destination if it already exists.                 
+</span><span class='line'>  -l  Allow DataNode to lazily persist the file to disk. Forces        
+</span><span class='line'>         replication factor of 1. This flag will result in reduced
+</span><span class='line'>         durability. Use with care.
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p><img src="/images/blogs/storage-lazy.png" alt="" /></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># -l 参数会把 replication 强制设置成数字1 ！
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put -l README.txt /tmp/readme.txt2
+</span><span class='line'>
+</span><span class='line'># 查看namenode的日志，可以看到文件写入到 RAM_DISK 类型的存储
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-cu2.log 
+</span><span class='line'>
+</span><span class='line'>  2016-05-05 20:38:36,465 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /tmp/readme.txt2._COPYING_. BP-1108852639-192.168.0.148-1452322889531 blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-dcb2673f-3297-4bd7-af1c-ac0ee3eebaf9:NORMAL:192.168.0.30:50010|RBW]]}
+</span><span class='line'>  2016-05-05 20:38:36,592 INFO BlockStateChange: BLOCK* addStoredBlock: blockMap updated: 192.168.0.30:50010 is added to blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[RAM_DISK]DS-bf1ab64f-7eb3-41e0-8466-43287de9893d:NORMAL:192.168.0.30:50010|FINALIZED]]} size 0
+</span><span class='line'>  2016-05-05 20:38:36,594 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /tmp/readme.txt2._COPYING_ is closed by DFSClient_NONMAPREDUCE_-1388277364_1
+</span><span class='line'>
+</span><span class='line'># 具体的内容所在位置
+</span><span class='line'>[hadoop@cu4 ~]$ tree /dev/shm/dfs/data/
+</span><span class='line'>/dev/shm/dfs/data/
+</span><span class='line'>├── current
+</span><span class='line'>│   ├── BP-1108852639-192.168.0.148-1452322889531
+</span><span class='line'>│   │   ├── current
+</span><span class='line'>│   │   │   ├── finalized
+</span><span class='line'>│   │   │   │   └── subdir0
+</span><span class='line'>│   │   │   │       └── subdir42
+</span><span class='line'>│   │   │   │           ├── blk_1073752578
+</span><span class='line'>│   │   │   │           └── blk_1073752578_11780.meta
+</span><span class='line'>│   │   │   ├── rbw
+</span><span class='line'>│   │   │   └── VERSION
+</span><span class='line'>│   │   └── tmp
+</span><span class='line'>│   └── VERSION
+</span><span class='line'>└── in_use.lock
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>3 设置目录的存储类型</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -mkdir /ramdisk
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -setStoragePolicy /ramdisk LAZY_PERSIST 
+</span><span class='line'>Set storage policy LAZY_PERSIST on /ramdisk
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /ramdisk
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk
+</span><span class='line'>The storage policy of /ramdisk:
+</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+</span><span class='line'>
+</span><span class='line'># 不支持通配符
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/*
+</span><span class='line'>getStoragePolicy: File/Directory does not exist: /ramdisk/*
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/README.txt
+</span><span class='line'>The storage policy of /ramdisk/README.txt:
+</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 添加replication参数，再测试多个备份只有一个写ram_disk
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -Ddfs.replication=3 -put README.txt /ramdisk/readme.txt2
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/readme.txt2
+</span><span class='line'>The storage policy of /ramdisk/readme.txt2:
+</span><span class='line'>BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /ramdisk/readme.txt2 -files -blocks -locations
+</span><span class='line'>
+</span><span class='line'>  /ramdisk/readme.txt2 1366 bytes, 1 block(s):  OK
+</span><span class='line'>  0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752580_11782 len=1366 repl=3 [192.168.0.30:50010, 192.168.0.174:50010, 192.168.0.148:50010]
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu3 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+</span><span class='line'>
+</span><span class='line'># 已经把ram_disk的内容持久化到磁盘了("Lazy_Persist")
+</span><span class='line'>[hadoop@cu4 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580_11782.meta
+</span><span class='line'>/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+</span><span class='line'>/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu5 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+</span><span class='line'>/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>[设想] 对于那些处理完就删除的临时文件，可以把持久化的时间设置的久一点 <code>dfs.datanode.lazywriter.interval.sec</code>。这样就不需要写磁盘了。</p>
+
+<p>不要妄想了，反正都会持久化！就是缓冲的效果，其他没有了！！一次性存储并且不需要持久化的还是用alluxio吧。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl.LazyWriter#saveNextReplica
+</span><span class='line'>  org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskAsyncLazyPersistService#submitLazyPersistTask</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>参考</h2>
+
+<ul>
+<li>挺详细的<a href="http://blog.csdn.net/androidlushangderen/article/details/51105876">HDFS异构存储</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2686,304 +3043,6 @@ Notice: Applied catalog in 0.02 seconds
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2016-04-23T07:45:34+00:00" pubdate data-updated="true">Sat 2016-04-23 07:45</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>1. 环境准备</h2>
-
-<p>工欲善事其必先利其器。不要吝啬硬件上投入，找一个适合自己的环境！</p>
-
-<ul>
-<li>Windows
-
-<ul>
-<li><a href="/blog/2014/02/23/quickly-open-program-in-windows/">快速打开程序</a></li>
-<li>Cygwin：Windows本地编译需要，执行命令比 cmd 更方便</li>
-</ul>
-</li>
-<li><a href="/blog/2011/02/28/win7-install-fedora-linux/">Windows + Linux双系统</a></li>
-<li>Linux
-
-<ul>
-<li><a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a></li>
-<li><a href="/blog/2015/09/13/review-linux-101-hacks/">【linux 101 Hacks】读后感</a>
-
-<ul>
-<li><a href="/images/blogs/linux-101-hacks-review-securecrt-config.png">Socket5代理</a></li>
-</ul>
-</li>
-<li><a href="/blog/2016/03/11/install-and-config-openvpn/">OpenVPN</a></li>
-<li>docker
-
-<ul>
-<li><a href="/blog/2014/09/27/docker-start-guide-on-centos/">Docker入门</a></li>
-<li><a href="/blog/2014/09/30/docker-ssh-on-centos/">配置ssh</a></li>
-<li><a href="/blog/2014/10/18/docker-dnsmasq-handler-hosts-build-hadoop-cluster/">Dnsmasq</a></li>
-</ul>
-</li>
-</ul>
-</li>
-</ul>
-
-
-<h2>2. 安装部署hadoop/spark</h2>
-
-<h4>编译安装</h4>
-
-<ul>
-<li>Hadoop安装与升级:
-
-<ul>
-<li><a href="/blog/2016/01/07/hadoop-install-and-upgrade-1-install-in-docker/">Docker中安装</a></li>
-<li><a href="/blog/2016/01/07/hadoop-install-and-upgrade-2-hadoop-upgrade/">2.2升级到2.6</a></li>
-<li><a href="/blog/2016/01/07/hadoop-install-and-upgrade-3-ha/">HA配置</a></li>
-<li><a href="/blog/2016/01/07/hadoop-install-and-upgrade-4-ha-upgrade/">HA升级</a></li>
-</ul>
-</li>
-<li><a href="/blog/2015/03/08/vmware-build-hadoop2-dot-6/">Centos6 Build hadoop2.6</a></li>
-<li><a href="/blog/2015/03/09/windows-build-hadoop-2-dot-6/">Windows Build hadoop2.6</a></li>
-<li><a href="/blog/2014/10/16/spark-build-and-configuration/">各版本Spark编译/搭建环境</a></li>
-</ul>
-
-
-<h4>功能优化</h4>
-
-<ul>
-<li><a href="/blog/2014/09/01/hadoop2-mapreduce-compress/">Hadoop2 Mapreduce输入输出压缩</a></li>
-<li><a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 ShortCircuit Local Reading</a></li>
-<li><a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
-
-<ul>
-<li><a href="/blog/2016/04/08/snappy-centos5-on-hive-on-spark/">Hive-on-spark Snappy on Centos5</a></li>
-</ul>
-</li>
-<li><a href="/blog/2016/05/05/hdfs-heterogeneous-storage">HDFS RamDisk内存缓冲</a></li>
-</ul>
-
-
-<h4>维护</h4>
-
-<ul>
-<li><a href="/blog/2013/02/22/hadoop-cluster-increases-nodes/">Hadoop集群增加节点</a></li>
-<li><a href="/blog/2014/07/29/safely-remove-datanode/">安全的关闭datanode</a></li>
-<li><a href="/blog/2015/03/25/deploy-separated-yarn-on-exists-hdfs-cluster/">已有HDFS上部署yarn</a></li>
-<li><a href="/blog/2015/06/10/hadoop-deploy-spark-diff-version-yarn-and-hdfs/">Hadoop不同版本yarn和hdfs混搭，spark-yarn环境配置</a></li>
-</ul>
-
-
-<h4>旧版本安装</h4>
-
-<ul>
-<li><a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a></li>
-<li><a href="/blog/2013/03/24/pseudo-distributed-hadoop-in-windows/"><del>Windows配置hadoop伪分布式环境(续)</del></a> 不再推荐cygwin下部署Hadoop。</li>
-<li><a href="/blog/2013/03/02/quickly-build-a-second-hadoop-cluster/">快速搭建第二个hadoop分布式集群环境</a></li>
-<li><a href="/blog/2013/03/27/run-on-hadoop-on-ant/"><del>Ant实现hadoop插件Run-on-Hadoop</del></a></li>
-</ul>
-
-
-<h2>3. 进阶</h2>
-
-<h4>配置深入理解</h4>
-
-<ul>
-<li><a href="/blog/2014/08/02/hadoop-datanode-config-should-equals/">Hadoop的datanode数据节点机器配置</a></li>
-<li><a href="/blog/2016/03/17/hadoop-memory-opts-and-args/">Hadoop内存环境变量和参数</a></li>
-<li><a href="/blog/2016/04/11/spark-on-yarn-memory-allocate/">Spark-on-yarn内存分配</a></li>
-<li><a href="/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn/">SparkSQL-on-YARN的Executors池(动态)配置</a></li>
-</ul>
-
-
-<h4>问题定位</h4>
-
-<ul>
-<li><a href="/blog/2014/09/17/windows-hadoop2-test-your-mapreduce-feature/">在windows开发测试mapreduce几种方式</a></li>
-<li><a href="/blog/2014/04/22/remote-debug-hadoop2/">远程调试hadoop2以及错误处理方法</a></li>
-<li><a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">逐步定位Java程序OOM的异常</a></li>
-</ul>
-
-
-<h4>读码</h4>
-
-<ul>
-<li>Hadoop2 Balancer磁盘空间平衡
-
-<ul>
-<li><a href="/blog/2014/08/06/read-hadoop-balancer-source-part1/">上</a></li>
-<li><a href="/blog/2014/09/05/read-hadoop-balancer-source-part2/">中</a></li>
-<li><a href="/blog/2014/09/05/read-hadoop-balancer-source-part3/">下</a></li>
-</ul>
-</li>
-<li><a href="/blog/2015/03/13/hadoop-distcp/">Hadoop Distcp</a></li>
-</ul>
-
-
-<h4>其他</h4>
-
-<ul>
-<li><a href="/blog/2014/09/12/scala-wordcount-on-hadoop/">Scala Wordcount on Hadoop2</a></li>
-<li><a href="/blog/2014/12/07/hadoop-mr-rest-api/">MR Rest接口</a></li>
-</ul>
-
-
-<h2>4. Hadoop平台</h2>
-
-<ul>
-<li>zookeeper</li>
-<li>hive
-
-<ul>
-<li><a href="/blog/2014/06/21/upgrade-hive/">Upgrade Hive: 0.12.0 to 0.13.1</a></li>
-<li>tez:
-
-<ul>
-<li><a href="/blog/2014/06/18/hadoop-tez-firststep/">Tez编译及使用</a></li>
-<li><a href="/blog/2016/01/12/tez-ui-config-and-run/">配置TEZ-UI</a></li>
-</ul>
-</li>
-<li>hive on spark
-
-<ul>
-<li><a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a></li>
-<li><a href="/blog/2016/04/08/snappy-centos5-on-hive-on-spark/">Hive-on-spark Snappy on Centos5</a></li>
-<li><a href="/blog/2016/03/29/limit-on-sparksql-and-hive/">Limit on Sparksql and Hive</a></li>
-</ul>
-</li>
-<li><a href="/blog/2016/04/08/dbcp-parameters/">DBCP参数在Hive JDBC上的实践</a></li>
-<li><a href="/blog/2016/04/13/hiveserver2-ui-and-upgrade-hive2-dot-0-0/">Hiveserver2 Ui and Upgrade hive2.0.0</a></li>
-</ul>
-</li>
-<li>kafka
-
-<ul>
-<li><a href="/blog/2015/01/08/kafka-guide/">Kafka快速入门</a></li>
-</ul>
-</li>
-<li>alluxio(tachyon)
-
-<ul>
-<li><a href="/blog/2015/04/15/tachyon-quickstart/">Tachyon入门指南</a></li>
-<li><a href="/blog/2015/04/18/tachyon-deep-source/">Tachyon剖析</a></li>
-<li><a href="/blog/2016/04/15/alluxio-quickstart2/">Alluxio入门大全2</a></li>
-</ul>
-</li>
-</ul>
-
-
-<h2>5. 监控与自动化部署</h2>
-
-<h4>监控</h4>
-
-<ul>
-<li><a href="/blog/2013/02/26/linux-top-command-mannual/">top</a></li>
-<li><del>nagios</del>
-
-<ul>
-<li><a href="/blog/2015/09/25/nagios-start-guide/">Nagios监控主机</a></li>
-</ul>
-</li>
-<li><del>cacti</del>    Ganglia更简单
-
-<ul>
-<li><a href="/blog/2015/09/22/cacti-start-guide/"><del>Cacti监控主机</del></a></li>
-<li><a href="/blog/2015/10/13/cacti-batch-adding-configurations/"><del>Cacti批量添加配置</del></a></li>
-</ul>
-</li>
-<li>ganglia
-
-<ul>
-<li><a href="/blog/2014/07/18/install-ganglia-on-redhat/"><del>Install Ganglia on Redhat5+</del></a> 手动安装依赖太麻烦了！</li>
-<li><a href="/blog/2016/01/23/install-and-config-ganglia-on-redhat-2/">安装配置Ganglia(2)</a></li>
-<li><a href="/blog/2016/06/17/ganglia-install-on-centos-with-puppet/">使用Puppet安装配置Ganglia</a></li>
-<li><a href="/blog/2016/02/01/ganglia-python-extension/">Ganglia扩展-Python</a></li>
-<li><a href="/blog/2016/02/25/ganglia-web-ui-views/">Ganglia页自定义视图</a></li>
-</ul>
-</li>
-</ul>
-
-
-<h4>自动化</h4>
-
-<ul>
-<li>git:
-
-<ul>
-<li><a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a></li>
-<li><a href="/blog/2014/02/19/maven-package-dependent-git-projects/">打包依赖的git项目</a></li>
-<li><a href="/blog/2013/05/27/handle-git-conflict/">处理git冲突</a></li>
-</ul>
-</li>
-<li><a href="/blog/2014/09/07/expect-automate-and-batch-config-ssh/">expect-批量实现SSH无密钥登录</a></li>
-<li>puppet
-
-<ul>
-<li><a href="/blog/2016/04/08/puppet-install/">puppet4.4.1入门安装</a></li>
-<li><a href="/blog/2016/04/21/puppet-domain-fdqn/">puppet入门之域名证书</a></li>
-<li><a href="/blog/2016/04/21/puppetdb-install-and-config/">puppetdb安装配置</a>
-
-<ul>
-<li><a href="/blog/2015/12/13/postgresql-start-guide/">postgresql入门</a></li>
-</ul>
-</li>
-<li>puppet-ui
-
-<ul>
-<li><a href="/blog/2016/05/05/puppetboard-install/">puppetboard安装</a></li>
-<li><a href="/blog/2016/04/21/puppetexplorer-setting/">puppetexplorer设置</a></li>
-<li>foreman</li>
-</ul>
-</li>
-<li><a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a></li>
-<li>puppet基本使用以及配置集群</li>
-<li>mcollective
-
-<ul>
-<li><a href="/blog/2016/04/28/mcollective-quick-start/">安装配置</a></li>
-<li><a href="/blog/2016/04/28/mcollective-plugins/">插件安装</a></li>
-</ul>
-</li>
-<li><a href="/blog/2016/05/03/hiera-and-facts/">Hiera</a></li>
-</ul>
-</li>
-</ul>
-
-
-<p>&hellip;</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/12">&larr; Older</a>
@@ -3060,6 +3119,10 @@ Notice: Applied catalog in 0.02 seconds
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/08/30/jenkins-build-via-shell/">命令行调用Jenkins2.63打包</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/08/22/vagrant-create-your-own-box/">Vagrant创建自定义的BOX</a>
       </li>
     
@@ -3085,10 +3148,6 @@ Notice: Applied catalog in 0.02 seconds
     
       <li class="post">
         <a href="/blog/2017/07/16/consistent-hashing/">[转]一致性Hash</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/07/15/togo-another-rpmbuild-tool/">togo简单的RPM打包工具</a>
       </li>
     
   </ul>
@@ -3169,6 +3228,10 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jenkins/'>jenkins</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/k8s/'>k8s</a> (8) 
 		</li>
 		 
@@ -3234,7 +3297,7 @@ Notice: Applied catalog in 0.02 seconds
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (182)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (183)</li>
 	</ul>
 	
 </section>
