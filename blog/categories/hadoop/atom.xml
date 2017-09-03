@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Hadoop | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/hadoop/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-09-01T03:17:00+00:00</updated>
+  <updated>2017-09-03T04:47:46+00:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,398 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Zookeeper ACL]]></title>
+    <link href="http://winseliu.com/blog/2017/09/02/zookeeper-acl/"/>
+    <updated>2017-09-02T15:14:55+00:00</updated>
+    <id>http://winseliu.com/blog/2017/09/02/zookeeper-acl</id>
+    <content type="html"><![CDATA[<p>集群又一次进行安检，SSH躲不过需要升级的，这次还加了hadoop security和zookeeper acl的bug。以前没太在意这些内容，既然安全检查出来了，还是需要处理的。</p>
+
+<pre><code>ZooKeeper 未授权访问【原理扫描】
+详细描述    ZooKeeper是一个分布式的，开放源码的分布式应用程序协调服务，是Google的Chubby一个开源的实现，是Hadoop和Hbase的重要组件。它是一个为分布式应用提供一致性服务的软件，提供的功能包括：配置维护、域名服务、分布式同步、组服务等。 
+ZooKeeper的目标就是封装好复杂易出错的关键服务，将简单易用的接口和性能高效、功能稳定的系统提供给用户。 
+在通常情况下，zookeeper允许未经授权的访问。
+解决办法    为ZooKeeper配置相应的访问权限。 
+
+方式一： 
+1）增加一个认证用户 
+addauth digest 用户名:密码明文 
+eg. addauth digest user1:password1 
+2）设置权限 
+setAcl /path auth:用户名:密码明文:权限 
+eg. setAcl /test auth:user1:password1:cdrwa 
+3）查看Acl设置 
+getAcl /path 
+
+方式二： 
+setAcl /path digest:用户名:密码密文:权限
+
+威胁分值    5.0
+危险插件    否
+发现日期    2015-02-10
+</code></pre>
+
+<h2>Zookeeper权限基本知识点、操作</h2>
+
+<ul>
+<li><a href="https://zookeeper.apache.org/doc/r3.3.3/zookeeperProgrammers.html#sc_ZooKeeperAccessControl">https://zookeeper.apache.org/doc/r3.3.3/zookeeperProgrammers.html#sc_ZooKeeperAccessControl</a></li>
+<li><a href="https://my.oschina.net/guol/blog/1358538">https://my.oschina.net/guol/blog/1358538</a></li>
+<li><a href="http://blog.csdn.net/xyang81/article/details/53147894">http://blog.csdn.net/xyang81/article/details/53147894</a></li>
+<li><a href="https://ihong5.wordpress.com/2014/07/24/apache-zookeeper-setting-acl-in-zookeeper-client/">https://ihong5.wordpress.com/2014/07/24/apache-zookeeper-setting-acl-in-zookeeper-client/</a></li>
+<li><a href="https://zookeeper.apache.org/doc/r3.3.3/zookeeperStarted.html">https://zookeeper.apache.org/doc/r3.3.3/zookeeperStarted.html</a></li>
+</ul>
+
+
+<p>Note also that an ACL pertains only to a specific znode. In particular it does not apply to children. ACL在znode上无继承性，也就是说子znode不会继承父znode的ACL权限.</p>
+
+<ul>
+<li>world has a single id, anyone, that represents anyone.</li>
+<li>auth doesn&rsquo;t use any id, represents any authenticated user.</li>
+<li>digest uses a username:password string to generate MD5 hash which is then used as an ACL ID identity. Authentication is done by sending the username:password in clear text. When used in the ACL the expression will be the username:base64 encoded SHA1 password digest.</li>
+<li>ip uses the client host IP as an ACL ID identity. The ACL expression is of the form addr/bits(3.5+) where the most significant bits of addr are matched against the most significant bits of the client host IP.</li>
+</ul>
+
+
+<p>zookeeper的ACL格式为 schema:id:permissions 。模式就是上面列的几种，再加一个super。创建的节点默认权限为 world:anyone:rwadc 表示所有人都对这个节点有rwadc的权限。</p>
+
+<ul>
+<li>Create：允许对子节点Create 操作</li>
+<li>Read：允许对本节点GetChildren 和GetData 操作</li>
+<li>Write ：允许对本节点SetData 操作</li>
+<li>Delete ：允许对子节点Delete 操作</li>
+<li>Admin ：允许对本节点setAcl 操作</li>
+</ul>
+
+
+<h2>Auth授权</h2>
+
+<p>不需要id，当前 &ldquo;登录&rdquo; 的所有users都有权限（sasl、kerberos这些授权方式不懂，囧)。虽然不需要id，但是格式还得按照 scheme:id:perm 的写法。</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 15] setAcl /c auth:rwadc  
+auth:rwadc does not have the form scheme:id:perm
+Acl is not valid : /c
+
+[zk: k8s(CONNECTED) 13] addauth digest a:a
+[zk: k8s(CONNECTED) 14] addauth digest b:b
+[zk: k8s(CONNECTED) 15] addauth digest c:c
+[zk: k8s(CONNECTED) 16] create /e e
+Created /e
+[zk: k8s(CONNECTED) 17] setAcl /e auth::cdrwa
+...省略节点输出信息
+
+[zk: k8s(CONNECTED) 18] getAcl /e
+'digest,'a:mDmPUap4qvYwm+PZOtJ/scGyHLY=
+: cdrwa
+'digest,'b:+F8zPn3x1CLx3qpYHEaRwIheWcc=
+: cdrwa
+'digest,'c:K7CO7OxIfBOQxczG+7FI9BdZ6/s=
+: cdrwa
+</code></pre>
+
+<p>id随便写也可以，zookeeper都不记录的。</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 9] addauth digest hdfs:hdfs    
+[zk: localhost:2181(CONNECTED) 10] setAcl /c auth:x:x:rwadc
+...
+[zk: localhost:2181(CONNECTED) 11] getAcl /c               
+'digest,'user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+: cdrwa
+'digest,'hdfs:0wpra2yK6RCUB9sbo0BkElpzcl8=
+: cdrwa
+</code></pre>
+
+<p>也可以对根 / 授权，这样客户端就不能随便在根下面新建节点了。</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 9] addauth digest user:password    
+[zk: localhost:2181(CONNECTED) 21] setAcl / auth::rawdc
+
+重新登录
+[zk: localhost:2181(CONNECTED) 0] ls /
+Authentication is not valid : /
+[zk: localhost:2181(CONNECTED) 1] getAcl /
+'digest,'user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+: cdrwa
+</code></pre>
+
+<p>还原</p>
+
+<p>使用有权限的用户/实例，如果都忘了那就只能放绝招：使用超级管理员登录，重新设置权限为world即可。</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 26] setAcl / world:anyone:cdrwa
+</code></pre>
+
+<h2>Digest</h2>
+
+<p>比 auth 用起来简单，直接把密文交给zookeeper。首先得生成对应用户的密码。</p>
+
+<pre><code>[root@k8s zookeeper-3.4.10]# java -cp zookeeper-3.4.10.jar:lib/* org.apache.zookeeper.server.auth.DigestAuthenticationProvider user:password
+user:password-&gt;user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+
+[root@k8s zookeeper-3.4.10]# java -cp zookeeper-3.4.10.jar:lib/* org.apache.zookeeper.server.auth.DigestAuthenticationProvider es:es
+es:es-&gt;es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+</code></pre>
+
+<p>scheme是digest的时候，id需要密文。通过Zookeeper的客户端编码方式添加认证（登录），digest对应的auth数据是明文。</p>
+
+<p>ACL授权一样使用 setAcl ：</p>
+
+<pre><code>$$ A实例
+[zk: localhost:2181(CONNECTED) 17] setAcl /b digest:user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=:cdrwa
+和md5密码类似，数据库被盗了，如果是常用的密码会被猜出来
+[zk: localhost:2181(CONNECTED) 18] getAcl /b
+'digest,'user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+: cdrwa
+
+$$ B实例
+重新登录：
+[zk: k8s:2181(CONNECTED) 2] ls /b
+Authentication is not valid : /b
+
+$$ A实例
+[zk: localhost:2181(CONNECTED) 20] create /b/bb ''
+Authentication is not valid : /b/bb
+[zk: localhost:2181(CONNECTED) 21] addauth digest user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+[zk: localhost:2181(CONNECTED) 22] create /b/bb ''                                 
+Authentication is not valid : /b/bb
+
+# 需要使用明文登录
+[zk: localhost:2181(CONNECTED) 23] addauth digest user:password
+[zk: localhost:2181(CONNECTED) 24] create /b/bb '' 
+Created /b/bb 
+
+# 权限没有继承性
+[zk: localhost:2181(CONNECTED) 25] getAcl /b/bb
+'world,'anyone
+: cdrwa
+</code></pre>
+
+<h1>IP</h1>
+
+<p>ip的权限配置更简单些。逻辑就是匹配客户端的IP地址，在权限IP地址段范围内的才能访问。</p>
+
+<pre><code>$$ A实例
+[zk: localhost:2181(CONNECTED) 18] setAcl /i ip:127.0.0.1:cdrwa
+...
+[zk: localhost:2181(CONNECTED) 19] getAcl /i
+'ip,'127.0.0.1
+: cdrwa
+[zk: localhost:2181(CONNECTED) 24] get /i
+Authentication is not valid : /i
+
+咋回事呢，就是本地还没权限？有时可localhost不一定对应127.0.0.1的。。。
+
+$$ B实例
+[root@k8s zookeeper-3.4.10]# bin/zkCli.sh -server 127.0.0.1
+[zk: 127.0.0.1(CONNECTED) 0] get /i
+i
+...
+改成另一个网卡的ip地址
+[zk: 127.0.0.1(CONNECTED) 1] setAcl /i ip:192.168.191.138:cdrwa
+...
+[zk: 127.0.0.1(CONNECTED) 2] getAcl /i
+'ip,'192.168.191.138
+: cdrwa
+[zk: 127.0.0.1(CONNECTED) 3] get /i
+Authentication is not valid : /i
+
+$$ C实例
+用主机名(191.138)登录的实例
+[zk: k8s(CONNECTED) 19] get /i
+i
+</code></pre>
+
+<h2>超级管理员</h2>
+
+<p>如果权限设置错了，咋办？</p>
+
+<pre><code>[zk: k8s(CONNECTED) 21] setAcl /i ip:192.168.191.0/24:cdrwa                   
+Acl is not valid : /i
+
+[zk: k8s(CONNECTED) 25] setAcl /i ip:192.168.191.0:cdrwa
+
+[zk: k8s(CONNECTED) 26] getAcl /i
+'ip,'192.168.191.0
+: cdrwa
+[zk: k8s(CONNECTED) 27] get /i
+Authentication is not valid : /i
+</code></pre>
+
+<p>除非把客户端的ip地址换成 192.168.191.0 否则就访问不了了。</p>
+
+<p>此时需要超级管理员才行，不然真没办法折腾了。（不知道为啥）是可以删掉（特指我当前的环境啊），但是这样数据就没有了啊！！</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 26] getAcl /i
+'ip,'192.168.191.0
+: cdrwa
+[zk: localhost:2181(CONNECTED) 27] delete /i
+[zk: localhost:2181(CONNECTED) 28] ls /
+[a, b, c, zookeeper, d, e]
+[zk: localhost:2181(CONNECTED) 29] ls /i
+Node does not exist: /i
+</code></pre>
+
+<p>如果数据很重要，重启后用超级管理员的方式找回密码还是很划的来的。</p>
+
+<ul>
+<li><a href="https://community.hortonworks.com/articles/29900/zookeeper-using-superdigest-to-gain-full-access-to.html">https://community.hortonworks.com/articles/29900/zookeeper-using-superdigest-to-gain-full-access-to.html</a></li>
+</ul>
+
+
+<p>用 DigestAuthenticationProvider 加密就不操作了，直接用 es:es 对应的 es:es->es:KiHfMOSWCTgPKpz78IL/6qO8AEE= 作为管理员的账号密码。</p>
+
+<pre><code>export SERVER_JVMFLAGS=-Dzookeeper.DigestAuthenticationProvider.superDigest=es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+
+[root@k8s zookeeper-3.4.10]# bin/zkServer.sh stop
+[root@k8s zookeeper-3.4.10]# bin/zkServer.sh start
+ZooKeeper JMX enabled by default
+Using config: /opt/zookeeper-3.4.10/bin/../conf/zoo.cfg
+Starting zookeeper ... STARTED
+
+$$ A实例
+[root@k8s zookeeper-3.4.10]# bin/zkCli.sh 
+[zk: localhost:2181(CONNECTED) 0] get /i
+Authentication is not valid : /i
+[zk: localhost:2181(CONNECTED) 1] getAcl /i
+'ip,'192.168.191.0
+: cdrwa
+[zk: localhost:2181(CONNECTED) 2] addauth digest es:es
+[zk: localhost:2181(CONNECTED) 3] get /i
+i
+...
+[zk: localhost:2181(CONNECTED) 4] setAcl /i world:anyone:cdrwa
+...
+
+$$ B实例
+[zk: localhost:2181(CONNECTED) 0] get /i
+i
+[zk: localhost:2181(CONNECTED) 1] getAcl /i
+'world,'anyone
+: cdrwa
+</code></pre>
+
+<h2>实践&mdash;好玩</h2>
+
+<p>权限可以直接在创建的时刻指定：</p>
+
+<pre><code>create /mynode content digest:user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=:cdrwa
+</code></pre>
+
+<p>也可以一次性设置N个权限：</p>
+
+<p>注：以下操作都是超级管理员登录的窗口，所以不存在权限的问题。想怎么改就怎么改</p>
+
+<pre><code>setAcl /i ip:192.168.191.0:cdrwa,ip:127.0.0.1:cdrwa,ip:192.168.191.138:cdrwa
+
+getAcl /i
+'ip,'192.168.191.0
+: cdrwa
+'ip,'127.0.0.1
+: cdrwa
+'ip,'192.168.191.138
+: cdrwa
+</code></pre>
+
+<p>但是，使用ip、digest、word重设权限后，会覆盖旧的：</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 7] setAcl /i ip:0.0.0.0:cdrwa
+[zk: localhost:2181(CONNECTED) 8] getAcl /i
+'ip,'0.0.0.0
+: cdrwa
+
+[zk: localhost:2181(CONNECTED) 15] setAcl /i world:anyone:cdraw
+[zk: localhost:2181(CONNECTED) 16] getAcl /i
+'world,'anyone
+: cdrwa
+</code></pre>
+
+<p>3.4的版本不支持ip段（3.5应该是ok的）： <a href="https://github.com/apache/zookeeper/blob/release-3.4.10/src/java/main/org/apache/zookeeper/server/auth/IPAuthenticationProvider.java#L114">IPAuthenticationProvider</a></p>
+
+<pre><code>    public boolean isValid(String id) {
+        return addr2Bytes(id) != null;
+    }
+</code></pre>
+
+<p>可以找对应版本的源码（远程）调试下：</p>
+
+<pre><code>[root@k8s zookeeper-3.4.10]# export SERVER_JVMFLAGS="-Dzookeeper.DigestAuthenticationProvider.superDigest=es:KiHfMOSWCTgPKpz78IL/6qO8AEE= -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
+[root@k8s zookeeper-3.4.10]# bin/zkServer.sh start
+</code></pre>
+
+<p>auth的权限比较有意思：自家兄弟添加、排除异己；permission按最新的算</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 21] setAcl /i auth::cdrwa,ip:0.0.0.0:cd
+...
+[zk: localhost:2181(CONNECTED) 22] getAcl /i
+'ip,'0.0.0.0
+: cd
+'digest,'es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+: cdrwa
+
+# auth add
+[zk: localhost:2181(CONNECTED) 27] addauth digest m:m
+[zk: localhost:2181(CONNECTED) 28] addauth digest n:n
+[zk: localhost:2181(CONNECTED) 29] setAcl /i auth::cdrwa
+...
+[zk: localhost:2181(CONNECTED) 30] getAcl /i
+'digest,'es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+: cdrwa
+'digest,'m:WZiIgWqJgd8EQVBh55Bslf/7JRc=
+: cdrwa
+'digest,'n:TZ3f1UF7B75EF5g6qWR0VmEvb/s=
+: cdrwa
+
+# perm
+[zk: localhost:2181(CONNECTED) 31] addauth digest z:z
+[zk: localhost:2181(CONNECTED) 32] addauth digest l:l
+[zk: localhost:2181(CONNECTED) 33] setAcl /i auth:z:z:cd
+...
+[zk: localhost:2181(CONNECTED) 34] getAcl /i
+'digest,'es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+: cd
+'digest,'m:WZiIgWqJgd8EQVBh55Bslf/7JRc=
+: cd
+'digest,'n:TZ3f1UF7B75EF5g6qWR0VmEvb/s=
+: cd
+'digest,'z:cOgtYxFOAwKiTCMigcN2j2fFI3c=
+: cd
+'digest,'l:gdlgatwJdq7uG8kFfIjcIZj0tnQ=
+: cd
+
+可以看到全部变成cd了
+
+[zk: localhost:2181(CONNECTED) 35] setAcl /i auth:z:z:cdraw
+...
+[zk: localhost:2181(CONNECTED) 36] getAcl /i               
+'digest,'es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+: cdrwa
+'digest,'m:WZiIgWqJgd8EQVBh55Bslf/7JRc=
+: cdrwa
+'digest,'n:TZ3f1UF7B75EF5g6qWR0VmEvb/s=
+: cdrwa
+'digest,'z:cOgtYxFOAwKiTCMigcN2j2fFI3c=
+: cdrwa
+'digest,'l:gdlgatwJdq7uG8kFfIjcIZj0tnQ=
+: cdrwa
+
+全部变成cdrwa
+</code></pre>
+
+<p>我觉得用 auth 设置权限是最保险的，不会搞错了出现自己都访问不了的情况。</p>
+
+<h2>后记</h2>
+
+<p>ok，到此基本的知识点算大概了解了。还有自定义实现授权的provider，这有点高级了有兴趣的自己去看官方文档了。</p>
+
+<p>但是因为权限没有继承关系，像一些开源项目用到zookeeper的话，怎么进行加密呢？所有子目录都一个个的加？或者自定义根路径（chroot）让别人猜不到？</p>
+
+<p>还有像zookeeper自己的目录 /zookeeper ，怎么进行权限管理呢？</p>
+
+<p></p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[K8s Hadoop Deploy]]></title>
@@ -1097,230 +1489,6 @@ hive&gt; select count(*) from t_ods_access_log2 where month=201512;
 <p>今天又重新认识一个yarn参数 <code>yarn.scheduler.minimum-allocation-mb</code> ，不仅仅是最小分配的内存，同时分配的资源也是minimum-allocation-mb的整数倍，还告诉我们 <code>yarn.nodemanager.resource.memory-mb</code> 也最好是minimum-allocation-mb的整数倍。</p>
 
 <p>间接的学习了新的参数，可以通过 <code>yarn.scheduler.capacity.resource-calculator</code> 参数 来修改 CapacityScheduler 调度器的资源计算类。</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Hadoop内存环境变量和参数]]></title>
-    <link href="http://winseliu.com/blog/2016/03/17/hadoop-memory-opts-and-args/"/>
-    <updated>2016-03-17T06:09:26+00:00</updated>
-    <id>http://winseliu.com/blog/2016/03/17/hadoop-memory-opts-and-args</id>
-    <content type="html"><![CDATA[<h2>问题：</h2>
-
-<p><a href="https://www.zhihu.com/question/25498407">https://www.zhihu.com/question/25498407</a></p>
-
-<p>问题是hadoop内存的配置，涉及两个方面：</p>
-
-<ul>
-<li>namenode/datanode/resourcemanager/nodemanager的HEAPSIZE环境变量</li>
-<li>在配置文件/Configuration中影响MR运行的变量</li>
-</ul>
-
-
-<p>尽管搞hadoop有好一阵子了，对这些变量有个大概的了解，但没有真正的去弄懂他们的区别。乘着这个机会好好的整整（其实就是下载源码然后全文查找<sup>V</sup>^）。</p>
-
-<h2>HEAPSIZE环境变量</h2>
-
-<p>hadoop-env.sh配置文件hdfs和yarn脚本都会加载。hdfs是一脉相承使用 <strong>HADOOP_HEAPSIZE</strong> ，而yarn使用新的环境变量 <strong>YARN_HEAPSIZE</strong> 。</p>
-
-<p>hadoop/hdfs/yarn命令最终会把HEAPSIZE的参数转换了 <strong>JAVA_HEAP_MAX</strong>，把它作为启动参数传递给Java。</p>
-
-<ul>
-<li>hadoop</li>
-</ul>
-
-
-<p>hadoop命令是把 <code>HADOOP_HEAPSIZE</code> 转换为 <code>JAVA_HEAP_MAX</code> ，调用路径：</p>
-
-<p><code>hadoop -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<pre><code>JAVA_HEAP_MAX=-Xmx1000m 
-
-# check envvars which might override default args
-if [ "$HADOOP_HEAPSIZE" != "" ]; then
-  #echo "run with heapsize $HADOOP_HEAPSIZE"
-  JAVA_HEAP_MAX="-Xmx""$HADOOP_HEAPSIZE""m"
-  #echo $JAVA_HEAP_MAX
-fi
-</code></pre>
-
-<ul>
-<li>hdfs</li>
-</ul>
-
-
-<p>hdfs其实就是从hadoop脚本里面分离出来的。调用路径：</p>
-
-<p><code>hdfs -&gt; hdfs-config.sh -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<ul>
-<li>yarn</li>
-</ul>
-
-
-<p>yarn也调用了hadoop-env.sh，但是设置内存的参数变成了 <strong>YARN_HEAPSIZE</strong> 。调用路径：</p>
-
-<p><code>yarn -&gt; yarn-config.sh -&gt; hadoop-config.sh -&gt; hadoop-env.sh</code></p>
-
-<pre><code>JAVA_HEAP_MAX=-Xmx1000m 
-
-# For setting YARN specific HEAP sizes please use this
-# Parameter and set appropriately
-# YARN_HEAPSIZE=1000
-
-# check envvars which might override default args
-if [ "$YARN_HEAPSIZE" != "" ]; then
-  JAVA_HEAP_MAX="-Xmx""$YARN_HEAPSIZE""m"
-fi
-</code></pre>
-
-<ul>
-<li>实例：</li>
-</ul>
-
-
-<p>配置hadoop参数的时刻，一般都是配置 <strong>hadoop-env.sh</strong> 如：<code>export HADOOP_HEAPSIZE=16000</code> 。查看相关进程命令有：</p>
-
-<pre><code>/usr/local/jdk1.7.0_17/bin/java -Dproc_resourcemanager -Xmx1000m
-/usr/local/jdk1.7.0_17/bin/java -Dproc_timelineserver -Xmx1000m
-/usr/local/jdk1.7.0_17/bin/java -Dproc_nodemanager -Xmx1000m 
-/usr/local/jdk1.7.0_17/bin/java -Dproc_journalnode -Xmx16000m
-/usr/local/jdk1.7.0_17/bin/java -Dproc_namenode -Xmx16000m
-/usr/local/jdk1.7.0_17/bin/java -Dproc_journalnode -Xmx16000m
-/usr/local/jdk1.7.0_17/bin/java -Dproc_datanode -Xmx16000m
-</code></pre>
-
-<p>与hdfs有关的内存都修改成功了。而与yarn的还是默认的1g(堆)内存。</p>
-
-<h2>MR配置文件参数</h2>
-
-<p>分成两组，一种是直接设置数字(mb结束的属性)，一种是配置java虚拟机变量的-Xmx。</p>
-
-<pre><code>* yarn.app.mapreduce.am.resource.mb、mapreduce.map.memory.mb、mapreduce.reduce.memory.mb
-    用于调度计算内存，是不是还能分配任务（计算额度）
-* yarn.app.mapreduce.am.command-opts、mapreduce.map.java.opts、mapreduce.reduce.java.opts
-    程序实际启动使用的参数
-</code></pre>
-
-<p>一个是控制中枢，一个是实实在在的限制。</p>
-
-<ul>
-<li>官网文档的介绍：</li>
-</ul>
-
-
-<blockquote><ul>
-<li>mapreduce.map.memory.mb 1024    The amount of memory to request from the scheduler for each map task.</li>
-<li>mapreduce.reduce.memory.mb  1024    The amount of memory to request from the scheduler for each reduce task.</li>
-<li>mapred.child.java.opts  -Xmx200m    Java opts for the task processes.</li>
-</ul>
-</blockquote>
-
-<ul>
-<li><p>下面用实践来验证效果：</p>
-
-<ul>
-<li>先搞一个很大大只有一个block的文件，把程序运行时间拖长一点</li>
-<li>修改opts参数，查看效果</li>
-<li>修改mb参数，查看效果</li>
-</ul>
-</li>
-<li><p>实践一</p></li>
-</ul>
-
-
-<p>mapreduce.map.memory.mb设置为1000，而mapreduce.map.java.opts设置为1200m。程序照样跑的很欢！！</p>
-
-<p>同时从map的 YarnChild 进程看出起实际作用的是 mapreduce.map.java.opts 参数。memory.mb用来计算节点是否有足够的内存来跑任务，以及用来计算整个集群的可用内存等。而java.opts则是用来限制真正任务的堆内存用量。</p>
-
-<p><strong>注意</strong> ： 这里仅仅是用来测试，正式环境java.opts的内存应该小于memory.mb！！具体配置参考：<a href="http://blog.javachen.com/2015/06/05/yarn-memory-and-cpu-configuration.html">yarn-memory-and-cpu-configuration</a></p>
-
-<p><img src="/images/blogs/hadoop-opts/yarn-opts-mb.jpg" alt="" /></p>
-
-<ul>
-<li>实践二</li>
-</ul>
-
-
-<p>map.memory.mb设置太大，导致调度失败！</p>
-
-<p><img src="/images/blogs/hadoop-opts/yarn-mb-1.jpg" alt="" /></p>
-
-<ul>
-<li>实践三</li>
-</ul>
-
-
-<p>尽管实际才用不大于1.2G的内存，但是由于mapreduce.map.memory.mb设置为8G，整个集群显示已用内存18G（2 * 8g + 1 * 2g）。登录实际运行任务的机器，实际内存其实不多。</p>
-
-<p><img src="/images/blogs/hadoop-opts/yarn-mb-2.jpg" alt="" />
-<img src="/images/blogs/hadoop-opts/yarn-mb-3.jpg" alt="" /></p>
-
-<p>reduce和am（appmaster）的参数类似。</p>
-
-<p><img src="/images/blogs/hadoop-opts/yarn-appmaster-mb-1.jpg" alt="" />
-<img src="/images/blogs/hadoop-opts/yarn-appmaster-mb-2.jpg" alt="" /></p>
-
-<h2>mapred.child.java.opts参数</h2>
-
-<p>这是一个过时的属性，当然你设置也能起效果(没有设置mapreduce.map.java.opts/mapreduce.reduce.java.opts)。相当于把MR的java.opts都设置了。</p>
-
-<p><img src="/images/blogs/hadoop-opts/mapred-opts.jpg" alt="" /></p>
-
-<p>获取map/reduce的opts中间会取 <strong>mapred.child.java.opts</strong> 的值。</p>
-
-<p><img src="/images/blogs/hadoop-opts/mapred-opts-2.jpg" alt="" /></p>
-
-<h2>admin-opts</h2>
-
-<p>查找源码后，其实opts被分成两部分：admin和user。admin的写在前面，user在后面。user设置的opts可以覆盖admin设置的。应该是方便用于设置默认值吧。</p>
-
-<h2>实例</h2>
-
-<p>同时在一台很牛掰的机器上跑程序（分了yarn.nodemanager.resource.memory-mb 26G内存），但是总是只能一次跑一个任务，但还剩很多内存(20G)没有用啊！！初步怀疑是调度算法的问题。</p>
-
-<p>查看了调度的日志，初始化的时刻会输出 <strong>scheduler.capacity.LeafQueue</strong> 的日志，打印了集群控制的一些参数。然后 同时找到一篇<a href="http://stackoverflow.com/questions/33465300/why-does-yarn-job-not-transition-to-running-state">http://stackoverflow.com/questions/33465300/why-does-yarn-job-not-transition-to-running-state</a> 说是调整 <strong>yarn.scheduler.capacity.maximum-am-resource-percent</strong> ，是用于控制appmaster最多可用的资源。</p>
-
-<p>appmaster的默认内存是： <strong>yarn.app.mapreduce.am.resource.mb  1536</strong>（client设置有效）， <strong>yarn.scheduler.capacity.maximum-am-resource-percent 0.1</strong>。</p>
-
-<p>跑第二job的时刻，第二个appmaster调度的时刻没有足够的内存（26G * 0.1 - 1.536 > 1.536），所以就跑不了两个job。</p>
-
-<h2>CLIENT_OPTS</h2>
-
-<p>一般 HADOOP 集群都会配套 HIVE，hive直接用 sql 来查询数据比mapreduce简单很多。启动hive是直接用 hadoop jar 来启动的。相对于一个客户端程序。控制hive内存的就是 HADOOP_CLIENT_OPTS 环境变量中的 -Xmx 。</p>
-
-<p>所以要调整 hive 内存的使用，可以通过调整 HADOOP_CLIENT_OPTS 来控制。（当然理解这些环境变量，你就可以随心随欲的改）</p>
-
-<pre><code>[hadoop@cu2 hive]$ sh -x bin/hiveserver2 
-...
-++ exec /home/hadoop/hadoop/bin/hadoop jar /home/hadoop/hive/lib/hive-service-1.2.1.jar org.apache.hive.service.server.HiveServer2
-
-[hadoop@cu2 hive]$ grep -3  "HADOOP_CLIENT_OPTS" ~/hadoop/etc/hadoop/hadoop-env.sh
-export HADOOP_PORTMAP_OPTS="-Xmx512m $HADOOP_PORTMAP_OPTS"
-
-# The following applies to multiple commands (fs, dfs, fsck, distcp etc)
-export HADOOP_CLIENT_OPTS="-Xmx128m $HADOOP_CLIENT_OPTS"
-#HADOOP_JAVA_PLATFORM_OPTS="-XX:-UsePerfData $HADOOP_JAVA_PLATFORM_OPTS"
-
-# On secure datanodes, user to run the datanode as after dropping privileges.
-
-[hadoop@cu2 hive]$ jinfo 10249
-...
-
-VM Flags:
-
--Xmx256m -Djava.net.preferIPv4Stack=true -Dhadoop.log.dir=/home/hadoop/hadoop-2.6.3/logs -Dhadoop.log.file=hadoop.log -Dhadoop.home.dir=/home/hadoop/hadoop-2.6.3 -Dhadoop.id.str=hadoop -Dhadoop.root.logger=INFO,console -Djava.library.path=/home/hadoop/hadoop-2.6.3/lib/native -Dhadoop.policy.file=hadoop-policy.xml -Djava.net.preferIPv4Stack=true -Xmx128m -Dhadoop.security.logger=INFO,NullAppender
-
-[hadoop@cu2 hive]$ jmap -heap 10249
-...
-Heap Configuration:
-   MinHeapFreeRatio = 40
-   MaxHeapFreeRatio = 70
-   MaxHeapSize      = 134217728 (128.0MB)
-...
-</code></pre>
 
 <p>&ndash;END</p>
 ]]></content>
