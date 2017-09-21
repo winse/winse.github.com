@@ -9,8 +9,12 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="前面讲到了节点的初始化，根据节点使用率与集群dfs使用率比较分为
-overUtilizedDatanodes，aboveAvgUtilizedDatanodes，belowAvgUtilizedDatanodes，underUtilizedDatanodes， &hellip;">
+  <meta name="description" content="在安装部署Hadoop集群的首要步骤就是配置SSH的无密钥登陆。 1
+2
+3
+4
+ssh-keygen -t rsa -P '' -f ~/.ssh/id_rsa
+cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys ssh-copy-id -i ~/.ssh/ &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -84,6 +88,204 @@ overUtilizedDatanodes，aboveAvgUtilizedDatanodes，belowAvgUtilizedDatanodes，
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/09/07/expect-automate-and-batch-config-ssh/">Expect-批量实现SSH无密钥登录</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-09-07T08:11:18+00:00" pubdate data-updated="true">Sun 2014-09-07 08:11</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>在安装部署Hadoop集群的首要步骤就是配置SSH的无密钥登陆。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh-keygen -t rsa -P '' -f ~/.ssh/id_rsa
+</span><span class='line'>cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys
+</span><span class='line'>
+</span><span class='line'>ssh-copy-id -i ~/.ssh/id_rsa.pub root@$ip</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后，可以通过ssh命令来进行批量的操作。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ssh root@$ip 'cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys'
+</span><span class='line'>scp -o StrictHostKeyChecking=no /etc/hosts root@${ip}:/etc/</span></code></pre></td></tr></table></div></figure>
+
+
+<p>但是，一些需要密码的dialogue形式的输入时，部署N台datanode就需要输入N遍！同时新建用户也是需要输入用户密码的操作！！</p>
+
+<p>Linux Expect就是用来自动化处理这些需求的。Except能根据提示来实现相应的输入。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ ssh-copy-id localhost
+</span><span class='line'>The authenticity of host 'localhost (::1)' can't be established.
+</span><span class='line'>RSA key fingerprint is 4e:fe:7a:0a:98:6e:9a:ab:af:e4:65:51:9b:3d:e0:99.
+</span><span class='line'>Are you sure you want to continue connecting (yes/no)? yes
+</span><span class='line'>Warning: Permanently added 'localhost' (RSA) to the list of known hosts.
+</span><span class='line'>hadoop@localhost's password: 
+</span><span class='line'>Now try logging into the machine, with "ssh 'localhost'", and check in:
+</span><span class='line'>
+</span><span class='line'>  .ssh/authorized_keys
+</span><span class='line'>
+</span><span class='line'>to make sure we haven't added extra keys that you weren't expecting.</span></code></pre></td></tr></table></div></figure>
+
+
+<p>根据需要<strong>提示信息</strong>，以及需要<strong>输入的信息</strong>，可以编写对应expect脚本来进行自动化。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ cat bin/ssh-copy-id.expect 
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 [user@]host password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set password [lrange $argv 1 1] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>spawn ssh-copy-id $host ;
+</span><span class='line'>
+</span><span class='line'>expect {
+</span><span class='line'>  "(yes/no)?" { send yes\n; exp_continue; }
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>同样新建用户初始化密码的操作一样可以使用expect来使用：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-deploy-0.0.1]$ cat bin/passwd.expect
+</span><span class='line'>#!/usr/bin/expect  
+</span><span class='line'>
+</span><span class='line'>## Usage $0 host username password
+</span><span class='line'>
+</span><span class='line'>set host [lrange $argv 0 0];
+</span><span class='line'>set username [lrange $argv 1 1];
+</span><span class='line'>set password [lrange $argv 2 2] ;
+</span><span class='line'>
+</span><span class='line'>set timeout 30;
+</span><span class='line'>
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>spawn ssh $host useradd $username ;
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;
+</span><span class='line'>
+</span><span class='line'>##
+</span><span class='line'>
+</span><span class='line'>spawn ssh $host passwd $username ;
+</span><span class='line'>
+</span><span class='line'>## password and repasswd all use this
+</span><span class='line'>expect {
+</span><span class='line'>  "password:" { send $password\n; exp_continue; }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>exec sleep 1;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>有了上面的脚本，预定义每台机器的root密码，使用ssh-copy-id.expect建立到各台datanode机器的无密钥登录；然后passwd.expect脚本分发给各台机器，然后使用ssh进行运行脚本建立用户初始化密码。</p>
+
+<p>Expect仅在master机器上安装就可以。安装程序的如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>yum install expect</span></code></pre></td></tr></table></div></figure>
+
+
+<p>or</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>rpm -ivh tcl-8.5.7-6.el6.x86_64.rpm
+</span><span class='line'>rpm -ivh expect-5.44.1.15-5.el6_4.x86_64.rpm</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1047,331 +1249,6 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/09/01/hadoop2-mapreduce-compress/">Hadoop2 Mapreduce输入输出压缩</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-09-01T08:05:13+00:00" pubdate data-updated="true">Mon 2014-09-01 08:05</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>当数据达到一定量时，自然就想到了对数据进行压缩来降低存储压力。在Hadoop的任务中提供了5个参数来控制输入输出的数据的压缩格式。添加map输出数据压缩可以降低集群间的网络传输，最终reduce输出压缩可以减低hdfs的集群存储空间。</p>
-
-<p>如果是使用hive等工具的话，效果会更加明显。因为hive的查询结果是临时存储在hdfs中，然后再通过一个<strong>Fetch Operator</strong>来获取数据，最后清理掉，压缩存储临时的数据可以减少磁盘的读写。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;Should the job outputs be compressed?
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress.type&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;RECORD&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;If the job outputs are to compressed as SequenceFiles, how should
-</span><span class='line'>               they be compressed? Should be one of NONE, RECORD or BLOCK.
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress.codec&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;org.apache.hadoop.io.compress.DefaultCodec&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;If the job outputs are compressed, how should they be compressed?
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.map.output.compress&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;Should the outputs of the maps be compressed before being
-</span><span class='line'>               sent across the network. Uses SequenceFile compression.
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.map.output.compress.codec&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;org.apache.hadoop.io.compress.DefaultCodec&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt;If the map outputs are compressed, how should they be 
-</span><span class='line'>               compressed?
-</span><span class='line'>  &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>上面5个属性弄好，在core-sitem.xml加下<code>io.compression.codecs</code>基本就完成配置了。</p>
-
-<p>这里主要探究下mapreduce（下面全部简称MR）过程中自动解压缩。刚刚接触Hadoop一般都不会去了解什么压缩不压缩的，先把hdfs-api，MR-api弄一遭。配置的TextInputFormat竟然能正确的读取tar.gz文件的内容，觉得不可思议，TextInputFormat不是直接读取txt行记录的输入嘛？难道还能读取压缩文件，先解压再&hellip;？？</p>
-
-<p>先说下OutputFormat，在MR中调用context.write写入数据的方法时，最终使用OutputFormat创建的RecordWriter进行持久化。在TextOutputFormat创建RecordWriter时，如果使用压缩会在结果文件名上<strong>加对应压缩库的后缀</strong>，如gzip压缩对应的后缀gz、snappy压缩对应后缀snappy等。对应下面代码的<code>getDefaultWorkFile</code>。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/03/wKhkA1QEjD2ASHiZAAExjXuQ25Y062.png" alt="" /></p>
-
-<p>同样对应的TextInputFormat的RecordReader也进行类似的处理：根据<strong>文件的后缀</strong>来判定该文件是否使用压缩，并使用对应的输入流InputStream来解码。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/03/wKhkA1QEjZaAdBeJAAEvRVMKVWY059.png" alt="" /></p>
-
-<p>此处的关键代码为<code>CompressionCodec codec = new CompressionCodecFactory(job).getCodec(file);</code>，根据分块（split）的文件名来判断使用的压缩算法。
-初始化Codec实现、以及根据文件名来获取压缩算法的实现还是挺有意思的：通过反转字符串然后最近匹配（headMap）来获取对应的结果。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  private void addCodec(CompressionCodec codec) {
-</span><span class='line'>    String suffix = codec.getDefaultExtension();
-</span><span class='line'>    codecs.put(new StringBuilder(suffix).reverse().toString(), codec);
-</span><span class='line'>    codecsByClassName.put(codec.getClass().getCanonicalName(), codec);
-</span><span class='line'>
-</span><span class='line'>    String codecName = codec.getClass().getSimpleName();
-</span><span class='line'>    codecsByName.put(codecName.toLowerCase(), codec);
-</span><span class='line'>    if (codecName.endsWith("Codec")) {
-</span><span class='line'>      codecName = codecName.substring(0, codecName.length() - "Codec".length());
-</span><span class='line'>      codecsByName.put(codecName.toLowerCase(), codec);
-</span><span class='line'>    }
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  public CompressionCodec getCodec(Path file) {
-</span><span class='line'>    CompressionCodec result = null;
-</span><span class='line'>    if (codecs != null) {
-</span><span class='line'>      String filename = file.getName();
-</span><span class='line'>      String reversedFilename = new StringBuilder(filename).reverse().toString();
-</span><span class='line'>      SortedMap&lt;String, CompressionCodec&gt; subMap = 
-</span><span class='line'>        codecs.headMap(reversedFilename);
-</span><span class='line'>      if (!subMap.isEmpty()) {
-</span><span class='line'>        String potentialSuffix = subMap.lastKey();
-</span><span class='line'>        if (reversedFilename.startsWith(potentialSuffix)) {
-</span><span class='line'>          result = codecs.get(potentialSuffix);
-</span><span class='line'>        }
-</span><span class='line'>      }
-</span><span class='line'>    }
-</span><span class='line'>    return result;
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<p></p>
-
-<p>了解了这些，MR（TextInputFormat）的输入文件可以比较随意些：各种压缩文件、原始文件都可以，只要文件有对应压缩算法的后缀即可。hive的解压缩功能也很容易了，如果使用hive存储text形式的文件，进行压缩无需进行额外的程序代码修改，仅仅修改MR的配置即可，注意下<strong>文件后缀</strong>！！</p>
-
-<p>如，在MR中生成了snappy压缩的文件，此时<strong>不能</strong>在文件的后面添加东西。否则在hive查询时，根据<strong>后缀</strong>进行解压会导致结果乱码/不正确。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;hive.exec.compress.output&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt; This controls whether the final outputs of a query (to a local/hdfs file or a hive table) is compressed. The compression codec and other options are determined from hadoop config variables mapred.output.compress* &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;hive.exec.compress.intermediate&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
-</span><span class='line'>  &lt;description&gt; This controls whether intermediate files produced by hive between multiple map-reduce jobs are compressed. The compression codec and other options are determined from hadoop config variables mapred.output.compress* &lt;/description&gt;
-</span><span class='line'>&lt;/property&gt;
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>hive也弄了两个参数来控制它自己的MR的输出输入压缩控制属性。其他的配置使用mapred-site.xml的配置即可。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/1D/wKhkA1QFQLmAfyZSAAIOx4UEIbY016.png" alt="" /></p>
-
-<p>网上一些资料有<code>hive.intermediate.compression.codec</code>和<code>hive.intermediate.compression.type</code>两个参数能调整中间过程的压缩算法。其实和mapreduce的参数功能是一样的。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/1F/wKhkA1QFQWyAUDMLAAGyNqR_X-c417.png" alt="" /></p>
-
-<p>附上解压缩的全部配置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$#core-site.xml
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;io.compression.codecs&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;
-</span><span class='line'>  org.apache.hadoop.io.compress.GzipCodec,
-</span><span class='line'>  org.apache.hadoop.io.compress.DefaultCodec,
-</span><span class='line'>  org.apache.hadoop.io.compress.BZip2Codec,
-</span><span class='line'>  org.apache.hadoop.io.compress.SnappyCodec
-</span><span class='line'>      &lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>$#mapred-site.xml
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.map.output.compress&lt;/name&gt; 
-</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.map.output.compress.codec&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.output.fileoutputformat.compress&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapreduce.output.fileoutputformat.compress.codec&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;mapred.output.compression.codec&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>$#hive-site.xml
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>      &lt;name&gt;hive.exec.compress.output&lt;/name&gt;
-</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>运行hive后，临时存储在HDFS的结果数据，注意文件的后缀。</p>
-
-<p><img src="http://file.bmob.cn/M00/0B/20/wKhkA1QFRjSACnLfAABVdoK0f1c803.png" alt="" /></p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://www.geek521.com/?p=4814">深入学习《Programing Hive》：数据压缩</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/28">&larr; Older</a>
@@ -1448,6 +1325,10 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/09/20/docker-manual-make-connect-each-other/">两台主机的docker通过route互联互通</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/09/19/os-install-via-usb/">使用U盘安装Centos7</a>
       </li>
     
@@ -1473,10 +1354,6 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
     
       <li class="post">
         <a href="/blog/2017/08/13/kubeadm-install-k8s-on-centos7-with-resources/">Kubeadm部署k8s(资源已有)</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/08/09/java-bytecode-security/">保护/加密JAVA代码</a>
       </li>
     
   </ul>
@@ -1513,7 +1390,7 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/docker/'>docker</a> (12) 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (13) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1626,7 +1503,7 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (187)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (188)</li>
 	</ul>
 	
 </section>

@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Docker | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/docker/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-09-20T01:48:25+00:00</updated>
+  <updated>2017-09-21T03:12:41+00:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,452 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[两台主机的docker通过route互联互通]]></title>
+    <link href="http://winseliu.com/blog/2017/09/20/docker-manual-make-connect-each-other/"/>
+    <updated>2017-09-20T10:34:52+00:00</updated>
+    <id>http://winseliu.com/blog/2017/09/20/docker-manual-make-connect-each-other</id>
+    <content type="html"><![CDATA[<p>前面一直用k8s的flannel来建立主机间docker容器的互联，但是当仅有两台机器用来做测试的时刻，安装一个flannel也是挺纠结的：麻烦、还有未知的问题，起一个服务在那里总会有那么些担忧。</p>
+
+<p>其实可以直接通过建立路由来实现两台机器间容器的互联互通：<a href="http://www.pangxie.space/docker/139">Docker多台宿主机间的容器互联-centos7（直接路由）</a></p>
+
+<p>两台主机（centos7/docker-1.12.6）：</p>
+
+<ul>
+<li>192.168.191.140 kube-master</li>
+<li>192.168.191.141 kube-worker1</li>
+</ul>
+
+
+<h2>安装/配置docker</h2>
+
+<p>这里不多讲了，参考 <a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a> 进行docker的安装。</p>
+
+<h2>建立新网卡，修改docker配置使用新网卡</h2>
+
+<ul>
+<li>安装/更新依赖</li>
+</ul>
+
+
+<pre><code>yum install net-tools bridge-utils -y
+</code></pre>
+
+<ul>
+<li>关防火墙、关selinux</li>
+</ul>
+
+
+<pre><code>setenforce 0
+
+vi /etc/selinux/config
+SELINUX=disabled
+
+systemctl stop firewalld
+systemctl disable firewalld
+</code></pre>
+
+<ul>
+<li>设置ip转发</li>
+</ul>
+
+
+<pre><code>echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+
+vi /etc/sysctl.conf
+net.ipv4.ip_forward = 1  
+</code></pre>
+
+<ul>
+<li>删docker0，建kbr0</li>
+</ul>
+
+
+<p>先停docker！先停docker！先停docker！（好像docker会缓冲bridge的ip）</p>
+
+<pre><code>service docker stop
+brctl addbr kbr0
+ip link set dev docker0 down
+ip link del dev docker0
+</code></pre>
+
+<p>下面的配置，两台机不同，如下：</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;"> 192.168.191.140 kube-master                   </th>
+<th style="text-align:left;"> 192.168.191.141 kube-worker1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;"> vi /etc/sysconfig/network-scripts/ifcfg-kbr0</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> DEVICE=kbr0                                   </td>
+<td style="text-align:left;"> DEVICE=kbr0</td>
+</tr>
+<tr>
+<td style="text-align:left;"> ONBOOT=yes                                    </td>
+<td style="text-align:left;"> ONBOOT=yes</td>
+</tr>
+<tr>
+<td style="text-align:left;"> BOOTPROTO=static                              </td>
+<td style="text-align:left;"> BOOTPROTO=static</td>
+</tr>
+<tr>
+<td style="text-align:left;"> IPADDR=172.17.3.1                             </td>
+<td style="text-align:left;"> IPADDR=172.17.4.1</td>
+</tr>
+<tr>
+<td style="text-align:left;"> NETMASK=255.255.255.0                         </td>
+<td style="text-align:left;"> NETMASK=255.255.255.0</td>
+</tr>
+<tr>
+<td style="text-align:left;"> GATEWAY=172.17.3.0                            </td>
+<td style="text-align:left;"> GATEWAY=172.17.4.0</td>
+</tr>
+<tr>
+<td style="text-align:left;"> USERCTL=no                                    </td>
+<td style="text-align:left;"> USERCTL=no</td>
+</tr>
+<tr>
+<td style="text-align:left;"> TYPE=Bridge                                   </td>
+<td style="text-align:left;"> TYPE=Bridge</td>
+</tr>
+<tr>
+<td style="text-align:left;"> IPV6INIT=no                                   </td>
+<td style="text-align:left;"> IPV6INIT=no</td>
+</tr>
+<tr>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+</tr>
+<tr>
+<td style="text-align:left;"> vi /etc/sysconfig/network-scripts/route-ens33 （ip对应的网卡名称）</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> 172.17.4.0/24 via 192.168.191.141 dev ens33   </td>
+<td style="text-align:left;"> 172.17.3.0/24 via 192.168.191.140 dev ens33</td>
+</tr>
+<tr>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>参考： <a href="https://www.centos.org/docs/5/html/5.2/Deployment_Guide/s1-networkscripts-static-routes.html">Configuring Static Routes</a></p>
+
+<ul>
+<li>修改docker配置</li>
+</ul>
+
+
+<pre><code>vi /usr/lib/systemd/system/docker.service     
+ExecStart=/usr/bin/dockerd --bridge=kbr0 
+
+systemctl daemon-reload 
+</code></pre>
+
+<ul>
+<li>重新启动</li>
+</ul>
+
+
+<p>先起网卡！</p>
+
+<pre><code>service network restart
+
+systemctl start docker
+</code></pre>
+
+<p></p>
+
+<h2>最终效果</h2>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;"> 192.168.191.140 kube-master                                                   </th>
+<th style="text-align:left;"> 192.168.191.141 kube-worker1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;"> [root@kube-master ~]# ifconfig                                                </td>
+<td style="text-align:left;"> [root@kube-worker1 ~]# ifconfig</td>
+</tr>
+<tr>
+<td style="text-align:left;"> ens33: flags=4163&lt;UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500                   </td>
+<td style="text-align:left;"> ens33: flags=4163&lt;UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500</td>
+</tr>
+<tr>
+<td style="text-align:left;">         inet 192.168.191.140  netmask 255.255.255.0  broadcast 192.168.191.255</td>
+<td style="text-align:left;">         inet 192.168.191.141  netmask 255.255.255.0  broadcast 192.168.191.255</td>
+</tr>
+<tr>
+<td style="text-align:left;">         inet6 fe80::1186:2fe5:9ee5:8790  prefixlen 64  scopeid 0x20<link>     </td>
+<td style="text-align:left;">         inet6 fe80::3995:4490:e2e7:1d0f  prefixlen 64  scopeid 0x20<link></td>
+</tr>
+<tr>
+<td style="text-align:left;">         ether 00:0c:29:40:2d:15  txqueuelen 1000  (Ethernet)                  </td>
+<td style="text-align:left;">         ether 00:0c:29:2e:67:4d  txqueuelen 1000  (Ethernet)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         RX packets 18010  bytes 10754845 (10.2 MiB)                           </td>
+<td style="text-align:left;">         RX packets 19871  bytes 12247126 (11.6 MiB)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         RX errors 0  dropped 0  overruns 0  frame 0                           </td>
+<td style="text-align:left;">         RX errors 0  dropped 0  overruns 0  frame 0</td>
+</tr>
+<tr>
+<td style="text-align:left;">         TX packets 4797  bytes 475332 (464.1 KiB)                             </td>
+<td style="text-align:left;">         TX packets 5647  bytes 561624 (548.4 KiB)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0            </td>
+<td style="text-align:left;">         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0</td>
+</tr>
+<tr>
+<td style="text-align:left;">                                                                               </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> kbr1: flags=4099&lt;UP,BROADCAST,MULTICAST>  mtu 1500                            </td>
+<td style="text-align:left;"> kbr0: flags=4099&lt;UP,BROADCAST,MULTICAST>  mtu 1500</td>
+</tr>
+<tr>
+<td style="text-align:left;">         inet 172.17.3.1  netmask 255.255.255.0  broadcast 172.17.3.255        </td>
+<td style="text-align:left;">         inet 172.17.4.1  netmask 255.255.255.0  broadcast 172.17.4.255</td>
+</tr>
+<tr>
+<td style="text-align:left;">         ether 00:00:00:00:00:00  txqueuelen 1000  (Ethernet)                  </td>
+<td style="text-align:left;">         ether 00:00:00:00:00:00  txqueuelen 1000  (Ethernet)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         RX packets 179  bytes 13932 (13.6 KiB)                                </td>
+<td style="text-align:left;">         RX packets 139  bytes 10492 (10.2 KiB)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         RX errors 0  dropped 0  overruns 0  frame 0                           </td>
+<td style="text-align:left;">         RX errors 0  dropped 0  overruns 0  frame 0</td>
+</tr>
+<tr>
+<td style="text-align:left;">         TX packets 43  bytes 3894 (3.8 KiB)                                   </td>
+<td style="text-align:left;">         TX packets 36  bytes 3004 (2.9 KiB)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0            </td>
+<td style="text-align:left;">         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0</td>
+</tr>
+<tr>
+<td style="text-align:left;">                                                                               </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> lo: flags=73&lt;UP,LOOPBACK,RUNNING>  mtu 65536                                  </td>
+<td style="text-align:left;"> lo: flags=73&lt;UP,LOOPBACK,RUNNING>  mtu 65536</td>
+</tr>
+<tr>
+<td style="text-align:left;">         inet 127.0.0.1  netmask 255.0.0.0                                     </td>
+<td style="text-align:left;">         inet 127.0.0.1  netmask 255.0.0.0</td>
+</tr>
+<tr>
+<td style="text-align:left;">         inet6 ::1  prefixlen 128  scopeid 0x10<host>                          </td>
+<td style="text-align:left;">         inet6 ::1  prefixlen 128  scopeid 0x10<host></td>
+</tr>
+<tr>
+<td style="text-align:left;">         loop  txqueuelen 1  (Local Loopback)                                  </td>
+<td style="text-align:left;">         loop  txqueuelen 1  (Local Loopback)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         RX packets 140  bytes 11644 (11.3 KiB)                                </td>
+<td style="text-align:left;">         RX packets 215  bytes 18260 (17.8 KiB)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         RX errors 0  dropped 0  overruns 0  frame 0                           </td>
+<td style="text-align:left;">         RX errors 0  dropped 0  overruns 0  frame 0</td>
+</tr>
+<tr>
+<td style="text-align:left;">         TX packets 140  bytes 11644 (11.3 KiB)                                </td>
+<td style="text-align:left;">         TX packets 215  bytes 18260 (17.8 KiB)</td>
+</tr>
+<tr>
+<td style="text-align:left;">         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0            </td>
+<td style="text-align:left;">         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0</td>
+</tr>
+<tr>
+<td style="text-align:left;">                                                                               </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> [root@kube-master ~]# route -n                                                </td>
+<td style="text-align:left;"> [root@kube-worker1 ~]# route -n</td>
+</tr>
+<tr>
+<td style="text-align:left;"> Kernel IP routing table                                                       </td>
+<td style="text-align:left;"> Kernel IP routing table</td>
+</tr>
+<tr>
+<td style="text-align:left;"> Destination     Gateway         Genmask         Flags Metric Ref    Use Iface </td>
+<td style="text-align:left;"> Destination     Gateway         Genmask         Flags Metric Ref    Use Iface</td>
+</tr>
+<tr>
+<td style="text-align:left;"> 0.0.0.0         192.168.191.2   0.0.0.0         UG    100    0        0 ens33 </td>
+<td style="text-align:left;"> 0.0.0.0         192.168.191.2   0.0.0.0         UG    100    0        0 ens33</td>
+</tr>
+<tr>
+<td style="text-align:left;"> 172.17.3.0      0.0.0.0         255.255.255.0   U     427    0        0 kbr1  </td>
+<td style="text-align:left;"> 172.17.3.0      192.168.191.140 255.255.255.0   UG    100    0        0 ens33</td>
+</tr>
+<tr>
+<td style="text-align:left;"> 172.17.4.0      192.168.191.141 255.255.255.0   UG    100    0        0 ens33 </td>
+<td style="text-align:left;"> 172.17.4.0      0.0.0.0         255.255.255.0   U     425    0        0 kbr0</td>
+</tr>
+<tr>
+<td style="text-align:left;"> 192.168.191.0   0.0.0.0         255.255.255.0   U     100    0        0 ens33 </td>
+<td style="text-align:left;"> 192.168.191.0   0.0.0.0         255.255.255.0   U     100    0        0 ens33</td>
+</tr>
+<tr>
+<td style="text-align:left;"> [root@kube-master ~]#                                                         </td>
+<td style="text-align:left;"> [root@kube-worker1 ~]#</td>
+</tr>
+<tr>
+<td style="text-align:left;"> [root@kube-master ~]# docker run -ti &ndash;rm busybox sh                          </td>
+<td style="text-align:left;"> [root@kube-worker1 ~]# docker run -ti &ndash;rm busybox sh</td>
+</tr>
+<tr>
+<td style="text-align:left;"> / # ifconfig                                                                  </td>
+<td style="text-align:left;"> / # ifconfig</td>
+</tr>
+<tr>
+<td style="text-align:left;"> eth0      Link encap:Ethernet  HWaddr 02:42:AC:11:03:02                       </td>
+<td style="text-align:left;"> eth0      Link encap:Ethernet  HWaddr 02:42:AC:11:04:02</td>
+</tr>
+<tr>
+<td style="text-align:left;">           inet addr:172.17.3.2  Bcast:0.0.0.0  Mask:255.255.255.0             </td>
+<td style="text-align:left;">           inet addr:172.17.4.2  Bcast:0.0.0.0  Mask:255.255.255.0</td>
+</tr>
+<tr>
+<td style="text-align:left;">           inet6 addr: fe80::42:acff:fe11:302/64 Scope:Link                    </td>
+<td style="text-align:left;">           inet6 addr: fe80::42:acff:fe11:402/64 Scope:Link</td>
+</tr>
+<tr>
+<td style="text-align:left;">           UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1                  </td>
+<td style="text-align:left;">           UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1</td>
+</tr>
+<tr>
+<td style="text-align:left;">           RX packets:23 errors:0 dropped:0 overruns:0 frame:0                 </td>
+<td style="text-align:left;">           RX packets:16 errors:0 dropped:0 overruns:0 frame:0</td>
+</tr>
+<tr>
+<td style="text-align:left;">           TX packets:15 errors:0 dropped:0 overruns:0 carrier:0               </td>
+<td style="text-align:left;">           TX packets:8 errors:0 dropped:0 overruns:0 carrier:0</td>
+</tr>
+<tr>
+<td style="text-align:left;">           collisions:0 txqueuelen:0                                           </td>
+<td style="text-align:left;">           collisions:0 txqueuelen:0</td>
+</tr>
+<tr>
+<td style="text-align:left;">           RX bytes:1870 (1.8 KiB)  TX bytes:1222 (1.1 KiB)                    </td>
+<td style="text-align:left;">           RX bytes:1296 (1.2 KiB)  TX bytes:648 (648.0 B)</td>
+</tr>
+<tr>
+<td style="text-align:left;">                                                                               </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> lo        Link encap:Local Loopback                                           </td>
+<td style="text-align:left;"> lo        Link encap:Local Loopback</td>
+</tr>
+<tr>
+<td style="text-align:left;">           inet addr:127.0.0.1  Mask:255.0.0.0                                 </td>
+<td style="text-align:left;">           inet addr:127.0.0.1  Mask:255.0.0.0</td>
+</tr>
+<tr>
+<td style="text-align:left;">           inet6 addr: ::1/128 Scope:Host                                      </td>
+<td style="text-align:left;">           inet6 addr: ::1/128 Scope:Host</td>
+</tr>
+<tr>
+<td style="text-align:left;">           UP LOOPBACK RUNNING  MTU:65536  Metric:1                            </td>
+<td style="text-align:left;">           UP LOOPBACK RUNNING  MTU:65536  Metric:1</td>
+</tr>
+<tr>
+<td style="text-align:left;">           RX packets:0 errors:0 dropped:0 overruns:0 frame:0                  </td>
+<td style="text-align:left;">           RX packets:0 errors:0 dropped:0 overruns:0 frame:0</td>
+</tr>
+<tr>
+<td style="text-align:left;">           TX packets:0 errors:0 dropped:0 overruns:0 carrier:0                </td>
+<td style="text-align:left;">           TX packets:0 errors:0 dropped:0 overruns:0 carrier:0</td>
+</tr>
+<tr>
+<td style="text-align:left;">           collisions:0 txqueuelen:1                                           </td>
+<td style="text-align:left;">           collisions:0 txqueuelen:1</td>
+</tr>
+<tr>
+<td style="text-align:left;">           RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)                              </td>
+<td style="text-align:left;">           RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)</td>
+</tr>
+<tr>
+<td style="text-align:left;"> / # ping 172.17.4.2                                                           </td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> PING 172.17.4.2 (172.17.4.2): 56 data bytes                                   </td>
+<td style="text-align:left;"> / # ping 172.17.3.2</td>
+</tr>
+<tr>
+<td style="text-align:left;"> 64 bytes from 172.17.4.2: seq=0 ttl=62 time=2.598 ms                          </td>
+<td style="text-align:left;"> PING 172.17.3.2 (172.17.3.2): 56 data bytes</td>
+</tr>
+<tr>
+<td style="text-align:left;"> 64 bytes from 172.17.4.2: seq=1 ttl=62 time=1.569 ms                          </td>
+<td style="text-align:left;"> 64 bytes from 172.17.3.2: seq=0 ttl=62 time=1.421 ms</td>
+</tr>
+<tr>
+<td style="text-align:left;"> 64 bytes from 172.17.4.2: seq=2 ttl=62 time=1.194 ms                          </td>
+<td style="text-align:left;"> 64 bytes from 172.17.3.2: seq=1 ttl=62 time=1.446 ms</td>
+</tr>
+<tr>
+<td style="text-align:left;"> ^C                                                                            </td>
+<td style="text-align:left;"> ^C</td>
+</tr>
+<tr>
+<td style="text-align:left;"> &mdash; 172.17.4.2 ping statistics &mdash;                                            </td>
+<td style="text-align:left;"> &mdash; 172.17.3.2 ping statistics &mdash;</td>
+</tr>
+<tr>
+<td style="text-align:left;"> 3 packets transmitted, 3 packets received, 0% packet loss                     </td>
+<td style="text-align:left;"> 2 packets transmitted, 2 packets received, 0% packet loss</td>
+</tr>
+<tr>
+<td style="text-align:left;"> round-trip min/avg/max = 1.194/1.787/2.598 ms                                 </td>
+<td style="text-align:left;"> round-trip min/avg/max = 1.421/1.433/1.446 ms</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;-</td>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>效果还不错，什么都没有安装配置下route两台机器的docker就互联互通了。二三台机器使用这种方式最省事的，并且理论上效率也是最高的。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Redmine部署以及插件安装]]></title>
@@ -1441,467 +1887,6 @@ kubectl get pods --all-namespaces -o jsonpath="{.items[*].spec.containers[*].ima
 * <a href="http://www.infoq.com/cn/articles/kubernetes-and-cloud-native-applications-part01">http://www.infoq.com/cn/articles/kubernetes-and-cloud-native-applications-part01</a>
 * <a href="http://www.codingwater.org/2016/08/25/Docker-Kubernetes-Intro/">http://www.codingwater.org/2016/08/25/Docker-Kubernetes-Intro/</a>
 * <a href="https://github.com/kubernetes/kubernetes/tree/v1.0.1/cluster/addons/dns">https://github.com/kubernetes/kubernetes/tree/v1.0.1/cluster/addons/dns</a></p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[K8s集群部署]]></title>
-    <link href="http://winseliu.com/blog/2017/02/25/k8s-docker-multinode/"/>
-    <updated>2017-02-25T13:25:26+00:00</updated>
-    <id>http://winseliu.com/blog/2017/02/25/k8s-docker-multinode</id>
-    <content type="html"><![CDATA[<p>前面讲了在本机windows安装方式，最近在linux多机器上尝试部署并操作。</p>
-
-<p>先看官网的文档<a href="https://kubernetes.io/docs/getting-started-guides/docker-multinode/">Portable Multi-Node Cluster</a>。这里根据文章进行实际操作记录下来，k8s是真的好用管理起来很方便。</p>
-
-<h2>安装docker（on centos7）</h2>
-
-<h4>不正确的打开方式</h4>
-
-<p>不要用这种方式安装</p>
-
-<pre><code>[root@k8s ~]# yum install docker
-
-[root@k8s ~]# docker -v
-Docker version 1.12.5, build 047e51b/1.12.5
-</code></pre>
-
-<p>否则运行报错的daemon语句，报错：</p>
-
-<pre><code>[root@k8s docker-multinode]# docker daemon -H unix:///var/run/docker-bootstrap.sock -p /var/run/docker-bootstrap.pid --iptables=false --ip-masq=false --bridge=none --graph=/var/lib/docker-bootstrap --exec-root=/var/run/docker-bootstrap
-exec: "dockerd": executable file not found in $PATH
-</code></pre>
-
-<p>先清理旧的软件</p>
-
-<pre><code>yum remove docker -y
-yum remove container-selinux -y
-yum remove docker-common -y
-</code></pre>
-
-<h4>安装docker的正确姿势</h4>
-
-<ul>
-<li><a href="https://docs.docker.com/engine/installation/linux/centos/">Get Docker for CentOS</a></li>
-</ul>
-
-
-<p>变化很快，直接按官网的操作。</p>
-
-<pre><code>[root@k8s ~]# yum install -y yum-utils
-
-[root@k8s ~]# yum-config-manager --add-repo https://docs.docker.com/engine/installation/linux/repo_files/centos/docker.repo
-Loaded plugins: fastestmirror, langpacks
-Repository base is listed more than once in the configuration
-Repository updates is listed more than once in the configuration
-Repository extras is listed more than once in the configuration
-Repository centosplus is listed more than once in the configuration
-adding repo from: https://docs.docker.com/engine/installation/linux/repo_files/centos/docker.repo
-grabbing file https://docs.docker.com/engine/installation/linux/repo_files/centos/docker.repo to /etc/yum.repos.d/docker.repo
-repo saved to /etc/yum.repos.d/docker.repo
-
-[root@k8s ~]# yum makecache fast
-[root@k8s ~]# yum -y install docker-engine
-
-# 把保存数据的目录转移到大磁盘下面去
-先启动服务来产生docker目录
-[root@k8s ~]# service docker start
-[root@k8s ~]# service docker stop
-
-[root@k8s ~]# rm -rf /var/lib/docker/
-[root@k8s ~]# ln -s /data/var/lib/docker /var/lib/
-</code></pre>
-
-<h2>安装k8s</h2>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/getting-started-guides/docker-multinode/">Portable Multi-Node Cluster</a></li>
-</ul>
-
-
-<h4>准备</h4>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/user-guide/prereqs/">Installing and Setting up kubectl</a></li>
-<li><a href="https://kubernetes.io/docs/getting-started-guides/kubectl/">https://kubernetes.io/docs/getting-started-guides/kubectl/</a></li>
-</ul>
-
-
-<pre><code># 删除旧的容器
-[root@k8s docker-multinode]# docker rm -f `docker ps -a | grep -v IMAGE | awk '{print $1}'`
-[root@k8s docker-multinode]# docker ps -a
-
-# 下载部署的工具
-[root@k8s ~]# yum install git -y
-[root@k8s ~]# git clone https://github.com/kubernetes/kube-deploy
-
-# kubectl安装，需要代理你懂得 
-export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8"
-export https_proxy=http://k8s:8118/
-export http_proxy=http://k8s:8118/
-
-[root@k8s ~]# curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
-  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
-                                 Dload  Upload   Total   Spent    Left  Speed
-100 48.0M  100 48.0M    0     0  1692k      0  0:00:29  0:00:29 --:--:-- 2351k
-[root@k8s ~]# chmod +x kubectl 
-[root@k8s ~]# mkdir ~/bin
-[root@k8s ~]# mv ./kubectl ~/bin/
-
-[root@k8s ~]# source &lt;(kubectl completion bash)
-[root@k8s ~]# echo "source &lt;(kubectl completion bash)" &gt;&gt; ~/.bashrc
-== 修改成下面的语句，不然你scp、rsync就不能用了: https://my.oschina.net/leejun2005/blog/342865
-== export PATH=~/bin:$PATH
-== [[ $- == *i* ]] &amp;&amp; source &lt;(kubectl completion bash)
-</code></pre>
-
-<h4>启动master</h4>
-
-<pre><code>[root@k8s ~]# cd kube-deploy/docker-multinode/
-[root@k8s docker-multinode]# ./master.sh 
-+++ [0206 19:07:23] K8S_VERSION is set to: v1.5.2
-+++ [0206 19:07:23] ETCD_VERSION is set to: 3.0.4
-+++ [0206 19:07:23] FLANNEL_VERSION is set to: v0.6.1
-+++ [0206 19:07:23] FLANNEL_IPMASQ is set to: true
-+++ [0206 19:07:23] FLANNEL_NETWORK is set to: 10.1.0.0/16
-+++ [0206 19:07:23] FLANNEL_BACKEND is set to: udp
-+++ [0206 19:07:23] RESTART_POLICY is set to: unless-stopped
-+++ [0206 19:07:23] MASTER_IP is set to: localhost
-+++ [0206 19:07:23] ARCH is set to: amd64
-+++ [0206 19:07:23] IP_ADDRESS is set to: 192.168.1.112
-+++ [0206 19:07:23] USE_CNI is set to: false
-+++ [0206 19:07:23] USE_CONTAINERIZED is set to: false
-+++ [0206 19:07:23] --------------------------------------------
-+++ [0206 19:07:23] Killing docker bootstrap...
-+++ [0206 19:07:24] Killing all kubernetes containers...
-Do you want to clean /var/lib/kubelet? [Y/n] y
-+++ [0206 19:07:27] Launching docker bootstrap...
-+++ [0206 19:07:28] Launching etcd...
-3ff0f0fd7a08282930449b2f496f786b9857f6290698d612cebc2086d1a1765c
-+++ [0206 19:07:31] Launching flannel...
-{"action":"set","node":{"key":"/coreos.com/network/config","value":"{ \"Network\": \"10.1.0.0/16\", \"Backend\": {\"Type\": \"udp\"}}","modifiedIndex":4,"createdIndex":4}}
-3651d077f453900a898ce6ad9fe67a7422f0c8084ec86b6e6a1a2ab6b9b1c629
-+++ [0206 19:07:33] FLANNEL_SUBNET is set to: 10.1.42.1/24
-+++ [0206 19:07:33] FLANNEL_MTU is set to: 1472
-+++ [0206 19:07:33] Restarting main docker daemon...
-+++ [0206 19:07:38] Restarted docker with the new flannel settings
-+++ [0206 19:07:38] Launching Kubernetes master components...
-d10130677853022fe37742437e39b21b3fcfbb90b3f24075457f469e238b0712
-+++ [0206 19:07:42] Done. It may take about a minute before apiserver is up.
-
-[root@k8s docker-multinode]# docker ps -a
-...一堆容器列表
-</code></pre>
-
-<p>如果有问题基本就是防火墙的问题（我遇到过的啊，下载镜像和本地firewall设置的问题）。</p>
-
-<p>上面安装kubectl时已经配置了代理地址。如果部署master的时刻pull镜像出错，那还得需要给docker配置代理增加配置 <strong> /etc/systemd/system/docker.service.d/http-proxy.conf </strong> / <strong> /usr/lib/systemd/system/docker.service </strong> 参考 <a href="https://docs.docker.com/engine/admin/systemd/#http-proxy">https://docs.docker.com/engine/admin/systemd/#http-proxy</a> 。具体错误详情及处理查看下面的【问题及处理】部分</p>
-
-<p><strong>安装启动好</strong>后，就可以通过浏览器图形界面来管理集群了(dashboard启动有问题的话查看后面的问题处理)： <a href="http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default">http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default</a></p>
-
-<h4>启动worker</h4>
-
-<p>下载安装软件的工作这里就不帖了，和master一样的：安装git、clone kube-deploy、docker。</p>
-
-<p>防火墙配置，master/slaves之间互通</p>
-
-<pre><code>centos7 firewall的add-source不知道怎么用的，反正加了地址也没效果；后面通过rule规则来实现。
-[root@bigdata-dev ~]# vi /etc/firewalld/zones/public.xml
-&lt;?xml version="1.0" encoding="utf-8"?&gt;
-&lt;zone&gt;
-  &lt;rule family="ipv4"&gt;
-    &lt;source address="192.168.1.112/32"/&gt;
-    &lt;accept/&gt;
-  &lt;/rule&gt;
-  &lt;service name="ssh"/&gt;
-  &lt;port protocol="tcp" port="80"/&gt;
-  &lt;port protocol="tcp" port="6379"/&gt;
-  &lt;port protocol="tcp" port="8080"/&gt;
-&lt;/zone&gt;
-[root@bigdata-dev ~]# firewall-cmd --complete-reload
-success
-[root@bigdata-dev ~]# firewall-cmd --list-all
-public (active)
-  target: default
-  icmp-block-inversion: no
-  interfaces: p4p1
-  sources: 
-  services: ssh
-  ports: 80/tcp 6379/tcp 8080/tcp
-  protocols: 
-  masquerade: no
-  forward-ports: 
-  sourceports: 
-  icmp-blocks: 
-  rich rules: 
-        rule family="ipv4" source address="192.168.1.112/32" accept
-
-[root@k8s ~]# cat /etc/firewalld/zones/public.xml
-&lt;?xml version="1.0" encoding="utf-8"?&gt;
-&lt;zone&gt;
-  &lt;rule family="ipv4"&gt;
-    &lt;source address="192.168.1.248"/&gt;
-    &lt;accept/&gt;
-  &lt;/rule&gt;
-  &lt;service name="ssh"/&gt;
-  &lt;port protocol="tcp" port="6443"/&gt;
-  &lt;port protocol="tcp" port="2379"/&gt;
-  &lt;port protocol="tcp" port="8118"/&gt;
-&lt;/zone&gt;
-</code></pre>
-
-<p>加载已经下载的镜像。从master拷贝过来（save/load）不要浪费VPN流量啦：</p>
-
-<pre><code>[root@bigdata-dev docker-multinode]# docker load &lt;k8s.tar
-</code></pre>
-
-<p>运行worker启动脚本：</p>
-
-<pre><code># 设置代理。如果有docker镜像下载失败的话再配置docker环境变量
-export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8"
-export https_proxy=http://k8s:8118/
-export http_proxy=http://k8s:8118/
-
-[root@bigdata-dev docker-multinode]# export MASTER_IP=192.168.1.112 
-[root@bigdata-dev docker-multinode]# ./worker.sh 
-+++ [0208 08:59:37] K8S_VERSION is set to: v1.5.2
-+++ [0208 08:59:37] ETCD_VERSION is set to: 3.0.4
-+++ [0208 08:59:37] FLANNEL_VERSION is set to: v0.6.1
-+++ [0208 08:59:37] FLANNEL_IPMASQ is set to: true
-+++ [0208 08:59:37] FLANNEL_NETWORK is set to: 10.1.0.0/16
-+++ [0208 08:59:37] FLANNEL_BACKEND is set to: udp
-+++ [0208 08:59:37] RESTART_POLICY is set to: unless-stopped
-+++ [0208 08:59:37] MASTER_IP is set to: 192.168.1.112
-+++ [0208 08:59:37] ARCH is set to: amd64
-+++ [0208 08:59:37] IP_ADDRESS is set to: 192.168.1.248
-+++ [0208 08:59:37] USE_CNI is set to: false
-+++ [0208 08:59:37] USE_CONTAINERIZED is set to: false
-+++ [0208 08:59:37] --------------------------------------------
-+++ [0208 08:59:37] Killing all kubernetes containers...
-+++ [0208 08:59:37] Launching docker bootstrap...
-+++ [0208 08:59:38] Launching flannel...
-+++ [0208 08:59:39] FLANNEL_SUBNET is set to: 10.1.42.1/24
-+++ [0208 08:59:39] FLANNEL_MTU is set to: 1472
-+++ [0208 08:59:39] Restarting main docker daemon...
-+++ [0208 08:59:43] Restarted docker with the new flannel settings
-+++ [0208 08:59:43] Launching Kubernetes worker components...
-1ce6ee6af709485668c9f170b1bc234b34d55d18e53116295c887c88046ca231
-+++ [0208 08:59:44] Done. After about a minute the node should be ready.
-</code></pre>
-
-<h2>查看集群状态</h2>
-
-<p>安装好了后，需要学习基本的管理操作</p>
-
-<ul>
-<li>交互式的学习一些基本概念命令 <a href="https://kubernetes.io/docs/tutorials/kubernetes-basics/">Kubernetes Basics</a></li>
-<li>常用的kubectl命令册子 <a href="https://kubernetes.io/docs/user-guide/kubectl-cheatsheet/">kubectl Cheat Sheet</a></li>
-</ul>
-
-
-<pre><code>[root@k8s ~]# kubectl cluster-info
-Kubernetes master is running at http://localhost:8080
-KubeDNS is running at http://localhost:8080/api/v1/proxy/namespaces/kube-system/services/kube-dns
-kubernetes-dashboard is running at http://localhost:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard
-
-To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
-
-[root@k8s ~]# kubectl get service
-NAME         CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
-kubernetes   10.0.0.1     &lt;none&gt;        443/TCP   16d
-
-[root@k8s ~]# kubectl get nodes
-NAME            STATUS    AGE
-192.168.1.112   Ready     16d
-192.168.1.248   Ready     16d
-
-[root@k8s ~]# kubectl get pods --namespace=kube-system
-NAME                                    READY     STATUS    RESTARTS   AGE
-k8s-master-192.168.1.112                4/4       Running   9          1d
-k8s-proxy-v1-4hp8c                      1/1       Running   0          1d
-k8s-proxy-v1-htrrf                      1/1       Running   0          1d
-kube-addon-manager-192.168.1.112        2/2       Running   0          1d
-kube-dns-4101612645-q0kcw               4/4       Running   0          1d
-kubernetes-dashboard-3543765157-hsls9   1/1       Running   0          1d
-
-dashboard运行正常的话，就可以通过浏览器查看以及管理集群
-== https://kubernetes.io/docs/user-guide/ui/
-== 走socks5代理
-http://k8s:8080/api/v1/proxy/namespaces/kube-system/services/kubernetes-dashboard/#/workload?namespace=default
-</code></pre>
-
-<h2>问题及处理</h2>
-
-<p>镜像或者启动失败的问题可以 <strong>set -x</strong> 输出脚本调试信息，获取到出错位置的命令单独重新执行来定位。</p>
-
-<p>另一种情况，脚本启动完成后，服务不能正常运行。重启机器，再次运行master后就不能访问dashboard了，把master机器的防火墙关闭就行了。github上有同样的一个问题<a href="https://github.com/kubernetes/dashboard/issues/916">https://github.com/kubernetes/dashboard/issues/916</a></p>
-
-<p>处理定位问题步骤如下：</p>
-
-<p>清理所有重新弄，无济于事</p>
-
-<pre><code>docker kill $(docker ps -q)
-docker rm $(docker ps -aq)
-[reboot]
-sudo rm -R /var/lib/kubelet
-sudo rm -R /var/run/kubernetes
-
-./turndown.sh &amp; ./master.sh 
-kubectl get pods --namespace=kube-system # 显示的dashboard容器启动总是失败，可以通过kubectl logs/docker logs查看。
-</code></pre>
-
-<p>重新定位问题</p>
-
-<pre><code>既然关闭防火墙能正常运行，下面通过拦截日志查看封堵日志
-[root@k8s ~]# firewall-cmd --set-log-denied=all
-
-[root@k8s ~]# less /var/log/messages
-Feb 25 00:04:30 k8s kernel: XFS (dm-32): Unmounting Filesystem
-Feb 25 00:04:30 k8s kernel: XFS (dm-32): Mounting V5 Filesystem
-Feb 25 00:04:30 k8s kernel: XFS (dm-32): Ending clean mount
-Feb 25 00:04:32 k8s kernel: FINAL_REJECT: IN=docker0 OUT= PHYSIN=veth2fd9745 MAC=02:42:cf:c5:2c:da:02:42:0a:01:49:03:08:00 SRC=10.1.73.3 DST=192.168.1.112 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=11531 DF PROTO=TCP SPT=38734 DPT=6443 WINDOW=28640 RES=0x00 SYN URGP=0 
-Feb 25 00:04:33 k8s kernel: FINAL_REJECT: IN=docker0 OUT= PHYSIN=veth2fd9745 MAC=02:42:cf:c5:2c:da:02:42:0a:01:49:03:08:00 SRC=10.1.73.3 DST=192.168.1.112 LEN=60 TOS=0x00 PREC=0x00 TTL=64 ID=11532 DF PROTO=TCP SPT=38734 DPT=6443 WINDOW=28640 RES=0x00 SYN URGP=0 
-Feb 25 00:04:33 k8s dockerd: time="2017-02-25T00:04:33.935301481+08:00" level=error msg="containerd: deleting container" error="exit status 1: \"container dcb4a44031b96470eaef50eb8ac4ee2b9f958906702d94645c3a45c4852b6335 does not exist\\none or more of the container deletions failed\\n\""
-Feb 25 00:04:34 k8s kernel: XFS (dm-32): Unmounting Filesystem
-Feb 25 00:04:35 k8s systemd-udevd: inotify_add_watch(7, /dev/dm-32, 10) failed: No such file or directory
-Feb 25 00:04:36 k8s systemd-udevd: inotify_add_watch(7, /dev/dm-32, 10) failed: No such file or directory
-Feb 25 00:04:36 k8s dockerd: time="2017-02-25T00:04:36.406470062+08:00" level=error msg="Handler for GET /v1.25/containers/5bd86339f0dcd513da632ec300d4235d8a09c3f9546f751ac8874de411de3c10/json returned error: No such container: 5bd86339f0dcd513da632ec300d4235d8a09c3f9546f751ac8874de411de3c10"
-可以看出访问的端口6443被拦截了
-</code></pre>
-
-<p>开放6443端口dashboard启动成功（直接把放开ip段也行）。通过浏览器能正常访问</p>
-
-<p></p>
-
-<pre><code>[root@k8s ~]# firewall-cmd --zone=public --add-port=6443/tcp --permanent
-success
-[root@k8s ~]# firewall-cmd --reload
-success
-
-[root@k8s ~]# kubectl get pods --namespace=kube-system
-NAME                                    READY     STATUS    RESTARTS   AGE
-k8s-master-192.168.1.112                4/4       Running   1          9m
-k8s-proxy-v1-nzkgt                      1/1       Running   0          9m
-kube-addon-manager-192.168.1.112        2/2       Running   0          8m
-kube-dns-4101612645-k4j0s               4/4       Running   4          9m
-kubernetes-dashboard-3543765157-h5g5f   1/1       Running   6          9m
-等所有都Running才能通过dashboard查看
-</code></pre>
-
-<h2>使用</h2>
-
-<p>使用已有镜像（网上、本地）</p>
-
-<pre><code>[root@k8s ~]# kubectl run hello-nginx --image=nginx --port=80
-
-[root@k8s ~]# kubectl get pods
-NAME                           READY     STATUS    RESTARTS   AGE
-hello-nginx-2471083592-94pm7   1/1       Running   0          19m
-[root@k8s ~]# kubectl describe pod hello-nginx-2471083592-94pm7
-Name:           hello-nginx-2471083592-94pm7
-Namespace:      default
-Node:           192.168.1.248/192.168.1.248
-Start Time:     Fri, 24 Feb 2017 12:37:30 +0800
-Labels:         pod-template-hash=2471083592
-                run=hello-nginx
-Status:         Running
-IP:             10.1.42.3
-Controllers:    ReplicaSet/hello-nginx-2471083592
-</code></pre>
-
-<p>查看到pod的ip，登录Node对应的机器就可以直接通过IP访问了。IP与flannel0网卡在同一网段。</p>
-
-<p>定制镜像</p>
-
-<pre><code>[root@k8s ~]# docker pull centos:centos5
-[root@k8s ~]# docker pull centos:centos6
-[root@k8s ~]# docker pull centos:centos7
-
-把最新的修改提交保存为行的镜像。
-登录centos6，安装sshd后，启动sshd服务（产生key）。清理yum缓冲、临时文件/tmp、以及history等。写Dockerfile减小镜像的大小： https://hui.lu/reduce-docker-image-size/  
-[root@k8s ~]# docker run -t -i centos:centos6 
-...yum install -y openssh-server openssh-clients ; service sshd start ; yum clean all ; history -c ; rm -rf /tmp/*
-
-提交的名字一定要打标签tag
-[root@k8s ~]# docker ps -a
-[root@k8s ~]# docker commit CONTAINER_ID bigdata:v1
-查看下版本的历史
-[root@k8s ~]# docker history bigdata:v1
-
-[root@k8s ~]# docker images
-[root@k8s ~]# docker save centos:centos5 centos:centos6 centos:centos7 bigdata:v1 &gt;bigdata.tar
-
-拷贝
-[root@bigdata-dev ~]# scp k8s:~/bigdata.tar ./
-centos.tar                                                                                                                                               100%  668MB  11.1MB/s   01:00    
-[root@bigdata-dev ~]# docker load &lt;bigdata.tar
-[root@bigdata-dev ~]# docker images
-
-真正的跑自己的镜像
-[root@k8s ~]# kubectl run hadoop --image=bigdata:v1 --command -- /usr/sbin/sshd -D
-deployment "hadoop" created
-</code></pre>
-
-<p>查看运行情况以及一些简单操作</p>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/user-guide/debugging-pods-and-replication-controllers/">https://kubernetes.io/docs/user-guide/debugging-pods-and-replication-controllers/</a></li>
-</ul>
-
-
-<pre><code>[root@k8s ~]# kubectl get pods
-NAME                      READY     STATUS    RESTARTS   AGE
-hadoop-2607718808-cqx2n   1/1       Running   0          2h
-[root@k8s ~]# kubectl describe pods hadoop-2607718808-cqx2n
-通过输出信息中Node和IP即可通过登录主机（IP与flannel0网卡在同一网段）
-
-也可以通过kubectl来登录
-[root@k8s ~]# kubectl exec hadoop-2607718808-cqx2n -i -t -- bash 
-[root@hadoop-2607718808-cqx2n /]# 
-[root@hadoop-2607718808-cqx2n /]# ifconfig 
-eth0      Link encap:Ethernet  HWaddr 02:42:0A:01:49:02  
-          inet addr:10.1.73.2  Bcast:0.0.0.0  Mask:255.255.255.0
-          inet6 addr: fe80::42:aff:fe01:4902/64 Scope:Link
-          UP BROADCAST RUNNING MULTICAST  MTU:1472  Metric:1
-          RX packets:8 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:8 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:0 
-          RX bytes:648 (648.0 b)  TX bytes:648 (648.0 b)
-
-lo        Link encap:Local Loopback  
-          inet addr:127.0.0.1  Mask:255.0.0.0
-          inet6 addr: ::1/128 Scope:Host
-          UP LOOPBACK RUNNING  MTU:65536  Metric:1
-          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:1 
-          RX bytes:0 (0.0 b)  TX bytes:0 (0.0 b)
-
-[root@k8s ~]# kubectl scale --replicas=4 deployment/hadoop
-[root@k8s ~]# kubectl get pods
-NAME                      READY     STATUS    RESTARTS   AGE
-hadoop-2607718808-0dzm6   1/1       Running   0          15s
-hadoop-2607718808-9twzq   1/1       Running   0          15s
-hadoop-2607718808-cqx2n   1/1       Running   0          6h
-hadoop-2607718808-k243d   1/1       Running   0          15s
-
-登上以及启动的机器
-[root@k8s ~]# kubectl exec hadoop-2607718808-cqx2n -i -t -- bash
-[root@hadoop-2607718808-cqx2n /]# 
-
-改变部署实例个数
-[root@k8s ~]# kubectl scale --replicas=2 deployment/hadoop
-deployment "hadoop" scaled
-[root@k8s ~]# kubectl get pods
-NAME                      READY     STATUS    RESTARTS   AGE
-hadoop-2607718808-cqx2n   1/1       Running   0          6h
-hadoop-2607718808-k243d   1/1       Running   0          9m
-</code></pre>
-
-<h2>小结</h2>
-
-<p>通过脚本来安装其实不难，就是要翻墙以及一些防火墙的设置需要特别的注意。</p>
 
 <p>&ndash;END</p>
 ]]></content>
