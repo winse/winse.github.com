@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Docker | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/docker/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2017-10-07T01:28:17+00:00</updated>
+  <updated>2017-10-08T10:55:57+00:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,498 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Docker多主机网络配置 - Macvlan]]></title>
+    <link href="http://winseliu.com/blog/2017/10/08/docker-network-via-macvlan/"/>
+    <updated>2017-10-08T02:27:54+00:00</updated>
+    <id>http://winseliu.com/blog/2017/10/08/docker-network-via-macvlan</id>
+    <content type="html"><![CDATA[<h2>参考</h2>
+
+<ul>
+<li><a href="https://docs.docker.com/engine/userguide/networking/get-started-macvlan/#macvlan-bridge-mode-example-usage">Get started with Macvlan network driver</a></li>
+<li><a href="https://github.com/alfredhuang211/study-docker-doc/blob/master/docker%E8%B7%A8%E4%B8%BB%E6%9C%BAmacvlan%E7%BD%91%E7%BB%9C%E9%85%8D%E7%BD%AE.md">docker跨主机macvlan网络配置</a></li>
+<li><a href="https://blog.jessfraz.com/post/ips-for-all-the-things/">ip static</a></li>
+<li><a href="https://stackoverflow.com/questions/35742807/docker-1-10-containers-ip-in-lan/39285950#39285950">Docker 1.12+ container&rsquo;s IP in LAN</a></li>
+<li><a href="http://hustcat.github.io/docker-macvlan/">Docker自定义网络——MacVLAN</a> 这篇内容有点类似pipework。</li>
+</ul>
+
+
+<blockquote><p>Note: In Macvlan you are not able to ping or communicate with the default namespace IP address. For example, if you create a container and try to ping the Docker host’s eth0 it will not work. That traffic is explicitly filtered by the kernel modules themselves to offer additional provider isolation and security.</p></blockquote>
+
+<h2>主机</h2>
+
+<pre><code>[root@kube-master140 ~]# ip addr show ens33
+2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
+    link/ether 00:0c:29:40:2d:15 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.140/24 brd 192.168.191.255 scope global dynamic ens33
+       valid_lft 1765sec preferred_lft 1765sec
+    inet6 fe80::1186:2fe5:9ee5:8790/64 scope link 
+       valid_lft forever preferred_lft forever
+
+[root@kube-worker141 ~]# ip addr show ens33
+2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
+    link/ether 00:0c:29:2e:67:4d brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.141/24 brd 192.168.191.255 scope global dynamic ens33
+       valid_lft 1779sec preferred_lft 1779sec
+    inet6 fe80::dd23:1df6:b37:efae/64 scope link 
+       valid_lft forever preferred_lft forever
+</code></pre>
+
+<h2>创建网络</h2>
+
+<pre><code>[root@kube-worker141 ~]# docker network create \
+-d macvlan \
+--subnet=192.168.191.0/24 \
+--gateway=192.168.191.2 \
+-o parent=ens33 pub_net
+4370998ed03024bc0057a894f1280d5b0fcdba526fd9e8da612a3abb0dbc884b
+
+[root@kube-worker141 ~]# docker network list 
+NETWORK ID          NAME                DRIVER              SCOPE
+eee9236a36ba        bridge              bridge              local               
+ddc7f59215c1        host                host                local               
+d8dc7fbc40a6        none                null                local               
+4370998ed030        pub_net             macvlan             local               
+
+[root@kube-worker141 ~]# docker network inspect pub_net
+...
+</code></pre>
+
+<h2>使用</h2>
+
+<pre><code>docker rm -f $( docker ps -a | grep -v IMAGE | awk '{print $1}' ) 
+
+[root@kube-worker141 ~]# docker run --net=pub_net --ip=192.168.191.200 --name c200 -tid busybox /bin/sh
+2e0a2ede40e80a2f1739330bb3a6c45b91ea08d78d26d165ad13945bedbea40f
+
+[root@kube-worker141 ~]# docker ps 
+CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
+2e0a2ede40e8        busybox             "/bin/sh"           13 seconds ago      Up 11 seconds                           c200
+[root@kube-worker141 ~]# docker exec c200 ifconfig 
+eth0      Link encap:Ethernet  HWaddr 02:42:C0:A8:BF:C8  
+          inet addr:192.168.191.200  Bcast:0.0.0.0  Mask:255.255.255.0
+          inet6 addr: fe80::42:c0ff:fea8:bfc8/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:8 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:648 (648.0 B)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+
+[root@kube-worker141 ~]# docker exec c200 route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         192.168.191.2   0.0.0.0         UG    0      0        0 eth0
+192.168.191.0   0.0.0.0         255.255.255.0   U     0      0        0 eth0
+[root@kube-worker141 ~]# docker exec c200 ping baidu.com 
+PING baidu.com (111.13.101.208): 56 data bytes
+64 bytes from 111.13.101.208: seq=0 ttl=128 time=45.029 ms
+64 bytes from 111.13.101.208: seq=1 ttl=128 time=44.616 ms
+
+#201
+[root@kube-worker141 ~]# docker run --net=pub_net --ip=192.168.191.201 -tid busybox /bin/sh 
+c8cfd3443f2b7b3973a06470cb95442eadface8d89c8cb1749ad73ebbd7e9e39
+
+##本地容器互通: 
+#: HOST141-200 ping HOST141-201
+[root@kube-worker141 ~]# docker exec c200 ping -W 10 192.168.191.201
+PING 192.168.191.201 (192.168.191.201): 56 data bytes
+64 bytes from 192.168.191.201: seq=0 ttl=64 time=0.523 ms
+
+#210 
+[root@kube-master ~]# docker run --net=pub_net --ip=192.168.191.210 -tid busybox /bin/sh 
+7929c136c3dbc646b68b3b7302e8525a25fe2f583db2246fea0da85a448b7b78
+
+##B访问A主机的容器: 
+#: HOST140 ping HOST141-201 
+[root@kube-master140 ~]# ping 192.168.191.201 
+PING 192.168.191.201 (192.168.191.201) 56(84) bytes of data.
+64 bytes from 192.168.191.201: icmp_seq=1 ttl=64 time=1.44 ms
+
+##A主机容器访问B主机容器: 
+#: HOST141-200 ping HOST140-210
+[root@kube-worker141 ~]# docker exec c200 ping -W 10 192.168.191.210
+PING 192.168.191.210 (192.168.191.210): 56 data bytes
+64 bytes from 192.168.191.210: seq=0 ttl=64 time=2.049 ms
+64 bytes from 192.168.191.210: seq=1 ttl=64 time=0.993 ms
+
+#主机与所在容器互相不能访问 (--!): 
+#: HOST141 ping HOST141-200
+[root@kube-worker141 ~]# ping 192.168.191.200
+PING 192.168.191.200 (192.168.191.200) 56(84) bytes of data.
+From 192.168.191.141 icmp_seq=1 Destination Host Unreachable
+From 192.168.191.141 icmp_seq=2 Destination Host Unreachable
+#: HOST141-200 ping HOST141
+[root@kube-worker1 ~]# docker exec c200 ping 192.168.191.141
+</code></pre>
+
+<p>针对主机与本机容器不能互通的问题，可以增加一张默认的网卡：<a href="https://success.docker.com/KBase/Multiple_Docker_Networks">Multiple Docker Networks</a></p>
+
+<pre><code>#先通过默认网络创建
+[root@kube-worker1 ~]# docker run --name c200 -tid busybox /bin/sh                                   
+47b7c1813b95cbec471b1a6de6a870e5537cfa70d54120873a5edb4e444b373b
+#然后连接pub_net！
+[root@kube-worker1 ~]# docker network connect --ip=192.168.191.200 pub_net c200        
+[root@kube-worker1 ~]# docker exec c200 ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue qlen 1
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+14: eth0@if15: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+    link/ether 02:42:ac:12:00:02 brd ff:ff:ff:ff:ff:ff
+    inet 172.18.0.2/16 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:acff:fe12:2/64 scope link 
+       valid_lft forever preferred_lft forever
+16: eth1@if2: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+    link/ether 02:42:c0:a8:bf:c8 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.200/24 scope global eth1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:c0ff:fea8:bfc8/64 scope link 
+       valid_lft forever preferred_lft forever
+</code></pre>
+
+<p>方式1：</p>
+
+<p>与主机的通信，通过 172.18.0.0/24 的网络。其他的通过 192.168.191.0/24 。还是感觉有点鸡肋！！</p>
+
+<p>方式2：</p>
+
+<p>增加route：</p>
+
+<pre><code>#route add -host $container_ip gw $lan_router_ip $if_device_nic2
+
+[root@kube-worker1 ~]# route add -net 192.168.191.200 gw 172.18.0.1 netmask 255.255.255.255 dev docker0
+[root@kube-worker1 ~]# route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         192.168.191.2   0.0.0.0         UG    100    0        0 ens33
+172.17.3.0      192.168.191.140 255.255.255.0   UG    100    0        0 ens33
+172.17.4.0      0.0.0.0         255.255.255.0   U     425    0        0 kbr0
+172.18.0.0      0.0.0.0         255.255.0.0     U     0      0        0 docker0
+192.168.191.0   0.0.0.0         255.255.255.0   U     100    0        0 ens33
+192.168.191.200 172.18.0.1      255.255.255.255 UGH   0      0        0 docker0
+[root@kube-worker1 ~]# ping 192.168.191.200
+PING 192.168.191.200 (192.168.191.200) 56(84) bytes of data.
+64 bytes from 192.168.191.200: icmp_seq=1 ttl=64 time=0.239 ms
+64 bytes from 192.168.191.200: icmp_seq=2 ttl=64 time=0.106 ms
+^C
+--- 192.168.191.200 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1000ms
+rtt min/avg/max/mdev = 0.106/0.172/0.239/0.067 ms
+</code></pre>
+
+<p>通过操作与pipework比较，互有优劣：</p>
+
+<ul>
+<li>pipework会创建网卡，然后所有的ip都是互通的，但是绑定、还得把主机的ip配置到br0上。</li>
+<li>而docker-network的方式与主机互通需要做额外的配置。</li>
+</ul>
+
+
+<p></p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Docker多主机网络配置 - Pipework]]></title>
+    <link href="http://winseliu.com/blog/2017/10/07/docker-network-via-pipework/"/>
+    <updated>2017-10-07T15:24:23+00:00</updated>
+    <id>http://winseliu.com/blog/2017/10/07/docker-network-via-pipework</id>
+    <content type="html"><![CDATA[<p>前面使用nat+route的方式手动连通两台机器上的docker容器。pipework是通过脚本的方式（手动）设置网络以及修改路由来进行配置的。</p>
+
+<p>参考：</p>
+
+<ul>
+<li><a href="http://www.infoq.com/cn/articles/docker-network-and-pipework-open-source-explanation-practice">Docker网络详解及pipework源码解读与实践</a></li>
+<li><a href="http://hongge.blog.51cto.com/2083180/1843169">docker技术剖析&ndash;docker网络（二）docker宿主机之间容器互通 for centos7.2</a> 步骤更详细一点</li>
+</ul>
+
+
+<p>原理就是建立一条连接link，一端 <strong> 在主机 </strong> 一端 <strong> 在容器 </strong> ；然后手动配置容器ip和路由；最后把主机Ethernet和新建的Bridge桥接连接到物理网络。</p>
+
+<p>容器的ip地址和主机的ip地址在一个网段内，所以在同一交换机下的所有主机、里面的容器都互通。</p>
+
+<h2>查看原网络的信息：</h2>
+
+<pre><code>[root@kube-worker1 ~]# nmcli d show ens33 
+GENERAL.DEVICE:                         ens33
+GENERAL.TYPE:                           ethernet
+GENERAL.HWADDR:                         00:0C:29:2E:67:4D
+GENERAL.MTU:                            1500
+GENERAL.STATE:                          100 (connected)
+GENERAL.CONNECTION:                     ens33
+GENERAL.CON-PATH:                       /org/freedesktop/NetworkManager/ActiveConnection/0
+WIRED-PROPERTIES.CARRIER:               on
+IP4.ADDRESS[1]:                         192.168.191.141/24
+IP4.GATEWAY:                            192.168.191.2
+IP4.ROUTE[1]:                           dst = 172.17.3.0/24, nh = 192.168.191.140, mt = 100
+IP4.DNS[1]:                             192.168.191.2
+IP4.DOMAIN[1]:                          localdomain
+IP6.ADDRESS[1]:                         fe80::3995:4490:e2e7:1d0f/64
+IP6.GATEWAY:                            
+</code></pre>
+
+<h2>安装pipework</h2>
+
+<pre><code>git clone https://github.com/jpetazzo/pipework
+cp ~/pipework/pipework /usr/local/bin/
+</code></pre>
+
+<h2>运行docker</h2>
+
+<pre><code>#设置ip转发
+echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+
+vi /etc/sysctl.conf
+net.ipv4.ip_forward = 1  
+
+NAME=test1
+
+#如不需要安装软件，可以加 --net none
+docker run -itd --name $NAME centos /bin/bash
+
+#docker ps -a -f name=$NAME | grep $NAME &amp;&amp; docker start $NAME 
+#docker exec test1 yum install -y iproute net-tools 
+</code></pre>
+
+<p></p>
+
+<h2>配置网络</h2>
+
+<pre><code>function docker_container_ip () {
+  local name=$1
+  local ip=$2
+  local gateway=${3:-$GATEWAY}
+
+  pipework br0 $name $ip@$gateway
+  #docker exec $name ifconfig 
+  #docker exec $name route -n 
+}
+
+function docker_hosted_bridge_network_reset () {
+  local ip=$1
+  local gateway=$2
+  local iface=$3
+
+  if nmcli d show $iface | grep -i ethernet ; then
+    #把地址给网桥，然后把ethernet和bridge连起来：(SSH连接操作的话，需要一条命令搞定！修改br0地址后route会变)
+    ip addr add $ip dev br0 ; \
+    ip addr del $ip dev $iface ; \
+    brctl addif br0 $iface ; \
+    #ip route del default ; \
+    ip route add default via $gateway 
+  fi 
+
+  brctl show br0
+}
+
+GATEWAY=$( route -n | grep '^0.0.0.0' | awk '{print $2}' )
+IFACE=$( route -n | grep '^0.0.0.0' | awk '{print $8}' )
+HOSTED_IPADDR=$( ip addr show $IFACE | grep "inet " | awk '{print $2}' )
+</code></pre>
+
+<p>设置容器的IP：</p>
+
+<pre><code>NAME=test1
+IP=192.168.191.210/24
+
+docker_container_ip $NAME $IP $GATEWAY
+docker_hosted_bridge_network_reset $HOSTED_IPADDR $GATEWAY $IFACE
+</code></pre>
+
+<p>上面的方式配置方式<strong>重启就失效</strong>的，可以通过写配置文件的方式来永久生效。如下：</p>
+
+<pre><code>[root@kube-worker1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-ens33 
+TYPE=Ethernet
+DEVICE=ens33
+BRIDGE=br0
+[root@kube-worker1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-br0 
+DEVICE=br0
+TYPE=Bridge
+ONBOOT=yes
+BOOTPROTO=static
+IPADDR=192.168.191.141
+NETMASK=255.255.255.0
+GATEWAY=192.168.191.2
+DNS1=192.168.191.2
+
+USERCTL=no
+</code></pre>
+
+<h2>测试</h2>
+
+<pre><code>[root@kube-worker1 ~]# screen
+
+  GATEWAY=$( route -n | grep '^0.0.0.0' | awk '{print $2}' )
+  IFACE=$( route -n | grep '^0.0.0.0' | awk '{print $8}' )
+  HOSTED_IPADDR=$( ip addr show $IFACE | grep "inet " | awk '{print $2}' )
+
+  docker run -itd --name test21 centos /bin/bash
+  docker run -itd --name test22 centos /bin/bash
+
+  docker_container_ip test21 192.168.191.231/24 $GATEWAY
+  docker_container_ip test22 192.168.191.232/24 $GATEWAY
+
+  docker exec test21 ping  192.168.191.140
+  docker exec test21 ping  192.168.191.141
+
+[root@kube-master ~]# screen #会话"不断"
+
+  docker_container_ip test11 192.168.191.221/24 $GATEWAY 
+  docker_container_ip test12 192.168.191.222/24 $GATEWAY
+
+  docker_hosted_bridge_network_reset $HOSTED_IPADDR $GATEWAY $IFACE
+
+  docker exec test11 ping 192.168.191.233
+</code></pre>
+
+<p>注意：容器重启后，这些配置的网卡/路由都没有了，要重新配置：</p>
+
+<pre><code>[root@kube-worker1 ~]# docker stop test21
+test21
+[root@kube-worker1 ~]# docker start test21
+test21
+[root@kube-worker1 ~]# pipework route test21 show 
+default via 172.18.0.1 dev eth0 
+172.18.0.0/16 dev eth0  proto kernel  scope link  src 172.18.0.2 
+
+[root@kube-worker1 ~]# docker_container_ip test21 192.168.191.231/24 $GATEWAY
+[root@kube-worker1 ~]# pipework route test21 show                            
+default via 192.168.191.2 dev eth1 
+172.18.0.0/16 dev eth0  proto kernel  scope link  src 172.18.0.2 
+192.168.191.0/24 dev eth1  proto kernel  scope link  src 192.168.191.231 
+
+[root@kube-worker1 ~]# docker exec test21 ping 192.168.191.140
+</code></pre>
+
+<p>了解原理后，操作起来还是比较容易的。就是每次重启都要重新配置比较烦。可以写成脚本，启动docker容器的时刻就执行下网络配置。</p>
+
+<p>pipework还可以用来配置vlan，暂时没这个需求，并且基本的操作都类似就没有实际操作了。</p>
+
+<p>话说，<strong> pipework还可以用来创建多网卡的容器。用docker network connect其实更简单。 </strong></p>
+
+<p></p>
+
+<h2>后记</h2>
+
+<p>除了通过pipework来实现共享物理网络外，docker network也可以实现这个功能：</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/35742807/docker-1-10-containers-ip-in-lan/35799206#35799206">Docker 1.10 container&rsquo;s IP in LAN</a></li>
+<li><a href="https://gist.github.com/dreamcat4/bc202ae175b367bcbe693da7a52851af">using bridge driver and brctrl.md</a> 感觉原理也类似pipework，就是那一堆的netns让 docker network + docker run &ndash;net 实现了而已。</li>
+</ul>
+
+
+<p></p>
+
+<ul>
+<li>建立并配置Bridge：</li>
+</ul>
+
+
+<pre><code>#中间会导致网络断掉，一条命令搞定才行
+docker network create --gateway=192.168.191.141 --subnet 192.168.191.0/24 --aux-address "DefaultGatewayIPv4=192.168.191.2" -o com.docker.network.bridge.name=br-home-net homenet ; \
+ip addr del 192.168.191.141/24 dev ens33 ; \
+brctl addif br-home-net ens33 
+
+#主机不上外网可以不加
+ip route add default via 192.168.191.2 ; 
+echo "nameserver 114.114.114.114" &gt;&gt;/etc/resolv.conf ; 
+</code></pre>
+
+<ul>
+<li>测试 docker-net + bridge：</li>
+</ul>
+
+
+<pre><code>[root@kube-worker1 ~]# ip a
+...
+2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast master br-home-net state UP qlen 1000
+    link/ether 00:0c:29:2e:67:4d brd ff:ff:ff:ff:ff:ff
+4: docker0: &lt;NO-CARRIER,BROADCAST,MULTICAST,UP&gt; mtu 1500 qdisc noqueue state DOWN 
+    link/ether 02:42:44:ef:32:28 brd ff:ff:ff:ff:ff:ff
+    inet 172.18.0.1/16 scope global docker0
+       valid_lft forever preferred_lft forever
+11: br-home-net: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP 
+    link/ether 02:42:84:97:c2:25 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.141/24 scope global br-home-net
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:84ff:fe97:c225/64 scope link 
+       valid_lft forever preferred_lft forever
+
+[root@kube-worker1 ~]# docker run -tid --name c200 --net homenet --ip 192.168.191.200 busybox /bin/sh 
+2579c2ddd18d23322eb1e145ad630205933dbc527b8981169ec6b125da8d8f1e
+
+[root@kube-worker1 ~]# docker exec -ti c200 sh 
+/ # ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue qlen 1
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+12: eth0@if13: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+    link/ether 02:42:c0:a8:bf:c8 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.200/24 scope global eth0
+       valid_lft forever preferred_lft forever
+/ # route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         192.168.191.2   0.0.0.0         UG    0      0        0 eth0
+192.168.191.0   0.0.0.0         255.255.255.0   U     0      0        0 eth0
+/ # ping baidu.com 
+PING baidu.com (111.13.101.208): 56 data bytes
+64 bytes from 111.13.101.208: seq=0 ttl=128 time=48.225 ms
+^C
+--- baidu.com ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 48.225/48.225/48.225 ms
+/ # ping 192.169.191.140
+PING 192.169.191.140 (192.169.191.140): 56 data bytes
+^C
+--- 192.169.191.140 ping statistics ---
+4 packets transmitted, 0 packets received, 100% packet loss
+/ # ping 192.168.191.140
+PING 192.168.191.140 (192.168.191.140): 56 data bytes
+64 bytes from 192.168.191.140: seq=0 ttl=64 time=2.572 ms
+64 bytes from 192.168.191.140: seq=1 ttl=64 time=1.076 ms
+^C
+--- 192.168.191.140 ping statistics ---
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 1.076/1.824/2.572 ms
+/ # ping 192.168.191.141
+PING 192.168.191.141 (192.168.191.141): 56 data bytes
+64 bytes from 192.168.191.141: seq=0 ttl=64 time=0.474 ms
+64 bytes from 192.168.191.141: seq=1 ttl=64 time=0.138 ms
+^C
+--- 192.168.191.141 ping statistics ---
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 0.138/0.306/0.474 ms
+/ # ping 192.168.191.1
+PING 192.168.191.1 (192.168.191.1): 56 data bytes
+64 bytes from 192.168.191.1: seq=0 ttl=128 time=1.068 ms
+64 bytes from 192.168.191.1: seq=1 ttl=128 time=0.603 ms
+^C
+--- 192.168.191.1 ping statistics ---
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 0.603/0.835/1.068 ms
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[两台主机的docker通过route互联互通]]></title>
@@ -170,7 +662,7 @@ systemctl daemon-reload
 </ul>
 
 
-<p>先起网卡！</p>
+<p>先起网卡！先起网卡！先起网卡！</p>
 
 <pre><code>service network restart
 
@@ -454,6 +946,13 @@ systemctl start docker
 
 
 <p>效果还不错，什么都没有安装配置下route两台机器的docker就互联互通了。二三台机器使用这种方式最省事的，并且理论上效率也是最高的。</p>
+
+<h2>其他参考</h2>
+
+<ul>
+<li><a href="http://www.infoq.com/cn/articles/docker-network-and-pipework-open-source-explanation-practice">Docker网络详解及pipework源码解读与实践</a></li>
+</ul>
+
 
 <p>&ndash;END</p>
 ]]></content>
@@ -857,1038 +1356,6 @@ web:
 <li><a href="https://yeasy.gitbooks.io/docker_practice/content/compose/commands.html">Compose 命令</a></li>
 </ul>
 
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[K8s Harbor Config on Centos6]]></title>
-    <link href="http://winseliu.com/blog/2017/03/12/k8s-harbor-config-on-centos6/"/>
-    <updated>2017-03-12T15:21:30+00:00</updated>
-    <id>http://winseliu.com/blog/2017/03/12/k8s-harbor-config-on-centos6</id>
-    <content type="html"><![CDATA[<h2>前传</h2>
-
-<p>前面有写在 centos6 安装k8s的文章，后来重启一台worker节点后该节点的网络就不通了 <strong> connect: Invalid argument </strong> 。更新到最新的0.7.0后worker节点重启网络都能正常连通。</p>
-
-<ul>
-<li><a href="https://github.com/coreos/flannel/issues/180">https://github.com/coreos/flannel/issues/180</a></li>
-</ul>
-
-
-<p>言归正传，来说说harbor的安装。想的是安装一个类似maven私服的功能（原来都是一台机一台机的save/load，麻烦）：</p>
-
-<ul>
-<li>本来安装registry就好了，每次都要加端口很烦有没有！！！</li>
-<li>弄了个service整到80端口，还得加 <strong> &ndash;insecure-registry </strong> 参数。还行吧，但是没有图形界面</li>
-<li>好了，看到有人用nexus3做docker私服。主要吧真没弄通，第二nexus3不会用！反正就是没搭成功了。</li>
-<li>本来前面有看到过vmware harbor，但是官网说是要docker1.10+的，差点就打消念头了，但是nexus3实在是搞不懂，只能硬着头皮尝试下harbor。</li>
-</ul>
-
-
-<p>这hardor是一坑货啊，功能是狠牛逼但是文档版本都对不上的！！！</p>
-
-<p>这里还是在 centos6 上面安装。并且老版本k8s-1.2各种配置不能用，一个个坑填的好苦！行，先爽一把，看看修改后的简单的安装操作流程：</p>
-
-<h2>简单配置</h2>
-
-<p>版本信息</p>
-
-<pre><code>[root@cu2 ~]# lsb_release -a
-LSB Version:    :base-4.0-amd64:base-4.0-noarch:core-4.0-amd64:core-4.0-noarch:graphics-4.0-amd64:graphics-4.0-noarch:printing-4.0-amd64:printing-4.0-noarch
-Distributor ID: CentOS
-Description:    CentOS release 6.8 (Final)
-Release:        6.8
-Codename:       Final
-[root@cu2 ~]# docker version
-Client version: 1.7.1
-Client API version: 1.19
-Go version (client): go1.4.2
-Git commit (client): 786b29d/1.7.1
-OS/Arch (client): linux/amd64
-Server version: 1.7.1
-Server API version: 1.19
-Go version (server): go1.4.2
-Git commit (server): 786b29d/1.7.1
-OS/Arch (server): linux/amd64
-</code></pre>
-
-<ul>
-<li>创建CA和证书</li>
-</ul>
-
-
-<pre><code>[root@cu2 kubernetes]# git clone https://github.com/OpenVPN/easy-rsa.git
-
-[root@cu2 easyrsa3]# ./easyrsa init-pki
-[root@cu2 easyrsa3]# ./easyrsa build-ca #记住输入的密码，下面颁发证书还会用到
-
-[root@cu2 easyrsa3]# ./easyrsa gen-req cu nopass
-[root@cu2 easyrsa3]# ./easyrsa sign-req server cu #commonName填将要用到的域名咯
-
-生成的key和证书在pki/private和pki/issued下
-</code></pre>
-
-<ul>
-<li>下载配置</li>
-</ul>
-
-
-<pre><code>git clone https://github.com/winse/docker-hadoop.git
-cd docker-hadoop/k8s-centos6/containers/harbor-make/
-</code></pre>
-
-<ul>
-<li>修改harbor.cfg配置</li>
-</ul>
-
-
-<p>把 <strong>域名</strong> 和 <strong>证书路径</strong> 修改成自己的。</p>
-
-<ul>
-<li>生成ConfigMaps配置</li>
-</ul>
-
-
-<pre><code>scl enable python27 bash
-python2.7 kubernetes/prepare 
-</code></pre>
-
-<ul>
-<li>创建服务和容器</li>
-</ul>
-
-
-<p>这里需要先下载官网的离线包harbor-offline-installer-0.5.0.tgz，加载harbor.0.5.0.tgz里面的镜像</p>
-
-<pre><code>[root@cu2 harbor]# docker images 
-REPOSITORY                                            TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-gcr.io/google_containers/heapster-grafana-amd64       v4.0.2              74d2c72849cc        7 weeks ago         131.5 MB
-gcr.io/google_containers/heapster-influxdb-amd64      v1.1.1              55d63942e2eb        7 weeks ago         11.59 MB
-gcr.io/google_containers/heapster-amd64               v1.3.0-beta.1       026fb02eca65        7 weeks ago         101.3 MB
-quay.io/coreos/flannel                                v0.7.0-amd64        072e88d50780        8 weeks ago         73.75 MB
-gcr.io/google_containers/kubernetes-dashboard-amd64   v1.5.1              9af7d5c61ccf        8 weeks ago         103.6 MB
-vmware/harbor-log                                     0.5.0               5cccdd11efe0        3 months ago        190.5 MB
-vmware/harbor-jobservice                              0.5.0               573d0bbd91ee        3 months ago        169.4 MB
-vmware/harbor-ui                                      0.5.0               990d3476bf93        3 months ago        233 MB
-vmware/harbor-db                                      0.5.0               9a595c26d6bc        3 months ago        326.8 MB
-nginx                                                 1.11.5              98f8314de615        4 months ago        181.4 MB
-gcr.io/google_containers/hyperkube-amd64              v1.2.7              1dd7250ed1b3        4 months ago        231.4 MB
-quay.io/coreos/flannel                                v0.6.1-amd64        ef86f3a53de0        6 months ago        27.89 MB
-gcr.io/google_containers/etcd-amd64                   3.0.4               ef5e89d609f1        7 months ago        39.62 MB
-registry                                              2.5.0               8cc599785872        7 months ago        33.28 MB
-gcr.io/google_containers/kube2sky-amd64               1.15                f93305484d65        10 months ago       29.16 MB
-gcr.io/google_containers/etcd-amd64                   2.2.5               a6752fb962b5        11 months ago       30.45 MB
-gcr.io/google_containers/skydns-amd64                 1.0                 a925f95d080a        11 months ago       15.57 MB
-gcr.io/google_containers/exechealthz-amd64            1.0                 5b9ac190b20c        11 months ago       7.116 MB
-gcr.io/google_containers/pause                        2.0                 9981ca1bbdb5        17 months ago       350.2 kB
-
----
-
-cd kubernetes/
-sh apply.sh
-</code></pre>
-
-<ul>
-<li>手动修复容器的配置文件</li>
-</ul>
-
-
-<pre><code>sh config.sh
-</code></pre>
-
-<p>CentOS6-K8S上面麻烦点，在CentOS7-K8S_V1.5+上面ConfigMap Volumn是可以用的，就不需要自己手动拷贝配置了。</p>
-
-<ul>
-<li>使用</li>
-</ul>
-
-
-<pre><code>[root@cu2 easyrsa3]# kubectl get services 
-NAME         CLUSTER-IP   EXTERNAL-IP   PORT(S)             AGE
-jobservice   10.0.0.154   &lt;none&gt;        80/TCP              1d
-kubernetes   10.0.0.1     &lt;none&gt;        443/TCP             2d
-mysql        10.0.0.176   &lt;none&gt;        3306/TCP            1d
-nginx        10.0.0.78    &lt;none&gt;        80/TCP,443/TCP      1d
-registry     10.0.0.46    &lt;none&gt;        5000/TCP,5001/TCP   1d
-ui           10.0.0.11    &lt;none&gt;        80/TCP              1d
-
-# 域名
-[root@cu3 ~]# vi /etc/hosts
-10.0.0.78 cu.eshore.cn
-
-# 证书
-[root@cu3 ~]# mkdir -p /etc/docker/certs.d/cu.eshore.cn/
-
-[root@cu2 pki]# scp ca.crt cu3:/etc/docker/certs.d/cu.eshore.cn/
-
-# 登录
-[root@cu3 certs.d]# docker login cu.eshore.cn
-Username: admin
-Password: Harbor12345
-Email: 1
-WARNING: login credentials saved in /root/.docker/config.json
-Login Succeeded
-
-# https://cu.eshore.cn 通过WEB页面创建项目 google_containers
-
-# PUSH
-[root@cu3 certs.d]# docker tag gcr.io/google_containers/pause:2.0 cu.eshore.cn/google_containers/pause:2.0
-
-[root@cu3 certs.d]# docker push cu.eshore.cn/google_containers/pause:2.0
-The push refers to a repository [cu.eshore.cn/google_containers/pause] (len: 1)
-9981ca1bbdb5: Image already exists 
-6995a49b90f2: Image successfully pushed 
-Digest: sha256:139471770ffc22a2f15ae2ad8e3a0b3b9cbd620ad32400c7e8024a3d09ebec7d
-</code></pre>
-
-<h1>&mdash;&mdash; 下面是记流水账内容 &mdash;&mdash;</h1>
-
-<h2>简单搭建配置</h2>
-
-<p>参考阅读</p>
-
-<ul>
-<li><a href="http://www.zoues.com/2017/02/19/vmware-harbor-%E5%9C%A8-kubernetes-%E4%B8%8A%E7%9A%84%E9%83%A8%E7%BD%B2%E3%80%90zoues-com%E3%80%91/">在 KUBERNETES 上的部署 VMWare Harbor</a></li>
-<li><a href="https://github.com/vmware/harbor/blob/master/docs/kubernetes_deployment.md">主干文档 Integration with Kubernetes </a></li>
-<li><a href="https://github.com/vmware/harbor/blob/master/docs/installation_guide.md">https://github.com/vmware/harbor/blob/master/docs/installation_guide.md</a></li>
-<li><a href="https://github.com/vmware/harbor/tree/00259567a8b59758930950440a0ecfd6061db485/make/kubernetes">https://github.com/vmware/harbor/tree/00259567a8b59758930950440a0ecfd6061db485/make/kubernetes</a></li>
-</ul>
-
-
-<p>简略步骤：</p>
-
-<ul>
-<li>下载0.5.0的离线压缩包 harbor-offline-installer-0.5.0.tgz</li>
-<li>把镜像加载到本地（解压offline后在目录下有tgz的镜像压缩包） <code>docker load -i harbor.0.5.0.tgz</code></li>
-<li>下载github主干的源码 harbor-master.zip ，对是主干，不是release页面的源码！！！（香菇，release源码包里面的k8s配置文件尽然是不配套的，那打什么版本咯！！文档也不说明下。非常非常感谢 www.zoues.com 博主，这才是明灯啊）</li>
-<li>安装python2.7（prepare脚本需要） <code>yum install centos-release-scl; yum install -y python27</code></li>
-<li>解压进入到 harbor-master/make 目录</li>
-<li>修改harbor.cfg文件配置。（这里我就改了域名而已，会有https的问题。先不管跑起来先，后面在讲https的处理）</li>
-<li>执行prepare脚本，用于生成配置键值对cm文件（ConfigMaps）。</li>
-</ul>
-
-
-<pre><code>[root@cu2 make]# python kubernetes/prepare 
-Traceback (most recent call last):
-  File "kubernetes/prepare", line 145, in &lt;module&gt;
-    pkey = subprocess.check_output(['openssl','genrsa','4096'], stderr=devnull)
-AttributeError: 'module' object has no attribute 'check_output'
-
-&gt; Python should be version 2.7 or higher. Note that you may have to install Python on Linux distributions (Gentoo, Arch) that do not come with a Python interpreter installed by default
-
-https://github.com/h2oai/h2o-2/wiki/installing-python-2.7-on-centos-6.3.-follow-this-sequence-exactly-for-centos-machine-only
-https://gist.github.com/dalegaspi/dec44117fa5e7597a559  我按这个小写的安装的
-[root@cu2 make]# yum install centos-release-scl
-[root@cu2 make]# yum install -y python27
-
-[root@cu2 make]# scl enable python27 bash
-[root@cu2 make]# /opt/rh/python27/root/usr/bin/python -V
-Python 2.7.8
-
-[root@cu2 make]# less harbor.cfg 
-
-[root@cu2 make]# /opt/rh/python27/root/usr/bin/python kubernetes/prepare 
-Warning: Key(ldap_searchdn) is not existing. Use empty string as default
-Warning: Key(ldap_search_pwd) is not existing. Use empty string as default
-Warning: Key(ldap_filter) is not existing. Use empty string as default
-</code></pre>
-
-<ul>
-<li>然后就是愉快的执行apply就好：</li>
-</ul>
-
-
-<pre><code>kubectl apply -f pv/
-
-kubectl apply -f jobservice/jobservice.cm.yaml
-kubectl apply -f mysql/mysql.cm.yaml
-kubectl apply -f nginx/nginx.cm.yaml
-kubectl apply -f registry/registry.cm.yaml
-kubectl apply -f ui/ui.cm.yaml
-
-kubectl apply -f jobservice/jobservice.svc.yaml
-kubectl apply -f mysql/mysql.svc.yaml
-kubectl apply -f nginx/nginx.svc.yaml
-kubectl apply -f registry/registry.svc.yaml
-kubectl apply -f ui/ui.svc.yaml
-
-kubectl apply -f registry/registry.rc.yaml
-kubectl apply -f mysql/mysql.rc.yaml
-kubectl apply -f jobservice/jobservice.rc.yaml
-kubectl apply -f ui/ui.rc.yaml
-kubectl apply -f nginx/nginx.rc.yaml
-</code></pre>
-
-<p>由于ConfigMaps方式不能正确的创建文件需要把配置文件拷贝到对应容器的config目录下：</p>
-
-<pre><code>sh config.sh
-</code></pre>
-
-<p>除了nginx报https的证书问题外，其他都正常跑起来了。把nginx.conf的https server部分先删掉，先查看效果。</p>
-
-<pre><code>[root@cu2 kubernetes]# kubectl get rc
-NAME            DESIRED   CURRENT   AGE
-jobservice-rc   1         1         4h
-mysql-rc        1         1         4h
-nginx-rc        1         1         4h
-registry-rc     1         1         4h
-ui-rc           1         1         4h
-[root@cu2 kubernetes]# kubectl get pods
-NAME                       READY     STATUS    RESTARTS   AGE
-jobservice-rc-3hhea        1/1       Running   0          4h
-k8s-master-192.168.0.214   4/4       Running   28         2d
-k8s-proxy-192.168.0.214    1/1       Running   4          2d
-mysql-rc-nyk6z             1/1       Running   0          4h
-nexus-3126345715-mfteg     1/1       Running   0          2d # 这个是maven私服
-nginx-rc-93cdr             1/1       Running   15         4h
-registry-rc-qbdfk          1/1       Running   12         4h
-ui-rc-7e76i                1/1       Running   10         4h
-
-[root@cu2 kubernetes]# kubectl get services nginx
-NAME      CLUSTER-IP   EXTERNAL-IP   PORT(S)          AGE
-nginx     10.0.0.78    &lt;none&gt;        80/TCP,443/TCP   1d
-</code></pre>
-
-<p>访问nginx：</p>
-
-<p><img src="/images/blogs/k8s-harbor.jpg" alt="" /></p>
-
-<p>安装完了后，使用harbor.cfg配置文件里面的admin和密码进行登录。然后看看官网的操作文档 <a href="https://github.com/vmware/harbor/blob/master/docs/user_guide.md">https://github.com/vmware/harbor/blob/master/docs/user_guide.md</a></p>
-
-<p>现在PUSH要加 <code>--insecure-registry</code> 参数，还得重启docker太麻烦了。等下先弄https，搞好后添加证书直接push比较爽。</p>
-
-<h2>修改配置过程中遇到的一些问题</h2>
-
-<p>pvc在v1.2的时刻不支持selector。使用volumeName属性来代替。</p>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/tasks/configure-pod-container/configure-persistent-volume-storage/">https://kubernetes.io/docs/tasks/configure-pod-container/configure-persistent-volume-storage/</a></li>
-<li><a href="https://kubernetes.io/docs/user-guide/persistent-volumes/#persistentvolumeclaims">https://kubernetes.io/docs/user-guide/persistent-volumes/#persistentvolumeclaims</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/tree/v1.2.7/docs/user-guide/persistent-volumes/claims">https://github.com/kubernetes/kubernetes/tree/v1.2.7/docs/user-guide/persistent-volumes/claims</a></li>
-<li><a href="https://kubernetes.io/docs/resources-reference/v1.5/#persistentvolumeclaim-v1">https://kubernetes.io/docs/resources-reference/v1.5/#persistentvolumeclaim-v1</a></li>
-<li><a href="http://blog.fleeto.us/translation/persistent-volumes">http://blog.fleeto.us/translation/persistent-volumes</a></li>
-</ul>
-
-
-<p>巨坑，键名对不能用下划线、不能大写字母，到1.4才修复。</p>
-
-<ul>
-<li><a href="https://github.com/kubernetes/kubernetes/issues/23722">Allow underscore in configMapKeyRef key&rsquo;s</a></li>
-</ul>
-
-
-<p>configmap~volumn用于创建volumns好像有问题，没有创建对应文件。</p>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/user-guide/configmap/">https://kubernetes.io/docs/user-guide/configmap/</a></li>
-<li><a href="http://stackoverflow.com/questions/36187624/kubernetes-configmap-volume-doesnt-create-file-in-container">http://stackoverflow.com/questions/36187624/kubernetes-configmap-volume-doesnt-create-file-in-container</a></li>
-</ul>
-
-
-<p>在1.5.3上面是可以生成的。。。囧，相比puppet的文档，k8s的文档真的差了十万八千里啊！！！
-<code>
-[root@k8s kube-deploy]# kubectl logs nginx-rc-fr52v
-https.crt
-https.key
-nginx.conf
-</code></p>
-
-<p>后面看到nginx的v1.2用了secrets修改后也不行。</p>
-
-<ul>
-<li><a href="https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/https-nginx/nginx-app.yaml">https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/https-nginx/nginx-app.yaml</a> 看到1.2使用secret volumes</li>
-<li><a href="https://github.com/kubernetes/kubernetes/blob/52f4d3806919e4ec16cb17336a1802461cf40a46/test/kubemark/resources/hollow-node_template.yaml">https://github.com/kubernetes/kubernetes/blob/52f4d3806919e4ec16cb17336a1802461cf40a46/test/kubemark/resources/hollow-node_template.yaml</a></li>
-<li><a href="https://kubernetes.io/docs/user-guide/secrets/">https://kubernetes.io/docs/user-guide/secrets/</a></li>
-<li><a href="https://kubernetes.io/docs/user-guide/configmap/">https://kubernetes.io/docs/user-guide/configmap/</a></li>
-<li><a href="https://kubernetes.io/docs/tasks/configure-pod-container/downward-api-volume-expose-pod-information/">https://kubernetes.io/docs/tasks/configure-pod-container/downward-api-volume-expose-pod-information/</a></li>
-</ul>
-
-
-<p>其实就是docker版本老的不支持shared，其实在kubelet的容器里面是创建了对应的文件的：</p>
-
-<pre><code># docker logs
-I0316 08:22:19.729825   13206 volumes.go:279] Used volume plugin "kubernetes.io/configmap" to mount config
-I0316 08:22:19.729860   13206 configmap.go:118] Setting up volume config for pod cfe8b3f6-09fb-11e7-bdde-020047eb000e at /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
-I0316 08:22:19.729915   13206 volumes.go:279] Used volume plugin "kubernetes.io/empty-dir" to mount wrapped_config
-...
-I0316 08:22:19.733309   13206 configmap.go:145] Received configMap default/harbor-ui-config containing (30) pieces of data, 3739 total bytes
-I0316 08:22:19.733470   13206 atomic_writer.go:316] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: current paths:   [app.conf private_key.pem]
-I0316 08:22:19.733493   13206 atomic_writer.go:328] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: new paths:       [app.conf private_key.pem]
-I0316 08:22:19.733502   13206 atomic_writer.go:331] /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config: paths to remove: map[]
-I0316 08:22:19.733552   13206 atomic_writer.go:136] pod default/ui-rc-psjzs volume config: no update required for target directory /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
-
-[root@cu3 config]# docker exec -ti b34c51260dda bash
-root@cu3:/# ls -al /var/lib/kubelet/pods/cfe8b3f6-09fb-11e7-bdde-020047eb000e/volumes/kubernetes.io~configmap/config
-total 4
-drwxrwxrwt 3 root root  120 Mar 16 04:08 .
-drwxr-xr-x 3 root root 4096 Mar 16 04:08 ..
-drwxr-xr-x 2 root root   80 Mar 16 04:08 ..3983_16_03_04_08_50.565987072
-lrwxrwxrwx 1 root root   31 Mar 16 04:08 ..data -&gt; ..3983_16_03_04_08_50.565987072
-lrwxrwxrwx 1 root root   15 Mar 16 04:08 app.conf -&gt; ..data/app.conf
-lrwxrwxrwx 1 root root   22 Mar 16 04:08 private_key.pem -&gt; ..data/private_key.pem
-</code></pre>
-
-<p>最后放弃了，直接用脚本来创建文件，然后把文件拷贝到对应的机器。</p>
-
-<pre><code>[root@cu2 kubernetes]# cd harbor-make/kubernetes/
-[root@cu2 kubernetes]# sh config.sh 
-</code></pre>
-
-<h2>HTTPS</h2>
-
-<ul>
-<li><a href="http://www.pangxie.space/docker/353">Docker部署认证私有仓库(registry2.x+nginx)-centos7</a></li>
-<li><a href="https://github.com/vmware/harbor/blob/master/docs/configure_https.md">Configuring Harbor with HTTPS Access</a></li>
-</ul>
-
-
-<p>生成CA和证书</p>
-
-<pre><code>[root@cu2 kubernetes]# git clone https://github.com/OpenVPN/easy-rsa.git
-
-https://github.com/OpenVPN/easy-rsa/blob/master/README.quickstart.md
-
-[root@cu2 easyrsa3]# ll
-total 56
--rwxr-xr-x 1 root root 35253 Mar 13 01:04 easyrsa
--rw-r--r-- 1 root root  4560 Mar 13 01:04 openssl-1.0.cnf
--rw-r--r-- 1 root root  8126 Mar 13 01:04 vars.example
-drwxr-xr-x 2 root root  4096 Mar 13 01:04 x509-types
-[root@cu2 easyrsa3]# ./easyrsa init-pki
-
-init-pki complete; you may now create a CA or requests.
-Your newly created PKI dir is: /data/kubernetes/easy-rsa/easyrsa3/pki
-
-[root@cu2 easyrsa3]# ./easyrsa build-ca
-Generating a 2048 bit RSA private key
-.............................+++
-..............................................+++
-writing new private key to '/data/kubernetes/easy-rsa/easyrsa3/pki/private/ca.key.Nj5oHgfZC5'
-Enter PEM pass phrase: 123456
-Verifying - Enter PEM pass phrase: 123456
------
-You are about to be asked to enter information that will be incorporated
-into your certificate request.
-What you are about to enter is what is called a Distinguished Name or a DN.
-There are quite a few fields but you can leave some blank
-For some fields there will be a default value,
-If you enter '.', the field will be left blank.
------
-Common Name (eg: your user, host, or server name) [Easy-RSA CA]:eshore.cn
-
-CA creation complete and you may now import and sign cert requests.
-Your new CA certificate file for publishing is at:
-/data/kubernetes/easy-rsa/easyrsa3/pki/ca.crt
-
-
-[root@cu2 easyrsa3]# ./easyrsa gen-req cu nopass
-Generating a 2048 bit RSA private key
-..........+++
-.................................+++
-writing new private key to '/data/kubernetes/easy-rsa/easyrsa3/pki/private/cu.key.LQX3Dr2jG3'
------
-You are about to be asked to enter information that will be incorporated
-into your certificate request.
-What you are about to enter is what is called a Distinguished Name or a DN.
-There are quite a few fields but you can leave some blank
-For some fields there will be a default value,
-If you enter '.', the field will be left blank.
------
-Common Name (eg: your user, host, or server name) [cu]:cu.eshore.cn
-
-Keypair and certificate request completed. Your files are:
-req: /data/kubernetes/easy-rsa/easyrsa3/pki/reqs/cu.req
-key: /data/kubernetes/easy-rsa/easyrsa3/pki/private/cu.key
-
-[root@cu2 easyrsa3]# ./easyrsa sign-req server cu
-
-
-You are about to sign the following certificate.
-Please check over the details shown below for accuracy. Note that this request
-has not been cryptographically verified. Please be sure it came from a trusted
-source or that you have verified the request checksum with the sender.
-
-Request subject, to be signed as a server certificate for 3650 days:
-
-subject=
-    commonName                = cu.eshore.cn
-
-
-Type the word 'yes' to continue, or any other input to abort.
-  Confirm request details: yes
-Using configuration from /data/kubernetes/easy-rsa/easyrsa3/openssl-1.0.cnf
-Enter pass phrase for /data/kubernetes/easy-rsa/easyrsa3/pki/private/ca.key:
-Check that the request matches the signature
-Signature ok
-The Subject's Distinguished Name is as follows
-commonName            :PRINTABLE:'cu.eshore.cn'
-Certificate is to be certified until Mar 10 23:36:42 2027 GMT (3650 days)
-
-Write out database with 1 new entries
-Data Base Updated
-
-Certificate created at: /data/kubernetes/easy-rsa/easyrsa3/pki/issued/cu.crt
-
-
-[root@cu2 easyrsa3]# 
-
-这里得用签发server端证书，如果是client使用时会报错： v2 ping attempt failed with error: Get https://cu.eshore.cn/v2/: x509: certificate specifies an incompatible key usage
-
-
-[root@cu2 easyrsa3]# tree .
-.
-├── easyrsa
-├── openssl-1.0.cnf
-├── pki
-│   ├── ca.crt
-│   ├── certs_by_serial
-│   │   └── 01.pem
-│   ├── index.txt
-│   ├── index.txt.attr
-│   ├── index.txt.old
-│   ├── issued
-│   │   └── cu.crt
-│   ├── private
-│   │   ├── ca.key
-│   │   └── cu.key
-│   ├── reqs
-│   │   └── cu.req
-│   ├── serial
-│   └── serial.old
-├── vars.example
-└── x509-types
-    ├── ca
-    ├── client
-    ├── COMMON
-    └── server
-
-6 directories, 18 files
-</code></pre>
-
-<p>重新执行以下上面的步骤，配置关联比较多。https和http请求地址会有冲突。</p>
-
-<p>重新配置后，把ca.cert拷贝到docker节点，然后登录、创建项目、提交项目即可。最开始有帖操作的代码，这里不重复了。</p>
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[k8s在Centos6部署实践]]></title>
-    <link href="http://winseliu.com/blog/2017/03/05/k8s-docker-multinode-on-centos6/"/>
-    <updated>2017-03-05T00:49:29+00:00</updated>
-    <id>http://winseliu.com/blog/2017/03/05/k8s-docker-multinode-on-centos6</id>
-    <content type="html"><![CDATA[<p>2017-3-17 08:33:56 折腾了大半个月，写点小结。在centos6 + docker-1.7 + k8s-1.2 是能用起来，安装了dashboard、nexus2、harbor，但是对于一些新的东西不能用，并且k8s官网文档不分版本并且没讲明白docker兼容的版本（至少官网文档），感觉人家就是行到自己这里就不行，各种折腾然后到后面是版本问题。docker和k8s在容器大热的当前，版本更新太快了，docker都到1.17了。综上，如果在centos6上面玩玩了解了k8s的概况还是好的，但是真的要用还是升级centos7吧。</p>
-
-<p>configmap-volumes真是好东西，没办法docker-1.7不支持shared volume。</p>
-
-<p>&ndash;</p>
-
-<p>centos6系统比较"老"啊，既没有systemd，也没有docker-engine。网上各种资料要么是原始安装（非bootstrap docker），要么就是在centos7上装的。不太想在系统上做安装，按照kube-deploy的docker-multinode的脚本来进行修改安装，版本不兼容需要开推土机填坑啊，centos6上面的docker才1.7还不能用kubernetes-1.3，dashboard也需要自己安装。</p>
-
-<p>环境描述：</p>
-
-<ul>
-<li>cu2: bootstrap(etcd, flannel), main(hyperkube, pause, kubernetes-dashboard)</li>
-<li>cu4、cu5: bootstrap(flannel), main(hyperkube, pause)</li>
-</ul>
-
-
-<pre><code>[root@cu2 ~]# docker -H unix:///var/run/docker-bootstrap.sock ps | grep -v IMAGE | awk '{print $2}' | sort -u
-gcr.io/google_containers/etcd-amd64:3.0.4
-quay.io/coreos/flannel:v0.6.1-amd64
-[root@cu4 ~]# docker -H unix:///var/run/docker-bootstrap.sock ps | grep -v IMAGE | awk '{print $2}' | sort -u
-quay.io/coreos/flannel:v0.6.1-amd64
-
-[root@cu2 kubernetes]# docker images
-REPOSITORY                                            TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-bigdata                                               v1                  9e30d146824b        38 hours ago        457.2 MB
-gcr.io/google_containers/heapster-grafana-amd64       v4.0.2              74d2c72849cc        6 weeks ago         131.5 MB
-gcr.io/google_containers/heapster-influxdb-amd64      v1.1.1              55d63942e2eb        6 weeks ago         11.59 MB
-gcr.io/google_containers/heapster-amd64               v1.3.0-beta.1       026fb02eca65        6 weeks ago         101.3 MB
-gcr.io/google_containers/kubernetes-dashboard-amd64   v1.5.1              9af7d5c61ccf        7 weeks ago         103.6 MB
-gcr.io/google_containers/hyperkube-amd64              v1.2.7              1dd7250ed1b3        4 months ago        231.4 MB
-quay.io/coreos/flannel                                v0.6.1-amd64        ef86f3a53de0        6 months ago        27.89 MB
-gcr.io/google_containers/etcd-amd64                   3.0.4               ef5e89d609f1        6 months ago        39.62 MB
-gcr.io/google_containers/kube2sky-amd64               1.15                f93305484d65        10 months ago       29.16 MB
-gcr.io/google_containers/etcd-amd64                   2.2.5               a6752fb962b5        10 months ago       30.45 MB
-gcr.io/google_containers/skydns-amd64                 1.0                 a925f95d080a        11 months ago       15.57 MB
-gcr.io/google_containers/exechealthz-amd64            1.0                 5b9ac190b20c        11 months ago       7.116 MB
-gcr.io/google_containers/pause                        2.0                 9981ca1bbdb5        17 months ago       350.2 kB
-</code></pre>
-
-<ul>
-<li>etcd，flannel，和kubernetes-dashboard用的是docker-multinode时的版本。</li>
-<li>kubelet是1.2的最新版v1.2.7。</li>
-<li>pause:2.0是启动apiserver、controller容器时自动下载的版本。</li>
-<li>新增DNS镜像（2017-3-6 02:07:14）</li>
-<li>新增heapster镜像（2017-3-6 17:00:48）</li>
-</ul>
-
-
-<p>最好每台机器都load所有镜像。</p>
-
-<h2>准备</h2>
-
-<ul>
-<li>安装docker，<a href="https://wiki.centos.org/zh/Cloud/Docker">Docker</a> <a href="/blog/2014/09/27/docker-start-guide-on-centos/">Docker入门</a></li>
-<li>代理，<a href="/blog/2017/02/04/privoxy-http-proxy-for-shadowsocks/">Privoxy</a></li>
-<li>镜像导入导出，<a href="/blog/2017/02/06/docker-http-proxy-and-save-reload/">Docker save/load</a></li>
-</ul>
-
-
-<pre><code>export NO_PROXY="localhost,127.0.0.1,10.0.0.0/8"
-export https_proxy=http://localhost:8118/
-export http_proxy=http://localhost:8118/
-</code></pre>
-
-<h2>先看操作和效果（看了菜单再看吃不吃）</h2>
-
-<pre><code>## 下载部署脚本 
-# https://github.com/winse/docker-hadoop/tree/master/k8s-centos6/docker-multinode
-
-## 防火墙，关闭selinux
-# 或者最后面增加 iptables -A INPUT -s 10.0.0.0/8 -j ACCEPT
-iptables -I INPUT 1 -s 10.0.0.0/8 -j ACCEPT
-
-## 先把镜像全部下载下来 git pull ...
-* 在master节点
-[root@cu2 ~]# docker images
-REPOSITORY                                            TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-bigdata                                               v1                  9e30d146824b        2 days ago          457.2 MB
-redis                                                 3.2.8               c30a7507ec4d        6 days ago          182.9 MB
-gcr.io/google_containers/heapster-grafana-amd64       v4.0.2              74d2c72849cc        6 weeks ago         131.5 MB
-gcr.io/google_containers/heapster-influxdb-amd64      v1.1.1              55d63942e2eb        6 weeks ago         11.59 MB
-gcr.io/google_containers/heapster-amd64               v1.3.0-beta.1       026fb02eca65        6 weeks ago         101.3 MB
-gcr.io/google_containers/kubernetes-dashboard-amd64   v1.5.1              9af7d5c61ccf        7 weeks ago         103.6 MB
-gcr.io/google_containers/hyperkube-amd64              v1.2.7              1dd7250ed1b3        4 months ago        231.4 MB
-quay.io/coreos/flannel                                v0.6.1-amd64        ef86f3a53de0        6 months ago        27.89 MB
-gcr.io/google_containers/etcd-amd64                   3.0.4               ef5e89d609f1        6 months ago        39.62 MB
-gcr.io/google_containers/kube2sky-amd64               1.15                f93305484d65        10 months ago       29.16 MB
-gcr.io/google_containers/etcd-amd64                   2.2.5               a6752fb962b5        10 months ago       30.45 MB
-gcr.io/google_containers/skydns-amd64                 1.0                 a925f95d080a        11 months ago       15.57 MB
-gcr.io/google_containers/exechealthz-amd64            1.0                 5b9ac190b20c        11 months ago       7.116 MB
-gcr.io/google_containers/pause                        2.0                 9981ca1bbdb5        17 months ago       350.2 kB
-
-## 下载kubectl
-https://storage.googleapis.com/kubernetes-release/release/v1.2.7/bin/linux/amd64/kubectl 
-# https://kubernetes.io/docs/user-guide/prereqs/
-# https://kubernetes.io/docs/user-guide/kubectl/kubectl_version/
-
-## 环境变量
-# https://kubernetes.io/docs/user-guide/kubeconfig-file/
-export KUBECONFIG=/var/lib/kubelet/kubeconfig/kubeconfig.yaml
-export PATH=...加kubectl所在文件夹
-
-## 启动MASTER
-./master.sh
-
-## 测试效果
-curl -fsSL http://localhost:2379/health
-curl -s http://localhost:8080/healthz
-curl -s http://localhost:8080/api
-kubectl get ns
-kubectl create namespace kube-system
-
-* 在worker节点
-[root@cu3 ~]# docker images
-...
-
-## 启动WORKER
-MASTER_IP=cu2 ./worker.sh
-</code></pre>
-
-<p>小状况：在第一次启动master脚本可能会有点问题：setup-files容器运行可能不正常，需要从googleapi下载easy-rsa.tar.gz，可以先手动下载到/root/kube目录，然后运行setup-files。sh脚本。如果不急的话等上一段时间多run几次后好像也能跑起来（囧）</p>
-
-<pre><code>[root@cu2 ~]# docker exec -ti kube_kubelet_624b2 bash
-root@cu2:/# /setup-files.sh IP:10.0.0.1,DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc,DNS:kubernetes.default.svc.cluster.local
-
-然后再次提交dashboard：
-[root@cu2 docker-multinode-centos6]# ./dashboard.sh 
-</code></pre>
-
-<p>然后启动应用，测试多节点的情况下启动的容器网络能否互通：</p>
-
-<pre><code>## 运行查看容器
-[root@cu2 ~]# kubectl run redis --image=bigdata:v1 -r 5 --command -- /usr/sbin/sshd -D
-
-[root@cu2 ~]# kubectl get pods -o wide
-NAME                       READY     STATUS    RESTARTS   AGE       NODE
-k8s-master-192.168.0.214   4/4       Running   22         1h        192.168.0.214
-k8s-proxy-192.168.0.214    1/1       Running   0          1h        192.168.0.214
-redis-2212193268-1789v     1/1       Running   0          1h        192.168.0.174
-redis-2212193268-1j4ej     1/1       Running   0          1h        192.168.0.174
-redis-2212193268-8dbmq     1/1       Running   0          1h        192.168.0.30
-redis-2212193268-a447n     1/1       Running   0          1h        192.168.0.30
-redis-2212193268-tu5fl     1/1       Running   0          1h        192.168.0.214
-
-https://kubernetes.io/docs/user-guide/jsonpath/
-[root@cu2 ~]# kubectl get pods -o wide -l run=redis -o jsonpath={..podIP}
-10.1.75.2 10.1.75.3 10.1.58.3 10.1.58.2 10.1.33.3
-
-## 登录容器
-# 用ssh登录
-[root@cu2 ~]# kubectl describe pods redis-2212193268-tu5fl | grep IP
-IP:             10.1.33.3
-[root@cu2 ~]# ssh 10.1.33.3
-The authenticity of host '10.1.33.3 (10.1.33.3)' can't be established.
-RSA key fingerprint is e5:58:ae:3b:54:c9:bb:0d:4c:9b:bc:fd:04:fe:be:cc.
-Are you sure you want to continue connecting (yes/no)? yes
-Warning: Permanently added '10.1.33.3' (RSA) to the list of known hosts.
-root@10.1.33.3's password: 
-Last login: Sat Mar  4 18:17:51 2017 from 10.1.61.1
-[root@redis-2212193268-tu5fl ~]# exit
-logout
-Connection to 10.1.33.3 closed.
-
-# exec登录
-[root@cu2 ~]# kubectl exec -ti redis-2212193268-tu5fl bash
-[root@redis-2212193268-tu5fl /]# 
-
-## ping五台机器全部节点的机器都是互通的
-[root@redis-2212193268-tu5fl /]# ping 10.1.75.2
-PING 10.1.75.2 (10.1.75.2) 56(84) bytes of data.
-64 bytes from 10.1.75.2: icmp_seq=1 ttl=60 time=1.15 ms
-...
-[root@redis-2212193268-tu5fl /]# ping 10.1.75.3
-PING 10.1.75.3 (10.1.75.3) 56(84) bytes of data.
-64 bytes from 10.1.75.3: icmp_seq=1 ttl=60 time=1.23 ms
-...
-[root@redis-2212193268-tu5fl /]# ping 10.1.58.3
-PING 10.1.58.3 (10.1.58.3) 56(84) bytes of data.
-64 bytes from 10.1.58.3: icmp_seq=1 ttl=60 time=1.60 ms
-...
-[root@redis-2212193268-tu5fl /]# ping 10.1.58.2
-PING 10.1.58.2 (10.1.58.2) 56(84) bytes of data.
-64 bytes from 10.1.58.2: icmp_seq=1 ttl=60 time=1.39 ms
-...
-[root@redis-2212193268-tu5fl /]# ping 10.1.33.3         
-PING 10.1.33.3 (10.1.33.3) 56(84) bytes of data.
-64 bytes from 10.1.33.3: icmp_seq=1 ttl=64 time=0.036 ms
-...
-</code></pre>
-
-<p>全部启动好后dashboard的效果图：</p>
-
-<p><img src="/images/blogs/k8s-dashboard.jpg" alt="" /></p>
-
-<h2>从脚本中学习</h2>
-
-<p>官网这份<a href="https://kubernetes.io/docs/getting-started-guides/scratch/#starting-cluster-services">Creating a Custom Cluster from Scratch</a> 看的糊里糊涂，真不是给入门级的同学看的。需要有一定的实践经验才能看的懂。</p>
-
-<p>另辟蹊径，根据docker-multi的启动脚本来拆分学习然后模拟动手实践。在根据 <a href="https://kubernetes.io/docs/getting-started-guides/docker-multinode/">Portable Multi-Node Cluster</a> 文档学习操作的时刻不理解bootstrap docker以及main docker的含义。</p>
-
-<p>这次通过单独运行提取每个函数运行后才理解，其实就相当于跑两个docker应用程序，互相不影响。</p>
-
-<pre><code>[root@cu2 ~]# ps aux|grep docker
-root      5310  0.0  0.2 645128 19180 pts/1    Sl   13:14   0:01 docker -d -H unix:///var/run/docker-bootstrap.sock -p /var/run/docker-bootstrap.pid --iptables=false --ip-masq=false --bridge=none --graph=/var/lib/docker-bootstrap --exec-root=/var/run/docker-bootstrap
-root      5782  1.1  0.5 2788284 43620 pts/1   Sl   13:14   0:23 /usr/bin/docker -d --mtu=1464 --bip=10.1.33.1/24
-root     10935  0.0  0.0 103316   896 pts/1    S+   13:47   0:00 grep docker
-</code></pre>
-
-<p>bootstrap docker启动后，容器etcd和flannel启动都很顺利。</p>
-
-<p>以下的问题都是在自己虚拟机试，弄好后再放到测试环境的。</p>
-
-<ul>
-<li>问题1： 执行docker0网卡重置失败</li>
-</ul>
-
-
-<pre><code>[root@bigdata1 data]# ip link set docker0 down
-[root@bigdata1 data]# ip link del docker0
-RTNETLINK answers: Operation not supported
-
-[root@bigdata1 data]# ip addr 
-
-删不掉，但是可以修改ip地址来实现相似的效果
-
-ifconfig docker0 ${FLANNEL_SUBNET}
-或者 
-[root@bigdata1 data]# ip link set dev docker0 mtu 1460
-[root@bigdata1 data]# ip addr del 172.17.42.1/16 dev docker0
-[root@bigdata1 data]# ip addr add ${FLANNEL_SUBNET} dev docker0
-[root@bigdata1 data]# ip link set dev docker0 up
-[root@bigdata1 data]# ifconfig # 查看重新分配的IP
-
-先添加参数在前端运行
-[root@bigdata1 data]# docker -d --mtu=1472 --bip=10.1.42.1/24
-
-启动
-[root@bigdata1 data]# sed -i 's/other_args=/other_args="--mtu=1472 --bip=10.1.42.1/24"/' /etc/sysconfig/docker
-[root@bigdata1 data]# service docker start
-Starting docker:                                           [确定]
-[root@bigdata1 data]# service docker status
-docker (pid  4542) 正在运行...
-</code></pre>
-
-<ul>
-<li>问题2：volumns mount不支持shared</li>
-</ul>
-
-
-<pre><code>[root@bigdata1 data]# echo $KUBELET_MOUNTS
--v /sys:/sys:rw -v /var/run:/var/run:rw -v /run:/run:rw -v /var/lib/docker:/var/lib/docker:rw -v /var/lib/kubelet:/var/lib/kubelet:shared -v /var/log/containers:/var/log/containers:rw
-
-[root@bigdata1 data]# mkdir -p /var/lib/kubelet
-[root@bigdata1 data]# mount --bind /var/lib/kubelet /var/lib/kubelet
-[root@bigdata1 data]# mount --make-shared /var/lib/kubelet
-
-[root@bigdata1 data]# docker run -d \
-&gt;     --net=host \
-&gt;     --pid=host \
-&gt;     --privileged \
-&gt;     --name kube_kubelet_$(kube::helpers::small_sha) \
-&gt;     ${KUBELET_MOUNTS} \
-&gt;     gcr.io/google_containers/hyperkube-${ARCH}:${K8S_VERSION} \
-&gt;     /hyperkube kubelet \
-&gt;       --allow-privileged \
-&gt;       --api-servers=http://localhost:8080 \
-&gt;       --config=/etc/kubernetes/manifests-multi \
-&gt;       --cluster-dns=10.0.0.10 \
-&gt;       --cluster-domain=cluster.local \
-&gt;       ${CNI_ARGS} \
-&gt;       ${CONTAINERIZED_FLAG} \
-&gt;       --hostname-override=${IP_ADDRESS} \
-&gt;       --v=2
-Error response from daemon: invalid mode for volumes-from: shared
-
-# 改成z -- 2017-3-16 19:15:57不支持shared，后面会遇到volume的问题！
-    KUBELET_MOUNT="-v /var/lib/kubelet:/var/lib/kubelet:z"
-
-[root@bigdata1 ~]# echo $KUBELET_MOUNTS
--v /sys:/sys:rw -v /var/run:/var/run:rw -v /run:/run:rw -v /var/lib/docker:/var/lib/docker:rw -v /var/lib/kubelet:/var/lib/kubelet:z -v /var/log/containers:/var/log/containers:rw
-</code></pre>
-
-<ul>
-<li>问题3：cgroup问题</li>
-</ul>
-
-
-<pre><code>Error: failed to run Kubelet: failed to get mounted cgroup subsystems: failed to find cgroup mounts
-failed to run Kubelet: failed to get mounted cgroup subsystems: failed to find cgroup mounts
-
-centos7 
-[root@k8s docker.service.d]# ll /sys/fs/cgroup/
-blkio/            cpuacct/          cpuset/           freezer/          memory/           net_cls,net_prio/ perf_event/       systemd/          
-cpu/              cpu,cpuacct/      devices/          hugetlb/          net_cls/          net_prio/         pids/             
-
-centos6
-http://wushank.blog.51cto.com/3489095/1203545
-[root@bigdata1 bin]# ls /cgroup/
-blkio  cpu  cpuacct  cpuset  devices  freezer  memory  net_cls
-
-把/cgroup加入到卷映射路径
-  KUBELET_MOUNTS="\
-    ${ROOTFS_MOUNT} \
-    -v /sys:/sys:rw \
-    -v /cgroup:/cgroup:rw \
-    -v /var/run:/var/run:rw \
-    -v /run:/run:rw \
-    -v /var/lib/docker:/var/lib/docker:rw \
-    ${KUBELET_MOUNT} \
-    -v /var/log/containers:/var/log/containers:rw"
-</code></pre>
-
-<ul>
-<li>问题4：再说版本，v1.3+的版本在centos6上运行kubelet报错：</li>
-</ul>
-
-
-<pre><code>[root@bigdata1 ~]# docker logs 7a2f7aec2239
-...
-E0228 10:56:05.408129    2516 kubelet.go:2049] Container runtime sanity check failed: container runtime version is older than 1.21
-</code></pre>
-
-<p>1.3以上的版本都会报这个错。kubernetes用1.2.7的版本即可。</p>
-
-<ul>
-<li><p>问题5：dashboard/dns配置注意点</p></li>
-<li><p>imagePullPolicy 就是个坑啊！改成IfNotPresent <a href="https://kubernetes.io/docs/user-guide/images/">https://kubernetes.io/docs/user-guide/images/</a></p></li>
-<li>namespace 也不能改，好像会写数据库然后指定的namespace就是kube-system</li>
-<li>apiserver 由于没有addon-manager的支持，暂时使用http获取数据（DNS的问题确认了很久，kube2sky容器日志有报错，修改server地址为http方式才解决）</li>
-</ul>
-
-
-<pre><code>[root@cu2 docker-multinode-centos6]# docker exec -ti 193863bc646b bash
-[root@redis-2212193268-0ovu7 /]# nslookup kubernetes.default
-Server:         10.0.0.10
-Address:        10.0.0.10#53
-
-Name:   kubernetes.default.svc.cluster.local
-Address: 10.0.0.1
-</code></pre>
-
-<p>处理完以上问题，K8S集群就跑起来了，然后整合成开始用的脚本。当然后续还有很多工作，不仅仅是怎么用，还有一些其他辅助的软件需要配置和安装。</p>
-
-<h2>监控</h2>
-
-<ul>
-<li><a href="https://kubernetes.io/docs/user-guide/monitoring/">Resource Usage Monitoring</a></li>
-<li><a href="https://github.com/kubernetes/heapster/blob/master/docs/influxdb.md">Run Heapster in a Kubernetes cluster with an InfluxDB backend and a Grafana UI</a></li>
-<li><a href="http://codingwater.org/2016/08/18/Kubernetes%E9%9B%86%E7%BE%A4%E6%80%A7%E8%83%BD%E7%9B%91%E6%8E%A7-Heapster/">Kubernetes集群性能监控&ndash;Heapster</a></li>
-<li><a href="http://www.pangxie.space/docker/727">Kubernetes部署监控(Heapster+Influxdb+Grafana)-centos7</a></li>
-</ul>
-
-
-<pre><code>可以通过4194访问cAdvisor  &lt;http://www.dockone.io/article/page-46&gt;
-http://cu2:4194/containers/
-
-[root@cu2 influxdb]# kubectl create -f ./
-deployment "monitoring-grafana" created
-service "monitoring-grafana" created
-deployment "heapster" created
-service "heapster" created
-deployment "monitoring-influxdb" created
-service "monitoring-influxdb" created
-
-[root@cu2 influxdb]# kubectl get pods --namespace=kube-system -o wide
-NAME                                    READY     STATUS             RESTARTS   AGE       NODE
-heapster-2621086088-s77cl               0/1       CrashLoopBackOff   2          37s       192.168.0.148
-kube-dns-v8-00p5h                       4/4       Running            1          5h        192.168.0.174
-kubernetes-dashboard-2845140353-l7o8o   1/1       Running            0          5h        192.168.0.30
-monitoring-grafana-1501214244-kw3im     1/1       Running            0          37s       192.168.0.148
-monitoring-influxdb-3498630124-241tx    1/1       Running            0          37s       192.168.0.30
-
-第一次启动heapster失败，定位机器查看日志
-[root@cu3 ~]# docker logs aad68dd07ff8
-I0306 09:06:25.611251       1 heapster.go:71] /heapster --source=kubernetes:https://kubernetes.default --sink=influxdb:http://monitoring-influxdb:8086
-I0306 09:06:25.611523       1 heapster.go:72] Heapster version v1.3.0-beta.1
-F0306 09:06:25.611555       1 heapster.go:174] Failed to create source provide: open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory
-
-https://github.com/kubernetes/heapster/blob/master/docs/source-configuration.md 改成http
-
-重新加载
-[root@cu2 influxdb]# for file in * ; do sed -e "s|MASTER_IP|${IP_ADDRESS}|g" $file | kubectl apply -f - ; done
-deployment "monitoring-grafana" configured
-service "monitoring-grafana" configured
-deployment "heapster" configured
-service "heapster" configured
-deployment "monitoring-influxdb" configured
-service "monitoring-influxdb" configured
-
-[root@cu2 influxdb]# kubectl get service --namespace=kube-system -o wide
-NAME                   CLUSTER-IP   EXTERNAL-IP   PORT(S)         AGE       SELECTOR
-heapster               10.0.0.54    &lt;none&gt;        80/TCP          8m        k8s-app=heapster
-kube-dns               10.0.0.10    &lt;none&gt;        53/UDP,53/TCP   6h        k8s-app=kube-dns
-kubernetes-dashboard   10.0.0.181   nodes         80/TCP          6h        app=kubernetes-dashboard
-monitoring-grafana     10.0.0.220   &lt;none&gt;        80/TCP          8m        k8s-app=grafana
-monitoring-influxdb    10.0.0.223   &lt;none&gt;        8086/TCP        8m        k8s-app=influxdb
-
-浏览器访问grafana 登录：admin/admin
-http://10.0.0.220/
-</code></pre>
-
-<p>安装好监控后，dashboard也有图标了。</p>
-
-<p><img src="/images/blogs/k8s-dashboard-pro.jpg" alt="" /></p>
-
-<h4>某机器数据不显示问题定位</h4>
-
-<p>原来是三台机器的，后面增加了148的机器进来。添加heapster监控后，就148机器图形显示不出来。并且dashboard的 148 Node 页面的 <strong> Conditions - Last heartbeat time </strong> 没显示内容。</p>
-
-<pre><code>[root@cu2 ~]# kubectl get services --all-namespaces
-NAMESPACE     NAME                   CLUSTER-IP   EXTERNAL-IP   PORT(S)         AGE
-default       kubernetes             10.0.0.1     &lt;none&gt;        443/TCP         1d
-kube-system   heapster               10.0.0.196   &lt;none&gt;        80/TCP          12m
-kube-system   kube-dns               10.0.0.10    &lt;none&gt;        53/UDP,53/TCP   21h
-kube-system   kubernetes-dashboard   10.0.0.181   nodes         80/TCP          21h
-kube-system   monitoring-grafana     10.0.0.215   &lt;none&gt;        80/TCP          12m
-kube-system   monitoring-influxdb    10.0.0.226   &lt;none&gt;        8086/TCP        12m
-
-查看接口
-https://github.com/kubernetes/heapster/blob/master/docs/debugging.md
-
-    http://10.0.0.196/metrics
-
-    这里没有148机器的key
-    http://10.0.0.196/api/v1/model/debug/allkeys
-
-    http://192.168.0.30:10255/stats/container/
-
-https://github.com/kubernetes/heapster/blob/master/docs/sink-configuration.md
-
-等到heapster机器运行命令，改下端口，日志输出详细点
-/ # /heapster --source=kubernetes:http://192.168.0.214:8080?inClusterConfig=false --sink=log --heapster-port=8083 -v 10
-
-    http://192.168.0.214:8080/api/v1/nodes
-    Node
-    Pod
-    Namespace
-
-148机器的10255和4194端口都正常运行，heapster从148也获取到数据了。但是最后log输出的时刻没有148机器。系统时间？抱着尝试的心态改了一下，148的机器快了几分钟。
-
-果不其然啊！！同步时间后监控图就显示出来了。
-</code></pre>
-
-<h2>后续学习操作</h2>
-
-<ul>
-<li>安全HTTPS <a href="https://kubernetes.io/docs/admin/authentication/#creating-certificates">https://kubernetes.io/docs/admin/authentication/#creating-certificates</a></li>
-<li>register <a href="http://www.pangxie.space/docker/643">http://www.pangxie.space/docker/643</a> k8s版本旧的话很麻烦</li>
-<li><a href="https://kubernetes.io/docs/tasks/">https://kubernetes.io/docs/tasks/</a></li>
-<li><a href="https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/redis/redis-controller.yaml">https://github.com/kubernetes/kubernetes/blob/release-1.2/examples/redis/redis-controller.yaml</a></li>
-</ul>
-
-
-<p>阿里云的镜像加速还是很赞的，由于我域名是在万网注册的本来就有账号，登录就能看到加速的地址，非常的方便。科技大学的加速镜像也很赞！</p>
-
-<pre><code>[root@cu1 ~]# cat /etc/sysconfig/docker
-...
-#other_args=" --registry-mirror=https://us69kjun.mirror.aliyuncs.com "
-other_args=" --registry-mirror=https://docker.mirrors.ustc.edu.cn "
-...
-</code></pre>
-
-<p>有趣的命令：</p>
-
-<pre><code>https://kubernetes.io/docs/user-guide/jsonpath/
-[root@cu2 ~]# kubectl get pods -o wide -l run=redis -o jsonpath={..podIP}
-10.1.75.2 10.1.75.3 10.1.58.3 10.1.58.2 10.1.33.3
-
-修改启动entry，以及网络共用
-docker run -ti --entrypoint=sh --net=container:8e9f21956469f4ef7e5b9d91798788ab83f380795d2825cdacae0ed28f5ba03b gcr.io/google_containers/skydns-amd64:1.0
-
-https://kubernetes.io/docs/tasks/kubectl/list-all-running-container-images/
-[root@cu2 ~]# kubectl get pods --all-namespaces -o jsonpath="{..image}" |\
-&gt; tr -s '[[:space:]]' '\n' |\
-&gt; sort |\
-&gt; uniq -c
-      2 gcr.io/google_containers/etcd-amd64:2.2.5
-      2 gcr.io/google_containers/exechealthz-amd64:1.0
-      2 gcr.io/google_containers/heapster-amd64:v1.3.0-beta.1
-      2 gcr.io/google_containers/heapster-grafana-amd64:v4.0.2
-      2 gcr.io/google_containers/heapster-influxdb-amd64:v1.1.1
-     10 gcr.io/google_containers/hyperkube-amd64:v1.2.7
-      2 gcr.io/google_containers/kube2sky-amd64:1.15
-      2 gcr.io/google_containers/kubernetes-dashboard-amd64:v1.5.1
-      2 gcr.io/google_containers/skydns-amd64:1.0
-      2 redis:3.2.8
-
-kubectl get pods --all-namespaces -o jsonpath="{.items[*].spec.containers[*].image}"
-
-[root@cu2 ~]# export POD_COL="custom-columns=NAME:.metadata.name,RESTARTS:.status.containerStatuses[*].restartCount,CONTAINERS:.spec.containers[*].name,IP:.status.podIP,HOST:.spec.nodeName"
-[root@cu2 ~]# kubectl get pods -o $POD_COL 
-
-# 加label
-[root@cu2 ~]# cat /etc/hosts | grep -E "\scu[0-9]\s" | awk '{print "kubectl label nodes "$1" hostname="$2}' | while read line ; do sh -c "$line" ; done
-
-[root@cu2 kubernetes]# kubectl run redis --image=redis:3.2.8 
-[root@cu2 kubernetes]# kubectl scale --replicas=9 deployment/redis
-</code></pre>
-
-<h2>其他参考</h2>
-
-<p>纯手动安装，所有应用都作为服务启动
-* <a href="http://chenguomin.blog.51cto.com/8794192/1828905">http://chenguomin.blog.51cto.com/8794192/1828905</a> 网络使用flannel、DNS的安装配置
-* <a href="http://www.pangxie.space/docker/618">http://www.pangxie.space/docker/618</a>
-* <a href="https://xuxinkun.github.io/2016/03/27/k8s-service/">https://xuxinkun.github.io/2016/03/27/k8s-service/</a> service是在防火墙做的跳转 => iptables -S -t nat</p>
-
-<p>介绍
-* <a href="http://www.infoq.com/cn/articles/kubernetes-and-cloud-native-applications-part01">http://www.infoq.com/cn/articles/kubernetes-and-cloud-native-applications-part01</a>
-* <a href="http://www.codingwater.org/2016/08/25/Docker-Kubernetes-Intro/">http://www.codingwater.org/2016/08/25/Docker-Kubernetes-Intro/</a>
-* <a href="https://github.com/kubernetes/kubernetes/tree/v1.0.1/cluster/addons/dns">https://github.com/kubernetes/kubernetes/tree/v1.0.1/cluster/addons/dns</a></p>
 
 <p>&ndash;END</p>
 ]]></content>
