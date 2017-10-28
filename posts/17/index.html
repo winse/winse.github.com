@@ -9,8 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="问题： https://www.zhihu.com/question/25498407 问题是hadoop内存的配置，涉及两个方面： namenode/datanode/resourcemanager/nodemanager的HEAPSIZE环境变量
-在配置文件/ &hellip;">
+  <meta name="description" content="先看官网的资源Hive on Spark: Getting Started 。文档是值得信任和有保证的，但是有前提：Spark版本得是hive/pom.xml中指定的。 重新编译spark(assembly包中去掉hive、hadoop) 这里hive-1.2.1用的是spark-1.3.1 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -84,6 +83,623 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2016-03-28T10:20:46+00:00" pubdate data-updated="true">Mon 2016-03-28 10:20</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>先看官网的资源<a href="https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started">Hive on Spark: Getting Started</a> 。文档是值得信任和有保证的，但是有前提：<strong>Spark版本</strong>得是hive/pom.xml中指定的。</p>
+
+<h2>重新编译spark(assembly包中去掉hive、hadoop)</h2>
+
+<p>这里hive-1.2.1用的是spark-1.3.1 !!!</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 spark-1.3.1]$ ./make-distribution.sh --name "hadoop2.6.3-without-hive" --tgz --mvn "$(which mvn)" -Pyarn,hadoop-provided,hadoop-2.6,parquet-provided -Dhadoop.version=2.6.3 -Dmaven.test.skip=true -Dmaven.javadoc.skip=true -DskipTests
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>拷贝打包好的 spark-1.3.1-bin-hadoop2.6.3-without-hive.tgz 到服务器。解压并做一个软链接到spark(或者指定 <strong>SPARK_HOME</strong> 环境变量 )，Hive不遗余力啊，把所有想的jar通过各种办法拿到 ( <code>sparkHome=$(readlink -f $bin/../../spark)</code> )。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ ln -s spark-1.3.1-bin-hadoop2.6.3-without-hive spark
+</span><span class='line'>
+</span><span class='line'>把压缩包传到hdfs，这样每次启动任务就少传几百M的数据。后面spark.yarn.jar配置会用到
+</span><span class='line'>[hadoop@hadoop-master2 ~]$ cd spark/lib/
+</span><span class='line'>[hadoop@hadoop-master2 lib]$ hadoop fs -put spark-assembly-1.3.1-hadoop2.6.3.jar /spark/
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>做好软链接后效果：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ ll | grep -E "hive|spark"
+</span><span class='line'>drwxrwxr-x   9 hadoop hadoop 4096 1月  14 08:08 apache-hive-1.2.1-bin
+</span><span class='line'>lrwxrwxrwx   1 hadoop hadoop   21 1月  14 08:07 hive -&gt; apache-hive-1.2.1-bin
+</span><span class='line'>lrwxrwxrwx   1 hadoop hadoop   40 3月  28 16:38 spark -&gt; spark-1.3.1-bin-hadoop2.6.3-without-hive
+</span><span class='line'>drwxrwxr-x  10 hadoop hadoop 4096 3月  28 16:31 spark-1.3.1-bin-hadoop2.6.3-without-hive
+</span><span class='line'>drwxrwxr-x  12 hadoop hadoop 4096 3月  25 16:18 spark-1.6.0-bin-2.6.3
+</span><span class='line'>drwxrwxr-x  11 hadoop hadoop 4096 3月  28 11:15 spark-1.6.0-bin-hadoop2-without-hive</span></code></pre></td></tr></table></div></figure>
+
+
+<p>这里的spark-1.6.0是教训啊！记住最好最好用hive/pom.xml中spark的版本！！！</p>
+
+<h2>修改hive配置</h2>
+
+<p>由于spark会加载很多的class，需要把permsize调大。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ less ~/hive/conf/hive-env.sh
+</span><span class='line'>export HADOOP_OPTS="$HADOOP_OPTS -XX:MaxPermSize=256m -Dhive.home=${HIVE_HOME} "</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在conf目录下增加spark-defaults.conf文件，指定spark的配置。动态资源分配查看：<a href="http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation">dynamic-resource-allocation</a>：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 conf]$ cat spark-defaults.conf 
+</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.3.1-hadoop2.6.3.jar
+</span><span class='line'>
+</span><span class='line'>spark.dynamicAllocation.enabled    true
+</span><span class='line'>spark.shuffle.service.enabled      true
+</span><span class='line'>spark.dynamicAllocation.executorIdleTimeout    600
+</span><span class='line'>spark.dynamicAllocation.minExecutors    160 
+</span><span class='line'>spark.dynamicAllocation.maxExecutors    1800
+</span><span class='line'>spark.dynamicAllocation.schedulerBacklogTimeout   5
+</span><span class='line'>
+</span><span class='line'>spark.driver.memory    10g
+</span><span class='line'>spark.driver.maxResultSize   0
+</span><span class='line'>
+</span><span class='line'>spark.eventLog.enabled  true
+</span><span class='line'>spark.eventLog.compress  true
+</span><span class='line'>spark.eventLog.dir    hdfs:///spark-eventlogs
+</span><span class='line'>spark.yarn.historyServer.address hadoop-master2:18080
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>spark.serializer        org.apache.spark.serializer.KryoSerializer
+</span><span class='line'>spark.kryoserializer.buffer.max    512m</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>minExecutors <strong>最好应该是和datanode机器数量差不多，每台一个executor才能本地计算嘛！</strong></li>
+<li>dynamicAllocation需要yarn的配合，具体查看前一篇文章，或者直接看官网的资料。</li>
+<li>eventlog查看历史记录需要，配置好后每个任务的信息会存储到eventlog.dir的路径。通过18080端口可以看到历史记录。</li>
+</ul>
+
+
+<h2>跑起来</h2>
+
+<p><code>spark.master</code> 默认是 <strong>yarn-cluster</strong>， 这里先本地(local)跑一下看下效果。然后再改成yarn-cluster/yarn-client就可以了(推荐使用yarn-client，如果yarn-cluster模式AppMaster同时也是Driver，内存比较难控制，日志看起来也麻烦)。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hive]$ hive --hiveconf hive.execution.engine=spark 
+</span><span class='line'>
+</span><span class='line'>hive&gt; set spark.master=local;
+</span><span class='line'>hive&gt; select count(*) from t_house_info ;
+</span><span class='line'>Query ID = hadoop_20160328163952_93dafddc-c8b1-4bc9-b851-5e51f6d26fa8
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 0
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[0] stages:
+</span><span class='line'>0
+</span><span class='line'>1
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[0])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2016-03-28 16:40:02,077 Stage-0_0: 0(+1)/1      Stage-1_0: 0/1
+</span><span class='line'>2016-03-28 16:40:03,078 Stage-0_0: 1/1 Finished Stage-1_0: 1/1 Finished
+</span><span class='line'>Status: Finished successfully in 2.01 seconds
+</span><span class='line'>OK
+</span><span class='line'>1
+</span><span class='line'>Time taken: 10.169 seconds, Fetched: 1 row(s)
+</span><span class='line'>hive&gt; 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>再回过头看其实挺简单，和官方文档中的差不多。</p>
+
+<p>注意：hive的日志级别可以通过 <strong>hive-log4j.properties</strong> 来配置。</p>
+
+<p>有一个问题，不管yarn-cluser还是yarn-client（hive1.2.1-on-spark1.3.1），application强制kill掉以后，再查询会失败，应该是application杀了但是session还在！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@file1 ~]$ yarn application -kill application_1460379750886_0012
+</span><span class='line'>16/04/13 08:47:17 INFO client.RMProxy: Connecting to ResourceManager at file1/192.168.102.6:8032
+</span><span class='line'>Killing application application_1460379750886_0012
+</span><span class='line'>16/04/13 08:47:18 INFO impl.YarnClientImpl: Killed application application_1460379750886_0012
+</span><span class='line'>
+</span><span class='line'>    &gt; select count(*) from t_info where edate=20160413;
+</span><span class='line'>Query ID = hadoop_20160413084736_ac8f88bb-5ee1-4941-9745-f4a8a504f2f3
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = eb7e038a-2db0-45d7-9b0d-1e55d354e5e9
+</span><span class='line'>Status: Failed
+</span><span class='line'>FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>坑坑坑</h2>
+
+<p>刚开始弄的时刻，没管spark的版本的。直接上spark-1.6.0，然后完全跑不通，看hive.log的日志，啥都看不出来。最后查看<a href="http://markmail.org/message/reingwn556e7e37y">http://markmail.org/message/reingwn556e7e37y</a>Hive on Spark的老大邮件列表的回复，把 <strong>spark.master=local</strong> 设置成本地跑才看到一点点有用的错误信息。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hive&gt; set hive.execution.engine=spark;
+</span><span class='line'>hive&gt; select count(*) from t_ods_access_log2 where day=20160327;
+</span><span class='line'>Query ID = hadoop_20160328083028_a9fb9860-38dc-4288-8415-b5b2b88f920a
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Failed to execute spark task, with exception 'org.apache.hadoop.hive.ql.metadata.HiveException(Failed to create spark client.)'
+</span><span class='line'>FAILED: Execution Error, return code 1 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>日志里面&#8217;毛&#8217;有用信息都没有！</p>
+
+<p>把日志级别调成debug（hive-log4j.properties），并把 <code>set spark.master=local;</code> 设置成本地。再跑日志：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-03-28 15:13:52,549 DEBUG internal.PlatformDependent (Slf4JLogger.java:debug(71)) - Javassist: unavailable
+</span><span class='line'>2016-03-28 15:13:52,549 DEBUG internal.PlatformDependent (Slf4JLogger.java:debug(71)) - You don't have Javassist in your class path or you don't have enough permission to load dynamically generated classes.  Please check the configuration for better performance.
+</span><span class='line'>
+</span><span class='line'>2016-03-28 15:14:56,594 DEBUG storage.BlockManager (Logging.scala:logDebug(62)) - Putting block broadcast_0_piece0 without replication took  8 ms
+</span><span class='line'>2016-03-28 15:14:56,597 ERROR util.Utils (Logging.scala:logError(95)) - uncaught error in thread SparkListenerBus, stopping SparkContext
+</span><span class='line'>java.lang.AbstractMethodError
+</span><span class='line'>        at org.apache.spark.scheduler.SparkListenerBus$class.onPostEvent(SparkListenerBus.scala:62)
+</span><span class='line'>        at org.apache.spark.scheduler.LiveListenerBus.onPostEvent(LiveListenerBus.scala:31)
+</span><span class='line'>        at org.apache.spark.scheduler.LiveListenerBus.onPostEvent(LiveListenerBus.scala:31)
+</span><span class='line'>        at org.apache.spark.util.ListenerBus$class.postToAll(ListenerBus.scala:55)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus.postToAll(AsynchronousListenerBus.scala:37)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply$mcV$sp(AsynchronousListenerBus.scala:80)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply(AsynchronousListenerBus.scala:65)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1$$anonfun$apply$mcV$sp$1.apply(AsynchronousListenerBus.scala:65)
+</span><span class='line'>        at scala.util.DynamicVariable.withValue(DynamicVariable.scala:57)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1$$anonfun$run$1.apply$mcV$sp(AsynchronousListenerBus.scala:64)
+</span><span class='line'>        at org.apache.spark.util.Utils$.tryOrStopSparkContext(Utils.scala:1180)
+</span><span class='line'>        at org.apache.spark.util.AsynchronousListenerBus$$anon$1.run(AsynchronousListenerBus.scala:63)</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p><strong>调用抽象方法</strong>的错误。然后查看了hive-1.2.1中 SparkListener实现类JobMetricsListener 确实没有(spark-1.6.0)62行错误的onBlockUpdated方法实现。然后把spark换成1.3.1一切就好了，其他就是文章前面写的。</p>
+
+<p><strong>心得</strong>: 刚刚开始用一个新东西的时刻，还是安装官网指定的版本来用省心。等到自己熟悉后，在玩其他的。</p>
+
+<h2><strong>hive on spark</strong> VS <strong>SparkSQL</strong> VS <strong>hive on tez</strong></h2>
+
+<p>前一篇已经弄好了SparkSQL，SparkSQL也有thriftserver服务，这里说说为啥还选择搞hive-on-spark：</p>
+
+<ul>
+<li>SparkSQL-Thriftserver所有结果全部内存，快是快，但是不能满足查询大量数据的需求。如果查询几千万的数据，SparkSQL是搞不定的。而hive-on-spark除了计算用spark其他逻辑都是hive的，返回的结果会先写hdfs，再慢慢返回给客户端。</li>
+<li>SparkSQL-Thriftserver代码的是全部用scala重写的，和已有hive业务不一定兼容！！</li>
+<li>SparkSQL-Thriftserver有一个最大的优势就是整个server相当于hive-on-spark的一个session，网页监控漂亮清晰。而hive-on-spark不同的session那就相当于不同的application！！（2016-4-13 20:57:23）用了动态分配，没感觉SparkSQLThriftserver快很多。</li>
+<li>SparkSQL由于基于内存，再一些调度方面做了优化。如[limit]: hive是死算，sparksql递增数据量的一次次的试。sparksql可以这么做的，毕竟算好的数据在内存里面放着。</li>
+</ul>
+
+
+<p>hive和sparksql的理念不同，hive的存储是HDFS，而sparksql只是把HDFS作为持久化工具，它的数据基本都放内存。</p>
+
+<p>查看hive的日志，可以看到返回结果后有写HDFS的动作体现，会有类似日志：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-03-28 19:39:25,687 INFO  exec.FileSinkOperator (Utilities.java:mvFileToFinalPath(1882))
+</span><span class='line'> - Moving tmp dir: hdfs://zfcluster/hive/scratchdir/hadoop/de2b263e-9601-4df7-bc38-ba932ae83f42/hive_2016-03-28_19-38-08_834_7914607982986605890-1/-mr-10000/.hive-staging_hive_2016-03-28_19-38-08_834_7914607982986605890-1/_tmp.-ext-10001 
+</span><span class='line'> to: hdfs://zfcluster/hive/scratchdir/hadoop/de2b263e-9601-4df7-bc38-ba932ae83f42/hive_2016-03-28_19-38-08_834_7914607982986605890-1/-mr-10000/.hive-staging_hive_2016-03-28_19-38-08_834_7914607982986605890-1/-ext-10001
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>tez的优势spark都有，并且tez其实缓冲优势并不大。而spark的缓冲效果更明显，而且可以快速返回。例如：你查3万条数据，tez是要全部查询然后再返回的，而sparksql取到3万条其他就不算了（效果看起来是这样子，具体没看源码实现；md hive-on-spark还是会全部跑）。</li>
+<li>tez任务缓冲不能共享，spark更加细化，可以有process级别缓冲（就是用上次计算过的结果，加载过的缓冲）！例如，你查数据记录同时又要返回count，这时有些操作是prcess_local级别的，这个tez是不能比的！</li>
+<li>spark的日志UI看起来更便捷，呵呵</li>
+</ul>
+
+
+<p>单就从用的角度，spark全面取胜啊。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started">https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started</a></li>
+<li><a href="http://spark.apache.org/docs/1.3.1/configuration.html">http://spark.apache.org/docs/1.3.1/configuration.html</a></li>
+<li><a href="http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation">http://spark.apache.org/docs/1.3.1/job-scheduling.html#dynamic-resource-allocation</a></li>
+<li>cloudera-hos优化: <a href="http://www.cloudera.com/documentation/enterprise/latest/topics/admin_hos_tuning.html">http://www.cloudera.com/documentation/enterprise/latest/topics/admin_hos_tuning.html</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn/">SparkSQL-on-YARN的Executors池(动态)配置</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-03-25T07:14:53+00:00" pubdate data-updated="true">Fri 2016-03-25 07:14</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>官网配置资料</h2>
+
+<ul>
+<li><a href="http://spark.apache.org/docs/latest/running-on-yarn.html">http://spark.apache.org/docs/latest/running-on-yarn.html</a></li>
+<li><a href="http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup">http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup</a></li>
+<li><a href="http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
+</ul>
+
+
+<h2>实战</h2>
+
+<h4>修改YARN配置，添加spark-yarn-shuffle.jar，同步配置和jar到nodemanager节点并重启。</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ vi etc/hadoop/yarn-site.xml 
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;mapreduce_shuffle,spark_shuffle&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.mapreduce.shuffle.class&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.hadoop.mapred.ShuffleHandler&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.spark_shuffle.class&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.spark.network.yarn.YarnShuffleService&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ cp ~/spark-1.6.0-bin-2.6.3/lib/spark-1.6.0-yarn-shuffle.jar share/hadoop/yarn/
+</span><span class='line'>
+</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az share $h:~/hadoop-2.6.3/ ; done 
+</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az etc $h:~/hadoop-2.6.3/ ; done 
+</span><span class='line'>
+</span><span class='line'>rsync -vaz etc hadoop-master2:~/hadoop-2.6.3/
+</span><span class='line'>rsync -vaz share hadoop-master2:~/hadoop-2.6.3/
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-yarn.sh </span></code></pre></td></tr></table></div></figure>
+
+
+<h4>原来已经部署了Hive-1.2.1（和spark-1.6.0的hive是匹配的），直接把hive-site.xml做一个软链到spark/conf下面：</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ cd conf/
+</span><span class='line'>[hadoop@hadoop-master1 conf]$ ln -s ~/hive/conf/hive-site.xml 
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ ll conf/hive-site.xml 
+</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop 36 3月  25 11:30 conf/hive-site.xml -&gt; /home/hadoop/hive/conf/hive-site.xml</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：如果原来配置了tez，把hive-site.xml的 <strong>hive.execution.engine</strong> 配置注释掉。或者启动的时刻换引擎： <code>bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr</code></p>
+
+<h4>修改spark配置</h4>
+
+<p>spark-defaults.conf</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-defaults.conf 
+</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar
+</span><span class='line'>
+</span><span class='line'>spark.dynamicAllocation.enabled    true
+</span><span class='line'>spark.shuffle.service.enabled      true
+</span><span class='line'>spark.dynamicAllocation.executorIdleTimeout    600s
+</span><span class='line'>spark.dynamicAllocation.minExecutors    160
+</span><span class='line'>spark.dynamicAllocation.maxExecutors    1800
+</span><span class='line'>spark.dynamicAllocation.schedulerBacklogTimeout   5s
+</span><span class='line'>
+</span><span class='line'>spark.driver.maxResultSize   0
+</span><span class='line'>
+</span><span class='line'>spark.eventLog.enabled  true
+</span><span class='line'>spark.eventLog.compress  true
+</span><span class='line'>spark.eventLog.dir    hdfs:///spark-eventlogs
+</span><span class='line'>spark.yarn.historyServer.address hadoop-master2:18080
+</span><span class='line'>
+</span><span class='line'>spark.serializer        org.apache.spark.serializer.KryoSerializer
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>spark.yarn.jar 配置后，spark启动后直接使用该文件作为executor的main-jar，不需要每次都上传一次spark.jar（每次都搞一下180M也不少资源了）</li>
+<li>enabled 启用动态两个都配置必须设置为true</li>
+<li>executorIdleTimeout 关闭不用executors需要等待的时间</li>
+<li>schedulerBacklogTimeout 增加积压的任务时间来判断是否增加executors</li>
+<li>minExecutors 至少存活的executors个数</li>
+</ul>
+
+
+<p>spark-env.sh环境变量</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-env.sh 
+</span><span class='line'>SPARK_CLASSPATH=/home/hadoop/hive/lib/mysql-connector-java-5.1.21-bin.jar:$SPARK_CLASSPATH
+</span><span class='line'>HADOOP_CONF_DIR=/home/hadoop/hadoop/etc/hadoop
+</span><span class='line'>SPARK_DRIVER_MEMORY=30g
+</span><span class='line'>SPARK_PID_DIR=/home/hadoop/tmp/pids</span></code></pre></td></tr></table></div></figure>
+
+
+<h4>启动</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ sbin/start-thriftserver.sh --master yarn-client
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ sbin/start-history-server.sh hdfs:///spark-eventlogs
+</span><span class='line'>
+</span><span class='line'># 不包括hadoop jars的情况下，自己编写脚本把hadoop的依赖包加入classpath
+</span><span class='line'>[hadoop@hadoop-master2 spark-1.3.1-bin-hadoop2.6.3-without-hive]$ cat start-historyserver.sh 
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>bin=`dirname $0`
+</span><span class='line'>cd $bin
+</span><span class='line'>
+</span><span class='line'>source $HADOOP_HOME/libexec/hadoop-config.sh
+</span><span class='line'>
+</span><span class='line'>export SPARK_PID_DIR=/home/hadoop/tmp/pids
+</span><span class='line'>export SPARK_CLASSPATH=`hadoop classpath`
+</span><span class='line'>
+</span><span class='line'>export SPARK_PID_DIR=/home/hadoop/tmp/pids
+</span><span class='line'>
+</span><span class='line'># http://spark.apache.org/docs/latest/monitoring.html#viewing-after-the-fact
+</span><span class='line'>export SPARK_HISTORY_OPTS="-Dspark.history.fs.update.interval=30s -Dspark.history.fs.cleaner.enabled=true -Dspark.history.fs.logDirectory=hdfs:///spark-eventlogs"
+</span><span class='line'>sbin/start-history-server.sh 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>收工。</p>
+
+<p>整个过程就是：添加spark-shuffle到yarn，然后配置spark参数，最后就是重启任务（yarn/hiveserver）。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1020,398 +1636,6 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/02/25/ganglia-web-ui-views/">Ganglia页自定义视图</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-02-25T12:29:11+00:00" pubdate data-updated="true">Thu 2016-02-25 12:29</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>官网自带的页面指标太拥挤，同一个组各指标的顺序不能指定(默认好像是按名称排序的)不便于观察。通过页面的Views页签可以查看自定的图标。</p>
-
-<p>在conf文件夹(由conf_default.php中views_dir指定)下面建立文件名以 <strong>view</strong> 开头的json文件。通过Views还可以聚合多个指标，在一个图中查看整体的变化趋势。配置聚合视图前可以先在 <strong>Aggregate Graphs</strong> 弄出来先瞧一瞧。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# cd /var/www/html/ganglia/
-</span><span class='line'># 查看view放置的位置
-</span><span class='line'>[root@cu2 ganglia]# grep views_dir conf_default.php 
-</span><span class='line'>$conf['views_dir'] = $conf['gweb_confdir'] . '/conf';
-</span><span class='line'>
-</span><span class='line'># view配置目录
-</span><span class='line'>[root@cu2 conf]$ ll
-</span><span class='line'>......
-</span><span class='line'>-rw-rw-r-- 1 apache apache    58 Oct  2 04:38 view_default.json
-</span><span class='line'>-rw-r--r-- 1 root   root    2344 Feb 25 20:12 view_qbevery.json
-</span><span class='line'>-rw-r--r-- 1 root   root     241 Feb 25 18:59 view_qb.json
-</span><span class='line'>
-</span><span class='line'>[root@cu2 conf]# cat view_qb.json 
-</span><span class='line'>{
-</span><span class='line'>"default_size" : "xlarge",
-</span><span class='line'>"view_name": "qb",
-</span><span class='line'>"items": [
-</span><span class='line'>{
-</span><span class='line'>"aggregate_graph": "true",
-</span><span class='line'>"graph_type": "stack", 
-</span><span class='line'>"host_regex":  [ { "regex" : "cu2" } ], 
-</span><span class='line'>"metric_regex": [ { "regex":  "qb_.*" } ],
-</span><span class='line'>"title": "qb"
-</span><span class='line'>}
-</span><span class='line'>],
-</span><span class='line'>"view_type": "standard"
-</span><span class='line'>}
-</span><span class='line'>[root@cu2 conf]# cat view_qbevery.json 
-</span><span class='line'>{
-</span><span class='line'>"default_size" : "medium",
-</span><span class='line'>"view_name": "qbevery",
-</span><span class='line'>"items": [
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_520k_53d_9.82_120807"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_500k_98d_7.81_116763"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_400k_91d_7.67_116762"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_350k_42d_9.08_120802"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_350k_83d_7.40_116761"},
-</span><span class='line'>{ "hostname":"cu2","metric":"qb_300k_78d_7.12_116760"}
-</span><span class='line'>],
-</span><span class='line'>"view_type": "standard"
-</span><span class='line'>}
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://github.com/ganglia/ganglia-web/wiki#Views">https://github.com/ganglia/ganglia-web/wiki#Views</a></li>
-<li><a href="https://gist.github.com/mnikhil-git/4708591">https://gist.github.com/mnikhil-git/4708591</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/02/01/ganglia-python-extension/">Ganglia扩展-Python</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-02-01T10:23:43+00:00" pubdate data-updated="true">Mon 2016-02-01 10:23</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>最简单的添加metric的方式使用 <code>gmetric</code> ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>/usr/local/ganglia/bin/gmetric -n "TITLE" -v VALUE -t int16 -g GROUP</span></code></pre></td></tr></table></div></figure>
-
-
-<p>有时指标计算复杂，通过简单的shell不能满足功能需要。我们可以使用python模块来定制。</p>
-
-<h2>安装</h2>
-
-<p>默认安装会检查Python环境，符合条件会自动的安装Python模块。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia-3.7.2]# yum install -y python-devel
-</span><span class='line'>[root@cu2 ganglia-3.7.2]# ./configure --with-gmetad --enable-gexec --enable-status --prefix=/usr/local/ganglia
-</span><span class='line'>...
-</span><span class='line'>Checking for python
-</span><span class='line'>checking for python... /usr/bin/python
-</span><span class='line'>checking Python version... 2.6
-</span><span class='line'>checking Python support... yes
-</span><span class='line'>checking Perl support... no
-</span><span class='line'>checking for pkg-config... /usr/bin/pkg-config
-</span><span class='line'>checking pkg-config is at least version 0.9.0... yes
-</span><span class='line'>...
-</span><span class='line'>[root@cu2 ganglia-3.7.2]# make && make install</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>安装成功</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia]# pwd
-</span><span class='line'>/usr/local/ganglia
-</span><span class='line'>[root@cu2 ganglia]# ll lib64/ganglia/
-</span><span class='line'>total 704
-</span><span class='line'>-rwxr-xr-x 1 root root 87344 Feb  1 16:52 modcpu.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84566 Feb  1 16:52 moddisk.so
-</span><span class='line'>-rwxr-xr-x 1 root root 17896 Feb  1 16:52 modgstatus.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84526 Feb  1 16:52 modload.so
-</span><span class='line'>-rwxr-xr-x 1 root root 86280 Feb  1 16:52 modmem.so
-</span><span class='line'>-rwxr-xr-x 1 root root 31695 Feb  1 16:52 modmulticpu.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84928 Feb  1 16:52 modnet.so
-</span><span class='line'>-rwxr-xr-x 1 root root 84246 Feb  1 16:52 modproc.so
-</span><span class='line'>-rwxr-xr-x 1 root root 53994 Feb  1 16:52 modpython.so
-</span><span class='line'>-rwxr-xr-x 1 root root 85584 Feb  1 16:52 modsys.so
-</span><span class='line'>[root@cu2 ganglia]# ll etc/conf.d/
-</span><span class='line'>total 4
-</span><span class='line'>-rw-r--r-- 1 root root 408 Feb  1 16:52 modpython.conf
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia]# vi etc/gmetad.conf
-</span><span class='line'> rrdtool_dir
-</span><span class='line'>
-</span><span class='line'>[root@cu2 ganglia]# cat etc/conf.d/modpython.conf 
-</span><span class='line'>/*
-</span><span class='line'>  params - path to the directory where mod_python
-</span><span class='line'>           should look for python metric modules
-</span><span class='line'>
-</span><span class='line'>  the "pyconf" files in the include directory below
-</span><span class='line'>  will be scanned for configurations for those modules
-</span><span class='line'>*/
-</span><span class='line'>modules {
-</span><span class='line'>  module {
-</span><span class='line'>    name = "python_module"
-</span><span class='line'>    path = "modpython.so"
-</span><span class='line'>    params = "/usr/local/ganglia/lib64/ganglia/python_modules"
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>include ("/usr/local/ganglia/etc/conf.d/*.pyconf")
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>Hello World</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ganglia]# cd lib64/ganglia/
-</span><span class='line'>[root@cu2 ganglia]# mkdir python_modules
-</span><span class='line'>[root@cu2 ganglia]# cd python_modules/
-</span><span class='line'>
-</span><span class='line'>[root@cu2 python_modules]# cp ~/ganglia-3.7.2/gmond/python_modules/example/example.py ./
-</span><span class='line'>[root@cu2 python_modules]# 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 python_modules]# cd /usr/local/ganglia/etc/conf.d/
-</span><span class='line'>[root@cu2 conf.d]# vi example.pyconf
-</span><span class='line'>modules {
-</span><span class='line'>  module {
-</span><span class='line'>    name = "example"
-</span><span class='line'>    language = "python"
-</span><span class='line'>    param RandomMax {
-</span><span class='line'>      value = 600
-</span><span class='line'>    }
-</span><span class='line'>    param ConstantValue {
-</span><span class='line'>      value = 112
-</span><span class='line'>    }
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>collection_group {
-</span><span class='line'>  collect_every = 10
-</span><span class='line'>  time_threshold = 50
-</span><span class='line'>  metric {
-</span><span class='line'>    name = "PyRandom_Numbers"
-</span><span class='line'>    title = "Random"
-</span><span class='line'>    value_threshold = 70
-</span><span class='line'>  }
-</span><span class='line'>  metric {
-</span><span class='line'>    name = "PyConstant_Number"
-</span><span class='line'>    title = "Constant"
-</span><span class='line'>    value_threshold = 70
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>[root@cu2 conf.d]# service gmond restart
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><strong>example.py</strong> 初始化函数 <code>metric_init</code> 从 <strong>example.pyconf</strong> 文件获取配置、返回可用指标对象（ <code>call_back</code> 关联执行的handler; <code>groups</code> 数据的分组）。</p>
-
-<p>模块中必须包含的三个方法是：</p>
-
-<ul>
-<li>def metric_init(params):</li>
-<li>def metric_cleanup():</li>
-<li>def metric_handler(name):</li>
-</ul>
-
-
-<p>前面两个方法的名字必须是一定的，而最后一个 metric_handler与 <code>metric_init</code> 返回对象的callback对应。<code>__main__</code> 函数用于debug，可以单独调试该模块，以检测是否有错。
-更详细的内容看官网的文档<a href="https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules">Ganglia-GMond-Python-Modules</a></p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules">https://github.com/ganglia/monitor-core/wiki/Ganglia-GMond-Python-Modules</a></li>
-<li><a href="http://www.cnblogs.com/marysam/archive/2012/01/03/2311187.html">http://www.cnblogs.com/marysam/archive/2012/01/03/2311187.html</a></li>
-<li><a href="http://blog.csdn.net/cloudeep/article/details/5669295">http://blog.csdn.net/cloudeep/article/details/5669295</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/18">&larr; Older</a>
@@ -1488,6 +1712,14 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/10/28/application-run-do-double-click-on-centos7/">在Cenots7双击运行程序</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2017/10/28/flamegraph-display-how-disk-be-used/">使用Flamegraph查看磁盘使用情况</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/10/08/docker-network-via-macvlan/">Docker多主机网络配置 - Macvlan</a>
       </li>
     
@@ -1509,14 +1741,6 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
     
       <li class="post">
         <a href="/blog/2017/09/19/os-install-via-usb/">使用U盘安装Centos7</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/09/17/docker-compose-hello/">Docker Compose入门</a>
       </li>
     
   </ul>
@@ -1653,7 +1877,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (54) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (56) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1670,7 +1894,7 @@ iptables -A FORWARD -i em2 -d 10.8.0.0/24 -j ACCEPT    #允许数据从后端ser
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (192)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (194)</li>
 	</ul>
 	
 </section>
