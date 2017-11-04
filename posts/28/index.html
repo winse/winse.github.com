@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="从了解scala，到spark再次遇见scala，准备好好学学这门语言。函数式编程大势所趋，简洁的语法，更抽象好用的集合操作。土生土长的JVM的语言，以及凭借其与java的互操作性，发展前景一片光明。在云计算以及手机（android）开发都有其大展拳脚的地方。 工作中大部分时间写mapreduce &hellip;">
+  <meta name="description" content="备注： 文后面的maven打包、以及执行的shell脚本还是极好的&hellip; hadoop提供的两大组件HDFS、MapReduce。其中HDFS提供了丰富的API，最重要的有类似shell的脚本进行操作。而编写程序，要很方便的调试测试，其实是一件比较麻烦和繁琐的事情。 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +83,512 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/09/17/windows-hadoop2-test-your-mapreduce-feature/">在windows开发测试mapreduce几种方式</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-09-17T12:55:38+08:00" pubdate data-updated="true">Wed 2014-09-17 12:55</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><blockquote><p>备注： 文后面的maven打包、以及执行的shell脚本还是极好的&hellip;</p></blockquote>
+
+<p>hadoop提供的两大组件HDFS、MapReduce。其中HDFS提供了丰富的API，最重要的有类似shell的脚本进行操作。而编写程序，要很方便的调试测试，其实是一件比较麻烦和繁琐的事情。</p>
+
+<p>首先可能针对拆分的功能进行<strong>单独的方法</strong>级别的单元测试，然后到map/reduce的一个<strong>完整的处理过程</strong>的测试，再就是针对<strong>整个MR</strong>的测试，前面说的都是在IDE中完成后，最后需要到<strong>测试环境</strong>对其进行验证。</p>
+
+<ul>
+<li>单独的方法这里就不必多讲，直接使用eclipse自带的junit即可完成。</li>
+<li>mrunit，针对map/reduce的测试，以至于整个MR流程的测试，但是mrunit的输入是针对小数据量的。</li>
+<li>本地模式运行程序，模拟正式的环境来进行测试，数据直接从hdfs获取。</li>
+<li>测试环境远程调试，尽管经过前面的步骤可能还会遇到各种问题，此时可结合<code>remote debug</code>来定位问题。</li>
+</ul>
+
+
+<h3>mrunit测试map/reduce</h3>
+
+<p>首先去到<a href="http://mrunit.apache.org/">官网下载</a>，把对应的jar加入到你项目的依赖。懒得去手工下载的话直接使用maven。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;dependency&gt;
+</span><span class='line'>  &lt;groupId&gt;org.apache.mrunit&lt;/groupId&gt;
+</span><span class='line'>  &lt;artifactId&gt;mrunit&lt;/artifactId&gt;
+</span><span class='line'>  &lt;version&gt;1.1.0&lt;/version&gt;
+</span><span class='line'>  &lt;classifier&gt;hadoop2&lt;/classifier&gt;
+</span><span class='line'>  &lt;scope&gt;test&lt;/scope&gt;
+</span><span class='line'>&lt;/dependency&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>可以对mapreduce的各种情况（map/reduce/map-reduce/map-combine-reduce）进行简单的测试，验证逻辑上是否存在问题。<a href="https://cwiki.apache.org/confluence/display/MRUNIT/MRUnit+Tutorial">官方文档的例子</a>已经很具体详细了。</p>
+
+<p>先新建初始化driver（MapDriver/ReduceDriver/MapReduceDriver)，然后添加配置配置信息（configuration），再指定withInput来进行输入数据，和withOutput对应的输出数据。运行调用runTest方法就会模拟mr的整个运行机制来对单条的记录进行处理。因为都是在一个jvm中执行，调试是很方便的。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>private MapReduceDriver&lt;LongWritable, Text, KeyWrapper, ValueWrapper, Text, Text&gt; mrDriver;
+</span><span class='line'>
+</span><span class='line'>@Before
+</span><span class='line'>public void setUp() {
+</span><span class='line'>  AccessLogMapper mapper = new AccessLogMapper();
+</span><span class='line'>  AccessLogReducer reducer = new AccessLogReducer();
+</span><span class='line'>  // AccessLogCombiner combiner = new AccessLogCombiner();
+</span><span class='line'>
+</span><span class='line'>  mrDriver = MapReduceDriver.newMapReduceDriver(mapper, reducer);
+</span><span class='line'>
+</span><span class='line'>  // mDriver = MapDriver.newMapDriver(mapper);
+</span><span class='line'>  // mcrDriver = MapReduceDriver.newMapReduceDriver(mapper, reducer, combiner);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private String[] datas;
+</span><span class='line'>
+</span><span class='line'>@After
+</span><span class='line'>public void run() throws IOException {
+</span><span class='line'>  if (datas != null) {
+</span><span class='line'>      // 配置
+</span><span class='line'>      ...
+</span><span class='line'>      mrDriver.setConfiguration(config);
+</span><span class='line'>      // mrDriver.getConfiguration().addResource("job_1399189058775_0627_conf.xml");
+</span><span class='line'>
+</span><span class='line'>    // 输入输出
+</span><span class='line'>      Text input = new Text();
+</span><span class='line'>      int i = 0;
+</span><span class='line'>      for (String data : datas) {
+</span><span class='line'>          input.set(data);
+</span><span class='line'>          mrDriver.withInput(new LongWritable(++i), new Text(data));
+</span><span class='line'>      }
+</span><span class='line'>      mrDriver.withOutputFormat(MultipleFileOutputFormat.class, TextInputFormat.class);
+</span><span class='line'>      mrDriver.runTest();
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>// / datas
+</span><span class='line'>
+</span><span class='line'>private String[] datas() {
+</span><span class='line'>  return ...;
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>@Test
+</span><span class='line'>public void testOne() throws IOException {
+</span><span class='line'>  datas = new String[] { datas()[0] };
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>local方式进行本地测试</h2>
+
+<p>mapreduce默认提供了两种任务框架： local和yarn。YARN环境需要把程序发布到nodemanager上去运行，对于开发测试来讲，还是太繁琐了。</p>
+
+<p>使用local的方式，既不用打包同时拥有IDE本地调试的便利，同时数据直接从HDFS中获取，也就是说，除了任务框架不同，其他都一样，程序的输入输出，任务代码的业务逻辑。为全面开发调试/测试提供了极其重要的方式。</p>
+
+<p>只需要指定服务为local的服务框架，再加上输入输出即可。如果本地用户和hdfs的用户不同，设置下环境变量<code>HADOOP_USER_NAME</code>。同样map、reduce通过线程来模拟，都运行的同一个JVM中，断点调试也很方便。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public class WordCountTest {
+</span><span class='line'>  
+</span><span class='line'>  static {
+</span><span class='line'>      System.setProperty("HADOOP_USER_NAME", "hadoop");
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  private static final String HDFS_SERVER = "hdfs://umcc97-44:9000";
+</span><span class='line'>
+</span><span class='line'>  @Test
+</span><span class='line'>  public void test() throws Exception {
+</span><span class='line'>      WordCount.main(new String[]{
+</span><span class='line'>              "-Dmapreduce.framework.name=local", 
+</span><span class='line'>              "-Dfs.defaultFS=" + HDFS_SERVER, 
+</span><span class='line'>              HDFS_SERVER + "/user/hadoop/dta/001.tar.gz", 
+</span><span class='line'>              HDFS_SERVER + "/user/hadoop/output/"});
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>测试环境打包测试</h3>
+
+<p>放到测试环境后，appmanager、map、reduce都是运行在不同的jvm；还有就是需要对程序进行打包，挺啰嗦而且麻烦的事情，依赖包多的话，包还挺大，每次job都需要传递这么大一个文件，也挺浪费的。</p>
+
+<p>提供两种打包方式，一种是直接jar运行的，一种是所有的jar压缩包tar.gz方式。可以结合distributecache减少每次执行程序需要传递给nodemanager的数据量，以及结合mapreduce运行时配置参数可以进行远程调试。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>调试appmanager
+</span><span class='line'>-Dyarn.app.mapreduce.am.command-opts="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090" 
+</span><span class='line'>调试map
+</span><span class='line'>-Dmapreduce.map.java.opts
+</span><span class='line'>调试reduce
+</span><span class='line'>-Dmapreduce.reduce.java.opts</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>小结</h3>
+
+<p>通过以上3中方式基本上能处理工作终于到的大部分问题了。大部分的功能使用mrunit测试就可以了，还可以单独的测试map，或者reduce挺不错的。</p>
+
+<h3>附录：maven打包</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;profile&gt;
+</span><span class='line'>  &lt;id&gt;jar&lt;/id&gt;
+</span><span class='line'>  &lt;build&gt;
+</span><span class='line'>      &lt;plugins&gt;
+</span><span class='line'>          &lt;plugin&gt;
+</span><span class='line'>              &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+</span><span class='line'>              &lt;artifactId&gt;maven-assembly-plugin&lt;/artifactId&gt;
+</span><span class='line'>              &lt;executions&gt;
+</span><span class='line'>                  &lt;execution&gt;
+</span><span class='line'>                      &lt;id&gt;make-assembly&lt;/id&gt;
+</span><span class='line'>                      &lt;phase&gt;package&lt;/phase&gt;
+</span><span class='line'>                      &lt;goals&gt;
+</span><span class='line'>                          &lt;goal&gt;single&lt;/goal&gt;
+</span><span class='line'>                      &lt;/goals&gt;
+</span><span class='line'>                  &lt;/execution&gt;
+</span><span class='line'>              &lt;/executions&gt;
+</span><span class='line'>              &lt;configuration&gt;
+</span><span class='line'>                  &lt;descriptorRefs&gt;
+</span><span class='line'>                      &lt;descriptorRef&gt;
+</span><span class='line'>                          jar-with-dependencies
+</span><span class='line'>                      &lt;/descriptorRef&gt;
+</span><span class='line'>                  &lt;/descriptorRefs&gt;
+</span><span class='line'>              &lt;/configuration&gt;
+</span><span class='line'>          &lt;/plugin&gt;
+</span><span class='line'>
+</span><span class='line'>      &lt;/plugins&gt;
+</span><span class='line'>  &lt;/build&gt;
+</span><span class='line'>&lt;/profile&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;profile&gt;
+</span><span class='line'>  &lt;id&gt;tar&lt;/id&gt;
+</span><span class='line'>  &lt;build&gt;
+</span><span class='line'>      &lt;plugins&gt;
+</span><span class='line'>          &lt;plugin&gt;
+</span><span class='line'>              &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+</span><span class='line'>              &lt;artifactId&gt;maven-assembly-plugin&lt;/artifactId&gt;
+</span><span class='line'>              &lt;executions&gt;
+</span><span class='line'>                  &lt;execution&gt;
+</span><span class='line'>                      &lt;id&gt;make-assembly&lt;/id&gt;
+</span><span class='line'>                      &lt;phase&gt;package&lt;/phase&gt;
+</span><span class='line'>                      &lt;goals&gt;
+</span><span class='line'>                          &lt;goal&gt;single&lt;/goal&gt;
+</span><span class='line'>                      &lt;/goals&gt;
+</span><span class='line'>                  &lt;/execution&gt;
+</span><span class='line'>              &lt;/executions&gt;
+</span><span class='line'>              &lt;configuration&gt;
+</span><span class='line'>                  &lt;appendAssemblyId&gt;true&lt;/appendAssemblyId&gt;
+</span><span class='line'>                  &lt;descriptors&gt;
+</span><span class='line'>                      &lt;descriptor&gt;${basedir}/../assemblies/application.xml&lt;/descriptor&gt;
+</span><span class='line'>                  &lt;/descriptors&gt;
+</span><span class='line'>              &lt;/configuration&gt;
+</span><span class='line'>          &lt;/plugin&gt;
+</span><span class='line'>      &lt;/plugins&gt;
+</span><span class='line'>  &lt;/build&gt;
+</span><span class='line'>&lt;/profile&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>打包成tar.gz的描述文件：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;assembly&gt;
+</span><span class='line'>  &lt;id&gt;dist-${env}&lt;/id&gt;
+</span><span class='line'>  &lt;formats&gt;
+</span><span class='line'>      &lt;format&gt;tar.gz&lt;/format&gt;
+</span><span class='line'>  &lt;/formats&gt;
+</span><span class='line'>  &lt;includeBaseDirectory&gt;true&lt;/includeBaseDirectory&gt;
+</span><span class='line'>  &lt;fileSets&gt;
+</span><span class='line'>      &lt;fileSet&gt;
+</span><span class='line'>          &lt;directory&gt;${basedir}/src/main/scripts&lt;/directory&gt;
+</span><span class='line'>          &lt;outputDirectory&gt;/bin&lt;/outputDirectory&gt;
+</span><span class='line'>          &lt;includes&gt;
+</span><span class='line'>              &lt;include&gt;*.sh&lt;/include&gt;
+</span><span class='line'>          &lt;/includes&gt;
+</span><span class='line'>          &lt;fileMode&gt;0755&lt;/fileMode&gt;
+</span><span class='line'>          &lt;lineEnding&gt;unix&lt;/lineEnding&gt;
+</span><span class='line'>      &lt;/fileSet&gt;
+</span><span class='line'>      &lt;fileSet&gt;
+</span><span class='line'>          &lt;directory&gt;${basedir}/target/classes&lt;/directory&gt;
+</span><span class='line'>          &lt;outputDirectory&gt;/conf&lt;/outputDirectory&gt;
+</span><span class='line'>          &lt;includes&gt;
+</span><span class='line'>              &lt;include&gt;*.xml&lt;/include&gt;
+</span><span class='line'>              &lt;include&gt;*.properties&lt;/include&gt;
+</span><span class='line'>          &lt;/includes&gt;
+</span><span class='line'>      &lt;/fileSet&gt;
+</span><span class='line'>      &lt;fileSet&gt;
+</span><span class='line'>          &lt;directory&gt;${basedir}/target&lt;/directory&gt;
+</span><span class='line'>          &lt;outputDirectory&gt;/lib/core&lt;/outputDirectory&gt;
+</span><span class='line'>          &lt;includes&gt;
+</span><span class='line'>              &lt;include&gt;${project.artifactId}-${project.version}.jar
+</span><span class='line'>              &lt;/include&gt;
+</span><span class='line'>          &lt;/includes&gt;
+</span><span class='line'>      &lt;/fileSet&gt;
+</span><span class='line'>  &lt;/fileSets&gt;
+</span><span class='line'>  &lt;dependencySets&gt;
+</span><span class='line'>      &lt;dependencySet&gt;
+</span><span class='line'>          &lt;useProjectArtifact&gt;false&lt;/useProjectArtifact&gt;
+</span><span class='line'>          &lt;outputDirectory&gt;/lib/common&lt;/outputDirectory&gt;
+</span><span class='line'>          &lt;scope&gt;runtime&lt;/scope&gt;
+</span><span class='line'>      &lt;/dependencySet&gt;
+</span><span class='line'>  &lt;/dependencySets&gt;
+</span><span class='line'>&lt;/assembly&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>运行整个程序的shell脚本</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>bin=`which $0`
+</span><span class='line'>bin=`dirname ${bin}`
+</span><span class='line'>bin=`cd "$bin"; pwd`
+</span><span class='line'>
+</span><span class='line'>export ANAYSER_HOME=`dirname "$bin"`
+</span><span class='line'>
+</span><span class='line'>export ANAYSER_LOG_DIR=$ANAYSER_HOME/logs
+</span><span class='line'>
+</span><span class='line'>export ANAYSER_OPTS="-Dproc_dta_analyser -server -Xms1024M -Xmx2048M -Danalyser.log.dir=${ANAYSER_LOG_DIR}"
+</span><span class='line'>
+</span><span class='line'>export HADOOP_HOME=${HADOOP_HOME:-/home/hadoop/hadoop-2.2.0}
+</span><span class='line'>export ANAYSER_CLASSPATH=$ANAYSER_HOME/conf
+</span><span class='line'>export ANAYSER_CLASSPATH=$ANAYSER_CLASSPATH:$HADOOP_HOME/etc/hadoop
+</span><span class='line'>
+</span><span class='line'>for f in $ANAYSER_HOME/lib/core/*.jar ; do
+</span><span class='line'>  export ANAYSER_CLASSPATH+=:$f
+</span><span class='line'>done
+</span><span class='line'>
+</span><span class='line'>for f in $ANAYSER_HOME/lib/common/*.jar ; do
+</span><span class='line'>  export ANAYSER_CLASSPATH+=:$f
+</span><span class='line'>done
+</span><span class='line'>
+</span><span class='line'>if [ ! -d $ANAYSER_LOG_DIR ] ; then
+</span><span class='line'>  mkdir -p $ANAYSER_LOG_DIR
+</span><span class='line'>fi
+</span><span class='line'>
+</span><span class='line'>[ -w "$ANAYSER_PID_DIR" ] ||  mkdir -p "$ANAYSER_PID_DIR"
+</span><span class='line'>
+</span><span class='line'>nohup ${JAVA_HOME}/bin/java $ANAYSER_OPTS -cp $ANAYSER_CLASSPATH com.analyser.AnalyserStarter &gt;$ANAYSER_LOG_DIR/stdout 2&gt;$ANAYSER_LOG_DIR/stderr &
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2938,449 +3444,6 @@ Scala提供了类似的机制：Objects。Objects是单例模式的实现。在�
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/09/05/read-hadoop-balancer-source-part2/">[读码] Hadoop2 Balancer磁盘空间平衡（中）</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-09-05T14:57:25+08:00" pubdate data-updated="true">Fri 2014-09-05 14:57</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>code</h2>
-
-<p>执行<code>hadoop-2.2.0/bin/hadoop balancer -h</code>查看可以设置的参数（和sbin/start-balancer.sh一样）。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Usage: java Balancer
-</span><span class='line'>  [-policy &lt;policy&gt;]    the balancing policy: datanode or blockpool
-</span><span class='line'>  [-threshold &lt;threshold&gt;]  Percentage of disk capacity</span></code></pre></td></tr></table></div></figure>
-
-
-<p>main方法入口，可以接受threshold（大于等于1小于等于100， 默认值10）和policy（可取datanode[dfsused]/blockpool[
-blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇中的javadoc的描述。</p>
-
-<h3>获取初始化参数</h3>
-
-<p>然后通过ToolRunner解析参数，并运行Cli工具类来执行HDFS的平衡。</p>
-
-<p>1 设置检查</p>
-
-<p><code>WIN_WIDTH</code>(默认1.5h) 已移动的数据会记录movedBlocks（list）变量中，在移动成功的数据<code>CUR_WIN</code>的值经过该时间后会被移动到<code>OLD_WIN</code>&mdash;现在感觉作用不大，为了减少map的大小？</p>
-
-<p><code>checkReplicationPolicyCompatibility()</code>检查配置<code>dfs.block.replicator.classname</code>是否为BlockPlacementPolicyDefault子类，即是否满足3份备份的策略（1st本地，2nd另一个rack，3rd和第二份拷贝不同rack的节点）？</p>
-
-<p>2 获取nameserviceuris</p>
-
-<p>通过<code>DFSUtil#getNsServiceRpcUris()</code>来获取namenodes，调用<code>getNameServiceUris()</code>来得到一个URI的结果集：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>+ nsId &lt;- dfs.nameservices
-</span><span class='line'>  ? ha  &lt;- dfs.namenode.rpc-address + [dfs.nameservices] + [dfs.ha.namenodes]
-</span><span class='line'>    Y+ =&gt; hdfs://nsId
-</span><span class='line'>    N+ =&gt; hdfs://[dfs.namenode.servicerpc-address.[nsId]] 或 hdfs://[dfs.namenode.rpc-address.[nsId]] 第二个满足条件的加入到nonPreferredUris
-</span><span class='line'>+ hdfs://[dfs.namenode.servicerpc-address] 或 hdfs://[dfs.namenode.rpc-address]  第二个满足条件的加入到nonPreferredUris
-</span><span class='line'>? [fs.defaultFs] 以hfds开头，且不在nonPreferredUris集合中是加入结果集</span></code></pre></td></tr></table></div></figure>
-
-
-<p>HA情况下的地址相关配置项可以查看<a href="http://hadoop.apache.org/docs/r2.2.0/hadoop-yarn/hadoop-yarn-site/HDFSHighAvailabilityWithQJM.html">官网的文档</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>dfs.nameservices
-</span><span class='line'>dfs.ha.namenodes.[nameservice ID]
-</span><span class='line'>dfs.namenode.rpc-address.[nameservice ID].[name node ID] </span></code></pre></td></tr></table></div></figure>
-
-
-<p>3 解析threshold和policy参数</p>
-
-<p>默认值: <strong>BalancingPolicy.Node.INSTANCE, 10.0</strong>。运行打印的日志如下，INFO日志中包括了初始化的参数信息。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>2014-09-05 10:55:12,183 INFO Balancer: Using a threshold of 1.0
-</span><span class='line'>2014-09-05 10:55:12,186 INFO Balancer: namenodes = [hdfs://umcc97-44:9000]
-</span><span class='line'>2014-09-05 10:55:12,186 INFO Balancer: p         = Balancer.Parameters[BalancingPolicy.Node, threshold=1.0]
-</span><span class='line'>2014-09-05 10:55:13,744 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-</span><span class='line'>2014-09-05 10:55:18,154 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.142:50010
-</span><span class='line'>2014-09-05 10:55:18,249 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.144:50010
-</span><span class='line'>2014-09-05 10:55:18,311 INFO net.NetworkTopology: Adding a new node: /default-rack/10.18.97.143:50010
-</span><span class='line'>2014-09-05 10:55:18,319 INFO Balancer: 2 over-utilized: [Source[10.18.97.144:50010, utilization=8.288283273062705], Source[10.18.97.143:50010, utilization=8.302032354001554]]
-</span><span class='line'>2014-09-05 10:55:18,320 INFO Balancer: 1 underutilized: [BalancerDatanode[10.18.97.142:50010, utilization=4.716543864576553]]
-</span><span class='line'>2014-09-05 10:55:33,918 INFO Balancer: Need to move 3.86 GB to make the cluster balanced.
-</span><span class='line'>2014-09-05 11:21:16,875 INFO Balancer: Decided to move 2.43 GB bytes from 10.18.97.144:50010 to 10.18.97.142:50010
-</span><span class='line'>2014-09-05 11:24:16,712 INFO Balancer: Decided to move 1.84 GB bytes from 10.18.97.143:50010 to 10.18.97.142:50010
-</span><span class='line'>2014-09-05 11:25:55,726 INFO Balancer: Will move 4.27 GB in this iteration</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>执行Balancer</h3>
-
-<p>4 调用Balancer#run执行</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'> # 调试命令
-</span><span class='line'> export HADOOP_OPTS=" -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8087 "
-</span><span class='line'> sbin/start-balancer.sh </span></code></pre></td></tr></table></div></figure>
-
-
-<p></p>
-
-<p>Balancer的静态方法run，循环处理所有namenodes。在实例化namenode的NameNodeConnector对象时，会把当前运行balancer程序的hostname写入到HDFS的<code>/system/balancer.id</code>文件中，可以用来控制同时只有一个balancer运行。</p>
-
-<p><img src="http://file.bmob.cn/M00/0C/96/wKhkA1QJJNqAXxeaAAAho0g2bEU520.png" alt="" /></p>
-
-<p>在循环处理的时刻使用<code>Collections.shuffle(connectors)</code>打乱了namenodes的顺序。</p>
-
-<p>Balancer的静态方法run中是一个双层循环，实例化Balancer并调用实例方法run来处理每个namenode的平衡。运行后要么<strong>出错</strong>要么就是平衡<strong>顺利完成</strong>才算结束。平衡的返回状态值及其含义可以查看javadoc（上）篇。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  static int run(Collection&lt;URI&gt; namenodes, final Parameters p,
-</span><span class='line'>      Configuration conf) throws IOException, InterruptedException {
-</span><span class='line'>    ...
-</span><span class='line'>      for (URI uri : namenodes) {
-</span><span class='line'>        connectors.add(new NameNodeConnector(uri, conf));
-</span><span class='line'>      }
-</span><span class='line'>    
-</span><span class='line'>      boolean done = false;
-</span><span class='line'>      for(int iteration = 0; !done; iteration++) {
-</span><span class='line'>        done = true;
-</span><span class='line'>        Collections.shuffle(connectors);
-</span><span class='line'>        for(NameNodeConnector nnc : connectors) {
-</span><span class='line'>          final Balancer b = new Balancer(nnc, p, conf);
-</span><span class='line'>          final ReturnStatus r = b.run(iteration, formatter, conf);
-</span><span class='line'>          // clean all lists
-</span><span class='line'>          b.resetData(conf);
-</span><span class='line'>          if (r == ReturnStatus.IN_PROGRESS) {
-</span><span class='line'>            done = false;
-</span><span class='line'>          } else if (r != ReturnStatus.SUCCESS) {
-</span><span class='line'>            //must be an error statue, return.
-</span><span class='line'>            return r.code;
-</span><span class='line'>          }
-</span><span class='line'>        }
-</span><span class='line'>
-</span><span class='line'>        if (!done) {
-</span><span class='line'>          Thread.sleep(sleeptime);
-</span><span class='line'>        }
-</span><span class='line'>      }
-</span><span class='line'>    ...
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<p>5 <strong>针对每个namenode的平衡处理</strong></p>
-
-<p>针对每个namenode的每次迭代，又可以分出初始化节点、选择移动节点、移动数据三个部分。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  private ReturnStatus run(int iteration, Formatter formatter, Configuration conf) {
-</span><span class='line'>      ...
-</span><span class='line'>      final long bytesLeftToMove = initNodes(nnc.client.getDatanodeReport(DatanodeReportType.LIVE));
-</span><span class='line'>      if (bytesLeftToMove == 0) {
-</span><span class='line'>        System.out.println("The cluster is balanced. Exiting...");
-</span><span class='line'>        return ReturnStatus.SUCCESS;
-</span><span class='line'>      }
-</span><span class='line'>
-</span><span class='line'>      final long bytesToMove = chooseNodes();
-</span><span class='line'>      if (bytesToMove == 0) {
-</span><span class='line'>        System.out.println("No block can be moved. Exiting...");
-</span><span class='line'>        return ReturnStatus.NO_MOVE_BLOCK;
-</span><span class='line'>      }
-</span><span class='line'>
-</span><span class='line'>      if (!this.nnc.shouldContinue(dispatchBlockMoves())) {
-</span><span class='line'>        return ReturnStatus.NO_MOVE_PROGRESS;
-</span><span class='line'>      }
-</span><span class='line'>
-</span><span class='line'>      return ReturnStatus.IN_PROGRESS;
-</span><span class='line'>      ...
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<p></p>
-
-<p>获取集群Live Datanode节点的信息，和通过50070查看的信息差不多，然后调用initNode()方法。</p>
-
-<p><img src="http://file.bmob.cn/M00/0C/8F/wKhkA1QJFgaAAsSNAAD4HDo1RfA678.png" alt="" /></p>
-
-<p>5.1 初始化节点</p>
-
-<p><code>initNodes()</code>中获取每个Datanode的capacity和dfsUsed数据，计算整个集群dfs的平均使用率avgUtilization。
-然后根据每个节点的使用率与集群使用率，以及阀值进行比较划分为4种情况：
-<code>overUtilizedDatanodes</code>，<code>aboveAvgUtilizedDatanodes</code>，<code>belowAvgUtilizedDatanodes</code>，<code>underUtilizedDatanodes</code>。</p>
-
-<p><img src="http://file.bmob.cn/M00/0C/95/wKhkA1QJH2uAa8UEAABq7RCSLQ0452.png" alt="" /></p>
-
-<p>同时取超出<strong>平均+阀值</strong>和<strong>低于平均-阀值</strong>的字节数最大值，即集群达到平衡需要移动的字节数。</p>
-
-<p>为了测试，如果集群已经平衡，可以搞点数据让集群不平衡，方便查看调试。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>bin/hadoop fs -D dfs.replication=1 -put XXXXX /abc
-</span><span class='line'>
-</span><span class='line'>sbin/start-balancer.sh -threshold 1</span></code></pre></td></tr></table></div></figure>
-
-
-<p>5.2 选择节点</p>
-
-<p>初始化节点后，计算出了需要移动的数据量。接下来就是选择移动数据的节点<code>chooseNodes</code>，以及接收对应数据的节点。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  private long chooseNodes() {
-</span><span class='line'>    // First, match nodes on the same node group if cluster is node group aware
-</span><span class='line'>    if (cluster.isNodeGroupAware()) {
-</span><span class='line'>      chooseNodes(SAME_NODE_GROUP);
-</span><span class='line'>    }
-</span><span class='line'>    
-</span><span class='line'>    chooseNodes(SAME_RACK);
-</span><span class='line'>    chooseNodes(ANY_OTHER);
-</span><span class='line'>
-</span><span class='line'>    long bytesToMove = 0L;
-</span><span class='line'>    for (Source src : sources) {
-</span><span class='line'>      bytesToMove += src.scheduledSize;
-</span><span class='line'>    }
-</span><span class='line'>    return bytesToMove;
-</span><span class='line'>  }
-</span><span class='line'>  private void chooseNodes(final Matcher matcher) {
-</span><span class='line'>    chooseDatanodes(overUtilizedDatanodes, underUtilizedDatanodes, matcher);
-</span><span class='line'>    chooseDatanodes(overUtilizedDatanodes, belowAvgUtilizedDatanodes, matcher);
-</span><span class='line'>    chooseDatanodes(underUtilizedDatanodes, aboveAvgUtilizedDatanodes, matcher);
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt; void 
-</span><span class='line'>      chooseDatanodes(Collection&lt;D&gt; datanodes, Collection&lt;C&gt; candidates,
-</span><span class='line'>          Matcher matcher) {
-</span><span class='line'>    for (Iterator&lt;D&gt; i = datanodes.iterator(); i.hasNext();) {
-</span><span class='line'>      final D datanode = i.next();
-</span><span class='line'>      for(; chooseForOneDatanode(datanode, candidates, matcher); );
-</span><span class='line'>      if (!datanode.hasSpaceForScheduling()) {
-</span><span class='line'>        i.remove(); // “超出”部分全部有去处了
-</span><span class='line'>      }
-</span><span class='line'>    }
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  private &lt;C extends BalancerDatanode&gt; boolean chooseForOneDatanode(
-</span><span class='line'>      BalancerDatanode dn, Collection&lt;C&gt; candidates, Matcher matcher) {
-</span><span class='line'>    final Iterator&lt;C&gt; i = candidates.iterator();
-</span><span class='line'>    final C chosen = chooseCandidate(dn, i, matcher);
-</span><span class='line'>
-</span><span class='line'>    if (chosen == null) {
-</span><span class='line'>      return false;
-</span><span class='line'>    }
-</span><span class='line'>    if (dn instanceof Source) {
-</span><span class='line'>      matchSourceWithTargetToMove((Source)dn, chosen);
-</span><span class='line'>    } else {
-</span><span class='line'>      matchSourceWithTargetToMove((Source)chosen, dn);
-</span><span class='line'>    }
-</span><span class='line'>    if (!chosen.hasSpaceForScheduling()) {
-</span><span class='line'>      i.remove(); // 可用的空间已经全部分配出去了
-</span><span class='line'>    }
-</span><span class='line'>    return true;
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>  private &lt;D extends BalancerDatanode, C extends BalancerDatanode&gt;
-</span><span class='line'>      C chooseCandidate(D dn, Iterator&lt;C&gt; candidates, Matcher matcher) {
-</span><span class='line'>    if (dn.hasSpaceForScheduling()) {
-</span><span class='line'>      for(; candidates.hasNext(); ) {
-</span><span class='line'>        final C c = candidates.next();
-</span><span class='line'>        if (!c.hasSpaceForScheduling()) {
-</span><span class='line'>          candidates.remove();
-</span><span class='line'>        } else if (matcher.match(cluster, dn.getDatanode(), c.getDatanode())) {
-</span><span class='line'>          return c;
-</span><span class='line'>        }
-</span><span class='line'>      }
-</span><span class='line'>    }
-</span><span class='line'>    return null;
-</span><span class='line'>  }  </span></code></pre></td></tr></table></div></figure>
-
-
-<p>选择到<strong>接收节点</strong>后，接下来计算可以移动的数据量（取双方的available的最大值），然后把<strong>接收节点</strong>和<strong>数据量</strong>的信息NodeTask存储到Source的NodeTasks对象中。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  private void matchSourceWithTargetToMove(
-</span><span class='line'>      Source source, BalancerDatanode target) {
-</span><span class='line'>    long size = Math.min(source.availableSizeToMove(), target.availableSizeToMove());
-</span><span class='line'>    NodeTask nodeTask = new NodeTask(target, size);
-</span><span class='line'>    source.addNodeTask(nodeTask);
-</span><span class='line'>    target.incScheduledSize(nodeTask.getSize());
-</span><span class='line'>    sources.add(source);
-</span><span class='line'>    targets.add(target);
-</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
-
-
-<p>5.3 移动数据</p>
-
-<p>（待）</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/29">&larr; Older</a>
@@ -3457,6 +3520,10 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/11/04/teamviewer-vpn-on-windows/">使用TeamviewerVPN访问公司内网</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a>
       </li>
     
@@ -3482,10 +3549,6 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
     
       <li class="post">
         <a href="/blog/2017/10/05/respberrypi-connected-via/">连接树莓派</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/09/20/docker-manual-make-connect-each-other/">两台主机的docker通过route互联互通</a>
       </li>
     
   </ul>
@@ -3622,7 +3685,7 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (57) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (58) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3639,7 +3702,7 @@ blockpoolused]， 默认值datanode），具体的含义可以查看（上）篇
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (195)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (196)</li>
 	</ul>
 	
 </section>
