@@ -9,7 +9,17 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="hadoop分为存储和计算两个主要的功能，hdfs步入hadoop2后不论稳定性还是HA等等功能都比hadoop1要更吸引人。hadoop-2.2.0的hdfs已经比较稳定，但是yarn高版本有更加丰富的功能。本文主要关注spark-yarn下日志的查看，以及spark-yarn- &hellip;">
+  <meta name="description" content="软件版本 1
+2
+3
+4
+5
+6
+7
+[root@master opt]# ll
+total 20
+drwxr-xr-x 7 root root 4096 Aug 21 01:23 elasticsearch-1.7.1
+drwxr-xr-x 8 uucp 143 4096 Mar 18 2014 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +93,358 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2015/08/21/logstash-elasticsearch-kibana-startguide/">Logstash Elasticsearch Kibana日志采集查询系统搭建</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2015-08-21T14:42:30+08:00" pubdate data-updated="true">Fri 2015-08-21 14:42</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>软件版本</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@master opt]# ll
+</span><span class='line'>total 20
+</span><span class='line'>drwxr-xr-x 7 root root 4096 Aug 21 01:23 elasticsearch-1.7.1
+</span><span class='line'>drwxr-xr-x 8 uucp  143 4096 Mar 18  2014 jdk1.8.0_05
+</span><span class='line'>drwxrwxr-x 7 1000 1000 4096 Aug 21 01:09 kibana-4.1.1-linux-x64
+</span><span class='line'>drwxr-xr-x 5 root root 4096 Aug 21 05:58 logstash-1.5.3
+</span><span class='line'>drwxrwxr-x 6 root root 4096 Aug 21 06:44 redis-3.0.3</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>安装运行脚本</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># java
+</span><span class='line'>vi /etc/profile
+</span><span class='line'>source /etc/profile
+</span><span class='line'>
+</span><span class='line'>cd /opt/elasticsearch-1.7.1
+</span><span class='line'>bin/elasticsearch -p elasticsearch.pid -d
+</span><span class='line'>
+</span><span class='line'>curl localhost:9200/_cluster/nodes/172.17.0.4
+</span><span class='line'>
+</span><span class='line'>cd /opt/kibana-4.1.1-linux-x64/
+</span><span class='line'>bin/kibana 
+</span><span class='line'># http://master:5601
+</span><span class='line'>
+</span><span class='line'>cd /opt/redis-3.0.3
+</span><span class='line'>yum install gcc
+</span><span class='line'>yum install bzip2
+</span><span class='line'>make MALLOC=jemalloc
+</span><span class='line'>
+</span><span class='line'># 也可以修改配置的daemon属性
+</span><span class='line'>nohup src/redis-server & 
+</span><span class='line'>
+</span><span class='line'>cd /opt/logstash-1.5.3/
+</span><span class='line'>bin/logstash -e 'input { stdin { } } output { stdout {} }'
+</span><span class='line'>
+</span><span class='line'>vi index.conf
+</span><span class='line'>vi agent.conf
+</span><span class='line'>
+</span><span class='line'># agent可不加
+</span><span class='line'>bin/logstash agent -f agent.conf &
+</span><span class='line'>bin/logstash agent -f index.conf &</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>logstash配置</h2>
+
+<p>由于程序都运行在一台机器(localhost)，redis、elasticsearch和kibana都使用默认配置。下面贴的是logstash的采集和过滤的配置：</p>
+
+<p>(kibaba的配置config/kibana.yml, elasticsearch的配置config/elasticsearch.yml)</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@master logstash-1.5.3]# cat agent.conf 
+</span><span class='line'>input {
+</span><span class='line'>  file {
+</span><span class='line'>    path =&gt; "/var/log/yum.log"
+</span><span class='line'>    start_position =&gt; beginning
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>output {
+</span><span class='line'>  redis {
+</span><span class='line'>    key =&gt; "logstash.redis"
+</span><span class='line'>    data_type =&gt; list
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  # 便于查看调试
+</span><span class='line'>  stdout { }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>[root@master logstash-1.5.3]# cat index.conf 
+</span><span class='line'>input {
+</span><span class='line'>  redis {
+</span><span class='line'>    data_type =&gt; list
+</span><span class='line'>    key =&gt; "logstash.redis"
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>output {
+</span><span class='line'>  elasticsearch {
+</span><span class='line'>    host =&gt; "localhost"
+</span><span class='line'>  }
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意要改动下被采集的原始文件！！然后启动相应的程序，打开浏览器<a href="http://master:5601">http://master:5601</a>配置一下索引项，就可以查看了。</p>
+
+<p>至于input/output/filter(map,reduce)怎么配置，查看官方文档<a href="https://www.elastic.co/guide/en/logstash/current/filter-plugins.html">filter-plugins</a></p>
+
+<h2>filter</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu1 logstash-1.5.3]$ bin/logstash -e "
+</span><span class='line'>input {
+</span><span class='line'>stdin {}
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>filter {
+</span><span class='line'>grok { 
+</span><span class='line'>match =&gt; {\"message\" =&gt; \"%{WORD:content}\"}
+</span><span class='line'>add_field =&gt; { \"foo_%{content}\" =&gt; \"helloworld\" }
+</span><span class='line'>}
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>output {
+</span><span class='line'>stdout { codec =&gt; json }
+</span><span class='line'>}
+</span><span class='line'>"
+</span><span class='line'>
+</span><span class='line'>abc
+</span><span class='line'>{"message":"abc","@version":"1","@timestamp":"2015-09-10T08:02:52.024Z","host":"cu1","content":"abc","foo_abc":"helloworld"}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>grok-pattern文件的位置：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 logstash-1.5.3]$ less ./vendor/bundle/jruby/1.9/gems/logstash-patterns-core-0.1.10/patterns/grok-patterns 
+</span><span class='line'>
+</span><span class='line'>2015-09-06 15:23:53,027 INFO org.apache.hadoop.hdfs.server.namenode.FSNamesystem: No KeyProvider found.
+</span><span class='line'>%{TIMESTAMP_ISO8601:time} %{LOGLEVEL:loglevel} %{GREEDYDATA:content}
+</span><span class='line'>
+</span><span class='line'>[2015-09-10 08:00:46,539][INFO ][cluster.metadata         ] [Jumbo Carnation] [logstash-2015.09.10] update_mapping [hbase-logs] (dynamic)
+</span><span class='line'>\[%{TIMESTAMP_ISO8601:time}\]\[%{LOGLEVEL:loglevel}%{SPACE}\]%{GREEDYDATA:content}</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>学习</h2>
+
+<p>过滤DEBUG/INFO日志</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu1 logstash-1.5.3]$ bin/logstash -e "
+</span><span class='line'> input {
+</span><span class='line'> stdin {}
+</span><span class='line'> }
+</span><span class='line'> 
+</span><span class='line'> filter {
+</span><span class='line'> grok {
+</span><span class='line'> match =&gt; { \"message\" =&gt; \"%{TIMESTAMP_ISO8601:time} %{LOGLEVEL:loglevel} %{GREEDYDATA:content}\" }
+</span><span class='line'> }
+</span><span class='line'> 
+</span><span class='line'> if [loglevel] == \"INFO\" { drop {} }
+</span><span class='line'> }
+</span><span class='line'> 
+</span><span class='line'> output {
+</span><span class='line'> stdout {}
+</span><span class='line'> }
+</span><span class='line'> 
+</span><span class='line'> "</span></code></pre></td></tr></table></div></figure>
+
+
+<p>用shell先预处理</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>input {
+</span><span class='line'>    stdin {
+</span><span class='line'>        type =&gt; "nginx"
+</span><span class='line'>        format =&gt; "json_event"
+</span><span class='line'>    }
+</span><span class='line'>} 
+</span><span class='line'>output {
+</span><span class='line'>    amqp {
+</span><span class='line'>        type =&gt; "nginx"
+</span><span class='line'>        host =&gt; "10.10.10.10"
+</span><span class='line'>        key  =&gt; "cdn"
+</span><span class='line'>        name =&gt; "logstash"
+</span><span class='line'>        exchange_type =&gt; "direct"
+</span><span class='line'>    }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>      tail -F /data/nginx/logs/access.json \
+</span><span class='line'>    | sed 's/upstreamtime":-/upstreamtime":0/' \
+</span><span class='line'>    | /usr/local/logstash/bin/logstash -f /usr/local/logstash/etc/agent.conf &</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://www.cnblogs.com/buzzlight/p/logstash_elasticsearch_kibana_log.html">http://www.cnblogs.com/buzzlight/p/logstash_elasticsearch_kibana_log.html</a></li>
+<li><a href="http://www.cnblogs.com/ibook360/archive/2013/03/15/2961428.html">http://www.cnblogs.com/ibook360/archive/2013/03/15/2961428.html</a></li>
+<li><a href="https://www.elastic.co/guide/en/logstash/current/index.html">https://www.elastic.co/guide/en/logstash/current/index.html</a></li>
+<li><a href="https://www.elastic.co/guide/en/logstash/current/first-event.html">https://www.elastic.co/guide/en/logstash/current/first-event.html</a></li>
+<li><a href="https://www.elastic.co/guide/en/logstash/current/working-with-plugins.html">https://www.elastic.co/guide/en/logstash/current/working-with-plugins.html</a></li>
+<li><a href="https://www.elastic.co/guide/en/logstash/current/advanced-pipeline.html">https://www.elastic.co/guide/en/logstash/current/advanced-pipeline.html</a></li>
+<li><p><a href="https://www.elastic.co/guide/en/logstash/current/codec-plugins.html">https://www.elastic.co/guide/en/logstash/current/codec-plugins.html</a></p></li>
+<li><p><a href="http://blog.csdn.net/yeasy/article/details/45332493">http://blog.csdn.net/yeasy/article/details/45332493</a></p></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -946,425 +1308,6 @@ Called when your instance has been granted leadership. This method should not re
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/03/25/deploy-separated-yarn-on-exists-hdfs-cluster/">已有HDFS上部署yarn</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2015-03-25T21:22:59+08:00" pubdate data-updated="true">Wed 2015-03-25 21:22</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>原有环境</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[biadmin@bigdatamgr1 IHC]$ pwd
-</span><span class='line'>/data/opt/ibm/biginsights/IHC
-</span><span class='line'>
-</span><span class='line'>[biadmin@bigdatamgr1 biginsights]$ ll conf/ hadoop-conf
-</span><span class='line'>conf/:
-</span><span class='line'>total 64
-</span><span class='line'>-rwxr-xr-x 1 biadmin biadmin  2886 Jan 30 15:09 biginsights-env.sh
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>hadoop-conf:
-</span><span class='line'>total 108
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  7698 Mar 12 17:57 capacity-scheduler.xml
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   535 Mar 12 17:57 configuration.xsl
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   872 Mar 12 17:57 console-site.xml
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  3744 Mar 24 16:51 core-site.xml
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   569 Mar 12 17:57 fair-scheduler.xml
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   410 Mar 12 17:57 flex-scheduler.xml
-</span><span class='line'>-rwxrwxr-x 1 biadmin biadmin  5027 Mar 12 17:57 hadoop-env.sh
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  1859 Mar 12 17:57 hadoop-metrics2.properties
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  4886 Mar 12 17:57 hadoop-policy.xml
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  3836 Mar 12 17:57 hdfs-site.xml
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  2678 Mar 12 17:57 ibm-hadoop.properties
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   207 Mar 12 17:57 includes
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin 10902 Mar 12 17:57 log4j.properties
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   610 Mar 12 17:57 mapred-queue-acls.xml
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  6951 Mar 23 17:24 mapred-site.xml
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin    44 Mar 12 17:57 masters
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   207 Mar 12 17:57 slaves
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  1243 Mar 12 17:57 ssl-client.xml.example
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin  1195 Mar 12 17:57 ssl-server.xml.example
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   301 Mar 12 17:57 taskcontroller.cfg
-</span><span class='line'>-rw-rw-r-- 1 biadmin biadmin   172 Mar 12 17:57 zk-jaas.conf
-</span><span class='line'>
-</span><span class='line'>[root@bigdatamgr1 ~]# cat /etc/profile
-</span><span class='line'>...
-</span><span class='line'>for i in /etc/profile.d/*.sh ; do
-</span><span class='line'>    if [ -r "$i" ]; then
-</span><span class='line'>        if [ "${-#*i}" != "$-" ]; then
-</span><span class='line'>            . "$i"
-</span><span class='line'>        else
-</span><span class='line'>            . "$i" &gt;/dev/null 2&gt;&1
-</span><span class='line'>        fi
-</span><span class='line'>    fi
-</span><span class='line'>done
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[root@bigdatamgr1 ~]# ll /etc/profile.d/
-</span><span class='line'>total 60
-</span><span class='line'>lrwxrwxrwx  1 root root   49 Jan 30 15:10 biginsights-env.sh -&gt; /data/opt/ibm/biginsights/conf/biginsights-env.sh
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>[biadmin@bigdatamgr1 biginsights]$ cat hadoop-conf/hadoop-env.sh
-</span><span class='line'>...
-</span><span class='line'># include biginsights-env.sh
-</span><span class='line'>if [ -r "/data/opt/ibm/biginsights/hdm/../conf/biginsights-env.sh" ]; then
-</span><span class='line'>        source "/data/opt/ibm/biginsights/hdm/../conf/biginsights-env.sh"
-</span><span class='line'>fi
-</span><span class='line'>...
-</span><span class='line'>export HADOOP_LOG_DIR=/data/var/ibm/biginsights/hadoop/logs
-</span><span class='line'>...
-</span><span class='line'>export HADOOP_PID_DIR=/data/var/ibm/biginsights/hadoop/pids
-</span><span class='line'>...
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>hdfs用的是2.x的，但是mr是1.x。真心坑爹！！</p>
-
-<h2>单独部署新的yarn</h2>
-
-<p>由于biginsights整了一套的环境变量，在加载profile的时刻就会进行初始化。所以需要搞一个<strong>新的用户</strong>在加载用户的环境变量的时刻把这些值清理掉。同时也为了与原来的有所区分。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 ~]$ cat .bash_profile 
-</span><span class='line'>...
-</span><span class='line'>for i in ~/conf/*.sh ; do
-</span><span class='line'>  if [ -r "$i" ] ; then
-</span><span class='line'>    . "$i"
-</span><span class='line'>  fi
-</span><span class='line'>done
-</span><span class='line'>
-</span><span class='line'>[eshore@bigdatamgr1 ~]$ ll conf/
-</span><span class='line'>total 4
-</span><span class='line'>-rwxr-xr-x 1 eshore biadmin 292 Mar 24 20:48 reset-biginsights-env.sh</span></code></pre></td></tr></table></div></figure>
-
-
-<p>使用biadmin停掉原来的jobtracker-tasktracker。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[biadmin@bigdatamgr1 IHC]$ ssh `hdfs getconf -confKey mapreduce.jobtracker.address | sed 's/:.*//' ` "sudo -u mapred /data/opt/ibm/biginsights/IHC/sbin/hadoop-daemon.sh  stop jobtracker"
-</span><span class='line'>
-</span><span class='line'>[biadmin@bigdatamgr1 biginsights]$ for h in `cat hadoop-conf/slaves ` ; do ssh $h "sudo -u mapred /data/opt/ibm/biginsights/IHC/sbin/hadoop-daemon.sh  stop tasktracker" ; done
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>这里使用while不行，不知道为啥!?</p>
-
-<p>部署新的hadoop-2.2.0。使用超级管理员新建目录给eshore用户：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>usermod -g biadmin eshore
-</span><span class='line'>mkdir /data/opt/ibm/biginsights/hadoop-2.2.0
-</span><span class='line'>chown eshore:biadmin hadoop-2.2.0</span></code></pre></td></tr></table></div></figure>
-
-
-<p>使用超级管理员同步到各个slaver节点：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bigdatamgr1 biginsights]# for line in `cat hadoop-conf/slaves` ; do ssh $line "usermod -g biadmin eshore" ; done
-</span><span class='line'>
-</span><span class='line'>[root@bigdatamgr1 biginsights]# cat hadoop-conf/slaves | while read line ; do rsync -vazXog hadoop-2.2.0 $line:/data/opt/ibm/biginsights/ ; done
-</span><span class='line'>
-</span><span class='line'>[eshore@bigdatamgr1 hadoop-2.2.0]$ cd etc/hadoop/
-</span><span class='line'>[eshore@bigdatamgr1 hadoop]$ ll
-</span><span class='line'>total 116
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 3560 Feb 15  2014 capacity-scheduler.xml
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 1335 Feb 15  2014 configuration.xsl
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin  318 Feb 15  2014 container-executor.cfg
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin  713 Mar 24 23:31 core-site.xml
-</span><span class='line'>-rwxr-xr-x 1 eshore biadmin 3614 Mar 24 22:45 hadoop-env.sh
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 1774 Feb 15  2014 hadoop-metrics2.properties
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 2490 Feb 15  2014 hadoop-metrics.properties
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 9257 Feb 15  2014 hadoop-policy.xml
-</span><span class='line'>lrwxrwxrwx 1 eshore biadmin   51 Mar 24 21:33 hdfs-site.xml -&gt; /data/opt/ibm/biginsights/hadoop-conf/hdfs-site.xml
-</span><span class='line'>-rwxr-xr-x 1 eshore biadmin 1180 Feb 15  2014 httpfs-env.sh
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 1657 Feb 15  2014 httpfs-log4j.properties
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin   21 Feb 15  2014 httpfs-signature.secret
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin  620 Feb 15  2014 httpfs-site.xml
-</span><span class='line'>-rw-rw-r-- 1 eshore biadmin   75 Feb 15  2014 journalnodes
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 9116 Feb 15  2014 log4j.properties
-</span><span class='line'>-rwxr-xr-x 1 eshore biadmin 1383 Feb 15  2014 mapred-env.sh
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 4113 Feb 15  2014 mapred-queues.xml.template
-</span><span class='line'>-rw-rw-r-- 1 eshore biadmin 1508 Mar 24 21:42 mapred-site.xml
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin  758 Feb 15  2014 mapred-site.xml.template
-</span><span class='line'>lrwxrwxrwx 1 eshore biadmin   44 Mar 24 21:34 slaves -&gt; /data/opt/ibm/biginsights/hadoop-conf/slaves
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 2316 Feb 15  2014 ssl-client.xml.example
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 2251 Feb 15  2014 ssl-server.xml.example
-</span><span class='line'>lrwxrwxrwx 1 eshore biadmin   16 Mar 25 16:10 tez-site.xml -&gt; tez-site.xml-0.4
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin  282 Mar 25 15:37 tez-site.xml-0.4
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin  347 Mar 25 15:49 tez-site.xml-0.6
-</span><span class='line'>-rwxr-xr-x 1 eshore biadmin 4039 Mar 24 22:26 yarn-env.sh
-</span><span class='line'>-rw-r--r-- 1 eshore biadmin 1826 Mar 24 21:42 yarn-site.xml</span></code></pre></td></tr></table></div></figure>
-
-
-<p>把属性配置好（hdfs，slaves<strong>可以用原来</strong>的就建立一个软链即可），然后用sbin/start-yarn.sh启动即可。</p>
-
-<h2>其他命令</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[eshore@bigdatamgr1 hadoop-2.2.0]$ for line in `cat etc/hadoop/slaves` ; do echo "================$line" ; ssh $line "top -u eshore -n 1 -b | grep java | xargs -I{}  kill {} "   ; done</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>部署值得鉴戒学习的IBM bigsql套件：</h2>
-
-<ul>
-<li>一个管理用户部署，各个引用使用各自的用户</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bigdatamgr1 ~]# cat /etc/sudoers
-</span><span class='line'>biadmin ALL=(ALL)   NOPASSWD: ALL
-</span><span class='line'>
-</span><span class='line'>[root@bigdatamgr1 ~]# cat /etc/passwd
-</span><span class='line'>biadmin:x:200:501::/home/biadmin:/bin/bash
-</span><span class='line'>avahi-autoipd:x:170:170:Avahi IPv4LL Stack:/var/lib/avahi-autoipd:/sbin/nologin
-</span><span class='line'>hive:x:205:501::/home/hive:/bin/bash
-</span><span class='line'>oozie:x:206:501::/home/oozie:/bin/bash
-</span><span class='line'>monitoring:x:220:501::/home/monitoring:/bin/bash
-</span><span class='line'>alert:x:225:501::/home/alert:/bin/bash
-</span><span class='line'>catalog:x:224:501::/home/catalog:/bin/bash
-</span><span class='line'>hdfs:x:201:501::/home/hdfs:/bin/bash
-</span><span class='line'>httpfs:x:221:501::/home/httpfs:/bin/bash
-</span><span class='line'>bigsql:x:222:501::/home/bigsql:/bin/bash
-</span><span class='line'>console:x:223:501::/home/console:/bin/bash
-</span><span class='line'>mapred:x:202:501::/home/mapred:/bin/bash
-</span><span class='line'>orchestrator:x:226:501::/home/orchestrator:/bin/bash
-</span><span class='line'>hbase:x:204:501::/home/hbase:/bin/bash
-</span><span class='line'>zookeeper:x:203:501::/home/zookeeper:/bin/bash</span></code></pre></td></tr></table></div></figure>
-
-
-<p>启用时管理员用户使用<code>sudo -u XXX COMMAND</code>操作。</p>
-
-<ul>
-<li>所有应用部署/启动管理</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[biadmin@bigdatamgr1 biginsights]$ bin/start.sh -h
-</span><span class='line'>Usage: start.sh &lt;component&gt;...
-</span><span class='line'>    Start one or more BigInsights components. Start all components if 'all' is
-</span><span class='line'>    specified. If a component is already started, this command does nothing to it.
-</span><span class='line'>    
-</span><span class='line'>    For example:
-</span><span class='line'>        start.sh all
-</span><span class='line'>          - Starts all components.
-</span><span class='line'>        start.sh hadoop zookeeper
-</span><span class='line'>          - Starts hadoop and zookeeper daemons.
-</span><span class='line'>
-</span><span class='line'>OPTIONS:
-</span><span class='line'>    -ex=&lt;component&gt;
-</span><span class='line'>        Exclude a component, often used together with 'all'. I.e. 
-</span><span class='line'>        `stop.sh all -ex=console` stops all components but the mgmt console.
-</span><span class='line'>
-</span><span class='line'>    -h, --help
-</span><span class='line'>        Get help information.</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>反复依赖的包，通过软链来管理</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[biadmin@bigdatamgr1 lib]$ ll
-</span><span class='line'>total 50336
-</span><span class='line'>-rw-r--r-- 1 biadmin biadmin   303042 Jan 30 15:22 avro-1.7.4.jar
-</span><span class='line'>lrwxrwxrwx 1 biadmin biadmin       60 Jan 30 15:22 biginsights-gpfs-2.2.0.jar -&gt; /data/opt/ibm/biginsights/IHC/lib/biginsights-gpfs-2.2.0.jar
-</span><span class='line'>-rw-r--r-- 1 biadmin biadmin    15322 Jan 30 15:22 findbugs-annotations-1.3.9-1.jar
-</span><span class='line'>lrwxrwxrwx 1 biadmin biadmin       48 Jan 30 15:22 guardium-proxy.jar -&gt; /data/opt/ibm/biginsights/lib/guardium-proxy.jar
-</span><span class='line'>-rw-r--r-- 1 biadmin biadmin  1795932 Jan 30 15:22 guava-12.0.1.jar
-</span><span class='line'>-rw-r--r-- 1 biadmin biadmin   710492 Jan 30 15:22 guice-3.0.jar
-</span><span class='line'>-rw-r--r-- 1 biadmin biadmin    65012 Jan 30 15:22 guice-servlet-3.0.jar
-</span><span class='line'>lrwxrwxrwx 1 biadmin biadmin       45 Jan 30 15:22 hadoop-core.jar -&gt; /data/opt/ibm/biginsights/IHC/hadoop-core.jar
-</span><span class='line'>lrwxrwxrwx 1 biadmin biadmin       76 Jan 30 15:22 hadoop-distcp-2.2.0.jar -&gt; /data/opt/ibm/biginsights/IHC/share/hadoop/tools/lib/hadoop-distcp-2.2.0.jar</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/24">&larr; Older</a>
@@ -1441,6 +1384,10 @@ Called when your instance has been granted leadership. This method should not re
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/11/04/teamviewer-vpn-on-windows/">使用TeamviewerVPN访问公司内网</a>
       </li>
     
@@ -1466,10 +1413,6 @@ Called when your instance has been granted leadership. This method should not re
     
       <li class="post">
         <a href="/blog/2017/10/06/staf-start-guide/">STAF Start Guide</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/10/05/respberrypi-connected-via/">连接树莓派</a>
       </li>
     
   </ul>
@@ -1606,7 +1549,7 @@ Called when your instance has been granted leadership. This method should not re
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (58) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (59) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1623,7 +1566,7 @@ Called when your instance has been granted leadership. This method should not re
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (196)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (197)</li>
 	</ul>
 	
 </section>

@@ -9,8 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="记录spark编译和打包成tar的整个流程。包括各个版本的编译过程，使用make-distribution脚本打包，搭建本地、standalone、yarn的spark环境。 2016-1 spark-1.6.0
-2015-04 【Spark-1.3.0】单独附在最后，添加了spark- &hellip;">
+  <meta name="description" content="上个星期学习了一下docker，写了一个伪分布式的Dockerfile。 通过--link的方式master能访问slaver，毕竟slaver的相关信息已经被写入到master的hosts文件里面去了嘛！理所当然认为， &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -84,6 +83,256 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/10/18/docker-dnsmasq-handler-hosts-build-hadoop-cluster/">Dnsmasq解决docker集群节点互通问题</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-10-18T04:19:21+08:00" pubdate data-updated="true">Sat 2014-10-18 04:19</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>上个星期学习了一下docker，写了一个<a href="https://github.com/winse/docker-hadoop/tree/Pseudo-Distributed">伪分布式的Dockerfile</a>。</p>
+
+<p>通过<code>--link</code>的方式master能访问slaver，毕竟slaver的相关信息已经被写入到master的hosts文件里面去了嘛！理所当然认为，直接把master的hosts文件全部复制一份到所有slaver节点问题就解决了。</p>
+
+<p>等真正操作的时刻，发现不是那么回事，docker容器不给修改hosts文件！！（2016-1-7 14:18:11 注： Docker 1.6.2已经可以修改/etc/hosts了！重启后hosts的变更也没了，囧）</p>
+
+<h2>错误实现</h2>
+
+<p>首先，看下不当的操作：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 注意：没有填写image，会去找Dockerfile
+</span><span class='line'>[root@docker hadoop]# docker run -d --name slaver1 -h slaver1 hadoop
+</span><span class='line'>[root@docker hadoop]# docker run -d --name slaver2 -h slaver2 hadoop
+</span><span class='line'>[root@docker hadoop]# docker run -d --name master -h master --link slaver1:slaver1 --link slaver2:slaver2 hadoop
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# docker ps
+</span><span class='line'>CONTAINER ID        IMAGE               COMMAND                CREATED             STATUS              PORTS               NAMES
+</span><span class='line'>dafc82678811        hadoop:latest       /bin/sh -c '/usr/sbi   40 seconds ago      Up 40 seconds       22/tcp              master
+</span><span class='line'>86d2da5209c5        hadoop:latest       /bin/sh -c '/usr/sbi   49 seconds ago      Up 48 seconds       22/tcp              master/slaver2,slaver2
+</span><span class='line'>7b9761fb05a8        hadoop:latest       /bin/sh -c '/usr/sbi   56 seconds ago      Up 55 seconds       22/tcp              master/slaver1,slaver1</span></code></pre></td></tr></table></div></figure>
+
+
+<p>此时，通过<code>--link</code>连接方式，master的hosts中已经包括了slaver1和slaver2，按照正常的路子，登录master拷贝其hosts到slaver节点，一切就妥妥的了。现实是残酷的：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>-bash-4.1# scp /etc/hosts slaver1:/etc/
+</span><span class='line'>scp: /etc//hosts: Read-only file system</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>DNS完美解决问题</h2>
+
+<p>首先需要在宿主机器上安装dns服务器，bind不多说比较麻烦。这里参考网上人家解决方式，使用dnsmasq来搭建DNS服务器。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker ~]# yum install dnsmasq -y
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# cp /etc/resolv.conf /etc/resolv.dnsmasq.conf 
+</span><span class='line'>[root@docker ~]# touch /etc/dnsmasq.hosts
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# vi /etc/resolv.conf
+</span><span class='line'>[root@docker ~]# cat /etc/resolv.conf
+</span><span class='line'>; generated by /sbin/dhclient-script
+</span><span class='line'>nameserver 127.0.0.1 
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# vi /etc/dnsmasq.conf
+</span><span class='line'>[root@docker ~]# cat /etc/dnsmasq.conf
+</span><span class='line'>...
+</span><span class='line'>resolv-file=/etc/resolv.dnsmasq.conf
+</span><span class='line'>...
+</span><span class='line'>addn-hosts=/etc/dnsmasq.hosts
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# service dnsmasq restart
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# dig www.baidu.com
+</span><span class='line'>...
+</span><span class='line'>;; SERVER: 127.0.0.1#53(127.0.0.1)
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>通过dig可以查看当前的DNS服务器你已经修改为localhost了。然后启动docker容器来搭建环境。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 注意：没有填写image，会去找Dockerfile
+</span><span class='line'>
+</span><span class='line'>[root@docker hadoop]# docker run -d  --dns 172.17.42.1 --name slaver1 -h slaver1 hadoop
+</span><span class='line'>[root@docker hadoop]# docker run -d  --dns 172.17.42.1 --name slaver2 -h slaver2 hadoop
+</span><span class='line'>[root@docker hadoop]# docker run -d  --dns 172.17.42.1 --name master -h master hadoop
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# docker ps
+</span><span class='line'>CONTAINER ID        IMAGE               COMMAND                CREATED             STATUS              PORTS               NAMES
+</span><span class='line'>f6e63b311e60        hadoop:latest       /bin/sh -c '/usr/sbi   6 seconds ago       Up 5 seconds        22/tcp              master
+</span><span class='line'>454ae2c3e435        hadoop:latest       /bin/sh -c '/usr/sbi   13 seconds ago      Up 12 seconds       22/tcp              slaver2
+</span><span class='line'>7698230a03fb        hadoop:latest       /bin/sh -c '/usr/sbi   21 seconds ago      Up 20 seconds       22/tcp              slaver1
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# docker ps | grep hadoop | awk '{print $1}' | xargs -I{} docker inspect -f '{{.NetworkSettings.IPAddress}} {{.Config.Hostname}}' {} &gt; /etc/dnsmasq.hosts
+</span><span class='line'>[root@docker ~]# service dnsmasq restart
+</span><span class='line'>
+</span><span class='line'>[root@docker ~]# ssh hadoop@master
+</span><span class='line'>hadoop@master's password: 
+</span><span class='line'>[hadoop@master ~]$ ping slaver1
+</span><span class='line'>PING slaver1 (172.17.0.9) 56(84) bytes of data.
+</span><span class='line'>64 bytes from slaver1 (172.17.0.9): icmp_seq=1 ttl=64 time=1.79 ms
+</span><span class='line'>...
+</span><span class='line'>[hadoop@master ~]$ ping slaver2
+</span><span class='line'>PING slaver2 (172.17.0.10) 56(84) bytes of data.
+</span><span class='line'>64 bytes from slaver2 (172.17.0.10): icmp_seq=1 ttl=64 time=1.96 ms
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'></span></code></pre></td></tr></table></div></figure>
+
+
+<p>节点互通后，后面的步骤都类似了，ssh无密钥通信，格式化namenode，启动等等。</p>
+
+<h2>遇到的问题</h2>
+
+<ul>
+<li>一开始我把配置文件放在/root目录下，dnsmasq总是不起作用。最后放到/etc目录就可以，不知道啥子问题。</li>
+<li>配置dns启动docker容器后，如果不起作用看下<code>/etc/resolv.conf</code>。如果互ping不同，去掉resolv的<code>search localhost</code>再试下。</li>
+</ul>
+
+
+<p>DNS可以正常工作的配置：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>-bash-4.1# ping slaver
+</span><span class='line'>PING slaver (172.17.0.7) 56(84) bytes of data.
+</span><span class='line'>64 bytes from slaver (172.17.0.7): icmp_seq=1 ttl=64 time=0.095 ms
+</span><span class='line'>
+</span><span class='line'>-bash-4.1# cat /etc/resolv.conf 
+</span><span class='line'>nameserver 172.17.42.1
+</span><span class='line'>search localdomain
+</span><span class='line'>
+</span><span class='line'>-bash-4.1# cat /etc/resolv.conf 
+</span><span class='line'>nameserver 172.17.42.1</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果还是不行的话，关掉防火墙然后重启下docker服务: <code>service iptables stop; service docker restart</code></p>
+
+<p>如果要访问外网，也可以条件其他的DNS服务解析：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>-bash-4.1# vi /etc/resolv.conf 
+</span><span class='line'>nameserver 172.17.42.1
+</span><span class='line'>nameserver 8.8.8.8</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>常用命令</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>~]# docker run -d --dns 172.17.42.1 --name puppet -h puppet winse/hadoop:2.6.0 /usr/sbin/sshd -D
+</span><span class='line'>~]# docker inspect `docker ps -a | grep centos | awk '{print $1}'` | grep IPAddress
+</span><span class='line'>~]# docker stop `docker ps -a | grep centos | awk '{print $1}'`</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://top.jobbole.com/7904/">DNS和Docker的小技巧</a></li>
+<li><a href="http://www.07net01.com/linux/zuixindnsmasqanzhuangbushuxiangjie_centos6__653221_1381214991.html">dnsmasq安装部署详解-centos6</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1674,992 +1923,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/09/27/docker-start-guide-on-centos/">Docker入门</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-09-27T20:28:24+08:00" pubdate data-updated="true">Sat 2014-09-27 20:28</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>docker进一年来火热，发现挺适合用来做运维系统发布的。如果用来捣鼓hadoop的系统部署感觉还是挺不错的。下面一起来学习下docker吧。</p>
-
-<p>docker中提供了<a href="https://docs.docker.com/installation/windows/">windows的安装文档</a>，但是其实很坑爹啊。尽管<a href="https://github.com/boot2docker/windows-installer/releases">提供exe安装</a>，但是最终还是安装visualbox，然后启动带了docker的linux系统（iso）。</p>
-
-<p>如果你已经安装了vmware，但没有安装linux，可以直接<a href="https://github.com/boot2docker/boot2docker/releases">下载iso</a>，然后通过iso来启动。</p>
-
-<h2>安装</h2>
-
-<p>如果你同时安装了vmware，又已经安装了linux，那下面简单列出安装配置docker中使用的命令。docker需要64位的linux操作系统，我这里使用的是<strong>centos6</strong>，具体的安装步骤看<a href="https://docs.docker.com/installation/centos/">官网的安装教程</a>。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker ~]# yum install epel-release
-</span><span class='line'>
-</span><span class='line'>[root@docker ~]# yum install docker-io
-</span><span class='line'>[root@docker ~]# service docker start
-</span><span class='line'>
-</span><span class='line'>[root@docker ~]# docker run learn/tutorial /bin/echo hello world
-</span><span class='line'>Unable to find image 'learn/tutorial' locally
-</span><span class='line'>Pulling repository learn/tutorial
-</span><span class='line'>8dbd9e392a96: Pulling fs layer 
-</span><span class='line'>8dbd9e392a96: Download complete 
-</span><span class='line'>hello world
-</span><span class='line'>
-</span><span class='line'>[root@docker ~]# docker images
-</span><span class='line'>REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-</span><span class='line'>learn/tutorial      latest              8dbd9e392a96        17 months ago       128 MB
-</span><span class='line'>[root@docker ~]# docker images learn/tutorial 
-</span><span class='line'>REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-</span><span class='line'>learn/tutorial      latest              8dbd9e392a96        17 months ago       128 MB</span></code></pre></td></tr></table></div></figure>
-
-
-<p>docker执行run命令时，如果指定的image本地不存在，会从<a href="https://registry.hub.docker.com/">hub服务器</a>获取。也可以先从pull服务器获取image，然后在执行。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>docker pull centos</span></code></pre></td></tr></table></div></figure>
-
-
-<p>【注】：如果启动失败可能的问题，1：重装一下docker； 2：还是不行，启动报<code>docker: relocation error: docker: symbol dm_task_get_info_with_deferred_remove, version Base not defined in file libdevmapper.so.1.02 with link time reference</code>，更新<code>yum upgrade device-mapper-libs</code>，然后启动<code>service docker start</code>（具体描述见文章末）</p>
-
-<h2>简单入门</h2>
-
-<p><a href="https://docs.docker.com/userguide/dockerizing/">HelloWorld教程</a></p>
-
-<h4>单次执行</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker ~]# docker run learn/tutorial /bin/echo 'hello world'
-</span><span class='line'>hello world</span></code></pre></td></tr></table></div></figure>
-
-
-<p>命令执行完后，容器就会关闭。</p>
-
-<h4>交互式执行方式</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker ~]# docker run -t -i learn/tutorial /bin/bash
-</span><span class='line'>root@274ede23baad:/# uptime
-</span><span class='line'> 12:36:02 up  5:59,  0 users,  load average: 0.00, 0.00, 0.00
-</span><span class='line'>root@9db219d2e98b:/# cat /etc/issue
-</span><span class='line'>Ubuntu 12.04 LTS \n \l
-</span><span class='line'>root@274ede23baad:/# pwd
-</span><span class='line'>/
-</span><span class='line'>root@274ede23baad:/# ls
-</span><span class='line'>bin  boot  dev  etc  home  lib  lib64  media  mnt  opt  proc  root  run  sbin  selinux  srv  sys  tmp  usr  var
-</span><span class='line'>root@274ede23baad:/# exit
-</span><span class='line'>exit</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>-t flag assigns a pseudo-tty or terminal inside our new container。</li>
-<li>-i flag allows us to make an interactive connection by grabbing the standard in (STDIN) of the container.</li>
-</ul>
-
-
-<h4>后台任务</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker ~]# docker run -d learn/tutorial /bin/sh -c "while true; do echo hello world; sleep 1; done" 
-</span><span class='line'>17e28b56e0cc4ddb5522736e2bcfd752d849a5b1d0b598478ee66b255801aa7c
-</span><span class='line'>
-</span><span class='line'>[root@docker ~]# docker ps
-</span><span class='line'>CONTAINER ID        IMAGE                   COMMAND                CREATED             STATUS              PORTS               NAMES
-</span><span class='line'>17e28b56e0cc        learn/tutorial:latest   /bin/sh -c 'while tr   2 minutes ago       Up 2 minutes                            trusting_wozniak    </span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>-d flag tells Docker to run the container and put it in the background, to daemonize it.</li>
-</ul>
-
-
-<p>执行返回的是containter id(唯一ID)。通过ps可以查看当前的后台任务列表。ps列表中的containter id对应，可以查看相应的信息，最后的字段是一个随机指定的名字（也可以指定，后面再讲）。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker ~]# docker logs trusting_wozniak
-</span><span class='line'>hello world
-</span><span class='line'>hello world
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>[root@docker ~]# docker stop trusting_wozniak
-</span><span class='line'>trusting_wozniak
-</span><span class='line'>[root@docker ~]# docker ps
-</span><span class='line'>CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES</span></code></pre></td></tr></table></div></figure>
-
-
-<p>可以通过logs查看容器的标准输出，通过stop来停止容器。</p>
-
-<h2>深入容器</h2>
-
-<p><a href="https://docs.docker.com/userguide/usingdocker/">Working with Containers</a></p>
-
-<p>可以交互式的方式运行container，也可以后台任务的方式运行。</p>
-
-<p>docker的命令：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># Usage:  [sudo] docker [flags] [command] [arguments] ..
-</span><span class='line'># Example:
-</span><span class='line'>$ sudo docker run -i -t ubuntu /bin/bash</span></code></pre></td></tr></table></div></figure>
-
-
-<p>每个命令可以指定跟一系列的开关标识(flags)和参数(arguments)。</p>
-
-<h4>各种参数</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ docker version
-</span><span class='line'>
-</span><span class='line'>$ docker run -d -P training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'>$ docker ps -l
-</span><span class='line'>CONTAINER ID  IMAGE                   COMMAND       CREATED        STATUS        PORTS                    NAMES
-</span><span class='line'>bc533791f3f5  training/webapp:latest  python app.py 5 seconds ago  Up 2 seconds  0.0.0.0:49155-&gt;5000/tcp  nostalgic_morse
-</span><span class='line'>
-</span><span class='line'># docker run -d -p 6379 -v /home/hadoop/redis-2.8.13:/opt/redis-2.8.13 learn/tutorial /opt/redis-2.8.13/src/redis-server 
-</span><span class='line'>be0b410f3601ea36070b3e519d9cc7cbe259caa2392f468c2dd2baebef42c4a8
-</span><span class='line'>
-</span><span class='line'># docker ps -l
-</span><span class='line'>CONTAINER ID        IMAGE                   COMMAND                CREATED             STATUS              PORTS                     NAMES
-</span><span class='line'>be0b410f3601        learn/tutorial:latest   /opt/redis-2.8.13/sr   10 seconds ago      Up 10 seconds       0.0.0.0:49153-&gt;6379/tcp   sad_colden          
-</span><span class='line'>
-</span><span class='line'># /home/hadoop/redis-2.8.13/src/redis-cli -p 49153
-</span><span class='line'>127.0.0.1:49153&gt; keys *
-</span><span class='line'>(empty list or set)
-</span><span class='line'>127.0.0.1:49153&gt; </span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>-P flag is new and tells Docker to map any required network ports inside our container to our host. This lets us view our web application.</li>
-<li>-l tells the docker ps command to return the details of the last container started.</li>
-<li>-a the docker ps command only shows information about running containers. If you want to see stopped containers too use the -a flag.</li>
-<li>-p Network port bindings are very configurable in Docker. In our last example the -P flag is a shortcut for -p 5000 that maps port 5000 inside the container to a high port (from the range 49153 to 65535) on the local Docker host. We can also bind Docker containers to specific ports using the -p flag。</li>
-<li>-v flag you can also mount a directory from your own host into a container.</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker redis-2.8.13]# docker run -d -p 6379:6379 -v /home/hadoop/redis-2.8.13:/opt/redis-2.8.13 learn/tutorial /opt/redis-2.8.13/src/redis-server 
-</span><span class='line'>2c50850c9437698769e54281a9f4154dc4120da2e113802454f1a23c83ab91fe
-</span><span class='line'>
-</span><span class='line'>[root@docker redis-2.8.13]# docker ps
-</span><span class='line'>CONTAINER ID        IMAGE                   COMMAND                CREATED             STATUS              PORTS                    NAMES
-</span><span class='line'>2c50850c9437        learn/tutorial:latest   /opt/redis-2.8.13/sr   29 seconds ago      Up 28 seconds       0.0.0.0:6379-&gt;6379/tcp   naughty_yonath  
-</span><span class='line'>
-</span><span class='line'>[root@docker redis-2.8.13]# docker port naughty_yonath 6379
-</span><span class='line'>0.0.0.0:6379
-</span><span class='line'>
-</span><span class='line'>[root@docker redis-2.8.13]# docker logs -f naughty_yonath
-</span><span class='line'>...
-</span><span class='line'>[1] 27 Sep 13:48:12.192 * The server is now ready to accept connections on port 6379
-</span><span class='line'>[1] 27 Sep 13:50:33.228 * DB saved on disk
-</span><span class='line'>[1] 27 Sep 13:50:43.730 * DB saved on disk</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>-f This time though we&rsquo;ve added a new flag, -f. This causes the docker logs command to act like the tail -f command and watch the container&rsquo;s standard out. We can see here the logs from Flask showing the application running on port 5000 and the access log entries for it.</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker redis-2.8.13]# docker top naughty_yonath
-</span><span class='line'>UID                 PID                 PPID                C                   STIME               TTY                 TIME                CMD
-</span><span class='line'>root                5015                1433                0                   21:48               ?                   00:00:00            /opt/redis-2.8.13/src/redis-server *:6379
-</span><span class='line'>[root@docker redis-2.8.13]# docker inspect naughty_yonath
-</span><span class='line'>...
-</span><span class='line'>    "Volumes": {
-</span><span class='line'>        "/opt/redis-2.8.13": "/home/hadoop/redis-2.8.13"
-</span><span class='line'>    },
-</span><span class='line'>    "VolumesRW": {
-</span><span class='line'>        "/opt/redis-2.8.13": true
-</span><span class='line'>    }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>[root@docker redis-2.8.13]# docker inspect -f '' naughty_yonath
-</span><span class='line'>map[/opt/redis-2.8.13:/home/hadoop/redis-2.8.13]
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>重启</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker redis-2.8.13]# docker stop naughty_yonath
-</span><span class='line'>naughty_yonath
-</span><span class='line'>[root@docker redis-2.8.13]# docker ps -l
-</span><span class='line'>CONTAINER ID        IMAGE                   COMMAND                CREATED             STATUS                     PORTS               NAMES
-</span><span class='line'>2c50850c9437        learn/tutorial:latest   /opt/redis-2.8.13/sr   8 minutes ago       Exited (0) 5 seconds ago                       naughty_yonath      
-</span><span class='line'>[root@docker redis-2.8.13]# docker start naughty_yonath
-</span><span class='line'>naughty_yonath
-</span><span class='line'>[root@docker redis-2.8.13]# docker ps -l
-</span><span class='line'>CONTAINER ID        IMAGE                   COMMAND                CREATED             STATUS              PORTS                    NAMES
-</span><span class='line'>2c50850c9437        learn/tutorial:latest   /opt/redis-2.8.13/sr   8 minutes ago       Up 1 seconds        0.0.0.0:6379-&gt;6379/tcp   naughty_yonath</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>删除</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>docker stop naughty_yonath
-</span><span class='line'>docker rm naughty_yonath
-</span><span class='line'>或者
-</span><span class='line'>docker rm -f naughty_yonath</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>Images</h2>
-
-<p><a href="https://docs.docker.com/userguide/dockerimages/">Working with Docker Images</a></p>
-
-<h4>列出本地的images</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>docker images
-</span><span class='line'># REPO[:TAG]
-</span><span class='line'>docker run -t -i ubuntu:14.04 /bin/bash
-</span><span class='line'>docker run -t -i ubuntu:latest /bin/bash</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>从Hub获取镜像Image</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>docker pull centos
-</span><span class='line'>docker run -t -i centos /bin/bash
-</span><span class='line'>docker search sinatra 
-</span><span class='line'>docker pull training/sinatra</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>创建自己的images</h4>
-
-<p>直接更新image</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ docker run -t -i training/sinatra /bin/bash
-</span><span class='line'>root@0b2616b0e5a8:/# gem install json
-</span><span class='line'>$ sudo docker commit -m="Added json gem" -a="Kate Smith" \
-</span><span class='line'>  0b2616b0e5a8 ouruser/sinatra:v2
-</span><span class='line'>$ docker images
-</span><span class='line'>$ docker run -t -i ouruser/sinatra:v2 /bin/bash
-</span><span class='line'>root@78e82f680994:/#</span></code></pre></td></tr></table></div></figure>
-
-
-<p>通过DockerFile来添加功能，进行更新。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ mkdir sinatra
-</span><span class='line'>$ cd sinatra
-</span><span class='line'>$ touch Dockerfile
-</span><span class='line'>  # This is a comment
-</span><span class='line'>  FROM ubuntu:14.04
-</span><span class='line'>  MAINTAINER Kate Smith &lt;ksmith@example.com&gt;
-</span><span class='line'>  RUN apt-get update && apt-get install -y ruby ruby-dev
-</span><span class='line'>  RUN gem install sinatra
-</span><span class='line'>
-</span><span class='line'>$ docker build -t="ouruser/sinatra:v2" .
-</span><span class='line'>$ docker run -t -i ouruser/sinatra:v2 /bin/bash</span></code></pre></td></tr></table></div></figure>
-
-
-<p>具体的DockerFile中各个指令的含义及其使用方法，参考<a href="https://docs.docker.com/userguide/dockerimages/">Building an image from a Dockerfile</a>和<a href="https://docs.docker.com/articles/dockerfile_best-practices/">Best Practices for Writing Dockerfiles</a>，以及<a href="https://docs.docker.com/reference/builder/">Dockerfile Reference</a>。具体例子<a href="https://github.com/perl/docker-perl/blob/r20140922.0/5.020.001-64bit,threaded/Dockerfile">docker-perl</a></p>
-
-<h4>添加新标签Tag</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ docker tag 5db5f8471261 ouruser/sinatra:devel
-</span><span class='line'>$ docker images ouruser/sinatra
-</span><span class='line'>REPOSITORY          TAG     IMAGE ID      CREATED        VIRTUAL SIZE
-</span><span class='line'>ouruser/sinatra     latest  5db5f8471261  11 hours ago   446.7 MB
-</span><span class='line'>ouruser/sinatra     devel   5db5f8471261  11 hours ago   446.7 MB</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>上传分享到<a href="https://hub.docker.com/">hub</a></h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>docker push ouruser/sinatra</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>从本地删除</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>docker rmi training/sinatra</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>多container结合使用</h2>
-
-<p><a href="https://docs.docker.com/userguide/dockerlinks/">Linking Containers Together</a></p>
-
-<h4>端口映射</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>docker run -d -P training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'>docker ps nostalgic_morse
-</span><span class='line'>CONTAINER ID  IMAGE                   COMMAND       CREATED        STATUS        PORTS                    NAMES
-</span><span class='line'>bc533791f3f5  training/webapp:latest  python app.py 5 seconds ago  Up 2 seconds  0.0.0.0:49155-&gt;5000/tcp  nostalgic_morse
-</span><span class='line'>
-</span><span class='line'>docker run -d -p 5000:5000 training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'>docker run -d -p 127.0.0.1:5000:5000 training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'>docker run -d -p 127.0.0.1::5000 training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'># The -p flag can be used multiple times to configure multiple ports.
-</span><span class='line'>docker run -d -p 127.0.0.1:5000:5000/udp training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'>docker port nostalgic_morse 5000
-</span><span class='line'>127.0.0.1:49155</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>Container Linking</h4>
-
-<p>docker想的还是很周到的。面临两个container互相访问，一个db，一个web，哪web怎么访问db的数据呢？</p>
-
-<p>指定container的名称：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ docker run -d -P --name web training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'>$ docker ps -l
-</span><span class='line'>CONTAINER ID  IMAGE                  COMMAND        CREATED       STATUS       PORTS                    NAMES
-</span><span class='line'>aed84ee21bde  training/webapp:latest python app.py  12 hours ago  Up 2 seconds 0.0.0.0:49154-&gt;5000/tcp  web
-</span><span class='line'>
-</span><span class='line'>$ docker inspect -f "" aed84ee21bde
-</span><span class='line'>/web</span></code></pre></td></tr></table></div></figure>
-
-
-<p>容器互通：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ docker run -d --name db training/postgres
-</span><span class='line'>
-</span><span class='line'>$ docker rm -f web
-</span><span class='line'>$ docker run -d -P --name web --link db:db training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'>$ docker ps
-</span><span class='line'>CONTAINER ID  IMAGE                     COMMAND               CREATED             STATUS             PORTS                    NAMES
-</span><span class='line'>349169744e49  training/postgres:latest  su postgres -c '/usr  About a minute ago  Up About a minute  5432/tcp                 db, web/db
-</span><span class='line'>aed84ee21bde  training/webapp:latest    python app.py         16 hours ago        Up 2 minutes       0.0.0.0:49154-&gt;5000/tcp  web</span></code></pre></td></tr></table></div></figure>
-
-
-<p>链接后，在web容器会添加DB的环境变量，同时把db的ip加入到/etc/hosts中。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>$ docker run --rm --name web2 --link db:db training/webapp env
-</span><span class='line'>    . . .
-</span><span class='line'>    DB_NAME=/web2/db
-</span><span class='line'>    DB_PORT=tcp://172.17.0.5:5432
-</span><span class='line'>    DB_PORT_5432_TCP=tcp://172.17.0.5:5432
-</span><span class='line'>    DB_PORT_5432_TCP_PROTO=tcp
-</span><span class='line'>    DB_PORT_5432_TCP_PORT=5432
-</span><span class='line'>    DB_PORT_5432_TCP_ADDR=172.17.0.5
-</span><span class='line'>
-</span><span class='line'>$ docker run -t -i --rm --link db:db training/webapp /bin/bash
-</span><span class='line'>root@aed84ee21bde:/opt/webapp# cat /etc/hosts
-</span><span class='line'>172.17.0.7  aed84ee21bde
-</span><span class='line'>. . .
-</span><span class='line'>172.17.0.5  db    </span></code></pre></td></tr></table></div></figure>
-
-
-<p>You can see that Docker has created a series of environment variables with useful information about the source db container. Each variable is prefixed with <code>DB_</code>, which is populated from the alias you specified above. If the alias were db1, the variables would be prefixed with <code>DB1_</code>.</p>
-
-<h2>存储</h2>
-
-<p><a href="https://docs.docker.com/userguide/dockervolumes/">Managing Data in Containers</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># Adding a data volume
-</span><span class='line'>docker run -d -P --name web -v /webapp training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'># Mount a Host Directory as a Data Volume
-</span><span class='line'>docker run -d -P --name web -v /src/webapp:/opt/webapp training/webapp python app.py
-</span><span class='line'># 只读
-</span><span class='line'>docker run -d -P --name web -v /src/webapp:/opt/webapp:ro training/webapp python app.py
-</span><span class='line'>
-</span><span class='line'># Mount a Host File as a Data Volume
-</span><span class='line'>docker run --rm -it -v ~/.bash_history:/.bash_history ubuntu /bin/bash
-</span><span class='line'>
-</span><span class='line'># Creating and mounting a Data Volume Container
-</span><span class='line'>docker run -d -v /dbdata --name dbdata training/postgres echo Data-only container for postgres
-</span><span class='line'>docker run -d --volumes-from dbdata --name db1 training/postgres
-</span><span class='line'>docker run -d --volumes-from dbdata --name db2 training/postgres
-</span><span class='line'>docker run -d --name db3 --volumes-from db1 training/postgres
-</span><span class='line'>
-</span><span class='line'># Backup, restore, or migrate data volumes
-</span><span class='line'>docker run --volumes-from dbdata -v $(pwd):/backup ubuntu tar cvf /backup/backup.tar /dbdata
-</span><span class='line'>docker run -v /dbdata --name dbdata2 ubuntu /bin/bash
-</span><span class='line'>docker run --volumes-from dbdata2 -v $(pwd):/backup busybox tar xvf /backup/backup.tar
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>回顾</h2>
-
-<p>管理docker主要使用其提供的各种命令、以及参数来进行。</p>
-
-<ul>
-<li>本地的镜像管理: docker images / docker rmi [image identify]</li>
-<li>容器管理： docker ps -a|-l / docker start|stop|rm|restart [image identify]</li>
-<li>运行容器：docker run [images] [command]
-
-<ul>
-<li>-d 后台运行</li>
-<li>-ti tty交互式运行</li>
-<li>-P 把容器expose的端口映射到宿主机器端口。可以通过<code>docker port [container-name]</code>来查看端口映射关系。</li>
-<li>-p [host-machine-port:container-machine-port]手动指定端口映射关系</li>
-<li>-h [hostname] 实例操作系统的hostname</li>
-<li>&ndash;name [name] 容器实例标识</li>
-<li>-v [path] 建立目录</li>
-<li>-v [host-machine-path:container-machine-path] 把宿主的文件路径映射到容器操作系统的指定目录</li>
-<li>&ndash;link [container-name:name] 多容器之间互相访问。</li>
-</ul>
-</li>
-</ul>
-
-
-<p>还有很多辅助命令如：<code>top</code>, <code>logs</code>, <code>port</code>, <code>inspect</code>。以及进行版本管理的<code>pull</code>, <code>push</code>, <code>commit</code>, <code>tag</code>等等。</p>
-
-<h2>更新</h2>
-
-<ul>
-<li>2015年3月3日00:29:44</li>
-</ul>
-
-
-<p>docker官网连不上，大中国的防火墙巨坑啊！从原来的docker导出（或者翻墙设置http_proxy）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@docker ~]# docker ps -a
-</span><span class='line'>CONTAINER ID        IMAGE                   COMMAND                CREATED             STATUS                      PORTS               NAMES
-</span><span class='line'>4a1ba5605868        learn/tutorial:latest   /bin/bash              15 seconds ago      Exited (0) 11 seconds ago                       loving_wilson        
-</span><span class='line'>6e8a77ff8c26        centos:centos6          /bin/bash              10 minutes ago      Exited (0) 10 minutes ago                       determined_almeida  
-</span><span class='line'>[root@docker ~]# docker export loving_wilson &gt; learn_tutorial.tar
-</span><span class='line'>
-</span><span class='line'>#===
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# cat centos6.tar | docker import - centos:centos6
-</span><span class='line'>876f82e7032a2ed567421298c6dd12a74ac7b37fc28ef4fd062ebb4678bd6821
-</span><span class='line'>[root@localhost ~]# cat learn_tutorial.tar | docker import - learn/tutorial
-</span><span class='line'>dc574b587de3479ecc3622c7b4f12227d894aa1461737612130122092a72bdb4
-</span><span class='line'>[root@localhost ~]# docker images
-</span><span class='line'>REPOSITORY          TAG                 IMAGE ID            CREATED              VIRTUAL SIZE
-</span><span class='line'>learn/tutorial      latest              dc574b587de3        23 seconds ago       128.2 MB
-</span><span class='line'>centos              centos6             876f82e7032a        About a minute ago   212.7 MB</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>2015年8月5日11:04:14</li>
-</ul>
-
-
-<p>1 看看国内网站是否有对应的镜像： <a href="http://dockerpool.com/downloads">http://dockerpool.com/downloads</a></p>
-
-<p>2 连不上可以<a href="https://registry.hub.docker.com/_/centos/">https://registry.hub.docker.com/_/centos/</a> , 直接到github上面下载对应的<a href="https://github.com/CentOS/sig-cloud-instance-images/tree/CentOS-6/docker">dockerfile</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# git clone -b CentOS-6  https://github.com/CentOS/sig-cloud-instance-images.git
-</span><span class='line'>[root@localhost docker]# docker build . 
-</span><span class='line'>
-</span><span class='line'>[root@localhost docker]# docker images
-</span><span class='line'>REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-</span><span class='line'>&lt;none&gt;              &lt;none&gt;              437c8a32e0c6        27 seconds ago      203.1 MB
-</span><span class='line'>
-</span><span class='line'># 启动登陆容器，安装sshd
-</span><span class='line'>[root@localhost docker]# docker run -ti 437c8a32e0c6 /bin/bash
-</span><span class='line'>[root@077cd71ff08f /]# yum install which openssh-server openssh-clients
-</span><span class='line'>[root@077cd71ff08f /]# chkconfig --list
-</span><span class='line'>iptables        0:off   1:off   2:on    3:on    4:on    5:on    6:off
-</span><span class='line'>netconsole      0:off   1:off   2:off   3:off   4:off   5:off   6:off
-</span><span class='line'>netfs           0:off   1:off   2:off   3:on    4:on    5:on    6:off
-</span><span class='line'>network         0:off   1:off   2:on    3:on    4:on    5:on    6:off
-</span><span class='line'>rdisc           0:off   1:off   2:off   3:off   4:off   5:off   6:off
-</span><span class='line'>restorecond     0:off   1:off   2:off   3:off   4:off   5:off   6:off
-</span><span class='line'>sshd            0:off   1:off   2:on    3:on    4:on    5:on    6:off
-</span><span class='line'>udev-post       0:off   1:on    2:on    3:on    4:on    5:on    6:off
-</span><span class='line'>[root@077cd71ff08f /]# service sshd status
-</span><span class='line'>openssh-daemon is stopped
-</span><span class='line'>[root@077cd71ff08f /]# service sshd start
-</span><span class='line'>Generating SSH2 RSA host key:                              [  OK  ]
-</span><span class='line'>Generating SSH1 RSA host key:                              [  OK  ]
-</span><span class='line'>Generating SSH2 DSA host key:                              [  OK  ]
-</span><span class='line'>Starting sshd:                                             [  OK  ]
-</span><span class='line'>[root@077cd71ff08f /]# vi /etc/ssh/sshd_config 
-</span><span class='line'>#UsePAM no
-</span><span class='line'>#或者 sed -i '/pam_loginuid.so/c session    optional     pam_loginuid.so'  /etc/pam.d/sshd
-</span><span class='line'>[root@077cd71ff08f /]# which sshd
-</span><span class='line'>/usr/sbin/sshd
-</span><span class='line'>[root@077cd71ff08f /]# passwd 记得添加密码
-</span><span class='line'>
-</span><span class='line'># 提交更新镜像
-</span><span class='line'>[root@localhost ~]# docker ps -a
-</span><span class='line'>CONTAINER ID        IMAGE                 COMMAND             CREATED             STATUS                      PORTS               NAMES
-</span><span class='line'>077cd71ff08f        bigdata:latest        "/bin/bash"         4 minutes ago       Exited (0) 11 seconds ago                       desperate_bell       
-</span><span class='line'>7195847a0166        437c8a32e0c6:latest   "/bin/bash"         3 hours ago         Up 5 minutes                                    determined_feynman  
-</span><span class='line'>[root@localhost ~]# docker diff 077cd71ff08f （提交之前记得清数据）
-</span><span class='line'>[root@localhost ~]# docker stop 077cd71ff08f
-</span><span class='line'>[root@localhost ~]# docker commit 077cd71ff08f bigdata
-</span><span class='line'>[root@localhost ~]# docker images
-</span><span class='line'>REPOSITORY          TAG                 IMAGE ID            CREATED             VIRTUAL SIZE
-</span><span class='line'>bigdata             latest              c2a336f22ff8        4 minutes ago       261.3 MB
-</span><span class='line'>
-</span><span class='line'># 启动新容器，使用ssh远程登陆
-</span><span class='line'>[root@localhost ~]# docker run -d --dns 172.17.42.1 --name master -h master bigdata /usr/sbin/sshd -D
-</span><span class='line'>[root@localhost ~]# docker run -d  --dns 172.17.42.1 --name slaver1 -h slaver1 bigdata /usr/sbin/sshd -D
-</span><span class='line'>[root@localhost ~]# docker inspect master
-</span><span class='line'>[root@localhost ~]# vi /etc/hosts
-</span><span class='line'>[root@localhost ~]# service dnsmasq restart</span></code></pre></td></tr></table></div></figure>
-
-
-<p>3 <a href="http://www.cnblogs.com/2018/p/4633940.html">自己制作</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost docker]# wget --no-check-certificate  https://raw.githubusercontent.com/docker/docker/master/contrib/mkimage-yum.sh
-</span><span class='line'>[root@localhost docker]# chmod +x mkimage-yum.sh
-</span><span class='line'>[root@localhost docker]# ./mkimage-yum.sh centos6
-</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>2015年3月2日16:13:12</li>
-</ul>
-
-
-<p>再在centos6.5上安装最新docker的，启动后报错：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# docker -d
-</span><span class='line'>INFO[0000] +job serveapi(unix:///var/run/docker.sock)   
-</span><span class='line'>INFO[0000] WARNING: You are running linux kernel version 2.6.32-431.el6.x86_64, which might be unstable running docker. Please upgrade your kernel to 3.8.0. 
-</span><span class='line'>INFO[0000] Listening for HTTP on unix (/var/run/docker.sock) 
-</span><span class='line'>docker: relocation error: docker: symbol dm_task_get_info_with_deferred_remove, version Base not defined in file libdevmapper.so.1.02 with link time reference</span></code></pre></td></tr></table></div></figure>
-
-
-<p>需要再安装新的依赖（囧，md，用yum安装还要自己安装其他依赖！！）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]#  yum install device-mapper-event-libs</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>报错2：<code>cgroup.procs: invalid argument</code>[2015年8月6日11:11:49]</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# docker start 5ed45ce5ad3d
-</span><span class='line'>Error response from daemon: Cannot start container 5ed45ce5ad3d: [8] System error: write /cgroup/freezer/docker/5ed45ce5ad3d085fe3c004f90eef7c774a722e84cf0c9d18c197cc5900bbc8ae/cgroup.procs: invalid argument
-</span><span class='line'>FATA[0000] Error: failed to start one or more containers </span></code></pre></td></tr></table></div></figure>
-
-
-<p>修改配置：<a href="http://blog.csdn.net/jollypigclub/article/details/40428095">http://blog.csdn.net/jollypigclub/article/details/40428095</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# vi /etc/sysconfig/docker
-</span><span class='line'>...
-</span><span class='line'>other_args="--exec-driver=lxc"
-</span><span class='line'>#other_args=""
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>报错3：2017-3-1 14:27:23 再次安装docker-io这些安装的是1.7.1-2.el6 报错又不同了：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@bigdata1 ~]# cat /etc/redhat-release 
-</span><span class='line'>CentOS release 6.5 (Final)
-</span><span class='line'>[root@bigdata1 ~]# yum install epel-release
-</span><span class='line'>[root@bigdata1 ~]# yum install docker-io
-</span><span class='line'>[root@bigdata1 ~]# docker -d
-</span><span class='line'>INFO[0000] Listening for HTTP on unix (/var/run/docker.sock) 
-</span><span class='line'>WARN[0000] You are running linux kernel version 2.6.32-431.el6.x86_64, which might be unstable running docker. Please upgrade your kernel to 3.10.0. 
-</span><span class='line'>docker: relocation error: docker: symbol dm_task_get_info_with_deferred_remove, version Base not defined in file libdevmapper.so.1.02 with link time reference
-</span><span class='line'>
-</span><span class='line'>https://github.com/docker/docker/issues/12108
-</span><span class='line'>[root@bigdata1 ~]# yum install device-mapper-devel
-</span><span class='line'>
-</span><span class='line'>[root@bigdata1 ~]# service docker start
-</span><span class='line'>Starting docker:                                           [确定]
-</span><span class='line'>[root@bigdata1 ~]# docker version
-</span><span class='line'>Client version: 1.7.1
-</span><span class='line'>Client API version: 1.19
-</span><span class='line'>Go version (client): go1.4.2
-</span><span class='line'>Git commit (client): 786b29d/1.7.1
-</span><span class='line'>OS/Arch (client): linux/amd64
-</span><span class='line'>Server version: 1.7.1
-</span><span class='line'>Server API version: 1.19
-</span><span class='line'>Go version (server): go1.4.2
-</span><span class='line'>Git commit (server): 786b29d/1.7.1
-</span><span class='line'>OS/Arch (server): linux/amd64
-</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>docker本地存储的路径[@ 2015年8月5日11:19:17]</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost docker]# cd /var/lib/docker/
-</span><span class='line'>[root@localhost docker]# ls
-</span><span class='line'>containers  devicemapper  graph  init  linkgraph.db  repositories-devicemapper  tmp  trust  volumes
-</span><span class='line'>[root@localhost docker]# cd graph/
-</span><span class='line'>[root@localhost graph]# ll
-</span><span class='line'>总用量 16
-</span><span class='line'>drwx------ 2 root root 4096 8月   5 10:39 d5d33a6a321ae20a3ae4805b5643560ce9c16a49d2f1d32541b39e04ad083983
-</span><span class='line'>drwx------ 2 root root 4096 8月   5 10:39 d8ed1be0a39bcc741aa1e95e59b844140d9294afc75082697184cdfbf2bc6a2d
-</span><span class='line'>drwx------ 2 root root 4096 8月   5 09:48 f1b10cd842498c23d206ee0cbeaa9de8d2ae09ff3c7af2723a9e337a6965d639
-</span><span class='line'>drwx------ 2 root root 4096 8月   5 10:39 _tmp
-</span><span class='line'>
-</span><span class='line'>[root@localhost docker]# cd devicemapper/devicemapper/
-</span><span class='line'>[root@localhost devicemapper]# ll
-</span><span class='line'>总用量 976024
-</span><span class='line'>-rw------- 1 root root 107374182400 8月   5 09:38 data
-</span><span class='line'>-rw------- 1 root root   2147483648 8月   5 09:38 metadata</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://www.blogjava.net/yongboy/archive/2013/12/12/407498.html">Docker学习笔记之一，搭建一个JAVA Tomcat运行环境</a></li>
-<li><a href="http://www.inspires.cn/note/36">You are running linux kernel version 2.6.32-431.el6.x86_64(centos 6.5)</a></li>
-<li><a href="http://blog.thoward37.me/articles/where-are-docker-images-stored/">Where are Docker images stored?(老版本，也值得一看)</a></li>
-<li><a href="http://blog.csdn.net/xu470438000/article/details/43704469">Docker启动报错 relocation error libdevmapper</a></li>
-<li><a href="http://www.programfish.com/blog/?p=9">docker镜像与容器存储结构分析</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/28">&larr; Older</a>
@@ -2736,6 +1999,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2017/11/04/teamviewer-vpn-on-windows/">使用TeamviewerVPN访问公司内网</a>
       </li>
     
@@ -2761,10 +2028,6 @@
     
       <li class="post">
         <a href="/blog/2017/10/06/staf-start-guide/">STAF Start Guide</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/10/05/respberrypi-connected-via/">连接树莓派</a>
       </li>
     
   </ul>
@@ -2901,7 +2164,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (58) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (59) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2918,7 +2181,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (196)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (197)</li>
 	</ul>
 	
 </section>
