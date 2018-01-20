@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="hadoop默认就有冗余（dfs.replication）的机制，所以一般情况下，一台机器挂了也没所谓。集群会自动的进行复制均衡处理。 作为测试，如果dfs.replication设置为1的情况下，怎么安全的把datanode节点服务关闭呢？例如说，刚刚开始搭建环境是把namenode、 &hellip;">
+  <meta name="description" content="hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白， &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -82,6 +82,181 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 ShortCircuit Local Reading</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2014-07-29T20:11:58+08:00" pubdate data-updated="true">Tue 2014-07-29 20:11</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白，最终大致就是通过linux的<strong>文件描述符</strong>来实现功能同时保证文件的权限。</p>
+
+<p>由于仅在自己的机器上面配置来查询hbase的数据，性能方面提升感觉不是很明显。等以后整到正式环境再对比对比。</p>
+
+<ul>
+<li>2016-1 添加测试方法数据是否通过short-circuit读取</li>
+</ul>
+
+
+<p>配置如下。</p>
+
+<p>1 修改hdfs-site.xml</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的写权限，要么仅root可写。</p>
+
+<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png" alt="" /></p>
+
+<p>2 修改hbase的配置，并添加HADOOP_HOME（hbase查找hadoop-native）</p>
+
+<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXhRKAZDs6AAChrEauBoU738.png" alt="" /></p>
+
+<p>hbase的脚本找到hadoop命令后，会把hadoop的java.library.path配置加入到hbase的启动脚本中。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>// 更好的方式是Hbase直接共享HADOOP_CONF_DIR
+</span><span class='line'>[hadoop@master1 ~]$ tail -15 hbase-0.98.3-hadoop2/conf/hbase-site.xml 
+</span><span class='line'>    &lt;name&gt;hbase.tmp.dir&lt;/name&gt;
+</span><span class='line'>    &lt;value&gt;/home/hadoop/data/hbase&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
+</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;/configuration&gt;
+</span><span class='line'>
+</span><span class='line'>// IBM部署是直接把一系列的bigdata的环境变量写到一个FILE，然后加入到/etc/profile.d/FILE。
+</span><span class='line'>[hadoop@master1 ~]$ cat hbase-0.98.3-hadoop2/conf/hbase-env.sh
+</span><span class='line'>...
+</span><span class='line'>export HADOOP_HOME=/home/hadoop/hadoop-2.2.0
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>3 同步到其他节点，然后重启hdfs,hbase</p>
+
+<h2>测试</h2>
+
+<ul>
+<li><a href="https://www.zybuluo.com/jewes/note/37713">https://www.zybuluo.com/jewes/note/37713</a></li>
+</ul>
+
+
+<p>在datanode读取该机器上的block（fsck命令可以查看文件的块在哪些机器）。通过查看日志，或者通过HdfsDataInputStream.getReadStatistics().getTotalShortCircuitBytesRead()来获取从ShortCircuit读取数据量。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># datanode.log
+</span><span class='line'>2017-05-05 09:53:16,089 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: cliID: DFSClient_attempt_1492660490127_17873_m_001534_0_698465397_1, src: 127.0.0.1, dest: 127.0.
+</span><span class='line'>0.1, op: REQUEST_SHORT_CIRCUIT_SHM, shmId: 3a2653121c6cb5acd0050fbb6a086fcf, srvID: 732ce1ee-3f4f-4be5-b806-22edcab58e6b, success: true
+</span><span class='line'>2017-05-05 09:53:16,095 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: cliID: DFSClient_attempt_1492660490127_17873_m_001469_0_936154908_1, src: 127.0.0.1, dest: 127.0.
+</span><span class='line'>0.1, op: REQUEST_SHORT_CIRCUIT_SHM, shmId: c9082d6420bc980b60bde78a437a90fd, srvID: 732ce1ee-3f4f-4be5-b806-22edcab58e6b, success: true
+</span><span class='line'>2017-05-05 09:53:16,122 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: src: 127.0.0.1, dest: 127.0.0.1, op: REQUEST_SHORT_CIRCUIT_FDS, blockid: 1211094391, srvID: 732ce
+</span><span class='line'>1ee-3f4f-4be5-b806-22edcab58e6b, success: true
+</span><span class='line'>2017-05-05 09:53:16,126 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: src: 127.0.0.1, dest: 127.0.0.1, op: REQUEST_SHORT_CIRCUIT_FDS, blockid: 1211095681, srvID: 732ce
+</span><span class='line'>1ee-3f4f-4be5-b806-22edcab58e6b, success: true
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu3 ~]$ ~/hadoop-2.6.3/bin/hdfs fsck /spark-assembly-1.6.0-hadoop2.6.3.jar -files -blocks -locations</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://vdisk.weibo.com/s/z_44nz36hNM3Z">hive-tuning</a></li>
+<li><a href="http://blog.cloudera.com/blog/2013/08/how-improved-short-circuit-local-reads-bring-better-performance-and-security-to-hadoop/">How Improved Short-Circuit Local Reads Bring Better Performance and Security to Hadoop</a></li>
+<li><a href="http://hbase.apache.org/book/perf.hdfs.html">HDFS&ndash;Apache HBase Performance Tuning</a></li>
+<li><a href="http://archive.cloudera.com/cdh4/cdh/4/hadoop/hadoop-project-dist/hadoop-hdfs/ShortCircuitLocalReads.html">HDFS Short-Circuit Local Reads</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2756,601 +2931,6 @@ ls
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/06/21/upgrade-hive/">Upgrade Hive: 0.12.0 to 0.13.1</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-06-21T02:34:59+08:00" pubdate data-updated="true">Sat 2014-06-21 02:34</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>由于hive-0.12.0的FileSystem使用不当导致内存溢出问题，最终考虑升级hive。升级的过程没想象中的那么可怕，步骤很简单：对源数据库执行升级脚本，拷贝原hive-0.12.0的配置和jar，然后把添加jar重启hiverserver2即可。记录了升级到0.13，添加tez，调试hive。</p>
-
-<h2>修改环境变量</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>HIVE_HOME=/home/hadoop/apache-hive-0.13.1-bin
-</span><span class='line'>PATH=$JAVA_HOME/bin:$HIVE_HOME/bin:$PATH</span></code></pre></td></tr></table></div></figure>
-
-
-<p>如果要使用hwi，需要自己下载原来编译生成war。（默认的bin.tar.gz里面不包括）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@Lenovo-PC ~/git/hive/hwi
-</span><span class='line'>$ mvn package war:war</span></code></pre></td></tr></table></div></figure>
-
-
-<p>配置的时刻注意下<code>hive.hwi.war.file</code>是相对于<strong>HIVE_HOME</strong>的位置<code>lib/hive-hwi-0.13.1.war</code>。同时需要把<code>$JDK/lib/tools.jar</code>加入到classpath。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:/home/eshore/jdk1.7.0_60/lib/tools.jar
-</span><span class='line'>
-</span><span class='line'>$CD/bin/hive --service hwi</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>升级metadata</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-<span class='line-number'>146</span>
-<span class='line-number'>147</span>
-<span class='line-number'>148</span>
-<span class='line-number'>149</span>
-<span class='line-number'>150</span>
-<span class='line-number'>151</span>
-<span class='line-number'>152</span>
-<span class='line-number'>153</span>
-<span class='line-number'>154</span>
-<span class='line-number'>155</span>
-<span class='line-number'>156</span>
-<span class='line-number'>157</span>
-<span class='line-number'>158</span>
-<span class='line-number'>159</span>
-<span class='line-number'>160</span>
-<span class='line-number'>161</span>
-<span class='line-number'>162</span>
-<span class='line-number'>163</span>
-<span class='line-number'>164</span>
-<span class='line-number'>165</span>
-<span class='line-number'>166</span>
-<span class='line-number'>167</span>
-<span class='line-number'>168</span>
-<span class='line-number'>169</span>
-<span class='line-number'>170</span>
-<span class='line-number'>171</span>
-<span class='line-number'>172</span>
-<span class='line-number'>173</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@ismp0 ~]$ cd apache-hive-0.13.1-bin/scripts/metastore/upgrade/mysql/
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 mysql]$ mysql -uXXX -hXXX -pXXX
-</span><span class='line'>mysql&gt; use hive
-</span><span class='line'>Reading table information for completion of table and column names
-</span><span class='line'>You can turn off this feature to get a quicker startup with -A
-</span><span class='line'>
-</span><span class='line'>Database changed
-</span><span class='line'>mysql&gt; source upgrade-0.12.0-to-0.13.0.mysql.sql
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>|                                                  |
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>| Upgrading MetaStore schema from 0.12.0 to 0.13.0 |
-</span><span class='line'>+--------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>|                                                                       |
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>| &lt; HIVE-5700 enforce single date format for partition column storage &gt; |
-</span><span class='line'>+-----------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.22 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>|                                            |
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>| &lt; HIVE-6386: Add owner filed to database &gt; |
-</span><span class='line'>+--------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.33 sec)
-</span><span class='line'>Records: 1  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.16 sec)
-</span><span class='line'>Records: 1  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>|                                                                                             |
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>| &lt;HIVE-6458 Add schema upgrade scripts for metastore changes related to permanent functions&gt; |
-</span><span class='line'>+---------------------------------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>|                                                                                  |
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>| &lt;HIVE-6757 Remove deprecated parquet classes from outside of org.apache package&gt; |
-</span><span class='line'>+----------------------------------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.04 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.01 sec)
-</span><span class='line'>Rows matched: 0  Changed: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.12 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.15 sec)
-</span><span class='line'>Records: 0  Duplicates: 0  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.07 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 0 rows affected (0.06 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.05 sec)
-</span><span class='line'>
-</span><span class='line'>Query OK, 1 row affected (0.07 sec)
-</span><span class='line'>Rows matched: 1  Changed: 1  Warnings: 0
-</span><span class='line'>
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>|                                                           |
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>| Finished upgrading MetaStore schema from 0.12.0 to 0.13.0 |
-</span><span class='line'>+-----------------------------------------------------------+
-</span><span class='line'>1 row in set, 1 warning (0.00 sec)
-</span><span class='line'>
-</span><span class='line'>mysql&gt; 
-</span><span class='line'>mysql&gt; 
-</span><span class='line'>mysql&gt; exit
-</span><span class='line'>Bye
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 ~]$ vi .bash_profile
-</span><span class='line'>[hadoop@ismp0 ~]$ source .bash_profile
-</span><span class='line'>[hadoop@ismp0 ~]$ cd apache-hive-0.13.1-bin
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ cd conf/
-</span><span class='line'>[hadoop@ismp0 conf]$ cp ~/hive-0.12.0/conf/hive-site.xml ./
-</span><span class='line'>[hadoop@ismp0 conf]$ cd ..
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ cp ~/hive-0.12.0/lib/mysql-connector-java-5.1.21-bin.jar lib/
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ hive
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ hive
-</span><span class='line'>
-</span><span class='line'>hive&gt;  select count(*) from t_ods_idc_isp_log2 where day=20140624;
-</span><span class='line'>Total jobs = 1
-</span><span class='line'>Launching Job 1 out of 1
-</span><span class='line'>Number of reduce tasks determined at compile time: 1
-</span><span class='line'>In order to change the average load for a reducer (in bytes):
-</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
-</span><span class='line'>In order to limit the maximum number of reducers:
-</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
-</span><span class='line'>In order to set a constant number of reducers:
-</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
-</span><span class='line'>Starting Job = job_1403006477300_3403, Tracking URL = http://umcc97-79:8088/proxy/application_1403006477300_3403/
-</span><span class='line'>Kill Command = /home/hadoop/hadoop-2.2.0/bin/hadoop job  -kill job_1403006477300_3403
-</span><span class='line'>Hadoop job information for Stage-1: number of mappers: 2; number of reducers: 1
-</span><span class='line'>2014-06-24 17:19:07,618 Stage-1 map = 0%,  reduce = 0%
-</span><span class='line'>2014-06-24 17:19:15,283 Stage-1 map = 50%,  reduce = 0%, Cumulative CPU 2.37 sec
-</span><span class='line'>2014-06-24 17:19:16,360 Stage-1 map = 100%,  reduce = 0%, Cumulative CPU 5.49 sec
-</span><span class='line'>2014-06-24 17:19:22,749 Stage-1 map = 100%,  reduce = 100%, Cumulative CPU 7.99 sec
-</span><span class='line'>MapReduce Total cumulative CPU time: 7 seconds 990 msec
-</span><span class='line'>Ended Job = job_1403006477300_3403
-</span><span class='line'>MapReduce Jobs Launched: 
-</span><span class='line'>Job 0: Map: 2  Reduce: 1   Cumulative CPU: 7.99 sec   HDFS Read: 19785618 HDFS Write: 6 SUCCESS
-</span><span class='line'>Total MapReduce CPU Time Spent: 7 seconds 990 msec
-</span><span class='line'>OK
-</span><span class='line'>77625
-</span><span class='line'>Time taken: 36.387 seconds, Fetched: 1 row(s)
-</span><span class='line'>hive&gt; 
-</span><span class='line'>
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ nohup bin/hiveserver2 &
-</span><span class='line'>
-</span><span class='line'>$# 测试hive-jdbc
-</span><span class='line'>[hadoop@ismp0 apache-hive-0.13.1-bin]$ bin/beeline 
-</span><span class='line'>Beeline version 0.13.1 by Apache Hive
-</span><span class='line'>beeline&gt; !connect jdbc:hive2://10.18.97.22:10000/
-</span><span class='line'>scan complete in 7ms
-</span><span class='line'>Connecting to jdbc:hive2://10.18.97.22:10000/
-</span><span class='line'>Enter username for jdbc:hive2://10.18.97.22:10000/: hadoop
-</span><span class='line'>Enter password for jdbc:hive2://10.18.97.22:10000/: 
-</span><span class='line'>Connected to: Apache Hive (version 0.13.1)
-</span><span class='line'>Driver: Hive JDBC (version 0.13.1)
-</span><span class='line'>Transaction isolation: TRANSACTION_REPEATABLE_READ
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt; show tables;
-</span><span class='line'>+-------------------------+
-</span><span class='line'>|        tab_name         |
-</span><span class='line'>+-------------------------+
-</span><span class='line'>...
-</span><span class='line'>| test_123                |
-</span><span class='line'>+-------------------------+
-</span><span class='line'>10 rows selected (2.547 seconds)
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt;  select count(*) from t_ods_idc_isp_log2 where day=20140624;
-</span><span class='line'>+--------+
-</span><span class='line'>|  _c0   |
-</span><span class='line'>+--------+
-</span><span class='line'>| 77625  |
-</span><span class='line'>+--------+
-</span><span class='line'>1 row selected (37.463 seconds)
-</span><span class='line'>0: jdbc:hive2://10.18.97.22:10000/&gt; 
-</span><span class='line'>
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>上一篇tez的安装使用中由于hive的缘故进行了回退，现在升级到hive-0.13后，也在hive上试下tez的功能：</p>
-
-<ul>
-<li>本地添加tez依赖，设置环境变量</li>
-<li>MR添加tez依赖，添加tez-site.xml</li>
-<li>切换到tez的engine</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$# 已上传到HDFS
-</span><span class='line'>$ hadoop fs -mkdir /apps
-</span><span class='line'>$ hadoop fs -put tez-0.4.0-incubating /apps/
-</span><span class='line'>$ hadoop fs -ls /apps
-</span><span class='line'>Found 1 items
-</span><span class='line'>drwxr-xr-x   - hadoop supergroup          0 2014-09-09 16:19 /apps/tez-0.4.0-incubating
-</span><span class='line'>
-</span><span class='line'>$ cat etc/hadoop/tez-site.xml 
-</span><span class='line'>&lt;?xml version="1.0"?&gt;
-</span><span class='line'>&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;!-- Put site-specific property overrides in this file. --&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;configuration&gt;
-</span><span class='line'>  &lt;property&gt;
-</span><span class='line'>    &lt;name&gt;tez.lib.uris&lt;/name&gt;
-</span><span class='line'>    &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>
-</span><span class='line'>$ export HADOOP_CLASSPATH=${TEZ_HOME}/*:${TEZ_HOME}/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>$ apache-hive-0.13.1-bin/bin/hive
-</span><span class='line'>hive&gt; set hive.execution.engine=tez;
-</span><span class='line'>hive&gt; select count(*) from t_ods_idc_isp_log2 ;
-</span><span class='line'>Time taken: 24.926 seconds, Fetched: 1 row(s)
-</span><span class='line'>
-</span><span class='line'>hive&gt; set hive.execution.engine=mr;                              
-</span><span class='line'>hive&gt; select count(*) from t_ods_idc_isp_log2 where day=20140720;
-</span><span class='line'>Time taken: 40.585 seconds, Fetched: 1 row(s)
-</span><span class='line'>
-</span><span class='line'>// 添加TEZ的jar到CLASSPATH
-</span><span class='line'>$# @hive-env.sh
-</span><span class='line'> # export TEZ_HOME=/home/hadoop/tez-0.4.0-incubating
-</span><span class='line'> # export HADOOP_CLASSPATH=$HADOOP_CLASSPATH:$TEZ_HOME/*:$TEZ_HOME/lib/*
-</span><span class='line'>$ last_hour=2014090915
-</span><span class='line'>$ hive --hiveconf hive.execution.engine=tez -e "select houseId, count(*) 
-</span><span class='line'>from 
-</span><span class='line'>(
-</span><span class='line'>select houseId
-</span><span class='line'>from t_house_monitor2
-</span><span class='line'>where hour=$last_hour
-</span><span class='line'>group by from_unixtime(cast(accesstime as bigint), 'yyyyMMdd'),houseId,IP,port,domain,serviceType,illegalType,currentState,usr,icpError,regerror,regDomain,use_type,real_useType
-</span><span class='line'>) hs
-</span><span class='line'>group by houseId"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>简单从时间上看，还是有效果的。</p>
-
-<p><img src="http://file.bmob.cn/M00/04/A2/wKhkA1PSPSeAb1wWAAER_4gjIug339.png" alt="" /></p>
-
-<h2>调试Hive</h2>
-
-<p>也很简单，hive脚本已经默认集成了这个功能，设置下DEBUG环境变量即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ less apache-hive-0.13.1-bin/bin/ext/debug.sh
-</span><span class='line'>[hadoop@master1 bin]$ less hive
-</span><span class='line'>
-</span><span class='line'>$# 脚本最终会把调试的参数` -agentlib:jdwp=transport=dt_socket,server=y,address=8000,suspend=y`加入到HADOOP_CLIENT_OPTS中，最后合并到HADOOP_OPTS传递给java程序。
-</span><span class='line'>
-</span><span class='line'>[hadoop@master1 bin]$ DEBUG=true hive
-</span><span class='line'>Listening for transport dt_socket at address: 8000</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后通过eclipse的远程调试即可一步步的查看整个过程。下面断点处为记录解析功能：</p>
-
-<p><img src="http://file.bmob.cn/M00/0A/D4/wKhkA1QEASyAM9VEAAHQS7gZJlo672.png" alt="" /></p>
-
-<h2>编译源码导入eclipse</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ git clone https://github.com/apache/hive.git
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC /cygdrive/e/git/hive
-</span><span class='line'>$ git checkout branch-0.13
-</span><span class='line'>
-</span><span class='line'>E:\git\hive&gt;mvn clean package eclipse:eclipse -DskipTests -Dmaven.test.skip=true -Phadoop-2</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>注意点</h2>
-
-<ul>
-<li>除了分区，hive表数据路径下不能包括其他文件夹</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>hive&gt; create database test location '/user/hive/warehouse_temp/' ;
-</span><span class='line'>
-</span><span class='line'>hive&gt; create table t_ods_ddos as select * from default.t_ods_ddos limit 0;
-</span><span class='line'>
-</span><span class='line'>hive&gt; select * from t_ods_ddos;
-</span><span class='line'>OK
-</span><span class='line'>Time taken: 0.176 seconds
-</span><span class='line'>
-</span><span class='line'>[hadoop@umcc97-44 ~]$ hadoop fs -mkdir /user/hive/warehouse_temp/t_ods_ddos/abc
-</span><span class='line'>
-</span><span class='line'>hive&gt; select * from t_ods_ddos;
-</span><span class='line'>OK
-</span><span class='line'>Failed with exception java.io.IOException:java.io.IOException: Not a file: hdfs://umcc97-44:9000/user/hive/warehouse_temp/t_ods_ddos/abc
-</span><span class='line'>Time taken: 0.167 seconds</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/33">&larr; Older</a>
@@ -3371,6 +2951,30 @@ ls
 <section>
   <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
 	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/08/10/java-bytecode-security/">保护/加密JAVA代码</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
+			</li>
 		
 			<li class="post">
 				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
@@ -3427,6 +3031,10 @@ ls
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2018/01/20/logstash-monitor-myself-blog-accesslog/">Logstash采集网站的访问日志</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
       </li>
     
@@ -3452,10 +3060,6 @@ ls
     
       <li class="post">
         <a href="/blog/2017/10/28/application-run-do-double-click-on-centos7/">在Cenots7双击运行程序</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/10/28/flamegraph-display-how-disk-be-used/">使用Flamegraph查看磁盘使用情况</a>
       </li>
     
   </ul>
@@ -3497,6 +3101,10 @@ ls
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/es/'>es</a> (1) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3552,6 +3160,10 @@ ls
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/logstash/'>logstash</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
 		</li>
 		 
@@ -3560,7 +3172,7 @@ ls
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (12) 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (18) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3609,7 +3221,7 @@ ls
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (200)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (201)</li>
 	</ul>
 	
 </section>
@@ -3701,6 +3313,23 @@ gitalk.render('gitalk-container')
 </script>
 
 
+
+<script>
+
+$.ajax({
+  type: "POST",
+  url: "http://47.74.180.109:20000",
+  data: JSON.stringify({
+    title: document.title,
+    location: JSON.stringify(location),
+    referrer: document.referrer,
+    userAgent: navigator.userAgent
+  }),
+  contentType: "application/json; charset=utf-8",
+  dataType: "json"
+});
+
+</script>
 
 
 

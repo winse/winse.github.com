@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="如何高效的阅读hadoop源代码？ 先看看这篇。 今天去广州图书馆办了证，借了几本关于大数据的书。老实说，国家提供的便民基础设施应该发挥她的价值，国家建那么多公共设施，还有很多人在后台让这些服务运作起来。借书是一种最高性价比学习的方式，第一：不能乱写乱画必须做笔记或者背下来，把最有价值的东西汇集； &hellip;">
+  <meta name="description" content="本来第二篇应该是与 [第1章 初识Spark] 有关，但我们运行helloworld、以及提交任务都是通过脚本 bin/spark-shell ，完全不知道那些脚本是干啥的？而且，在开发环境运行shell来启动应用总觉得怪怪的，这篇先来简单了解脚本的功能、以及Launcher模块。 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -82,6 +82,471 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2016-05-08T21:41:01+08:00" pubdate data-updated="true">Sun 2016-05-08 21:41</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>本来第二篇应该是与 [第1章 初识Spark] 有关，但我们运行helloworld、以及提交任务都是通过脚本 <code>bin/spark-shell</code> ，完全不知道那些脚本是干啥的？而且，在开发环境运行shell来启动应用总觉得怪怪的，这篇先来简单了解脚本的功能、以及Launcher模块。</p>
+
+<p><strong> 其实每个大数据的框架，shell脚本都是通用入口，也是研读源码的第一个突破口 </strong>。掌握脚本功能相当于熟悉了基本的API功能，把 spark/bin 目录下面的脚本理清楚，然后再去写搭建开发环境、编写调试helloworld就事半功倍了。</p>
+
+<p>官网 <strong> Quick Start </strong> 提供的简短例子都是通过 bin/spark-shell 来运行的。Submit页面提供了 bin/spark-submit 提交jar发布任务的方式。 spark-shell，spark-submit 就是两个非常重要的脚本，这里就来看下这两个脚本。</p>
+
+<h2>spark-shell - 对应[3.1 spark-shell]章节</h2>
+
+<p>spark-shell 脚本的内容相对多一些，主要代码如下（其他代码都是为了兼容cygwin弄的，我们这里不关注）：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>SPARK_SUBMIT_OPTS="$SPARK_SUBMIT_OPTS -Dscala.usejavacp=true"
+</span><span class='line'>trap onExit INT     # 程序终止(interrupt)信号, 在用户键入INTR字符(通常是Ctrl + C)时触发
+</span><span class='line'>
+</span><span class='line'>export SPARK_SUBMIT_OPTS
+</span><span class='line'>"${SPARK_HOME}"/bin/spark-submit --class org.apache.spark.repl.Main --name "Spark shell" "$@"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>最终调用 bin/spark-submit 脚本。其实和我们自己提交 helloworld.jar 命令一样：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ bin/spark-submit \
+</span><span class='line'>  --class "HelloWorld" \
+</span><span class='line'>  --master local[2] \
+</span><span class='line'>  target/scala-2.10/helloworld_2.10-1.0.jar</span></code></pre></td></tr></table></div></figure>
+
+
+<p>不过通过 bin/spark-shell 提交运行的类是spark自带，没有附加（不需要）额外的jar。这个后面再讲，我们也可以通过这种方式类运行公共位置的jar，可以减少一些不必要的网络带宽。</p>
+
+<h2>spark-submit</h2>
+
+<p>submit脚本更简单。就是把 <strong>org.apache.spark.deploy.SparkSubmit</strong> 和 <strong>输入参数</strong> 全部传递给脚本 bin/spark-class 。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>exec "${SPARK_HOME}"/bin/spark-class org.apache.spark.deploy.SparkSubmit "$@"</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>spark-class</h2>
+
+<p>主要的功能都集中在 bin/spark-class。bin/spark-class脚本最终启动java、调用 <strong>Launcher模块</strong> 。而 <strong>Launcher模块</strong> 解析输入参数并输出 <strong>最终输出Driver启动的命令</strong>，然后shell再通过 <strong>exec</strong> 来运行Driver程序。</p>
+
+<p>要讲清楚 bin/spark-class 相对复杂点：通过脚本传递参数，调用java处理参数，又输出脚本，最后运行脚本才真正运行了Driver。所以这里通过 <strong>脚本</strong> 和 <strong>程序</strong> 来进行说明。</p>
+
+<h4>脚本</h4>
+
+<ul>
+<li>先加载环境变量配置文件</li>
+<li>再获取 assembly.jar 位置</li>
+<li>然后调用 <code>org.apache.spark.launcher.Main</code> ， Main类根据环境变量和传入参数算出真正执行的命令(具体在【程序】部分讲)。</li>
+</ul>
+
+
+<p>下面是核心脚本的内容：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>. "${SPARK_HOME}"/bin/load-spark-env.sh 
+</span><span class='line'>  # 把load-spark-env.sh展开
+</span><span class='line'>  . "${user_conf_dir}/spark-env.sh"
+</span><span class='line'>  
+</span><span class='line'>  ASSEMBLY_DIR1="${SPARK_HOME}/assembly/target/scala-2.10"  # 通过ASSEMBLY路径来判断SPARK_SCALA_VERSION，编译打包成tar的不需要这个变量
+</span><span class='line'>  export SPARK_SCALA_VERSION="2.10"
+</span><span class='line'>
+</span><span class='line'>RUNNER="${JAVA_HOME}/bin/java"
+</span><span class='line'>
+</span><span class='line'>SPARK_ASSEMBLY_JAR=
+</span><span class='line'>if [ -f "${SPARK_HOME}/RELEASE" ]; then
+</span><span class='line'>  ASSEMBLY_DIR="${SPARK_HOME}/lib"
+</span><span class='line'>else
+</span><span class='line'>  ASSEMBLY_DIR="${SPARK_HOME}/assembly/target/scala-$SPARK_SCALA_VERSION"
+</span><span class='line'>fi
+</span><span class='line'>ASSEMBLY_JARS="$(ls -1 "$ASSEMBLY_DIR" | grep "^spark-assembly.*hadoop.*\.jar$" || true)"
+</span><span class='line'>SPARK_ASSEMBLY_JAR="${ASSEMBLY_DIR}/${ASSEMBLY_JARS}"
+</span><span class='line'>LAUNCH_CLASSPATH="$SPARK_ASSEMBLY_JAR"
+</span><span class='line'>
+</span><span class='line'>export _SPARK_ASSEMBLY="$SPARK_ASSEMBLY_JAR"
+</span><span class='line'>
+</span><span class='line'>CMD=()
+</span><span class='line'>while IFS= read -d '' -r ARG; do
+</span><span class='line'>  CMD+=("$ARG")
+</span><span class='line'>done &lt; &lt;("$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@")
+</span><span class='line'>exec "${CMD[@]}"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>大部分内容都是准备环境变量，就最后几行代码比较复杂。这里设置DEBUG在脚本 <code>while</code> 循环打印每个输出的值看下输出的是什么。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 修改后的效果
+</span><span class='line'>CMD=()
+</span><span class='line'>while IFS= read -d '' -r ARG; do
+</span><span class='line'>  echo "[DEBUG] $ARG"
+</span><span class='line'>  CMD+=("$ARG")
+</span><span class='line'>done &lt; &lt;(set -x; "$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@")
+</span><span class='line'>echo "${CMD[@]}"
+</span><span class='line'>exec "${CMD[@]}"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>启动 bin/spark-shell（最终会调用 bin/spark-class，上面已经讲过脚本之间的关系），查看输出的调试信息：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ bin/spark-shell 
+</span><span class='line'>++ /opt/jdk1.8.0/bin/java -cp /home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar org.apache.spark.launcher.Main org.apache.spark.deploy.SparkSubmit --class org.apache.spark.repl.Main --name 'Spark shell'
+</span><span class='line'>[DEBUG] /opt/jdk1.8.0/bin/java
+</span><span class='line'>[DEBUG] -cp
+</span><span class='line'>[DEBUG] /home/hadoop/spark/lib/mysql-connector-java-5.1.34.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/conf/:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-rdbms-3.2.9.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-core-3.2.10.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-api-jdo-3.2.6.jar:/home/hadoop/hadoop/etc/hadoop/
+</span><span class='line'>[DEBUG] -Dscala.usejavacp=true
+</span><span class='line'>[DEBUG] -Xms512m
+</span><span class='line'>[DEBUG] -Xmx512m
+</span><span class='line'>[DEBUG] org.apache.spark.deploy.SparkSubmit
+</span><span class='line'>[DEBUG] --class
+</span><span class='line'>[DEBUG] org.apache.spark.repl.Main
+</span><span class='line'>[DEBUG] --name
+</span><span class='line'>[DEBUG] Spark shell
+</span><span class='line'>[DEBUG] spark-shell
+</span><span class='line'>/opt/jdk1.8.0/bin/java -cp /home/hadoop/spark/lib/mysql-connector-java-5.1.34.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/conf/:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-rdbms-3.2.9.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-core-3.2.10.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-api-jdo-3.2.6.jar:/home/hadoop/hadoop/etc/hadoop/ -Dscala.usejavacp=true -Xms512m -Xmx512m org.apache.spark.deploy.SparkSubmit --class org.apache.spark.repl.Main --name 'Spark shell' spark-shell
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>从上面的调试信息可以看出：</p>
+
+<ul>
+<li><code>org.apache.spark.launcher.Main</code> 把传入参数整理后重新输出</li>
+<li>脚本把java输出内容保存到 <code>CMD[@]</code> 数组中</li>
+<li>最后使用exec来执行。</li>
+</ul>
+
+
+<p>根据上面 bin/spark-class 产生的启动命令可以直接在idea里面运行，效果与直接运行 bin/spark-shell 一样：</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-spark-shell.png" alt="" /></p>
+
+<p><strong>注意：</strong> 这里的 spark-shell 是一个特殊的字符串，代码中会对其进行特殊处理不额外加载jar。类似的字符串还有： pyspark-shell, sparkr-shell, spark-internal（参看SparkSubmit），如果调用类就在SPARK_CLASSPATH可以使用它们减少不必要的网络传输。</p>
+
+<h4>Launcher模块</h4>
+
+<p>发现 shell 和 launcher的java代码 功能逻辑非常类似。比如说获取java程序路径的代码：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>List&lt;String&gt; buildJavaCommand(String extraClassPath) throws IOException {
+</span><span class='line'>  ...
+</span><span class='line'>  if (javaHome != null) {
+</span><span class='line'>      cmd.add(join(File.separator, javaHome, "bin", "java"));
+</span><span class='line'>  } else if ((envJavaHome = System.getenv("JAVA_HOME")) != null) {
+</span><span class='line'>      cmd.add(join(File.separator, envJavaHome, "bin", "java"));
+</span><span class='line'>  } else {
+</span><span class='line'>      cmd.add(join(File.separator, System.getProperty("java.home"), "bin", "java"));
+</span><span class='line'>  }
+</span><span class='line'>  ...
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在shell脚本里面的处理是：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># Find the java binary
+</span><span class='line'>if [ -n "${JAVA_HOME}" ]; then
+</span><span class='line'>  RUNNER="${JAVA_HOME}/bin/java"
+</span><span class='line'>else
+</span><span class='line'>  if [ `command -v java` ]; then
+</span><span class='line'>  RUNNER="java"
+</span><span class='line'>  else
+</span><span class='line'>  echo "JAVA_HOME is not set" &gt;&2
+</span><span class='line'>  exit 1
+</span><span class='line'>  fi
+</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
+
+
+<p>对比两者，其实是用脚本更加直观。但是使用java编写一个模块更便于管理和扩展，稍微调整下就能复用代码。比如说要添加windows的cmd脚本、又或者为了兼容多个操作系统/多语言(python，r 等)。所以提取一个公共的 <strong>Launcher模块</strong> 出来其实是个挺不错的选择。同时对于不是很熟悉shell的程序员来说也更方便了解系统运作。</p>
+
+<p><strong>Launcher模块</strong> 按功能可以分为 CommandBuilder 和 SparkLauncher 两个部分。</p>
+
+<ol>
+<li><p>CommandBuilder</p></li>
+<li><p>SparkSubmitCommandBuilder: 解析用户输入的参数并输出命令给脚本使用</p></li>
+<li>SparkClassCommandBuilder: 主要为后台进程产生启动命令（sbin目录下面的脚本）。</li>
+</ol>
+
+
+<p>1.1 公共类</p>
+
+<ul>
+<li>Main ： 统一入口</li>
+<li>AbstractCommandBuilder : 提供构造命令的公共基类
+
+<ul>
+<li>buildJavaCommand
+
+<ul>
+<li>buildClassPath
+
+<ul>
+<li>SPARK_CLASSPATH</li>
+<li>extraClassPath</li>
+<li>getConfDir : 等于环境变量 $SPARK_CONF_DIR 或者 $SPARK_HOME/conf 的值</li>
+<li>classes
+
+<ul>
+<li>SPARK_PREPEND_CLASSES</li>
+<li>SPARK_TESTING</li>
+</ul>
+</li>
+<li>findAssembly : 获取 spark-assembly-1.6.0-hadoop2.6.3.jar 的路径，lib 或者 assembly/target/scala-$SPARK_SCALA_VERSION 路径下
+
+<ul>
+<li>_SPARK_ASSEMBLY</li>
+</ul>
+</li>
+<li>datanucleus-* : 从 lib / lib_managed/jars 目录下获取</li>
+<li>HADOOP_CONF_DIR</li>
+<li>YARN_CONF_DIR</li>
+<li>SPARK_DIST_CLASSPATH</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>getEffectiveConfig : 获取 spark-defaults.conf 的内容</li>
+</ul>
+</li>
+</ul>
+
+
+<p>1.2 SparkSubmitCommandBuilder</p>
+
+<p>主要的类以及参数：</p>
+
+<ul>
+<li>SparkSubmitCommandBuilder
+
+<ul>
+<li>构造函数调用OptionParser解析参数，解析handle有处理specialClasses！</li>
+<li>buildSparkSubmitCommand
+
+<ul>
+<li>getEffectiveConfig</li>
+<li>extraClassPath : spark.driver.extraClassPath</li>
+<li>SPARK_SUBMIT_OPTS</li>
+<li>SPARK_JAVA_OPTS</li>
+<li>client模式下加载配置
+
+<ul>
+<li>spark.driver.memory / SPARK_DRIVER_MEMORY / SPARK_MEM / DEFAULT_MEM(1g)</li>
+<li>DRIVER_EXTRA_JAVA_OPTIONS</li>
+<li>DRIVER_EXTRA_LIBRARY_PATH</li>
+</ul>
+</li>
+<li>buildSparkSubmitArgs</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>SparkSubmitOptionParser(子类需要实现handle方法)</li>
+<li>SparkSubmitCommandBuilder$OptionParser 命令参数
+
+<ul>
+<li><code>bin/spark-submit -h</code> 查看可以<strong>设置的参数</strong></li>
+<li>直接查看<a href="http://spark.apache.org/docs/latest/submitting-applications.html">官网文档</a></li>
+</ul>
+</li>
+</ul>
+
+
+<p>1.3 SparkClassCommandBuilder</p>
+
+<p>主要CommandBuilder的功能上面已经都覆盖了，SparkClassCommandBuilder主要关注命令行可以设置哪些环境变量：</p>
+
+<ul>
+<li>org.apache.spark.deploy.master.Master
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_MASTER_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.worker.Worker
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_WORKER_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.history.HistoryServer
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_HISTORY_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.executor.CoarseGrainedExecutorBackend
+
+<ul>
+<li>SPARK_JAVA_OPTS</li>
+<li>SPARK_EXECUTOR_OPTS</li>
+<li>SPARK_EXECUTOR_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.executor.MesosExecutorBackend
+
+<ul>
+<li>SPARK_EXECUTOR_OPTS</li>
+<li>SPARK_EXECUTOR_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.ExternalShuffleService / org.apache.spark.deploy.mesos.MesosExternalShuffleService
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_SHUFFLE_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.tools.
+
+<ul>
+<li>extraClassPath : spark-tools_.*.jar</li>
+<li>SPARK_JAVA_OPTS</li>
+<li>DEFAULT_MEM(1g)</li>
+</ul>
+</li>
+<li>other
+
+<ul>
+<li>SPARK_JAVA_OPTS</li>
+<li>SPARK_DRIVER_MEMORY</li>
+</ul>
+</li>
+</ul>
+
+
+<h4>SparkLauncher</h4>
+
+<p>SparkLauncher提供了在程序中提交任务的方式。通过Driver端的支持获取程序执行动态（通过socket与Driver交互），为实现后端管理应用提供一种可行的方式。</p>
+
+<p>SparkLauncher提交任务其中一部分还是使用spark-submit脚本，绕一圈又回到上面的参数解析生成命令然后exec执行。另外SparkLauncher通过启动 SocketServer(LauncherServer)接收来自Driver(LauncherBackend)任务执行情况的最新状态。</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-launcher.jpg" alt="" /></p>
+
+<p>代码包括：</p>
+
+<ul>
+<li>SparkLauncher 主要是startApplication。其他都是解析设置参数，相当于把shell的工作用java重写了一遍</li>
+<li>LauncherServer 服务SocketServer类</li>
+<li>LauncherServer$ServerConnection 状态处理类</li>
+<li>LauncherConnection 通信基类：接收、发送消息</li>
+<li>LauncherProtocol 通信协议</li>
+<li>ChildProcAppHandle : SparkAppHandle 接收到Driver的状态后，请求分发类</li>
+</ul>
+
+
+<p>具体功能的流转请下载代码 <a href="https://github.com/winse/spark-examples/blob/master/src/main/scala/com/github/winse/spark/HelloWorldLauncher.scala">HelloWorldLauncher.scala</a> ，然后本地调试一步步的追踪学习。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1537,304 +2002,6 @@ exit
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/05/03/hiera-and-facts/">Hiera and Facts</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-05-03T18:30:41+08:00" pubdate data-updated="true">Tue 2016-05-03 18:30</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>为什么用hiera： <a href="https://docs.puppet.com/hiera/3.1/#why-hiera">https://docs.puppet.com/hiera/3.1/#why-hiera</a></p>
-
-<ul>
-<li>hierarchy层级体系。可以设置公共属性，也可以覆写！</li>
-<li>&ldquo;注入&#8221;设置 class 中的属性值。</li>
-<li>hiera_include 通过配置来完成site.pp同样的功能，并且比 <code>node</code> 更加强大灵活（数组值可以合并）。</li>
-</ul>
-
-
-<p>基本概念：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/configuring.html">hiera.yaml</a> 默认配置文件放在 $codedir/hiera.yaml 。 结合puppet使用时可以通过修改 puppet.conf 的 hiera_config 自定义配置的文件。</li>
-<li><a href="https://docs.puppet.com/hiera/3.1/hierarchy.html">hierarchy</a> hierarchy定义好可以简化很多工作量。如需要根据操作系统 %{::osfamily} 进行适配。</li>
-<li><a href="https://docs.puppet.com/hiera/3.1/data_sources.html#yaml">datasource</a> yaml格式介绍。</li>
-</ul>
-
-
-<h2>windows cygwin命令行环境配置</h2>
-
-<pre><code>winse@Lenovo-PC ~
-$ cat bin/hiera
-#!/bin/sh
-
-# default puppetlabs config in c:\Users\winse\Puppetlabs
-export HOME=/cygdrive/c/Users/winse
-
-name=`basename $0`
-
-# execute
-"C:/Progra~1/Puppet~1/Puppet/bin"/$name.bat "$@"
-
-
-winse@Lenovo-PC ~
-$ cat .bash_profile
-...
-function hiera_look(){
-  code_dir=`puppet config print codedir | sed 's/\r//' `
-  ~/bin/hiera -c "$code_dir/hiera.yaml" --debug "$@" ::environment=production
-}
-</code></pre>
-
-<h2>HelloWorld</h2>
-
-<pre><code>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat /cygdrive/c/Users/winse/.puppetlabs/etc/puppet/puppet.conf
-[main]
-codedir = D:/eshore-shells/puppet/dta/code
-hiera_config = $codedir/hiera.yaml
-
-certname = winse
-
-winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat hiera.yaml
----
-:backends:
-  - yaml
-:hierarchy:
-  - "nodes/%{::trusted.certname}"
-  - common
-
-:yaml:
-  :datadir: "D:/eshore-shells/puppet/dta/code/environments/%{::environment}/hieradata"
-
-
-winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat environments/production/hieradata/common.yaml
-whoami: winse
-
-
-winse@Lenovo-PC ~
-$ hiera_look whoami
-DEBUG: 2016-05-03 11:27:41 +0100: Hiera YAML backend starting
-DEBUG: 2016-05-03 11:27:41 +0100: Looking up whoami in YAML backend
-DEBUG: 2016-05-03 11:27:41 +0100: Looking for data source common
-DEBUG: 2016-05-03 11:27:41 +0100: Found whoami in common
-winse
-</code></pre>
-
-<h2><strong>与Puppet结合使用</strong></h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/puppet.html">https://docs.puppet.com/hiera/3.1/puppet.html</a></li>
-<li><a href="https://docs.puppet.com/hiera/3.1/puppet.html#assigning-classes-to-nodes-with-hiera-hierainclude">https://docs.puppet.com/hiera/3.1/puppet.html#assigning-classes-to-nodes-with-hiera-hierainclude</a></li>
-<li>单值属性重复优先级：就近原则 <a href="https://docs.puppet.com/hiera/3.1/hierarchy.html#example">https://docs.puppet.com/hiera/3.1/hierarchy.html#example</a></li>
-</ul>
-
-
-<h4>参考案例</h4>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/complete_example.html">https://docs.puppet.com/hiera/3.1/complete_example.html</a></li>
-<li><a href="https://kisspuppet.gitbooks.io/puppet/content/puppet_learning_ext1.html">https://kisspuppet.gitbooks.io/puppet/content/puppet_learning_ext1.html</a></li>
-</ul>
-
-
-<h4>主要功能</h4>
-
-<ul>
-<li>hiera获取puppet-facts的属性</li>
-<li>puppet读取hiera中的属性</li>
-<li>hiera注入设置puppet-module的属性：
-  获取到第一个就返回了(类似于hiera)，对于strings, arrays, hashes类型 cannot merge values from multiple hierarchy levels; 需要使用来 hiera_array or hiera_hash 代替。</li>
-<li>hiera_include</li>
-</ul>
-
-
-<h4>动手实践</h4>
-
-<pre><code>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code/environments/production
-$ tree .
-.
-├── hieradata
-│   ├── common.yaml
-│   └── nodes
-│       └── winse.yaml
-├── manifests
-│   └── site.pp
-└── modules
-    └── helloworld
-        └── manifests
-            └── init.pp
-
-$ cat hieradata/common.yaml
-whoami: "%{calling_module} - %{calling_class} - %{calling_class_path} - %{::domain}"
-
-$ cat hieradata/nodes/winse.yaml  | iconv -f gbk -t utf8
----
-classes:
-  - helloworld::hello
-  - helloworld::world
-
-# 文件编码需要与环境匹配，windows要GBK的
-helloworld::hello::hello: 你好
-
-$ cat modules/helloworld/manifests/init.pp
-
-class helloworld::hello ($hello = "hello"){
-
-  notify {$hello :
-  }
-
-}
-
-class helloworld::world {
-
-  notify {hiera('whoami') : # 不推荐在module中使用hiera方法，这里仅为了演示获取calling_module等
-  }
-
-}
-
-$ cat manifests/site.pp
-
-hiera_include('classes')
-
-$ puppet apply environments/production/manifests/site.pp
-Notice: Compiled catalog for winse in environment production in 0.28 seconds
-Notice: 你好
-Notice: /Stage[main]/Helloworld::Hello/Notify[你好]/message: defined 'message' as '你好'
-Notice: helloworld - helloworld::world - helloworld/world - DHCP HOST
-Notice: /Stage[main]/Helloworld::World/Notify[helloworld - helloworld::world - helloworld/world - DHCP HOST]/message: defined 'message' as 'helloworld - helloworld::world - helloworld/world - DHCP HOST'
-Notice: Applied catalog in 0.02 seconds
-
-# 测试获取hiera变量
-$ puppet apply -e "notice(hiera('whoami'))"
-Notice: Scope(Class[main]):  -  -  - DHCP HOST
-Notice: Compiled catalog for winse in environment production in 0.05 seconds
-Notice: Applied catalog in 0.03 seconds
-
-$ puppet apply -e "notice(hiera('classes'))"
-Notice: Scope(Class[main]): [helloworld::hello, helloworld::world]
-Notice: Compiled catalog for winse in environment production in 0.05 seconds
-Notice: Applied catalog in 0.02 seconds
-</code></pre>
-
-<h2>facts</h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/facter/3.1/">https://docs.puppet.com/facter/3.1/</a></li>
-<li>系统自带指标 <a href="https://docs.puppet.com/facter/3.1/core_facts.html">https://docs.puppet.com/facter/3.1/core_facts.html</a></li>
-</ul>
-
-
-<h4>自定义指标</h4>
-
-<ul>
-<li><a href="https://docs.puppet.com/facter/3.1/custom_facts.html">https://docs.puppet.com/facter/3.1/custom_facts.html</a></li>
-<li>Example <a href="https://docs.puppet.com/facter/3.1/fact_overview.html">https://docs.puppet.com/facter/3.1/fact_overview.html</a></li>
-<li>《Learning Puppet4》</li>
-</ul>
-
-
-<p>三种方式：</p>
-
-<ul>
-<li>文件: yaml/json/txt。推荐放置到 modules/[name]/facts.d 目录下</li>
-<li>可执行脚本输出键值对。推荐放置到 modules/[name]/facts.d 目录下，可执行脚本！</li>
-<li>ruby。放置到 modules/[name]/lib/facter 。<a href="https://docs.puppet.com/guides/plugins_in_modules.html">custom facts should go in lib/facter/</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ cat environments/production/modules/helloworld/facts.d/simple_facts.yaml
-</span><span class='line'>---
-</span><span class='line'>my_fact: my_value
-</span><span class='line'>
-</span><span class='line'>$ puppet facts find --debug | grep -iE "my_fact|helloworld"
-</span><span class='line'>Debug: Loading external facts from D:/eshore-shells/puppet/dta/code/environments/production/modules/helloworld/facts.d
-</span><span class='line'>Debug: Facter: searching "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d" for external facts.
-</span><span class='line'>Debug: Facter: resolving facts from YAML file "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d\simple_facts.yaml".
-</span><span class='line'>Debug: Facter: fact "my_fact" has resolved to "my_value".
-</span><span class='line'>Debug: Facter: completed resolving facts from YAML file "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d\simple_facts.yaml".
-</span><span class='line'>    "my_fact": "my_value",
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-</span><span class='line'>$ cat environments/production/modules/helloworld/lib/facter/users.rb
-</span><span class='line'>Facter.add('users') do
-</span><span class='line'>  setcode do
-</span><span class='line'>    ["winse", "winseliu"]
-</span><span class='line'>  end
-</span><span class='line'>end
-</span><span class='line'>
-</span><span class='line'>$ puppet facts | grep -3 users
-</span><span class='line'>    "uptime_days": 0,
-</span><span class='line'>    "uptime_hours": 1,
-</span><span class='line'>    "uptime_seconds": 6980,
-</span><span class='line'>    "users": [
-</span><span class='line'>      "winse",
-</span><span class='line'>      "winseliu"
-</span><span class='line'>    ],
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/15">&larr; Older</a>
@@ -1855,6 +2022,30 @@ Notice: Applied catalog in 0.02 seconds
 <section>
   <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
 	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/08/10/java-bytecode-security/">保护/加密JAVA代码</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
+			</li>
 		
 			<li class="post">
 				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
@@ -1911,6 +2102,10 @@ Notice: Applied catalog in 0.02 seconds
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2018/01/20/logstash-monitor-myself-blog-accesslog/">Logstash采集网站的访问日志</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
       </li>
     
@@ -1936,10 +2131,6 @@ Notice: Applied catalog in 0.02 seconds
     
       <li class="post">
         <a href="/blog/2017/10/28/application-run-do-double-click-on-centos7/">在Cenots7双击运行程序</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/10/28/flamegraph-display-how-disk-be-used/">使用Flamegraph查看磁盘使用情况</a>
       </li>
     
   </ul>
@@ -1981,6 +2172,10 @@ Notice: Applied catalog in 0.02 seconds
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/es/'>es</a> (1) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2036,6 +2231,10 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/logstash/'>logstash</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
 		</li>
 		 
@@ -2044,7 +2243,7 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (12) 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (18) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2093,7 +2292,7 @@ Notice: Applied catalog in 0.02 seconds
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (200)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (201)</li>
 	</ul>
 	
 </section>
@@ -2185,6 +2384,23 @@ gitalk.render('gitalk-container')
 </script>
 
 
+
+<script>
+
+$.ajax({
+  type: "POST",
+  url: "http://47.74.180.109:20000",
+  data: JSON.stringify({
+    title: document.title,
+    location: JSON.stringify(location),
+    referrer: document.referrer,
+    userAgent: navigator.userAgent
+  }),
+  contentType: "application/json; charset=utf-8",
+  dataType: "json"
+});
+
+</script>
 
 
 
