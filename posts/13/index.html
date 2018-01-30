@@ -9,8 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="前台安全检查时出现了【检测到目标URL存在跨站漏洞】，就是可以通过url带js来截取用户的信息。 1
-js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt; XSS的一些简单介绍： 淺析XSS(Cross &hellip;">
+  <meta name="description" content="最近对生产的Redis做了两个优化：Redis扩展、以及对简单键值对的存储优化（string改成hash形式） Redis扩展 上一篇介绍的Codis安装。但是使用Pipeline操作时间比较长、连接数比较多的情况下，经常出现连接重置的情况。感觉不踏实，go也不懂感觉短时间处理不了这种问题。 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +82,582 @@ js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt; XSS的�
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/07/28/redis-optimise/">Redis使用优化</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-07-28T08:22:26+08:00" pubdate data-updated="true">Thu 2016-07-28 08:22</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>最近对生产的Redis做了两个优化：Redis扩展、以及对简单键值对的存储优化（string改成hash形式）</p>
+
+<h2>Redis扩展</h2>
+
+<p>上一篇介绍的Codis安装。但是使用Pipeline操作时间比较长、连接数比较多的情况下，经常出现连接重置的情况。感觉不踏实，go也不懂感觉短时间处理不了这种问题。</p>
+
+<p>寻求它法。前期是把不同业务数据写入不同的redis实例，根据业务来分。对于同一个业务来说，得根据key的hash来写入不同的实例，但是自己写的话得包装一堆东西。</p>
+
+<p>jedis工具包括Shared的功能，根据写入key的hash映射到不同的redis实例。截取了部分Shared的主要代码:</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public class Sharded&lt;R, S extends ShardInfo&lt;R&gt;&gt; {
+</span><span class='line'>...
+</span><span class='line'>    private void initialize(List&lt;S&gt; shards) {
+</span><span class='line'>  nodes = new TreeMap&lt;Long, S&gt;();
+</span><span class='line'>
+</span><span class='line'>  for (int i = 0; i != shards.size(); ++i) {
+</span><span class='line'>      final S shardInfo = shards.get(i);
+</span><span class='line'>      if (shardInfo.getName() == null)
+</span><span class='line'>      for (int n = 0; n &lt; 160 * shardInfo.getWeight(); n++) {
+</span><span class='line'>          nodes.put(this.algo.hash("SHARD-" + i + "-NODE-" + n),
+</span><span class='line'>              shardInfo);
+</span><span class='line'>      }
+</span><span class='line'>      else
+</span><span class='line'>      for (int n = 0; n &lt; 160 * shardInfo.getWeight(); n++) {
+</span><span class='line'>          nodes.put(
+</span><span class='line'>              this.algo.hash(shardInfo.getName() + "*"
+</span><span class='line'>                  + shardInfo.getWeight() + n), shardInfo);
+</span><span class='line'>      }
+</span><span class='line'>      resources.put(shardInfo, shardInfo.createResource());
+</span><span class='line'>  }
+</span><span class='line'>    }
+</span><span class='line'>...   
+</span><span class='line'>    public S getShardInfo(byte[] key) {
+</span><span class='line'>  SortedMap&lt;Long, S&gt; tail = nodes.tailMap(algo.hash(key));
+</span><span class='line'>  if (tail.isEmpty()) {
+</span><span class='line'>      return nodes.get(nodes.firstKey());
+</span><span class='line'>  }
+</span><span class='line'>  return tail.get(tail.firstKey());
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    public S getShardInfo(String key) {
+</span><span class='line'>  return getShardInfo(SafeEncoder.encode(getKeyTag(key)));
+</span><span class='line'>    }
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>使用的时刻很简单，通过ShardedJedis来进读写，大部分的操作与Jedis类似。只是有部分整个集群的操作不能用：keys/scan等。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public List&lt;JedisShardInfo&gt; getShards(String sValue) {
+</span><span class='line'>    String[] servers = sValue.split(",");
+</span><span class='line'>
+</span><span class='line'>    List&lt;JedisShardInfo&gt; shards = new ArrayList&lt;&gt;();
+</span><span class='line'>    for (String server : servers) {
+</span><span class='line'>      Pair&lt;String, Integer&gt; hp = parseServer(server);
+</span><span class='line'>      shards.add(new JedisShardInfo(hp.getLeft(), hp.getRight(), Integer.MAX_VALUE));
+</span><span class='line'>    }
+</span><span class='line'>    return shards;
+</span><span class='line'>  }
+</span><span class='line'>  private ShardedJedisPool createRedisPool(String server) {
+</span><span class='line'>    return new ShardedJedisPool(new GenericObjectPoolConfig(), getShards(server));
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果使用过程中要使用keys，可以通过getAllShards得到所有Jedis实例的键再进行处理：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public Double zscore(String key, String member) {
+</span><span class='line'>    try (ShardedJedis redis = getRedis()) {
+</span><span class='line'>      return redis.zscore(key, member);
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  public void expires(List&lt;String&gt; patterns, int seconds) {
+</span><span class='line'>    try (ShardedJedis shardedJedis = getRedis()) {
+</span><span class='line'>      Set&lt;String&gt; keys = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>      for (Jedis redis : shardedJedis.getAllShards()) {
+</span><span class='line'>        for (String p : patterns) {
+</span><span class='line'>          keys.addAll(redis.keys(p)); // 调用单独实例的keys命令获取匹配的键
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      ShardedJedisPipeline pipeline = shardedJedis.pipelined();
+</span><span class='line'>      for (String key : keys) {
+</span><span class='line'>        pipeline.expire(key, seconds);
+</span><span class='line'>      }
+</span><span class='line'>      pipeline.sync();
+</span><span class='line'>    }
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>进行多实例(集群)切分后，效果还是挺明显的。写入高峰期分流效果显著，负载均摊，可使用的内存也翻翻，键也基本平均分布（ <code>--maxmemory-policy volatile-lru</code> ）。生产实际效果：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 redis]$ sh stat_cluster.sh 
+</span><span class='line'>
+</span><span class='line'> * [ ============================================================&gt; ] 4 / 4
+</span><span class='line'>
+</span><span class='line'>hadoop-master1:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:44287785776
+</span><span class='line'>used_memory_human:41.25G
+</span><span class='line'>used_memory_rss:67458658304
+</span><span class='line'>used_memory_peak:67981990576
+</span><span class='line'>used_memory_peak_human:63.31G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.52
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=72729777,expires=11967,avg_ttl=63510023
+</span><span class='line'>
+</span><span class='line'>hadoop-master2:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:50667945344
+</span><span class='line'>used_memory_human:47.19G
+</span><span class='line'>used_memory_rss:66036752384
+</span><span class='line'>used_memory_peak:64424543672
+</span><span class='line'>used_memory_peak_human:60.00G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.30
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=100697581,expires=13426,avg_ttl=63509903
+</span><span class='line'>
+</span><span class='line'>hadoop-master3:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:56763389184
+</span><span class='line'>used_memory_human:52.87G
+</span><span class='line'>used_memory_rss:66324045824
+</span><span class='line'>used_memory_peak:64424546136
+</span><span class='line'>used_memory_peak_human:60.00G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.17
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=94363547,expires=13544,avg_ttl=63505693
+</span><span class='line'>
+</span><span class='line'>hadoop-master4:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:54513952832
+</span><span class='line'>used_memory_human:50.77G
+</span><span class='line'>used_memory_rss:67257393152
+</span><span class='line'>used_memory_peak:64820124928
+</span><span class='line'>used_memory_peak_human:60.37G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.23
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=83297543,expires=12418,avg_ttl=63507046
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Finished processing 4 / 4 hosts in 298.89 ms</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>存储优化</h2>
+
+<p>实际环境中存在会大量的用到简单string键值对，挺耗内存的。其实使用hash（内部存储ziplist）能更有效的利用内存。</p>
+
+<p>注意是ziplist形式的hash才能省内存！！如果是skiplist的hash会浪费内存。</p>
+
+<ul>
+<li><a href="http://webcache.googleusercontent.com/search?q=cache:yr96Qf3F0e4J:heylinux.com/archives/1920.html+&amp;cd=1&amp;hl=zh-CN&amp;ct=clnk&amp;gl=jp">内存优化之Redis数据结构的设计优化实践</a> heylinux.com/archives/1920.html 这篇文章可能访问不了，可以通过google/baidu的快照来查看</li>
+<li><a href="http://redis4you.com/articles.php?id=008&amp;name=Understanding+hash-max-zipmap-entries+and+">Understanding hash-max-zipmap-entries and &ldquo;hash of hashes&rdquo; optimization</a></li>
+<li><a href="http://redis.io/topics/memory-optimization">http://redis.io/topics/memory-optimization</a></li>
+<li><a href="http://redis.io/topics/lru-cache">http://redis.io/topics/lru-cache</a></li>
+<li><a href="https://segmentfault.com/a/1190000004708270">Redis内存优化</a></li>
+</ul>
+
+
+<p>下面引用官网对简单键值对和Hash的一个比较（Redis中key的相关特性不关注）: 对于小数据量的hash进行了优化</p>
+
+<blockquote><p> a few keys use a lot more memory than a single key containing a hash with a few fields.</p>
+
+<p> We use a trick.</p>
+
+<p> But many times hashes contain just a few fields. When hashes are small we can instead just encode them in an O(N) data structure, like a linear array with length-prefixed key value pairs. Since we do this only when N is small</p>
+
+<p> This does not work well just from the point of view of time complexity, but also from the point of view of constant times, since a linear array of key value pairs happens to play very well with the CPU cache (it has a better cache locality than a hash table).</p></blockquote>
+
+<p>优化主要涉及到ziplist的两个参数，是一个cpu/memory之间的均衡关系。entries直接用默认的就好了，value最好不要大于254（ziplist节点entry大于254需要增加4个到5字节，来存储前一个entry的长度）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hash-max-zipmap-entries 512 (hash-max-ziplist-entries for Redis &gt;= 2.6)
+</span><span class='line'>hash-max-zipmap-value 64  (hash-max-ziplist-value for Redis &gt;= 2.6)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>简单列几条数据：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com  -&gt;  1469584847
+</span><span class='line'>3:co4hk52ia0b1.5buzd.com                                          -&gt;  1468859527
+</span><span class='line'>1:119.84.110.82_39502                                             -&gt;  1469666877</span></code></pre></td></tr></table></div></figure>
+
+
+<p>原始key内容可以不需要，鉴于包括域名的key太长，直接对数据key取md5。以1亿键值对来进行估算，取md5的前五位作为key，后27位作为hash键值对的key。</p>
+
+<p>扫描原始redis实例，然后把键值对转换后存储到新的实例。转换Scala代码如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>import java.util.{List =&gt; JList}
+</span><span class='line'>import org.apache.commons.codec.digest.DigestUtils
+</span><span class='line'>import redis.clients.jedis._
+</span><span class='line'>import scala.collection.JavaConversions._
+</span><span class='line'>
+</span><span class='line'>trait RedisUtils {
+</span><span class='line'>
+</span><span class='line'>  def md5(data: String): String = {
+</span><span class='line'>    DigestUtils.md5Hex(data)
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  def Type(redis: Jedis, key: String) = redis.`type`(key)
+</span><span class='line'>
+</span><span class='line'>  def scan(redis: Jedis)(action: JList[String] =&gt; Unit): Unit = {
+</span><span class='line'>    import scala.util.control.Breaks._
+</span><span class='line'>
+</span><span class='line'>    var cursor = "0"
+</span><span class='line'>    breakable {
+</span><span class='line'>      while (true) {
+</span><span class='line'>        val res = redis.scan(cursor)
+</span><span class='line'>
+</span><span class='line'>        action(res.getResult())
+</span><span class='line'>
+</span><span class='line'>        cursor = res.getStringCursor
+</span><span class='line'>        if (cursor.equals("0")) {
+</span><span class='line'>          break
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  def printInfo(redis: Jedis): Unit = {
+</span><span class='line'>    println(redis.info())
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  // 验证：
+</span><span class='line'>  //  打印 **总共** 的键值对数量
+</span><span class='line'>  //  eval "local aks=redis.call('keys', '*'); local res=0; for i,r in ipairs(aks) do res=res+redis.call('hlen', r) end; return res" 0
+</span><span class='line'>  //  打印 **每个** hash包括的键值对个数
+</span><span class='line'>  //  eval "local aks=redis.call('keys', '*'); local res={}; for i,r in ipairs(aks) do res[i]=redis.call('hlen', r) end; return res" 0
+</span><span class='line'>  //
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>Object RedisTransfer extends RedisUtils {
+</span><span class='line'>
+</span><span class='line'>  def handle(key: String, value: String, tp: Pipeline): Unit = {
+</span><span class='line'>    val m5 = md5(key)
+</span><span class='line'>    tp.hset(m5.substring(0, 5), m5.substring(5), value)
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  def main(args: Array[String]) {
+</span><span class='line'>    val Array(sHost, sPort, tHost, tPort) = args
+</span><span class='line'>
+</span><span class='line'>    val timeout = 60 * 1000
+</span><span class='line'>    val source = new Jedis(sHost, sPort.toInt, timeout)
+</span><span class='line'>    val sp = source.pipelined()
+</span><span class='line'>    val target = new Jedis(tHost, tPort.toInt, timeout)
+</span><span class='line'>    val tp = target.pipelined()
+</span><span class='line'>
+</span><span class='line'>    scan(source) { keys =&gt;
+</span><span class='line'>      // 仅处理 string类型 的记录
+</span><span class='line'>      val requests = for (key &lt;- keys) yield Some((key, sp.get(key)))
+</span><span class='line'>      sp.sync()
+</span><span class='line'>
+</span><span class='line'>      for (
+</span><span class='line'>        request &lt;- requests;
+</span><span class='line'>        (key, resp) &lt;- request
+</span><span class='line'>      ) {
+</span><span class='line'>        try {
+</span><span class='line'>          handle(key, resp.get(), tp)
+</span><span class='line'>        } catch {
+</span><span class='line'>          case e: Exception =&gt; println(s"fetch $key with exception, ${e.getMessage}")
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    tp.sync()
+</span><span class='line'>
+</span><span class='line'>    printInfo(target)
+</span><span class='line'>
+</span><span class='line'>    target.close()
+</span><span class='line'>    source.close()
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>由于对数据进行了处理，对比不是很清晰，不能直接说省了多少空间。但是添加上面的处理后，原来30G（大概3亿多）的实例变成了15G。</p>
+
+<h2>另一个案例</h2>
+
+<p>另外对域名的实例做了下测试，6.4百万的键值对：707.29M内存：</p>
+
+<p>md5前4个字符作为key，总共产生65536个键值对。每个hash大概包括100个kv。</p>
+
+<ul>
+<li>hash的key使用原来的键
+
+<ul>
+<li>不调ziplist_value的值，实际的转换成hash(skiplist)：939.6M，</li>
+<li>ziplist_value修改成1024，转换成hash(ziplist)：513.78M</li>
+</ul>
+</li>
+<li>md5的作为hash的新key：344.7M</li>
+<li>md5的后28位作为hash的新key： 259.09M</li>
+</ul>
+
+
+<p>如：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>MD5:
+</span><span class='line'>  3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com
+</span><span class='line'>  1356de078028ddf266c962533760b27c
+</span><span class='line'>
+</span><span class='line'>1356 -&gt; hash( 3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com -&gt; 1469584847 )
+</span><span class='line'>1356 -&gt; hash( 1356de078028ddf266c962533760b27c -&gt; 1469584847 )
+</span><span class='line'>1356 -&gt; hash( de078028ddf266c962533760b27c -&gt; 1469584847 )</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2220,255 +2795,6 @@ js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt; XSS的�
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/06/15/elasticsearch-startguide/">Elasticsearch Startguide</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-06-15T08:40:28+08:00" pubdate data-updated="true">Wed 2016-06-15 08:40</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>如果有Lucene的使用经历，elasticsearch的入门还是比较简单的。直接解压启动命令就安装好了，然后就是添加一些plugins就OK了。</p>
-
-<h2>安装</h2>
-
-<p>从官网下载 <a href="https://www.elastic.co/downloads/elasticsearch">TAR包</a> ，解压后，运行 elasticsearch 脚本启动服务。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># -d 表示 daemonize 后台运行
-</span><span class='line'>[hadoop@cu2 elasticsearch-2.2.0]$ bin/elasticsearch -d</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>插件</h2>
-
-<p>大部分插件都是ajax方式的静态页面，可以通过plugin脚本安装，或者直接解压文件到plugins目录下面。</p>
-
-<p>安装已经下载到本地的插件需要加file协议，不然程序会从官网下载。或者直接解压到plugins目录下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 elasticsearch-2.2.0]$ bin/plugin install file:///home/hadoop/elasticsearch-head-master.zip 
-</span><span class='line'>-&gt; Installing from file:/home/hadoop/elasticsearch-head-master.zip...
-</span><span class='line'>Trying file:/home/hadoop/elasticsearch-head-master.zip ...
-</span><span class='line'>Downloading .........DONE
-</span><span class='line'>Verifying file:/home/hadoop/elasticsearch-head-master.zip checksums if available ...
-</span><span class='line'>NOTE: Unable to verify checksum for downloaded plugin (unable to find .sha1 or .md5 file to verify)
-</span><span class='line'>Installed head into /home/hadoop/elasticsearch-2.2.0/plugins/head
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>windows</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\usr\share\elasticsearch-2.3.3\bin&gt;plugin.bat install file:///D:/SOFTWARE/elasticsearch/elasticsearch-plugin/elasticsearch-head-master.zip</span></code></pre></td></tr></table></div></figure>
-
-
-<p>安装好plugin后，打开浏览器查看索引情况： <a href="http://localhost:9200/_plugin/head/">http://localhost:9200/_plugin/head/</a></p>
-
-<h2>插件高阶</h2>
-
-<p>有些插件版本比较旧需要改一改，需要了解新版本的 elasticsearch-plugin 的规范：</p>
-
-<p><a href="https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/installation.html">https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/installation.html</a></p>
-
-<p>新版本插件主要是需要增加一个描述文件：</p>
-
-<p><a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.3/breaking_20_plugin_and_packaging_changes.html#_plugins_require_descriptor_file">Plugins require descriptor file</a></p>
-
-<p>遇到想安装的旧版本的plugin，描述文件写法可以参考 <a href="https://github.com/mobz/elasticsearch-head">elasticsearch-head</a> 。</p>
-
-<p>可选插件：</p>
-
-<ul>
-<li>paramedic <a href="https://github.com/karmi/elasticsearch-paramedic">https://github.com/karmi/elasticsearch-paramedic</a></li>
-<li>head <a href="https://github.com/mobz/elasticsearch-head">https://github.com/mobz/elasticsearch-head</a></li>
-<li>kopf <a href="https://github.com/lmenezes/elasticsearch-kopf">https://github.com/lmenezes/elasticsearch-kopf</a></li>
-</ul>
-
-
-<h2>常用URL请求</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-create-index.html
-</span><span class='line'># 创建
-</span><span class='line'>$ curl -XPUT 'http://localhost:9200/t_ods_idc_isp_log2/' -d '{
-</span><span class='line'>    "settings" : {
-</span><span class='line'>        "index" : {
-</span><span class='line'>            "number_of_shards" : 3,
-</span><span class='line'>            "number_of_replicas" : 0
-</span><span class='line'>        }
-</span><span class='line'>    }
-</span><span class='line'>}'
-</span><span class='line'>{"acknowledged":true}
-</span><span class='line'>
-</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-put-mapping.html
-</span><span class='line'># 更新
-</span><span class='line'># mapping.json
-</span><span class='line'>{
-</span><span class='line'>  "properties": {
-</span><span class='line'>      "author": {
-</span><span class='line'>          "type": "string"
-</span><span class='line'>      },
-</span><span class='line'>...
-</span><span class='line'>      "year": {
-</span><span class='line'>          "type": "long",
-</span><span class='line'>          "ignore_malformed": false,
-</span><span class='line'>          "index": "analyzed"
-</span><span class='line'>      },
-</span><span class='line'>      "avaiable": {
-</span><span class='line'>          "type": "boolean"
-</span><span class='line'>      }
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>$ curl -XPUT 'localhost:9200/t_ods_idc_isp_log2/_mapping/default' -d @mapping.json
-</span><span class='line'>
-</span><span class='line'>$ curl -XPUT 'localhost:9200/t_ods_idc_isp_log2/_mapping/default' -d '
-</span><span class='line'>{
-</span><span class='line'>  "properties": {
-</span><span class='line'>    "fDIID": {
-</span><span class='line'>      "type": "string"
-</span><span class='line'>    },
-</span><span class='line'>...
-</span><span class='line'>    "gatherTime": {
-</span><span class='line'>      "type": "long"
-</span><span class='line'>    }
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>'
-</span><span class='line'>
-</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-templates.html
-</span><span class='line'># 索引
-</span><span class='line'># documents.json
-</span><span class='line'>{ "index": {      "_index": "library",        "_type": "book",        "_id": "1"  } }
-</span><span class='line'>{     "title": "All Quiet on the Western Front",  "otitle": "Im Westen nichts Neues",     "author": "Erich Maria Remarque",   "year": 1929,   "characters": ["Paul Baumer",   "Albert Kropp",     "Haie Westhus",     "Fredrich Muller",  "Stanislaus Katczinsky",    "Tjaden"],  "tags": ["novel"],  "copies": 1,    "available": true,  "section": 3 }
-</span><span class='line'>{     "index": {      "_index": "library",        "_type": "book",        "_id": "2"  } }
-</span><span class='line'>{     "title": "Catch-22",    "author": "Joseph Heller",  "year": 1961,   "characters": ["John Yossarian",    "Captain Aardvark",     "Chaplain Tappman",     "Colonel Cathcart",     "Doctor Daneeka"],  "tags": ["novel"],  "copies": 6,    "available": false,     "section": 1 }
-</span><span class='line'>
-</span><span class='line'>$ curl -s -XPOST localhost:9200/_bulk --data-binary @documents.json
-</span><span class='line'>
-</span><span class='line'># 删除
-</span><span class='line'>$ curl -XDELETE 'http://localhost:9200/t_ods_idc_isp_log2/'
-</span><span class='line'>{"acknowledged":true}
-</span><span class='line'>
-</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-get-mapping.html
-</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-get-field-mapping.html
-</span><span class='line'># 状态查看
-</span><span class='line'>http://localhost:9200/_cat/health?v
-</span><span class='line'>http://localhost:9200/_cat/nodes?v
-</span><span class='line'>http://localhost:9200/_cat/indices?v
-</span><span class='line'>
-</span><span class='line'>curl -XGET 'http://localhost:9200/_all/_mapping/book/field/author'
-</span><span class='line'>curl -XHEAD -i 'http://localhost:9200/twitter/tweet'
-</span><span class='line'>curl localhost:9200/_stats
-</span><span class='line'>curl -XGET 'http://localhost:9200/_all/_mapping/[type]'
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/14">&larr; Older</a>
@@ -2569,6 +2895,10 @@ js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt; XSS的�
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2018/01/26/proxy-on-java-via-shandowsocks/">Java中使用代理-基于Shandowsocks</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2018/01/20/logstash-monitor-myself-blog-accesslog/">Logstash采集网站的访问日志</a>
       </li>
     
@@ -2594,10 +2924,6 @@ js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt; XSS的�
     
       <li class="post">
         <a href="/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/10/28/application-run-do-double-click-on-centos7/">在Cenots7双击运行程序</a>
       </li>
     
   </ul>
@@ -2674,7 +3000,7 @@ js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt; XSS的�
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/java/'>java</a> (9) 
+			<a class='category' href='/blog/categories/java/'>java</a> (10) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2742,7 +3068,7 @@ js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt; XSS的�
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (61) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (62) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2759,7 +3085,7 @@ js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt; XSS的�
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (201)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (202)</li>
 	</ul>
 	
 </section>
@@ -2856,7 +3182,7 @@ gitalk.render('gitalk-container')
 
 $.ajax({
   type: "POST",
-  url: "http://47.74.180.109:20000",
+  url: "http://log.winseliu.com:20000",
   data: JSON.stringify({
     title: document.title,
     location: JSON.stringify(location),

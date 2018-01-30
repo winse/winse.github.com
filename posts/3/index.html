@@ -9,8 +9,11 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="前面使用nat+route的方式手动连通两台机器上的docker容器。pipework是通过脚本的方式（手动）设置网络以及修改路由来进行配置的。 参考： Docker网络详解及pipework源码解读与实践
-docker技术剖析&ndash;docker网络（二）docker宿主机之间容器互通 &hellip;">
+  <meta name="description" content="参考 Get started with Macvlan network driver
+docker跨主机macvlan网络配置
+ip static
+Docker 1.12+ container&rsquo;s IP in LAN
+Docker自定义网络——MacVLAN &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -83,6 +86,387 @@ docker技术剖析&ndash;docker网络（二）docker宿主机之间容器互通 
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2017/10/08/docker-network-via-macvlan/">Docker多主机网络配置 - Macvlan</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-10-08T10:27:54+08:00" pubdate data-updated="true">Sun 2017-10-08 10:27</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>参考</h2>
+
+<ul>
+<li><a href="https://docs.docker.com/engine/userguide/networking/get-started-macvlan/#macvlan-bridge-mode-example-usage">Get started with Macvlan network driver</a></li>
+<li><a href="https://github.com/alfredhuang211/study-docker-doc/blob/master/docker%E8%B7%A8%E4%B8%BB%E6%9C%BAmacvlan%E7%BD%91%E7%BB%9C%E9%85%8D%E7%BD%AE.md">docker跨主机macvlan网络配置</a></li>
+<li><a href="https://blog.jessfraz.com/post/ips-for-all-the-things/">ip static</a></li>
+<li><a href="https://stackoverflow.com/questions/35742807/docker-1-10-containers-ip-in-lan/39285950#39285950">Docker 1.12+ container&rsquo;s IP in LAN</a></li>
+<li><a href="http://hustcat.github.io/docker-macvlan/">Docker自定义网络——MacVLAN</a> 这篇内容有点类似pipework。</li>
+</ul>
+
+
+<blockquote><p>Note: In Macvlan you are not able to ping or communicate with the default namespace IP address. For example, if you create a container and try to ping the Docker host’s eth0 it will not work. That traffic is explicitly filtered by the kernel modules themselves to offer additional provider isolation and security.</p></blockquote>
+
+<h2>主机</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-master140 ~]# ip addr show ens33
+</span><span class='line'>2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
+</span><span class='line'>    link/ether 00:0c:29:40:2d:15 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 192.168.191.140/24 brd 192.168.191.255 scope global dynamic ens33
+</span><span class='line'>       valid_lft 1765sec preferred_lft 1765sec
+</span><span class='line'>    inet6 fe80::1186:2fe5:9ee5:8790/64 scope link 
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker141 ~]# ip addr show ens33
+</span><span class='line'>2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
+</span><span class='line'>    link/ether 00:0c:29:2e:67:4d brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 192.168.191.141/24 brd 192.168.191.255 scope global dynamic ens33
+</span><span class='line'>       valid_lft 1779sec preferred_lft 1779sec
+</span><span class='line'>    inet6 fe80::dd23:1df6:b37:efae/64 scope link 
+</span><span class='line'>       valid_lft forever preferred_lft forever</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>创建网络</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker141 ~]# docker network create \
+</span><span class='line'>-d macvlan \
+</span><span class='line'>--subnet=192.168.191.0/24 \
+</span><span class='line'>--gateway=192.168.191.2 \
+</span><span class='line'>-o parent=ens33 pub_net
+</span><span class='line'>4370998ed03024bc0057a894f1280d5b0fcdba526fd9e8da612a3abb0dbc884b
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker141 ~]# docker network list 
+</span><span class='line'>NETWORK ID          NAME                DRIVER              SCOPE
+</span><span class='line'>eee9236a36ba        bridge              bridge              local               
+</span><span class='line'>ddc7f59215c1        host                host                local               
+</span><span class='line'>d8dc7fbc40a6        none                null                local               
+</span><span class='line'>4370998ed030        pub_net             macvlan             local               
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker141 ~]# docker network inspect pub_net
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>使用</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>docker rm -f $( docker ps -a | grep -v IMAGE | awk '{print $1}' ) 
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker141 ~]# docker run --net=pub_net --ip=192.168.191.200 --name c200 -tid busybox /bin/sh
+</span><span class='line'>2e0a2ede40e80a2f1739330bb3a6c45b91ea08d78d26d165ad13945bedbea40f
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker141 ~]# docker ps 
+</span><span class='line'>CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
+</span><span class='line'>2e0a2ede40e8        busybox             "/bin/sh"           13 seconds ago      Up 11 seconds                           c200
+</span><span class='line'>[root@kube-worker141 ~]# docker exec c200 ifconfig 
+</span><span class='line'>eth0      Link encap:Ethernet  HWaddr 02:42:C0:A8:BF:C8  
+</span><span class='line'>          inet addr:192.168.191.200  Bcast:0.0.0.0  Mask:255.255.255.0
+</span><span class='line'>          inet6 addr: fe80::42:c0ff:fea8:bfc8/64 Scope:Link
+</span><span class='line'>          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+</span><span class='line'>          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+</span><span class='line'>          TX packets:8 errors:0 dropped:0 overruns:0 carrier:0
+</span><span class='line'>          collisions:0 txqueuelen:0 
+</span><span class='line'>          RX bytes:0 (0.0 B)  TX bytes:648 (648.0 B)
+</span><span class='line'>
+</span><span class='line'>lo        Link encap:Local Loopback  
+</span><span class='line'>          inet addr:127.0.0.1  Mask:255.0.0.0
+</span><span class='line'>          inet6 addr: ::1/128 Scope:Host
+</span><span class='line'>          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+</span><span class='line'>          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+</span><span class='line'>          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+</span><span class='line'>          collisions:0 txqueuelen:1 
+</span><span class='line'>          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker141 ~]# docker exec c200 route -n
+</span><span class='line'>Kernel IP routing table
+</span><span class='line'>Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+</span><span class='line'>0.0.0.0         192.168.191.2   0.0.0.0         UG    0      0        0 eth0
+</span><span class='line'>192.168.191.0   0.0.0.0         255.255.255.0   U     0      0        0 eth0
+</span><span class='line'>[root@kube-worker141 ~]# docker exec c200 ping baidu.com 
+</span><span class='line'>PING baidu.com (111.13.101.208): 56 data bytes
+</span><span class='line'>64 bytes from 111.13.101.208: seq=0 ttl=128 time=45.029 ms
+</span><span class='line'>64 bytes from 111.13.101.208: seq=1 ttl=128 time=44.616 ms
+</span><span class='line'>
+</span><span class='line'>#201
+</span><span class='line'>[root@kube-worker141 ~]# docker run --net=pub_net --ip=192.168.191.201 -tid busybox /bin/sh 
+</span><span class='line'>c8cfd3443f2b7b3973a06470cb95442eadface8d89c8cb1749ad73ebbd7e9e39
+</span><span class='line'>
+</span><span class='line'>##本地容器互通: 
+</span><span class='line'>#: HOST141-200 ping HOST141-201
+</span><span class='line'>[root@kube-worker141 ~]# docker exec c200 ping -W 10 192.168.191.201
+</span><span class='line'>PING 192.168.191.201 (192.168.191.201): 56 data bytes
+</span><span class='line'>64 bytes from 192.168.191.201: seq=0 ttl=64 time=0.523 ms
+</span><span class='line'>
+</span><span class='line'>#210 
+</span><span class='line'>[root@kube-master ~]# docker run --net=pub_net --ip=192.168.191.210 -tid busybox /bin/sh 
+</span><span class='line'>7929c136c3dbc646b68b3b7302e8525a25fe2f583db2246fea0da85a448b7b78
+</span><span class='line'>
+</span><span class='line'>##B访问A主机的容器: 
+</span><span class='line'>#: HOST140 ping HOST141-201 
+</span><span class='line'>[root@kube-master140 ~]# ping 192.168.191.201 
+</span><span class='line'>PING 192.168.191.201 (192.168.191.201) 56(84) bytes of data.
+</span><span class='line'>64 bytes from 192.168.191.201: icmp_seq=1 ttl=64 time=1.44 ms
+</span><span class='line'>
+</span><span class='line'>##A主机容器访问B主机容器: 
+</span><span class='line'>#: HOST141-200 ping HOST140-210
+</span><span class='line'>[root@kube-worker141 ~]# docker exec c200 ping -W 10 192.168.191.210
+</span><span class='line'>PING 192.168.191.210 (192.168.191.210): 56 data bytes
+</span><span class='line'>64 bytes from 192.168.191.210: seq=0 ttl=64 time=2.049 ms
+</span><span class='line'>64 bytes from 192.168.191.210: seq=1 ttl=64 time=0.993 ms
+</span><span class='line'>
+</span><span class='line'>#主机与所在容器互相不能访问 (--!): 
+</span><span class='line'>#: HOST141 ping HOST141-200
+</span><span class='line'>[root@kube-worker141 ~]# ping 192.168.191.200
+</span><span class='line'>PING 192.168.191.200 (192.168.191.200) 56(84) bytes of data.
+</span><span class='line'>From 192.168.191.141 icmp_seq=1 Destination Host Unreachable
+</span><span class='line'>From 192.168.191.141 icmp_seq=2 Destination Host Unreachable
+</span><span class='line'>#: HOST141-200 ping HOST141
+</span><span class='line'>[root@kube-worker1 ~]# docker exec c200 ping 192.168.191.141
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>针对主机与本机容器不能互通的问题，可以增加一张默认的网卡：<a href="https://success.docker.com/KBase/Multiple_Docker_Networks">Multiple Docker Networks</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#先通过默认网络创建
+</span><span class='line'>[root@kube-worker1 ~]# docker run --name c200 -tid busybox /bin/sh                                   
+</span><span class='line'>47b7c1813b95cbec471b1a6de6a870e5537cfa70d54120873a5edb4e444b373b
+</span><span class='line'>#然后连接pub_net！
+</span><span class='line'>[root@kube-worker1 ~]# docker network connect --ip=192.168.191.200 pub_net c200        
+</span><span class='line'>[root@kube-worker1 ~]# docker exec c200 ip a
+</span><span class='line'>1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue qlen 1
+</span><span class='line'>    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+</span><span class='line'>    inet 127.0.0.1/8 scope host lo
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>    inet6 ::1/128 scope host 
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>14: eth0@if15: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+</span><span class='line'>    link/ether 02:42:ac:12:00:02 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 172.18.0.2/16 scope global eth0
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>    inet6 fe80::42:acff:fe12:2/64 scope link 
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>16: eth1@if2: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+</span><span class='line'>    link/ether 02:42:c0:a8:bf:c8 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 192.168.191.200/24 scope global eth1
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>    inet6 fe80::42:c0ff:fea8:bfc8/64 scope link 
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>       </span></code></pre></td></tr></table></div></figure>
+
+
+<p>方式1：</p>
+
+<p>与主机的通信，通过 172.18.0.0/24 的网络。其他的通过 192.168.191.0/24 。还是感觉有点鸡肋！！</p>
+
+<p>方式2：</p>
+
+<p>增加route：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#route add -host $container_ip gw $lan_router_ip $if_device_nic2
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker1 ~]# route add -net 192.168.191.200 gw 172.18.0.1 netmask 255.255.255.255 dev docker0
+</span><span class='line'>[root@kube-worker1 ~]# route -n
+</span><span class='line'>Kernel IP routing table
+</span><span class='line'>Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+</span><span class='line'>0.0.0.0         192.168.191.2   0.0.0.0         UG    100    0        0 ens33
+</span><span class='line'>172.17.3.0      192.168.191.140 255.255.255.0   UG    100    0        0 ens33
+</span><span class='line'>172.17.4.0      0.0.0.0         255.255.255.0   U     425    0        0 kbr0
+</span><span class='line'>172.18.0.0      0.0.0.0         255.255.0.0     U     0      0        0 docker0
+</span><span class='line'>192.168.191.0   0.0.0.0         255.255.255.0   U     100    0        0 ens33
+</span><span class='line'>192.168.191.200 172.18.0.1      255.255.255.255 UGH   0      0        0 docker0
+</span><span class='line'>[root@kube-worker1 ~]# ping 192.168.191.200
+</span><span class='line'>PING 192.168.191.200 (192.168.191.200) 56(84) bytes of data.
+</span><span class='line'>64 bytes from 192.168.191.200: icmp_seq=1 ttl=64 time=0.239 ms
+</span><span class='line'>64 bytes from 192.168.191.200: icmp_seq=2 ttl=64 time=0.106 ms
+</span><span class='line'>^C
+</span><span class='line'>--- 192.168.191.200 ping statistics ---
+</span><span class='line'>2 packets transmitted, 2 received, 0% packet loss, time 1000ms
+</span><span class='line'>rtt min/avg/max/mdev = 0.106/0.172/0.239/0.067 ms
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>通过操作与pipework比较，互有优劣：</p>
+
+<ul>
+<li>pipework会创建网卡，然后所有的ip都是互通的，但是绑定、还得把主机的ip配置到br0上。</li>
+<li>而docker-network的方式与主机互通需要做额外的配置。</li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2068,79 +2452,6 @@ your root STAF directory</p>
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2017/09/19/os-install-via-usb/">使用U盘安装Centos7</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2017-09-19T22:26:30+08:00" pubdate data-updated="true">Tue 2017-09-19 22:26</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>使用U盘安装操作系统，原来一直用 unetbootin-windows 但这次不好使，U盘重新格式化也不行。遇到的几个问题：</p>
-
-<ol>
-<li>有光驱最好啊，没光驱才用U盘安装啊！</li>
-<li>U盘是否能被识别？安装系统嘛，你得屈就电脑，它不识别你就只能换另一个咯。旧的服务器识别USB3.0有问题。</li>
-<li>进BIOS看启动项是否有你的U盘？把U盘的顺序调整到HDD的前面。与第二项是一起检测的。</li>
-<li><p>做的系统：下载<a href="http://isoredirect.centos.org/centos/7/isos/x86_64/CentOS-7-x86_64-Minimal-1708.iso">Minimal.iso</a>，用<a href="https://wiki.centos.org/zh/HowTos/InstallFromUSBkey">采用 Windows iso2usb</a> 把iso载入到U盘。</p></li>
-<li><p>注意1： 看到 ntldr is missing 这样的提示，就可以去再重写一遍U盘了！</p></li>
-<li>注意2： U盘必须是FAT32的！！</li>
-</ol>
-
-
-<p>安装系统的时刻，问题又来了：</p>
-
-<ul>
-<li>dracut_initqueue[599]: Warning: Could not boot</li>
-</ul>
-
-
-<p>找不到镜像。</p>
-
-<p>处理： <strong> 等一段时间后会进行入到 Dracut shell </strong>, 查看下 /dev 下面有哪些磁盘设备。<strong> 最大/最后的那个磁盘设备 </strong> 一般就是你的U盘：如我的是 /dev/sdc1 。</p>
-
-<p>CTRL+ALT+DELETE 重新启动，进入 CENTOS 安装界面启动选项时，按 TAB ，替换为如下内容：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>vmlinux initrd=initrd.img
-</span><span class='line'>inst.stage2=hd:/dev/sdc1 quit</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li><a href="http://m.blog.csdn.net/w_z_z_1991/article/details/41909851">http://m.blog.csdn.net/w_z_z_1991/article/details/41909851</a></li>
-<li><a href="http://www.jianshu.com/p/e3cd90c540c3">http://www.jianshu.com/p/e3cd90c540c3</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/4">&larr; Older</a>
@@ -2241,6 +2552,10 @@ your root STAF directory</p>
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2018/01/26/proxy-on-java-via-shandowsocks/">Java中使用代理-基于Shandowsocks</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2018/01/20/logstash-monitor-myself-blog-accesslog/">Logstash采集网站的访问日志</a>
       </li>
     
@@ -2266,10 +2581,6 @@ your root STAF directory</p>
     
       <li class="post">
         <a href="/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/10/28/application-run-do-double-click-on-centos7/">在Cenots7双击运行程序</a>
       </li>
     
   </ul>
@@ -2346,7 +2657,7 @@ your root STAF directory</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/java/'>java</a> (9) 
+			<a class='category' href='/blog/categories/java/'>java</a> (10) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2414,7 +2725,7 @@ your root STAF directory</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (61) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (62) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2431,7 +2742,7 @@ your root STAF directory</p>
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (201)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (202)</li>
 	</ul>
 	
 </section>
@@ -2528,7 +2839,7 @@ gitalk.render('gitalk-container')
 
 $.ajax({
   type: "POST",
-  url: "http://47.74.180.109:20000",
+  url: "http://log.winseliu.com:20000",
   data: JSON.stringify({
     title: document.title,
     location: JSON.stringify(location),
