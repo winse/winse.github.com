@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.32.7.2）！ 我这里测试环境使用的是 2.6.3 Heterogeneous Storage: Archival Storage, SSD &amp; Memory 配置 &hellip;">
+  <meta name="description" content="在MacTalk的公众号上读到了agentzh关于火焰图介绍(2016年5月6日07:57 动态追踪技术（中） - Dtrace、SystemTap、火焰图)，挺新奇的，并且应该对于查询热线程还是有作用的。 先了解perf和flamegraphs基础知识： https://www.ibm.com/ &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -82,6 +82,446 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/05/06/flamegraphs-java-cpu/">Flamegraphs Java Cpu</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-05-06T21:35:03+08:00" pubdate data-updated="true">Fri 2016-05-06 21:35</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>在MacTalk的公众号上读到了agentzh关于火焰图介绍(2016年5月6日07:57 动态追踪技术（中） - Dtrace、SystemTap、火焰图)，挺新奇的，并且应该对于查询热线程还是有作用的。</p>
+
+<p>先了解perf和flamegraphs基础知识：</p>
+
+<ul>
+<li><a href="https://www.ibm.com/developerworks/cn/linux/l-cn-perf1/">https://www.ibm.com/developerworks/cn/linux/l-cn-perf1/</a></li>
+<li><a href="http://www.brendangregg.com/perf.html#FlameGraphs">perf Examples</a></li>
+<li><a href="http://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html">CPU Flame Graphs</a></li>
+<li><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">Java in Flames</a></li>
+<li><a href="http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html">Java CPU Flame Graphs</a></li>
+<li>使用方法<a href="https://randomascii.wordpress.com/2013/03/26/summarizing-xperf-cpu-usage-with-flame-graphs/">xperf - windows perf</a></li>
+<li>工具<a href="https://github.com/google/UIforETW/blob/master/bin/xperf_to_collapsedstacks.py">UIforETW</a></li>
+</ul>
+
+
+<p>perf好像有点类似java的btrace，不过perf是操作系统层面的。把操作系统当做服务，客户端通过perf来获取/查询系统的信息。</p>
+
+<h2>安装</h2>
+
+<ul>
+<li>虚拟机</li>
+</ul>
+
+
+<p>perf包括在linux 2.6.31代码里面，redhat可以通过yum来安装/更新：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 ~]# yum install perf
+</span><span class='line'>...
+</span><span class='line'>Installed:
+</span><span class='line'>  perf.x86_64 0:2.6.32-573.26.1.el6  
+</span><span class='line'>  
+</span><span class='line'>[root@hadoop-master2 ~]# perf stat ls /dev/shm
+</span><span class='line'>
+</span><span class='line'> Performance counter stats for 'ls /dev/shm':
+</span><span class='line'>
+</span><span class='line'>          0.697115 task-clock                #    0.613 CPUs utilized          
+</span><span class='line'>                 0 context-switches          #    0.000 K/sec                  
+</span><span class='line'>                 0 cpu-migrations            #    0.000 K/sec                  
+</span><span class='line'>               236 page-faults               #    0.339 M/sec                  
+</span><span class='line'>   &lt;not supported&gt; cycles                  
+</span><span class='line'>   &lt;not supported&gt; stalled-cycles-frontend 
+</span><span class='line'>   &lt;not supported&gt; stalled-cycles-backend  
+</span><span class='line'>   &lt;not supported&gt; instructions            
+</span><span class='line'>   &lt;not supported&gt; branches                
+</span><span class='line'>   &lt;not supported&gt; branch-misses           
+</span><span class='line'>
+</span><span class='line'>       0.001137015 seconds time elapsed
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>虚拟机可能有一些event不能用，到真正的实体机上面应该是没问题的（网上有同学验证过）。可以通过 <code>perf list</code> 查看支持的event。</p>
+
+<ul>
+<li>实体机指标项：</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@dacs ~]# perf stat ls /dev/shm
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'> Performance counter stats for 'ls /dev/shm':
+</span><span class='line'>
+</span><span class='line'>          1.793297      task-clock (msec)         #    0.677 CPUs utilized          
+</span><span class='line'>                 1      context-switches          #    0.558 K/sec                  
+</span><span class='line'>                 0      cpu-migrations            #    0.000 K/sec                  
+</span><span class='line'>               255      page-faults               #    0.142 M/sec                  
+</span><span class='line'>           2765454      cycles                    #    1.542 GHz                     [44.66%]
+</span><span class='line'>           1544155      stalled-cycles-frontend   #   55.84% frontend cycles idle    [64.12%]
+</span><span class='line'>           1013635      stalled-cycles-backend    #   36.65% backend  cycles idle   
+</span><span class='line'>           2692743      instructions              #    0.97  insns per cycle        
+</span><span class='line'>                                                  #    0.57  stalled cycles per insn
+</span><span class='line'>            603340      branches                  #  336.442 M/sec                  
+</span><span class='line'>             12499      branch-misses             #    2.07% of all branches         [98.00%]
+</span><span class='line'>
+</span><span class='line'>       0.002650313 seconds time elapsed
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>windows的话直接下载 UIforETW ，运行 UIforETW.exe 就可以用来采样了。把采样产生的etl文件传给xperf_to_collapsedstacks.py，最后用flamegraph.pl画图。</p>
+
+<ul>
+<li>perf的常用命令：</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># http://www.brendangregg.com/perf.html
+</span><span class='line'>perf list
+</span><span class='line'>
+</span><span class='line'>perf stat ./t1 
+</span><span class='line'>perf stat -a -A ls
+</span><span class='line'>
+</span><span class='line'>perf top
+</span><span class='line'> 
+</span><span class='line'>perf record – e cpu-clock ./t1 
+</span><span class='line'>perf report</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>画图</h2>
+
+<p>参考：</p>
+
+<ul>
+<li><a href="http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html">http://isuru-perera.blogspot.hk/2015/07/java-cpu-flame-graphs.html</a></li>
+<li><a href="https://github.com/coderplay/perfj/releases">https://github.com/coderplay/perfj/releases</a></li>
+<li><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">http://techblog.netflix.com/2015/07/java-in-flames.html</a></li>
+</ul>
+
+
+<h4>绘制系统火焰图</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># http://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html
+</span><span class='line'># https://github.com/brendangregg/FlameGraph
+</span><span class='line'># 真实的机器效果还是挺不错的
+</span><span class='line'>perf record -F 99 -a -g -- sleep 60
+</span><span class='line'>perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
+</span><span class='line'>~/FlameGraph/flamegraph.pl out.perf-folded &gt;perf.svg
+</span><span class='line'>sz perf.svg
+</span><span class='line'>
+</span><span class='line'># --
+</span><span class='line'># perf script | ./stackcollapse-perf.pl &gt; out.perf-folded
+</span><span class='line'># grep -v cpu_idle out.perf-folded | ./flamegraph.pl &gt; nonidle.svg
+</span><span class='line'># grep ext4 out.perf-folded | ./flamegraph.pl &gt; ext4internals.svg
+</span><span class='line'># egrep 'system_call.*sys_(read|write)' out.perf-folded | ./flamegraph.pl &gt; rw.svg
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>安装的虚拟机中操作没采集到有用的。虚拟机和真实机器两个图</p>
+
+<p>实体机：</p>
+
+<p><img src="/images/blogs/flames/flames-real.png" alt="" /></p>
+
+<p>虚拟机：</p>
+
+<p><img src="/images/blogs/flames/flames-vm.png" alt="" /></p>
+
+<h4>java</h4>
+
+<p>首先需要jdk8_u60+，直接下载最新的jdk就好了。应用启动带上参数 -XX:+PreserveFramePointer ：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 ~]# java -version
+</span><span class='line'>java version "1.8.0_92"
+</span><span class='line'>Java(TM) SE Runtime Environment (build 1.8.0_92-b14)
+</span><span class='line'>Java HotSpot(TM) 64-Bit Server VM (build 25.92-b14, mixed mode)
+</span><span class='line'>[root@hadoop-master2 ~]# cd /home/hadoop/spark-1.6.0-bin-2.6.3/
+</span><span class='line'>[root@hadoop-master2 spark-1.6.0-bin-2.6.3]# export SPARK_SUBMIT_OPTS=-XX:+PreserveFramePointer     
+</span><span class='line'>[root@hadoop-master2 spark-1.6.0-bin-2.6.3]# bin/spark-shell --master local   </span></code></pre></td></tr></table></div></figure>
+
+
+<p>这里java进程使用root启动的，如果是普通用户如hadoop，为了采样需要把hadoop用户加入sudoer，在采样时使用 <code>sudo -u hadoop CMD</code>。</p>
+
+<p><a href="http://techblog.netflix.com/2015/07/java-in-flames.html">http://techblog.netflix.com/2015/07/java-in-flames.html</a></p>
+
+<ul>
+<li>AAA、 使用perf-map-agent（推荐）</li>
+</ul>
+
+
+<p><strong>OLD</strong> ：</p>
+
+<p>实际操作：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>git clone https://github.com/jrudolph/perf-map-agent.git
+</span><span class='line'>cd perf-map-agent/
+</span><span class='line'>export JAVA_HOME=/opt/jdk1.8.0_92
+</span><span class='line'>cmake .
+</span><span class='line'>make
+</span><span class='line'>
+</span><span class='line'>perf record -F 99 -g -p 7661 -- sleep 120
+</span><span class='line'>bin/create-java-perf-map.sh 7661
+</span><span class='line'>
+</span><span class='line'>sudo perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
+</span><span class='line'>cat out.perf-folded | ~/FlameGraph/flamegraph.pl --color=java &gt;perf.svg
+</span><span class='line'>sz perf.svg</span></code></pre></td></tr></table></div></figure>
+
+
+<p><strong>NEW</strong> ：</p>
+
+<p>NOTE: 2017-10-21 项目改名了，挂到更牛逼的一个组织下了：jvm-profiling-tools
+NOTE: 2018-03-09 再实践</p>
+
+<p>参考：</p>
+
+<ul>
+<li><a href="https://medium.com/netflix-techblog/java-in-flames-e763b3d32166">https://medium.com/netflix-techblog/java-in-flames-e763b3d32166</a></li>
+<li><a href="http://neoremind.com/2017/09/%E4%BD%BF%E7%94%A8%E7%81%AB%E7%84%B0%E5%9B%BE%E5%81%9A%E6%80%A7%E8%83%BD%E5%88%86%E6%9E%90/">http://neoremind.com/2017/09/%E4%BD%BF%E7%94%A8%E7%81%AB%E7%84%B0%E5%9B%BE%E5%81%9A%E6%80%A7%E8%83%BD%E5%88%86%E6%9E%90/</a></li>
+<li><a href="https://github.com/jvm-profiling-tools/perf-map-agent">https://github.com/jvm-profiling-tools/perf-map-agent</a></li>
+</ul>
+
+
+<p>实际操作：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@ansible ~]# yum install -y perf gcc gcc-c++ cmake git
+</span><span class='line'>
+</span><span class='line'>git clone https://github.com/brendangregg/FlameGraph.git
+</span><span class='line'>git clone https://github.com/jvm-profiling-tools/perf-map-agent.git 
+</span><span class='line'>
+</span><span class='line'>[root@ansible /opt]# cd perf-map-agent/
+</span><span class='line'>[root@ansible perf-map-agent]# echo $JAVA_HOME
+</span><span class='line'>[root@ansible perf-map-agent]# 
+</span><span class='line'>[root@ansible perf-map-agent]# cmake . 
+</span><span class='line'>[root@ansible perf-map-agent]# make 
+</span><span class='line'>
+</span><span class='line'>在需要监控的程序上，加上下面的启动参数：
+</span><span class='line'>JAVA_OPTS+=" -XX:+PreserveFramePointer"
+</span><span class='line'>
+</span><span class='line'>把FlameGraph和perf-map-agent都到放/opt下面（java进程的用户要能读）。。。
+</span><span class='line'>[root@dispatch1 ~]# cd /opt/
+</span><span class='line'>[root@dispatch1 opt]# ll
+</span><span class='line'>total 8
+</span><span class='line'>drwxr-xr-x. 7 root root 4096 Oct 21 21:38 FlameGraph
+</span><span class='line'>drwxr-xr-x. 7 root root  206 Oct 21 21:36 perf-map-agent
+</span><span class='line'>drwxr-xr-x. 2 root root    6 Mar 26  2015 rh
+</span><span class='line'>[root@dispatch1 opt]# 
+</span><span class='line'>[root@dispatch1 opt]# cd perf-map-agent/
+</span><span class='line'>[root@dispatch1 perf-map-agent]# export FLAMEGRAPH_DIR=/opt/FlameGraph
+</span><span class='line'>
+</span><span class='line'>[root@dispatch1 perf-map-agent]# bin/perf-java-flames 7297 #PID# 
+</span><span class='line'>[root@dispatch1 perf-map-agent]# PERF_RECORD_SECONDS=360 bin/perf-java-flames 7297</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后把生成svg拷贝到本地看。</p>
+
+<ul>
+<li>A、 使用perfj采样</li>
+</ul>
+
+
+<p>NOTE：2017-10-21 这个项目好久没更新了，用 <strong>perf-map-agent</strong> 吧。</p>
+
+<p>参考：<a href="http://greenteajug.cn/2015/07/02/greenteajug%E6%B4%BB%E5%8A%A8-%E7%AC%AC16%E6%9C%9F-%E6%80%A7%E8%83%BD%E8%B0%83%E4%BC%98%E5%88%A9%E5%99%A8-perfj/">性能调优利器——PerfJ</a> ，直接下载release-1.0的版本，解压后给 bin/perfj 加上执行权限。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 测试的时刻可以把-F 99设置大一点
+</span><span class='line'># java和perfj的用户得一致！！
+</span><span class='line'># https://github.com/coderplay/perfj/wiki/CPU-Flame-Graph
+</span><span class='line'>
+</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
+</span><span class='line'>[root@dacs ~]# wget http://blog.minzhou.info/perfj/leveldb-benchmark.jar
+</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/java -cp leveldb-benchmark.jar -XX:+PreserveFramePointer org.iq80.leveldb.benchmark.DbBenchmark --benchmarks=fillrandom --num=100000000
+</span><span class='line'>
+</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
+</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj record -F 999 -g -p `pgrep -f DbBenchmark` 
+</span><span class='line'>
+</span><span class='line'>perf script | ~/FlameGraph/stackcollapse-perf.pl &gt;out.perf-folded
+</span><span class='line'>~/FlameGraph/flamegraph.pl out.perf-folded  --color=java &gt;perf.svg
+</span><span class='line'>sz perf.svg
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>还是挺有意思的。运行效果：</p>
+
+<p><img src="/images/blogs/flames/flames-java-leveldb.png" alt="" /></p>
+
+<p>虚拟机的少了好多信息！一模一样的命令，得出来的东西差好远！！</p>
+
+<p><img src="/images/blogs/flames/flames-java-leveldb-vm.png" alt="" /></p>
+
+<p>另一个 <strong>Context Switch</strong> 案例：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># https://github.com/coderplay/perfj/wiki/Context-Switch-Analysis
+</span><span class='line'># 在vmware虚拟机里面运行啥都看不到！实体机也看不到作者的那些栈信息
+</span><span class='line'>[root@dacs ~]# wget http://blog.minzhou.info/perfj/leveldb-benchmark.jar
+</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
+</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/javac ContextSwitchTest.java 
+</span><span class='line'>[root@dacs ~]# $JAVA_HOME/bin/java -XX:+PreserveFramePointer ContextSwitchTest
+</span><span class='line'>
+</span><span class='line'>[root@dacs ~]# export JAVA_HOME=/usr/java/jdk1.8.0_92 
+</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj record  -e sched:sched_switch -F 999 -g -p `pgrep -f ContextSwitchTest` 
+</span><span class='line'>[root@dacs ~]# perfj-1.0/bin/perfj report --stdio
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2033,1015 +2473,6 @@ Notice: Applied catalog in 0.02 seconds
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/04/28/mcollective-quick-start/">MCollective安装配置</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-04-28T08:39:23+08:00" pubdate data-updated="true">Thu 2016-04-28 08:39</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>puppet agent 通过定时拉取的方式来更新本地系统，但无法满足实时更新的需求。 mcollective 通过 <strong>消息中间件</strong> 的方式，mclient/mservers通过消息的推送/订阅，实现mservers实时执行mclient提交的请求。（添加 m 说明是mcollective的组件！）</p>
-
-<p>最新版的安装除了官网，没有其他可以直接学习的资料（只能参考）。先看官网的资料：</p>
-
-<ul>
-<li>组件功能(必须看看) <a href="https://docs.puppet.com/mcollective/overview_components.html">https://docs.puppet.com/mcollective/overview_components.html</a></li>
-<li>部署 <a href="https://docs.puppet.com/mcollective/deploy/install.html">https://docs.puppet.com/mcollective/deploy/install.html</a></li>
-<li>部署规范/准则 <a href="https://docs.puppet.com/mcollective/deploy/standard.html">https://docs.puppet.com/mcollective/deploy/standard.html</a></li>
-</ul>
-
-
-<p>摘录官网安装描述：[Installing MCollective requires the following steps]</p>
-
-<ul>
-<li>Make sure your middleware is up and running and your firewalls are in order.</li>
-<li>Install the mcollective package on servers, then make sure the mcollective service is running.</li>
-<li>Install the mcollective-client package on admin workstations.</li>
-<li>Most Debian-like and Red Hat-like systems can use the official Puppet Labs packages. Enable the Puppet Labs repos, or import the packages into your own repos.
-
-<ul>
-<li>If you’re on Debian/Ubuntu, mind the missing package dependency.</li>
-</ul>
-</li>
-<li>If your systems can’t use the official packages, check the system requirements and either build your own or run from source.</li>
-</ul>
-
-
-<p>mcollective对于puppet来说是一个锦上添花的组件，没有puppet一样正常运转。部署主要由两个部分组成：</p>
-
-<ul>
-<li>部署消息中间件</li>
-<li>配置mcollective(puppet4.4 agent已经安装该功能，redhat也自带装了Stomp包：<code>/opt/puppetlabs/puppet/lib/ruby/gems/2.1.0/gems/</code> 目录下面)
-
-<ul>
-<li>配置mclient/mserver</li>
-<li>配置Stomp with TLS</li>
-<li>配置security</li>
-</ul>
-</li>
-</ul>
-
-
-<p>本文先简单实现连接远程主机，然后配置安全功能，最后用puppet来重新实现 mcollective 的安装和配置。</p>
-
-<h1>环境说明</h1>
-
-<ul>
-<li>hadoop-master2:
-
-<ul>
-<li>172.17.42.1</li>
-<li>puppetserver, activemq-server, mcollective-client</li>
-</ul>
-</li>
-<li>hadoop-master1/hadoop-slaver1/hadoop-slaver2:
-
-<ul>
-<li>172.17.0.2/&frac34;</li>
-<li>puppet-agent, mcollective-server</li>
-</ul>
-</li>
-</ul>
-
-
-<h1>ActiveMQ部署</h1>
-
-<p>activemq的服务端是一个spring-jetty项目，直接解压运行启动脚本即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># http://activemq.apache.org/download-archives.html
-</span><span class='line'># 直接下载最新的 tar.gz
-</span><span class='line'>
-</span><span class='line'># 解压，启动
-</span><span class='line'>On Unix:
-</span><span class='line'>From a command shell, change to the installation directory and run ActiveMQ as a foregroud process:
-</span><span class='line'>cd [activemq_install_dir]/bin
-</span><span class='line'>./activemq console
-</span><span class='line'>From a command shell, change to the installation directory and run ActiveMQ as a daemon process:
-</span><span class='line'>cd [activemq_install_dir]/bin
-</span><span class='line'>./activemq start
-</span><span class='line'>
-</span><span class='line'># 确认
-</span><span class='line'>URL: http://127.0.0.1:8161/admin/
-</span><span class='line'>Login: admin
-</span><span class='line'>Passwort: admin
-</span><span class='line'># 起了好多端口，随便试一个
-</span><span class='line'>netstat -nl|grep 61616
-</span><span class='line'>netstat -anp|grep PID
-</span><span class='line'>
-</span><span class='line'># 数据/日志目录
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# ll data/
-</span><span class='line'>total 16
-</span><span class='line'>-rw-r--r-- 1 root users 4276 Apr 27 21:36 activemq.log
-</span><span class='line'>-rw-r--r-- 1 root root     5 Apr 27 21:36 activemq.pid
-</span><span class='line'>-rw-r--r-- 1 root root     0 Apr 27 21:36 audit.log
-</span><span class='line'>drwxr-xr-x 2 root root  4096 Apr 27 21:36 kahadb</span></code></pre></td></tr></table></div></figure>
-
-
-<p><img src="/images/blogs/mcollective-activemq.png" alt="" /></p>
-
-<p>查看连接密码：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 conf]# cat credentials.properties
-</span><span class='line'>...
-</span><span class='line'>activemq.username=system
-</span><span class='line'>activemq.password=manager
-</span><span class='line'>guest.password=password[root@hadoop-master2 conf]# 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h1>简单配置(unencrypted Stomp) <a name="cli-simple-usage"></a></h1>
-
-<p>安装puppet4.4后，mcollective已经安装好了！直接修改配置连接到activemq即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 puppetlabs]# chkconfig --list | grep mco
-</span><span class='line'>mcollective     0:off   1:off   2:off   3:off   4:off   5:off   6:off
-</span><span class='line'>
-</span><span class='line'># puppetserver作为mcollective-client
-</span><span class='line'>[root@hadoop-master2 mcollective]# cat client.cfg                    
-</span><span class='line'>...
-</span><span class='line'>connector = activemq
-</span><span class='line'>plugin.activemq.pool.size = 1
-</span><span class='line'>plugin.activemq.pool.1.host = hadoop-master2.example.com
-</span><span class='line'>plugin.activemq.pool.1.port = 61613
-</span><span class='line'>plugin.activemq.pool.1.user = system
-</span><span class='line'>plugin.activemq.pool.1.password = manager
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco ping
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>No responses received
-</span><span class='line'>
-</span><span class='line'># puppet agent作为mcollective-server
-</span><span class='line'>-bash-4.1# cat server.cfg 
-</span><span class='line'>...
-</span><span class='line'>connector = activemq
-</span><span class='line'>plugin.activemq.pool.size = 1
-</span><span class='line'>plugin.activemq.pool.1.host = hadoop-master2.example.com
-</span><span class='line'>plugin.activemq.pool.1.port = 61613
-</span><span class='line'>plugin.activemq.pool.1.user = system
-</span><span class='line'>plugin.activemq.pool.1.password = manager
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>-bash-4.1# service mcollective start
-</span><span class='line'>Starting mcollective:                                      [  OK  ]
-</span><span class='line'>-bash-4.1# service mcollective status
-</span><span class='line'>mcollectived (pid  202) is running...
-</span><span class='line'>
-</span><span class='line'># 其他两台agent机器一样的配置操作
-</span><span class='line'>
-</span><span class='line'># 1. mcollective-client(puppetserver) 测试
-</span><span class='line'>[root@hadoop-master2 ~]# mco find
-</span><span class='line'>hadoop-master1
-</span><span class='line'>hadoop-slaver2
-</span><span class='line'>hadoop-slaver1
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco ping
-</span><span class='line'>hadoop-master1                           time=148.29 ms
-</span><span class='line'>hadoop-slaver2                           time=187.99 ms
-</span><span class='line'>hadoop-slaver1                           time=190.21 ms
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>3 replies max: 190.21 min: 148.29 avg: 175.50 
-</span><span class='line'>
-</span><span class='line'># 2. 先查看/扫描节点状态。（如果配置了facts后，会输出一长串的Facts！）
-</span><span class='line'>[root@hadoop-master2 ssl]# mco inventory hadoop-master1
-</span><span class='line'>Inventory for hadoop-master1:
-</span><span class='line'>
-</span><span class='line'>   Server Statistics:
-</span><span class='line'>                      Version: 2.8.8
-</span><span class='line'>                   Start Time: 2016-04-29 00:21:31 +0800
-</span><span class='line'>                  Config File: /etc/puppetlabs/mcollective/server.cfg
-</span><span class='line'>                  Collectives: mcollective
-</span><span class='line'>              Main Collective: mcollective
-</span><span class='line'>                   Process ID: 155
-</span><span class='line'>               Total Messages: 13
-</span><span class='line'>      Messages Passed Filters: 3
-</span><span class='line'>            Messages Filtered: 0
-</span><span class='line'>             Expired Messages: 0
-</span><span class='line'>                 Replies Sent: 2
-</span><span class='line'>         Total Processor Time: 2.32 seconds
-</span><span class='line'>                  System Time: 0.3 seconds
-</span><span class='line'>
-</span><span class='line'>   Agents:
-</span><span class='line'>      discovery       rpcutil                        
-</span><span class='line'>
-</span><span class='line'>   Data Plugins:
-</span><span class='line'>      agent           collective      fact           
-</span><span class='line'>      fstat                                          
-</span><span class='line'>
-</span><span class='line'>   Configuration Management Classes:
-</span><span class='line'>      No classes applied
-</span><span class='line'>
-</span><span class='line'>   Facts:
-</span><span class='line'>      mcollective =&gt; 1
-</span><span class='line'>
-</span><span class='line'># 3. 获取节点facts，需要配合puppet一起来使用
-</span><span class='line'># puppetserver节点 配置更新agent facts.yaml信息
-</span><span class='line'>[root@hadoop-master2 manifests]# cat site.pp 
-</span><span class='line'>file{'/etc/puppetlabs/mcollective/facts.yaml':
-</span><span class='line'>  owner    =&gt; root,
-</span><span class='line'>  group    =&gt; root,
-</span><span class='line'>  mode     =&gt; '400',
-</span><span class='line'>  loglevel =&gt; debug, # reduce noise in Puppet reports
-</span><span class='line'>  content  =&gt; inline_template("&lt;%= scope.to_hash.reject { |k,v| k.to_s =~ /(uptime_seconds|timestamp|free)/ }.to_yaml %&gt;"), # exclude rapidly changing facts
-</span><span class='line'>}
-</span><span class='line'># 读取facts
-</span><span class='line'>[root@hadoop-master2 manifests]# mco facts hostname
-</span><span class='line'>Report for fact: hostname
-</span><span class='line'>
-</span><span class='line'>        hadoop-master1                           found 1 times
-</span><span class='line'>        hadoop-slaver1                           found 1 times
-</span><span class='line'>        hadoop-slaver2                           found 1 times
-</span><span class='line'>
-</span><span class='line'>Finished processing 3 / 3 hosts in 579.93 ms
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>自带的插件功能比较少，要真正把 mcollective 用起来需要安装插件：puppet, service, package等等。这篇主要记录安装过程，<a href="/blog/2016/04/28/mcollective-plugins/">插件安装以及使用</a>后面具体实践了再写。</p>
-
-<p>我觉得内网生产环境安装，到这一步已经差不多了！下面的安全配置就当深入学习吧。</p>
-
-<h1>Stomp with TLS 配置</h1>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html">https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html">https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html</a></li>
-</ul>
-
-
-<p><strong>Anonymous TLS</strong> 步骤简单一点，这里就不列出来了，自己去看官网的文档: <a href="https://docs.puppet.com/mcollective/reference/integration/activemq_ssl.html#anonymous-tls">Anonymous TLS</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-<span class='line-number'>146</span>
-<span class='line-number'>147</span>
-<span class='line-number'>148</span>
-<span class='line-number'>149</span>
-<span class='line-number'>150</span>
-<span class='line-number'>151</span>
-<span class='line-number'>152</span>
-<span class='line-number'>153</span>
-<span class='line-number'>154</span>
-<span class='line-number'>155</span>
-<span class='line-number'>156</span>
-<span class='line-number'>157</span>
-<span class='line-number'>158</span>
-<span class='line-number'>159</span>
-<span class='line-number'>160</span>
-<span class='line-number'>161</span>
-<span class='line-number'>162</span>
-<span class='line-number'>163</span>
-<span class='line-number'>164</span>
-<span class='line-number'>165</span>
-<span class='line-number'>166</span>
-<span class='line-number'>167</span>
-<span class='line-number'>168</span>
-<span class='line-number'>169</span>
-<span class='line-number'>170</span>
-<span class='line-number'>171</span>
-<span class='line-number'>172</span>
-<span class='line-number'>173</span>
-<span class='line-number'>174</span>
-<span class='line-number'>175</span>
-<span class='line-number'>176</span>
-<span class='line-number'>177</span>
-<span class='line-number'>178</span>
-<span class='line-number'>179</span>
-<span class='line-number'>180</span>
-<span class='line-number'>181</span>
-<span class='line-number'>182</span>
-<span class='line-number'>183</span>
-<span class='line-number'>184</span>
-<span class='line-number'>185</span>
-<span class='line-number'>186</span>
-<span class='line-number'>187</span>
-<span class='line-number'>188</span>
-<span class='line-number'>189</span>
-<span class='line-number'>190</span>
-<span class='line-number'>191</span>
-<span class='line-number'>192</span>
-<span class='line-number'>193</span>
-<span class='line-number'>194</span>
-<span class='line-number'>195</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># CA-Verified TLS
-</span><span class='line'>
-</span><span class='line'># 1 手动配置activemq
-</span><span class='line'>
-</span><span class='line'># 1.1 可以直接用puppet的cert/private-keys，我这里新生成一个activemq的证书
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# puppet master --configprint ssldir
-</span><span class='line'>/etc/puppetlabs/puppet/ssl
-</span><span class='line'># 一个不冲突的名称即可，不需要是hostname/FQDN
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# puppet cert generate activemq
-</span><span class='line'>Notice: activemq has a waiting certificate request
-</span><span class='line'>Notice: Signed certificate request for activemq
-</span><span class='line'>Notice: Removing file Puppet::SSL::CertificateRequest activemq at '/etc/puppetlabs/puppet/ssl/ca/requests/activemq.pem'
-</span><span class='line'>Notice: Removing file Puppet::SSL::CertificateRequest activemq at '/etc/puppetlabs/puppet/ssl/certificate_requests/activemq.pem'
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# tree /etc/puppetlabs/puppet/ssl/
-</span><span class='line'>/etc/puppetlabs/puppet/ssl/
-</span><span class='line'>...
-</span><span class='line'>├── certificate_requests
-</span><span class='line'>├── certs
-</span><span class='line'>│   ├── activemq.pem
-</span><span class='line'>│   ├── ca.pem
-</span><span class='line'>│   └── hadoop-master2.example.com.pem
-</span><span class='line'>├── crl.pem
-</span><span class='line'>├── private
-</span><span class='line'>├── private_keys
-</span><span class='line'>│   ├── activemq.pem
-</span><span class='line'>│   └── hadoop-master2.example.com.pem
-</span><span class='line'>└── public_keys
-</span><span class='line'>    ├── activemq.pem
-</span><span class='line'>    └── hadoop-master2.example.com.pem
-</span><span class='line'>
-</span><span class='line'>9 directories, 22 files
-</span><span class='line'>
-</span><span class='line'># certs/activemq.pem, certs/ca.pem, private_keys/activemq.pem 就是我们需要的。
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 1.2 创建Truststore
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# which keytool
-</span><span class='line'>/opt/jdk1.7.0_60/bin/keytool
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# cd /etc/puppetlabs/puppet/ssl            
-</span><span class='line'>[root@hadoop-master2 ssl]# keytool -import -alias "CU CA" -file certs/ca.pem -keystore truststore.jks
-</span><span class='line'>Enter keystore password:  
-</span><span class='line'>Re-enter new password: 
-</span><span class='line'>Owner: CN=Puppet CA: hadoop-master2.example.com
-</span><span class='line'>Issuer: CN=Puppet CA: hadoop-master2.example.com
-</span><span class='line'>...
-</span><span class='line'>Trust this certificate? [no]:  y
-</span><span class='line'>Certificate was added to keystore
-</span><span class='line'>[root@hadoop-master2 ssl]# ll
-</span><span class='line'>total 32
-</span><span class='line'>drwxr-xr-x 5 puppet puppet 4096 Apr 23 00:01 ca
-</span><span class='line'>drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 certificate_requests
-</span><span class='line'>drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 certs
-</span><span class='line'>-rw-r--r-- 1 puppet puppet  979 Apr 28 10:33 crl.pem
-</span><span class='line'>drwxr-x--- 2 puppet puppet 4096 Apr 22 23:51 private
-</span><span class='line'>drwxr-x--- 2 puppet puppet 4096 Apr 28 19:53 private_keys
-</span><span class='line'>drwxr-xr-x 2 puppet puppet 4096 Apr 28 19:53 public_keys
-</span><span class='line'>-rw-r--r-- 1 root   root   1496 Apr 28 20:01 truststore.jks
-</span><span class='line'># 验证下指纹fingerprints
-</span><span class='line'>[root@hadoop-master2 ssl]# keytool -list -keystore truststore.jks 
-</span><span class='line'>Enter keystore password:  
-</span><span class='line'>
-</span><span class='line'>Keystore type: JKS
-</span><span class='line'>Keystore provider: SUN
-</span><span class='line'>
-</span><span class='line'>Your keystore contains 1 entry
-</span><span class='line'>
-</span><span class='line'>cu ca, Apr 28, 2016, trustedCertEntry, 
-</span><span class='line'>Certificate fingerprint (SHA1): 40:2C:45:37:6B:C7:9C:92:E7:4D:1E:4F:2B:C4:17:F4:A3:5F:EB:56
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl x509 -in certs/ca.pem -fingerprint -sha1
-</span><span class='line'>SHA1 Fingerprint=40:2C:45:37:6B:C7:9C:92:E7:4D:1E:4F:2B:C4:17:F4:A3:5F:EB:56
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 1.3 创建Keystore
-</span><span class='line'>[root@hadoop-master2 ssl]# cat private_keys/activemq.pem certs/activemq.pem &gt;activemq.pem
-</span><span class='line'># 所有密码都需一致！！ All of these passwords must be the same.
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl pkcs12 -export -in activemq.pem -out activemq.p12 -name activemq      
-</span><span class='line'>Enter Export Password:
-</span><span class='line'>Verifying - Enter Export Password:
-</span><span class='line'>[root@hadoop-master2 ssl]# keytool -importkeystore -destkeystore keystore.jks -srckeystore activemq.p12 \
-</span><span class='line'>&gt; -srcstoretype PKCS12 -alias activemq
-</span><span class='line'>Enter destination keystore password:  XXX
-</span><span class='line'>Re-enter new password: XXX
-</span><span class='line'>Enter source keystore password:  XXX
-</span><span class='line'>[root@hadoop-master2 ssl]# ll -t
-</span><span class='line'>total 52
-</span><span class='line'>-rw-r--r-- 1 root   root   3918 Apr 28 20:12 keystore.jks
-</span><span class='line'>-rw-r--r-- 1 root   root   4230 Apr 28 20:08 activemq.p12
-</span><span class='line'>-rw-r--r-- 1 root   root   5203 Apr 28 20:07 activemq.pem
-</span><span class='line'>-rw-r--r-- 1 root   root   1496 Apr 28 20:01 truststore.jks
-</span><span class='line'>...
-</span><span class='line'># 验证指纹
-</span><span class='line'>[root@hadoop-master2 ssl]# keytool -list -keystore keystore.jks 
-</span><span class='line'>Enter keystore password:  
-</span><span class='line'>
-</span><span class='line'>Keystore type: JKS
-</span><span class='line'>Keystore provider: SUN
-</span><span class='line'>
-</span><span class='line'>Your keystore contains 1 entry
-</span><span class='line'>
-</span><span class='line'>activemq, Apr 28, 2016, PrivateKeyEntry, 
-</span><span class='line'>Certificate fingerprint (SHA1): 4F:DF:DE:64:13:36:0E:74:8B:7F:D3:61:78:29:C4:AA:4F:A4:ED:D8
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl x509 -in certs/activemq.pem -fingerprint -sha1
-</span><span class='line'>SHA1 Fingerprint=4F:DF:DE:64:13:36:0E:74:8B:7F:D3:61:78:29:C4:AA:4F:A4:ED:D8
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 1.4 配置activemq
-</span><span class='line'># http://activemq.apache.org/how-do-i-use-ssl.html
-</span><span class='line'># https://docs.puppet.com/mcollective/deploy/middleware/activemq.html#tls-credentials
-</span><span class='line'># https://docs.puppet.com/mcollective/deploy/middleware/activemq.html#stomp
-</span><span class='line'>[root@hadoop-master2 ssl]# mv keystore.jks truststore.jks /opt/puppetlabs/apache-activemq-5.13.2/conf
-</span><span class='line'>[root@hadoop-master2 ssl]# cd /opt/puppetlabs/apache-activemq-5.13.2/conf/
-</span><span class='line'># 填上面步骤设置的密码
-</span><span class='line'>[root@hadoop-master2 conf]# vi activemq.xml 
-</span><span class='line'>...
-</span><span class='line'>&lt;sslContext&gt;
-</span><span class='line'>  &lt;sslContext keyStore="keystore.jks" keyStorePassword="XXXX"
-</span><span class='line'>              trustStrore="truststore.jks" trustStorePassword="XXXX" /&gt;
-</span><span class='line'>&lt;/sslContext&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;transportConnectors&gt;
-</span><span class='line'>  &lt;!-- DOS protection, limit concurrent connections to 1000 and frame size to 100MB --&gt;
-</span><span class='line'>  &lt;transportConnector name="stomp+nio+ssl" uri="stomp+nio+ssl://0.0.0.0:61614?maximumConnections=1000&amp;wireFormat.maxFrameSize=104857600&amp;needClientAuth=true&amp;transport.enabledProtocols=TLSv1,TLSv1.1,TLSv1.2"/&gt;
-</span><span class='line'>&lt;/transportConnectors&gt;
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# chmod 600 conf/activemq.xml 
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# bin/activemq stop
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# bin/activemq start
-</span><span class='line'># 日志查看
-</span><span class='line'>[root@hadoop-master2 apache-activemq-5.13.2]# less data/activemq.log 
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 2 puppetserver(mcollective client)
-</span><span class='line'># https://docs.puppet.com/mcollective/configure/client.html
-</span><span class='line'>[root@hadoop-master2 ~]# cd /etc/puppetlabs/mcollective/
-</span><span class='line'>[root@hadoop-master2 mcollective]# cat client.cfg
-</span><span class='line'>...
-</span><span class='line'>connector = activemq
-</span><span class='line'>plugin.activemq.pool.size = 1
-</span><span class='line'>plugin.activemq.pool.1.host = hadoop-master2.example.com
-</span><span class='line'>plugin.activemq.pool.1.port = 61614
-</span><span class='line'>plugin.activemq.pool.1.user = system
-</span><span class='line'>plugin.activemq.pool.1.password = manager
-</span><span class='line'>plugin.activemq.pool.1.ssl = true
-</span><span class='line'>plugin.activemq.pool.1.ssl.ca = /etc/puppetlabs/puppet/ssl/certs/ca.pem
-</span><span class='line'>plugin.activemq.pool.1.ssl.key = /etc/puppetlabs/puppet/ssl/private_keys/hadoop-master2.example.com.pem
-</span><span class='line'>plugin.activemq.pool.1.ssl.cert = /etc/puppetlabs/puppet/ssl/certs/hadoop-master2.example.com.pem
-</span><span class='line'>...
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco ping -v
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>No responses received
-</span><span class='line'>
-</span><span class='line'># 3 puppet agents(mcollective servers)
-</span><span class='line'># https://docs.puppet.com/mcollective/configure/server.html
-</span><span class='line'>-bash-4.1# puppet agent --configprint confdir
-</span><span class='line'>/etc/puppetlabs/puppet
-</span><span class='line'>-bash-4.1# puppet agent --configprint ssldir
-</span><span class='line'>/etc/puppetlabs/puppet/ssl
-</span><span class='line'>-bash-4.1# puppet agent --configprint hostprivkey
-</span><span class='line'>/etc/puppetlabs/puppet/ssl/private_keys/hadoop-master1.example.com.pem
-</span><span class='line'>-bash-4.1# puppet agent --configprint hostcert
-</span><span class='line'>/etc/puppetlabs/puppet/ssl/certs/hadoop-master1.example.com.pem
-</span><span class='line'>-bash-4.1# puppet agent --configprint localcacert
-</span><span class='line'>/etc/puppetlabs/puppet/ssl/certs/ca.pem
-</span><span class='line'>
-</span><span class='line'>-bash-4.1# cd /etc/puppetlabs/mcollective/
-</span><span class='line'>-bash-4.1# cat server.cfg 
-</span><span class='line'>...
-</span><span class='line'>connector = activemq
-</span><span class='line'>plugin.activemq.pool.size = 1
-</span><span class='line'>plugin.activemq.pool.1.host = hadoop-master2.example.com
-</span><span class='line'>plugin.activemq.pool.1.port = 61614
-</span><span class='line'>plugin.activemq.pool.1.user = system
-</span><span class='line'>plugin.activemq.pool.1.password = manager
-</span><span class='line'>plugin.activemq.pool.1.ssl = true
-</span><span class='line'>plugin.activemq.pool.1.ssl.ca = /etc/puppetlabs/puppet/ssl/certs/ca.pem
-</span><span class='line'>plugin.activemq.pool.1.ssl.key = /etc/puppetlabs/puppet/ssl/private_keys/hadoop-master1.example.com.pem
-</span><span class='line'>plugin.activemq.pool.1.ssl.cert = /etc/puppetlabs/puppet/ssl/certs/hadoop-master1.example.com.pem
-</span><span class='line'>...
-</span><span class='line'>-bash-4.1# service mcollective restart
-</span><span class='line'>Shutting down mcollective: 
-</span><span class='line'>Starting mcollective:                                      [  OK  ]
-</span><span class='line'>
-</span><span class='line'># 其他两台机器一样的操作
-</span><span class='line'>
-</span><span class='line'># 测试
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco ping -v
-</span><span class='line'>hadoop-master1                           time=41.99 ms
-</span><span class='line'>hadoop-slaver2                           time=84.87 ms
-</span><span class='line'>hadoop-slaver1                           time=85.46 ms
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>3 replies max: 85.46 min: 41.99 avg: 70.77 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>更多activemq的设置查看官方文档： <a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq.html">ActiveMQ Config Reference for MCollective Users</a> <a href="https://raw.github.com/puppetlabs/marionette-collective/master/ext/activemq/examples/single-broker/activemq.xml">example activemq.xml</a></p>
-
-<h1>SSL Security plugin</h1>
-
-<p>Stomp with TLS (安全传输层协议)用于加密数据。而 security plugin 主要功能有：</p>
-
-<ul>
-<li>mcollective server要授权才会执行 client 发送的请求。</li>
-<li>create a token that uniquely identify the client - based on the filename of the public key。</li>
-<li>在请求中添加创建时间和TTL保证数据的完整性(不被拦截、篡改以及重复)。</li>
-</ul>
-
-
-<p>参考：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/configure/client.html#security-plugin-settings">https://docs.puppet.com/mcollective/configure/client.html#security-plugin-settings</a></li>
-<li><a href="https://docs.puppet.com/mcollective/security.html">https://docs.puppet.com/mcollective/security.html</a></li>
-<li><a href="https://docs.puppet.com/mcollective/reference/plugins/security_ssl.html">https://docs.puppet.com/mcollective/reference/plugins/security_ssl.html</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 1 生成server秘钥(公钥、私钥)
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# openssl genrsa -out server-private.pem 1024
-</span><span class='line'>...
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# openssl rsa -in server-private.pem -out server-public.pem -outform PEM -pubout  
-</span><span class='line'>writing RSA key
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# ll
-</span><span class='line'>total 12
-</span><span class='line'>-rw-r--r-- 1 root root 7915 Apr 29 00:06 server-private.pem
-</span><span class='line'>-rw-r--r-- 1 root root 1836 Apr 29 00:07 server-public.pem
-</span><span class='line'>
-</span><span class='line'># 把 private/public 复制到所有的mcollective-servers节点
-</span><span class='line'># 把 public 复制到mcollective-clients节点
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# ssh 172.17.0.2 mkdir -p /etc/puppetlabs/mcollective/ssl/clients
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# scp * 172.17.0.2:/etc/puppetlabs/mcollective/ssl/
-</span><span class='line'>server-private.pem   100% 7915     7.7KB/s   00:00    
-</span><span class='line'>server-public.pem    100% 1836     1.8KB/s   00:00    
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# mkdir -p /etc/puppetlabs/mcollective/ssl
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# cp server-public.pem /etc/puppetlabs/mcollective/ssl/
-</span><span class='line'>
-</span><span class='line'># 2 配置mcollective-servers。节点间配置不能同步，TLS配置的证书名称是不一样的！！
-</span><span class='line'>-bash-4.1# vi /etc/puppetlabs/mcollective/server.cfg 
-</span><span class='line'>...
-</span><span class='line'># Plugins
-</span><span class='line'>#securityprovider = psk
-</span><span class='line'>#plugin.psk = unset
-</span><span class='line'>
-</span><span class='line'>securityprovider = ssl
-</span><span class='line'>plugin.ssl_server_private = /etc/puppetlabs/mcollective/ssl/server-private.pem
-</span><span class='line'>plugin.ssl_server_public = /etc/puppetlabs/mcollective/ssl/server-public.pem
-</span><span class='line'>plugin.ssl_client_cert_dir = /etc/puppetlabs/mcollective/ssl/clients/
-</span><span class='line'>plugin.ssl.enfore_ttl = 0
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>-bash-4.1# service mcollective restart
-</span><span class='line'>Shutting down mcollective:                                 [  OK  ]
-</span><span class='line'>Starting mcollective:                                      [  OK  ]
-</span><span class='line'># 可以通过 /var/log/puppetlabs/mcollective.log 查看详细日志
-</span><span class='line'>
-</span><span class='line'># 配置一个节点后，mco ping已经不再显示hadoop-master1了！！
-</span><span class='line'>
-</span><span class='line'># 3 生成client秘钥
-</span><span class='line'>[root@hadoop-master2 mcollective-security]# cd /etc/puppetlabs/mcollective/ssl
-</span><span class='line'>[root@hadoop-master2 ssl]# ll
-</span><span class='line'>total 8
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Apr 29 00:15 clients
-</span><span class='line'>-rw-r--r-- 1 root root 1836 Apr 29 00:15 server-public.pem
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl genrsa -out winse-private.pem 1024    
-</span><span class='line'>...
-</span><span class='line'>[root@hadoop-master2 ssl]# openssl rsa -in winse-private.pem -out winse-public.pem -outform PEM -pubout
-</span><span class='line'>writing RSA key
-</span><span class='line'>[root@hadoop-master2 ssl]# ll
-</span><span class='line'>total 16
-</span><span class='line'>drwxr-xr-x 2 root root 4096 Apr 29 00:15 clients
-</span><span class='line'>-rw-r--r-- 1 root root 1836 Apr 29 00:15 server-public.pem
-</span><span class='line'>-rw-r--r-- 1 root root  887 Apr 29 00:26 winse-private.pem
-</span><span class='line'>-rw-r--r-- 1 root root  272 Apr 29 00:26 winse-public.pem
-</span><span class='line'>
-</span><span class='line'># 把client用户的公钥拷贝到所有mcollective-servers的ssl/clients目录下
-</span><span class='line'>[root@hadoop-master2 ssl]# scp winse-public.pem 172.17.0.2:/etc/puppetlabs/mcollective/ssl/clients
-</span><span class='line'>winse-public.pem 100%  272     0.3KB/s   00:00    
-</span><span class='line'>
-</span><span class='line'># 4 配置clients
-</span><span class='line'>[root@hadoop-master2 ~]# vi /etc/puppetlabs/mcollective/client.cfg 
-</span><span class='line'>...
-</span><span class='line'># Plugins
-</span><span class='line'>#connector=activemq
-</span><span class='line'>#direct_addressing=1 决定是否支持点对点消息，这里选择支持
-</span><span class='line'>
-</span><span class='line'>#securityprovider = psk
-</span><span class='line'>#plugin.psk = unset
-</span><span class='line'>securityprovider = ssl
-</span><span class='line'>plugin.ssl_server_public = /etc/puppetlabs/mcollective/ssl/server-public.pem
-</span><span class='line'>plugin.ssl_client_private = /etc/puppetlabs/mcollective/ssl/winse-private.pem
-</span><span class='line'>plugin.ssl_client_public = /etc/puppetlabs/mcollective/ssl/winse-public.pem
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'># mcollective-server不需要重启！客户端连接测试
-</span><span class='line'>[root@hadoop-master2 ssl]# mco ping -v
-</span><span class='line'>hadoop-master1                           time=561.29 ms
-</span><span class='line'>hadoop-slaver2                           time=601.91 ms
-</span><span class='line'>hadoop-slaver1                           time=608.31 ms
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>---- ping statistics ----
-</span><span class='line'>3 replies max: 608.31 min: 561.29 avg: 590.50 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>理解了功能后，再按条理配置其实感觉就不是那么难了。遇到问题先查看日志！！</p>
-
-<h1>最佳实践</h1>
-
-<p>官网推荐使用 站点管理工具 统一来安装管理，如puppet。下面使用puppet来配置mcollective：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/deploy/install.html#example">https://docs.puppet.com/mcollective/deploy/install.html#example</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html#creating-keystores-with-puppet">https://docs.puppet.com/mcollective/deploy/middleware/activemq_keystores.html#creating-keystores-with-puppet</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/standard.html#write-the-server-config-file">https://docs.puppet.com/mcollective/deploy/standard.html#write-the-server-config-file</a></li>
-</ul>
-
-
-<p>TODO</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/16">&larr; Older</a>
@@ -3142,6 +2573,10 @@ Notice: Applied catalog in 0.02 seconds
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2018/04/07/java-webstart-jnlp-with-jvmti/">WebStart的使用以及如何结合JVMTI</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2018/01/30/map-started-guide/">Map入门指南</a>
       </li>
     
@@ -3167,10 +2602,6 @@ Notice: Applied catalog in 0.02 seconds
     
       <li class="post">
         <a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/11/04/teamviewer-vpn-on-windows/">使用TeamviewerVPN访问公司内网</a>
       </li>
     
   </ul>
@@ -3247,7 +2678,7 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/java/'>java</a> (10) 
+			<a class='category' href='/blog/categories/java/'>java</a> (11) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3336,7 +2767,7 @@ Notice: Applied catalog in 0.02 seconds
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (203)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (204)</li>
 	</ul>
 	
 </section>
