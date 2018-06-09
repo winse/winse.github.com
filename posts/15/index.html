@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="在MacTalk的公众号上读到了agentzh关于火焰图介绍(2016年5月6日07:57 动态追踪技术（中） - Dtrace、SystemTap、火焰图)，挺新奇的，并且应该对于查询热线程还是有作用的。 先了解perf和flamegraphs基础知识： https://www.ibm.com/ &hellip;">
+  <meta name="description" content="本来第二篇应该是与 [第1章 初识Spark] 有关，但我们运行helloworld、以及提交任务都是通过脚本 bin/spark-shell ，完全不知道那些脚本是干啥的？而且，在开发环境运行shell来启动应用总觉得怪怪的，这篇先来简单了解脚本的功能、以及Launcher模块。 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -21,10 +21,10 @@
   <link rel="canonical" href="http://winseliu.com/posts/15">
   <link href="/favicon.png" rel="icon">
   <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
-  <link href="http://maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
   <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
   <script src="/javascripts/modernizr-2.0.js"></script>
-  <script src="http://cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script src="//cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
   <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
   <script src="/javascripts/octopress.js" type="text/javascript"></script>
   <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
@@ -82,6 +82,681 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2016-05-08T21:41:01+08:00" pubdate data-updated="true">Sun 2016-05-08 21:41</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>本来第二篇应该是与 [第1章 初识Spark] 有关，但我们运行helloworld、以及提交任务都是通过脚本 <code>bin/spark-shell</code> ，完全不知道那些脚本是干啥的？而且，在开发环境运行shell来启动应用总觉得怪怪的，这篇先来简单了解脚本的功能、以及Launcher模块。</p>
+
+<p><strong> 其实每个大数据的框架，shell脚本都是通用入口，也是研读源码的第一个突破口 </strong>。掌握脚本功能相当于熟悉了基本的API功能，把 spark/bin 目录下面的脚本理清楚，然后再去写搭建开发环境、编写调试helloworld就事半功倍了。</p>
+
+<p>官网 <strong> Quick Start </strong> 提供的简短例子都是通过 bin/spark-shell 来运行的。Submit页面提供了 bin/spark-submit 提交jar发布任务的方式。 spark-shell，spark-submit 就是两个非常重要的脚本，这里就来看下这两个脚本。</p>
+
+<h2>spark-shell - 对应[3.1 spark-shell]章节</h2>
+
+<p>spark-shell 脚本的内容相对多一些，主要代码如下（其他代码都是为了兼容cygwin弄的，我们这里不关注）：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>SPARK_SUBMIT_OPTS="$SPARK_SUBMIT_OPTS -Dscala.usejavacp=true"
+</span><span class='line'>trap onExit INT     # 程序终止(interrupt)信号, 在用户键入INTR字符(通常是Ctrl + C)时触发
+</span><span class='line'>
+</span><span class='line'>export SPARK_SUBMIT_OPTS
+</span><span class='line'>"${SPARK_HOME}"/bin/spark-submit --class org.apache.spark.repl.Main --name "Spark shell" "$@"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>最终调用 bin/spark-submit 脚本。其实和我们自己提交 helloworld.jar 命令一样：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ bin/spark-submit \
+</span><span class='line'>  --class "HelloWorld" \
+</span><span class='line'>  --master local[2] \
+</span><span class='line'>  target/scala-2.10/helloworld_2.10-1.0.jar</span></code></pre></td></tr></table></div></figure>
+
+
+<p>不过通过 bin/spark-shell 提交运行的类是spark自带，没有附加（不需要）额外的jar。这个后面再讲，我们也可以通过这种方式类运行公共位置的jar，可以减少一些不必要的网络带宽。</p>
+
+<h2>spark-submit</h2>
+
+<p>submit脚本更简单。就是把 <strong>org.apache.spark.deploy.SparkSubmit</strong> 和 <strong>输入参数</strong> 全部传递给脚本 bin/spark-class 。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>exec "${SPARK_HOME}"/bin/spark-class org.apache.spark.deploy.SparkSubmit "$@"</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>spark-class</h2>
+
+<p>主要的功能都集中在 bin/spark-class。bin/spark-class脚本最终启动java、调用 <strong>Launcher模块</strong> 。而 <strong>Launcher模块</strong> 解析输入参数并输出 <strong>最终输出Driver启动的命令</strong>，然后shell再通过 <strong>exec</strong> 来运行Driver程序。</p>
+
+<p>要讲清楚 bin/spark-class 相对复杂点：通过脚本传递参数，调用java处理参数，又输出脚本，最后运行脚本才真正运行了Driver。所以这里通过 <strong>脚本</strong> 和 <strong>程序</strong> 来进行说明。</p>
+
+<h4>脚本</h4>
+
+<ul>
+<li>先加载环境变量配置文件</li>
+<li>再获取 assembly.jar 位置</li>
+<li>然后调用 <code>org.apache.spark.launcher.Main</code> ， Main类根据环境变量和传入参数算出真正执行的命令(具体在【程序】部分讲)。</li>
+</ul>
+
+
+<p>下面是核心脚本的内容：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>. "${SPARK_HOME}"/bin/load-spark-env.sh 
+</span><span class='line'>  # 把load-spark-env.sh展开
+</span><span class='line'>  . "${user_conf_dir}/spark-env.sh"
+</span><span class='line'>  
+</span><span class='line'>  ASSEMBLY_DIR1="${SPARK_HOME}/assembly/target/scala-2.10"  # 通过ASSEMBLY路径来判断SPARK_SCALA_VERSION，编译打包成tar的不需要这个变量
+</span><span class='line'>  export SPARK_SCALA_VERSION="2.10"
+</span><span class='line'>
+</span><span class='line'>RUNNER="${JAVA_HOME}/bin/java"
+</span><span class='line'>
+</span><span class='line'>SPARK_ASSEMBLY_JAR=
+</span><span class='line'>if [ -f "${SPARK_HOME}/RELEASE" ]; then
+</span><span class='line'>  ASSEMBLY_DIR="${SPARK_HOME}/lib"
+</span><span class='line'>else
+</span><span class='line'>  ASSEMBLY_DIR="${SPARK_HOME}/assembly/target/scala-$SPARK_SCALA_VERSION"
+</span><span class='line'>fi
+</span><span class='line'>ASSEMBLY_JARS="$(ls -1 "$ASSEMBLY_DIR" | grep "^spark-assembly.*hadoop.*\.jar$" || true)"
+</span><span class='line'>SPARK_ASSEMBLY_JAR="${ASSEMBLY_DIR}/${ASSEMBLY_JARS}"
+</span><span class='line'>LAUNCH_CLASSPATH="$SPARK_ASSEMBLY_JAR"
+</span><span class='line'>
+</span><span class='line'>export _SPARK_ASSEMBLY="$SPARK_ASSEMBLY_JAR"
+</span><span class='line'>
+</span><span class='line'>CMD=()
+</span><span class='line'>while IFS= read -d '' -r ARG; do
+</span><span class='line'>  CMD+=("$ARG")
+</span><span class='line'>done &lt; &lt;("$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@")
+</span><span class='line'>exec "${CMD[@]}"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>大部分内容都是准备环境变量，就最后几行代码比较复杂。这里设置DEBUG在脚本 <code>while</code> 循环打印每个输出的值看下输出的是什么。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 修改后的效果
+</span><span class='line'>CMD=()
+</span><span class='line'>while IFS= read -d '' -r ARG; do
+</span><span class='line'>  echo "[DEBUG] $ARG"
+</span><span class='line'>  CMD+=("$ARG")
+</span><span class='line'>done &lt; &lt;(set -x; "$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@")
+</span><span class='line'>echo "${CMD[@]}"
+</span><span class='line'>exec "${CMD[@]}"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>启动 bin/spark-shell（最终会调用 bin/spark-class，上面已经讲过脚本之间的关系），查看输出的调试信息：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ bin/spark-shell 
+</span><span class='line'>++ /opt/jdk1.8.0/bin/java -cp /home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar org.apache.spark.launcher.Main org.apache.spark.deploy.SparkSubmit --class org.apache.spark.repl.Main --name 'Spark shell'
+</span><span class='line'>[DEBUG] /opt/jdk1.8.0/bin/java
+</span><span class='line'>[DEBUG] -cp
+</span><span class='line'>[DEBUG] /home/hadoop/spark/lib/mysql-connector-java-5.1.34.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/conf/:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-rdbms-3.2.9.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-core-3.2.10.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-api-jdo-3.2.6.jar:/home/hadoop/hadoop/etc/hadoop/
+</span><span class='line'>[DEBUG] -Dscala.usejavacp=true
+</span><span class='line'>[DEBUG] -Xms512m
+</span><span class='line'>[DEBUG] -Xmx512m
+</span><span class='line'>[DEBUG] org.apache.spark.deploy.SparkSubmit
+</span><span class='line'>[DEBUG] --class
+</span><span class='line'>[DEBUG] org.apache.spark.repl.Main
+</span><span class='line'>[DEBUG] --name
+</span><span class='line'>[DEBUG] Spark shell
+</span><span class='line'>[DEBUG] spark-shell
+</span><span class='line'>/opt/jdk1.8.0/bin/java -cp /home/hadoop/spark/lib/mysql-connector-java-5.1.34.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/conf/:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-rdbms-3.2.9.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-core-3.2.10.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-api-jdo-3.2.6.jar:/home/hadoop/hadoop/etc/hadoop/ -Dscala.usejavacp=true -Xms512m -Xmx512m org.apache.spark.deploy.SparkSubmit --class org.apache.spark.repl.Main --name 'Spark shell' spark-shell
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>从上面的调试信息可以看出：</p>
+
+<ul>
+<li><code>org.apache.spark.launcher.Main</code> 把传入参数整理后重新输出</li>
+<li>脚本把java输出内容保存到 <code>CMD[@]</code> 数组中</li>
+<li>最后使用exec来执行。</li>
+</ul>
+
+
+<p>根据上面 bin/spark-class 产生的启动命令可以直接在idea里面运行，效果与直接运行 bin/spark-shell 一样：</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-spark-shell.png" alt="" /></p>
+
+<p><strong>注意：</strong> 这里的 spark-shell 是一个特殊的字符串，代码中会对其进行特殊处理不额外加载jar。类似的字符串还有： pyspark-shell, sparkr-shell, spark-internal（参看SparkSubmit），如果调用类就在SPARK_CLASSPATH可以使用它们减少不必要的网络传输。</p>
+
+<h4>Launcher模块</h4>
+
+<p>发现 shell 和 launcher的java代码 功能逻辑非常类似。比如说获取java程序路径的代码：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>List&lt;String&gt; buildJavaCommand(String extraClassPath) throws IOException {
+</span><span class='line'>  ...
+</span><span class='line'>  if (javaHome != null) {
+</span><span class='line'>      cmd.add(join(File.separator, javaHome, "bin", "java"));
+</span><span class='line'>  } else if ((envJavaHome = System.getenv("JAVA_HOME")) != null) {
+</span><span class='line'>      cmd.add(join(File.separator, envJavaHome, "bin", "java"));
+</span><span class='line'>  } else {
+</span><span class='line'>      cmd.add(join(File.separator, System.getProperty("java.home"), "bin", "java"));
+</span><span class='line'>  }
+</span><span class='line'>  ...
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在shell脚本里面的处理是：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># Find the java binary
+</span><span class='line'>if [ -n "${JAVA_HOME}" ]; then
+</span><span class='line'>  RUNNER="${JAVA_HOME}/bin/java"
+</span><span class='line'>else
+</span><span class='line'>  if [ `command -v java` ]; then
+</span><span class='line'>  RUNNER="java"
+</span><span class='line'>  else
+</span><span class='line'>  echo "JAVA_HOME is not set" &gt;&2
+</span><span class='line'>  exit 1
+</span><span class='line'>  fi
+</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
+
+
+<p>对比两者，其实是用脚本更加直观。但是使用java编写一个模块更便于管理和扩展，稍微调整下就能复用代码。比如说要添加windows的cmd脚本、又或者为了兼容多个操作系统/多语言(python，r 等)。所以提取一个公共的 <strong>Launcher模块</strong> 出来其实是个挺不错的选择。同时对于不是很熟悉shell的程序员来说也更方便了解系统运作。</p>
+
+<p><strong>Launcher模块</strong> 按功能可以分为 CommandBuilder 和 SparkLauncher 两个部分。</p>
+
+<ol>
+<li><p>CommandBuilder</p></li>
+<li><p>SparkSubmitCommandBuilder: 解析用户输入的参数并输出命令给脚本使用</p></li>
+<li>SparkClassCommandBuilder: 主要为后台进程产生启动命令（sbin目录下面的脚本）。</li>
+</ol>
+
+
+<p>1.1 公共类</p>
+
+<ul>
+<li>Main ： 统一入口</li>
+<li>AbstractCommandBuilder : 提供构造命令的公共基类
+
+<ul>
+<li>buildJavaCommand
+
+<ul>
+<li>buildClassPath
+
+<ul>
+<li>SPARK_CLASSPATH</li>
+<li>extraClassPath</li>
+<li>getConfDir : 等于环境变量 $SPARK_CONF_DIR 或者 $SPARK_HOME/conf 的值</li>
+<li>classes
+
+<ul>
+<li>SPARK_PREPEND_CLASSES</li>
+<li>SPARK_TESTING</li>
+</ul>
+</li>
+<li>findAssembly : 获取 spark-assembly-1.6.0-hadoop2.6.3.jar 的路径，lib 或者 assembly/target/scala-$SPARK_SCALA_VERSION 路径下
+
+<ul>
+<li>_SPARK_ASSEMBLY</li>
+</ul>
+</li>
+<li>datanucleus-* : 从 lib / lib_managed/jars 目录下获取</li>
+<li>HADOOP_CONF_DIR</li>
+<li>YARN_CONF_DIR</li>
+<li>SPARK_DIST_CLASSPATH</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>getEffectiveConfig : 获取 spark-defaults.conf 的内容</li>
+</ul>
+</li>
+</ul>
+
+
+<p>1.2 SparkSubmitCommandBuilder</p>
+
+<p>主要的类以及参数：</p>
+
+<ul>
+<li>SparkSubmitCommandBuilder
+
+<ul>
+<li>构造函数调用OptionParser解析参数，解析handle有处理specialClasses！</li>
+<li>buildSparkSubmitCommand
+
+<ul>
+<li>getEffectiveConfig</li>
+<li>extraClassPath : spark.driver.extraClassPath</li>
+<li>SPARK_SUBMIT_OPTS</li>
+<li>SPARK_JAVA_OPTS</li>
+<li>client模式下加载配置
+
+<ul>
+<li>spark.driver.memory / SPARK_DRIVER_MEMORY / SPARK_MEM / DEFAULT_MEM(1g)</li>
+<li>DRIVER_EXTRA_JAVA_OPTIONS</li>
+<li>DRIVER_EXTRA_LIBRARY_PATH</li>
+</ul>
+</li>
+<li>buildSparkSubmitArgs</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>SparkSubmitOptionParser(子类需要实现handle方法)</li>
+<li>SparkSubmitCommandBuilder$OptionParser 命令参数
+
+<ul>
+<li><code>bin/spark-submit -h</code> 查看可以<strong>设置的参数</strong></li>
+<li>直接查看<a href="http://spark.apache.org/docs/latest/submitting-applications.html">官网文档</a></li>
+</ul>
+</li>
+</ul>
+
+
+<p>1.3 SparkClassCommandBuilder</p>
+
+<p>主要CommandBuilder的功能上面已经都覆盖了，SparkClassCommandBuilder主要关注命令行可以设置哪些环境变量：</p>
+
+<ul>
+<li>org.apache.spark.deploy.master.Master
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_MASTER_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.worker.Worker
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_WORKER_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.history.HistoryServer
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_HISTORY_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.executor.CoarseGrainedExecutorBackend
+
+<ul>
+<li>SPARK_JAVA_OPTS</li>
+<li>SPARK_EXECUTOR_OPTS</li>
+<li>SPARK_EXECUTOR_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.executor.MesosExecutorBackend
+
+<ul>
+<li>SPARK_EXECUTOR_OPTS</li>
+<li>SPARK_EXECUTOR_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.deploy.ExternalShuffleService / org.apache.spark.deploy.mesos.MesosExternalShuffleService
+
+<ul>
+<li>SPARK_DAEMON_JAVA_OPTS</li>
+<li>SPARK_SHUFFLE_OPTS</li>
+<li>SPARK_DAEMON_MEMORY</li>
+</ul>
+</li>
+<li>org.apache.spark.tools.
+
+<ul>
+<li>extraClassPath : spark-tools_.*.jar</li>
+<li>SPARK_JAVA_OPTS</li>
+<li>DEFAULT_MEM(1g)</li>
+</ul>
+</li>
+<li>other
+
+<ul>
+<li>SPARK_JAVA_OPTS</li>
+<li>SPARK_DRIVER_MEMORY</li>
+</ul>
+</li>
+</ul>
+
+
+<h4>SparkLauncher</h4>
+
+<p>SparkLauncher提供了在程序中提交任务的方式。通过Driver端的支持获取程序执行动态（通过socket与Driver交互），为实现后端管理应用提供一种可行的方式。</p>
+
+<p>SparkLauncher提交任务其中一部分还是使用spark-submit脚本，绕一圈又回到上面的参数解析生成命令然后exec执行。另外SparkLauncher通过启动 SocketServer(LauncherServer)接收来自Driver(LauncherBackend)任务执行情况的最新状态。</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-launcher.jpg" alt="" /></p>
+
+<p>代码包括：</p>
+
+<ul>
+<li>SparkLauncher 主要是startApplication。其他都是解析设置参数，相当于把shell的工作用java重写了一遍</li>
+<li>LauncherServer 服务SocketServer类</li>
+<li>LauncherServer$ServerConnection 状态处理类</li>
+<li>LauncherConnection 通信基类：接收、发送消息</li>
+<li>LauncherProtocol 通信协议</li>
+<li>ChildProcAppHandle : SparkAppHandle 接收到Driver的状态后，请求分发类</li>
+</ul>
+
+
+<p>具体功能的流转请下载代码 <a href="https://github.com/winse/spark-examples/blob/master/src/main/scala/com/github/winse/spark/HelloWorldLauncher.scala">HelloWorldLauncher.scala</a> ，然后本地调试一步步的追踪学习。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/05/07/rrc-apache-spark-source-inside-preface/">[读读书]Apache Spark源码剖析-序</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+
+  
+<time datetime="2016-05-07T23:58:57+08:00" pubdate data-updated="true">Sat 2016-05-07 23:58</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p><a href="http://dongxicheng.org/mapreduce-nextgen/how-to-read-hadoop-code-effectively/">如何高效的阅读hadoop源代码？</a> 先看看这篇。</p>
+
+<p>今天去广州图书馆办了证，借了几本关于大数据的书。老实说，国家提供的便民基础设施应该发挥她的价值，国家建那么多公共设施，还有很多人在后台让这些服务运作起来。借书是一种最高性价比学习的方式，第一：不能乱写乱画必须做笔记或者背下来，把最有价值的东西汇集；第二：有时间限制，好书逼着我们持续的去读；第三：自然是读到烂书也不用花钱，有价值的书必然也是最多人看的，看到翻的很旧的新书你就借了吧。</p>
+
+<p>其中一个《Apache Spark源码剖析-徐鹏》，大致翻了一下，老实说作者很牛逼啊，从那么多的代码里面挑出和主题相关的，不比鸡蛋里面挑石头容易，跟着作者的思路去读应该不错。打算每天读点代码，同时把看书和看代码也记录下来，每天一小结，同时希望对别人有些参考作用。</p>
+
+<p>Spark更新的很快，书本介绍的是 spark-1.0 ，不过书中介绍的主要是思路，我们这里选择比较新的版本 1.6.0 来读（生产用的是1.6）。</p>
+
+<p><strong> 说到思路，如果你对Redis也感兴趣，强烈推荐读读 《Redis设计与实现-黄建宏》 </strong></p>
+
+<h2>使用环境说明</h2>
+
+<p>和作者不同，我选择直接在windows来读/调试代码，为了读个代码还得整一套linux的开发环境挺累的（原来也试过整linux开发环境后来放弃了），Windows 积累的经验已经可以让我自由调试和看代码了。</p>
+
+<p>吐槽下sbt，很讨厌这玩意又慢还用ivy，我X，大数据不都用 maven 嘛，难道我还得为 spark 整一套完全一样的jar本地缓冲？不过还好 spark-1.6 已经是用 maven 来管理了。</p>
+
+<ul>
+<li>win10 + cygwin</li>
+<li>jdk8_x64（内存可以调到大于1G）</li>
+<li>maven3</li>
+<li>scala_2.10</li>
+<li>spark_1.6.0</li>
+<li>hive_1.2.1</li>
+<li>hadoop_2.6.3</li>
+<li>JetBrains idea 看代码确实不错</li>
+</ul>
+
+
+<h2>Spark开发环境搭建 - 对应书本的[附录A Spark源码调试]部分</h2>
+
+<h4>配置 idea-scala</h4>
+
+<h6>优化idea启动参数</h6>
+
+<p>安装 <strong>最新版idea</strong> (当前最新版本是15.0.5)。在程序安装的 bin 目录下，有x64配置文件 idea64.exe.vmoptions ，在配置文件开头添加jdk8内存配置：</p>
+
+<pre><code>-server
+-Xms1g
+-Xmx2g
+-XX:MetaspaceSize=256m
+-XX:MaxMetaspaceSize=256m
+</code></pre>
+
+<p>由于机器 eclipse 原来使用的 jdk_x86，为了兼容，单独编写 idea64.exe 的启动脚本 <strong> idea.bat </strong>：</p>
+
+<pre><code>set JAVA_HOME=D:\Java\jdk1.8.0_40
+D:
+cd "D:\Program Files\JetBrains\IntelliJ IDEA Community Edition 15.0.5\bin"
+start idea64.exe"
+
+exit
+</code></pre>
+
+<p><strong> [IDEA的快键配置]：IDEA 适配 Eclipse 的快键集，通过 <code>Settings -&gt; Keymap -&gt; Keymaps</code> 配置。 </strong></p>
+
+<h6>安装scala插件</h6>
+
+<ol>
+<li>第一种方式：当然最好就是通过plugins的搜索框就能安装，但在中国这得看运气。</li>
+<li><p>第二种方式：首先下载好插件，然后选择从硬盘安装插件。</p></li>
+<li><p>从网络安装</p></li>
+</ol>
+
+
+<p>打开 plugins 管理页面：（也可以通过 File -> Settings&hellip; -> Plugins 打开）</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-start-configure.png" alt="" /></p>
+
+<p>弹出的 Plugins 对话框显示了当前已经安装的插件：</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-plugins-list.png" alt="" /></p>
+
+<p>在 Plugins 对话框页面选择 [<strong>Browse repositories&hellip;</strong>] 按钮，再在弹出的对话框中查找 <strong>Scala</strong> 的插件：</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-browse-plugins.png" alt="" /></p>
+
+<p>选择安装 Scala ，当然你也可以同时安装上 SBT 。</p>
+
+<ul>
+<li>从硬盘安装</li>
+</ul>
+
+
+<p>运气好就算可以直接从网络安装，但是下载过程其实也挺慢的。</p>
+
+<p>我们还可以先自己下载好插件再安装（或者从其他同学获取、迅雷分分钟下完）。首先需要查看自己 idea 的版本，再在 <a href="https://plugins.jetbrains.com/?idea_ce">https://plugins.jetbrains.com/?idea_ce</a> 查找下载符合自己版本的 <a href="https://plugins.jetbrains.com/plugin/1347?pr=idea_ce">scala 插件</a>，最后通过 [<strong>Install plugin from disk&hellip;</strong>] 安装，然后重启IDEA即可。</p>
+
+<p><img src="/images/blogs/rrc-spark/idea-version.png" alt="" />
+<img src="/images/blogs/rrc-spark/download-scala-plugin.png" alt="" />
+<img src="/images/blogs/rrc-spark/idea-scala-from-disk.png" alt="" /></p>
+
+<h4>下载 spark 源码，并导入idea</h4>
+
+<ol>
+<li>下载源码，检出 1.6.0 版本</li>
+</ol>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ git clone https://github.com/apache/spark.git
+</span><span class='line'>$ git checkout v1.6.0</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果你只想看 1.6.0 的内容，可以直接在clone命令添加参数指定版本：</p>
+
+<pre><code>$ git clone https://github.com/apache/spark.git -b v1.6.0
+</code></pre>
+
+<ol>
+<li>导入idea</li>
+</ol>
+
+
+<p>导入之前先要生成arvo的java类(这里直接package编译一下)：</p>
+
+<pre><code>E:\git\spark\external\flume-sink&gt;mvn package -DskipTests
+</code></pre>
+
+<p>由于我使用 hadoop-2.6.3 ，并且导入过程中不能修改环境变量，直接修改 pom.xml 里面 hadoop.version 属性的值。</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-hadoop-version.png" alt="" /></p>
+
+<p>启动IDEA，使用 [<strong>Import Project</strong>] 导入源代码; 然后选择 <code>E:/git/spark</code>（刚刚下载的源码位置）; 然后选择导入maven项目; 在 profile 页把必要的都选上（当然也可以后期通过 <code>Maven Projects</code> 面板来修改）:</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-import-profile.png" alt="" /></p>
+
+<p>导入完成后，依赖关系maven已经处理好了，直接就能用了。也可以 Make Projects 再编译一次，并把运行application的make去掉，免得浪费编译时间）。</p>
+
+<p><strong> 注意：mvn idea:idea 其实不咋的，生成的配置不兼容。最好不要用！！ </strong></p>
+
+<ol>
+<li>调试/测试</li>
+</ol>
+
+
+<p>在调试运行之前，先了解下并解决 idea maven-provided 的问题：</p>
+
+<p>在idea里面直接运行 src/main/java 下面的类会被当做在生产环境运行，所以idea不会把这些 provided的依赖 加入到运行的classpath。</p>
+
+<ul>
+<li><a href="https://youtrack.jetbrains.com/issue/IDEA-54595">https://youtrack.jetbrains.com/issue/IDEA-54595</a></li>
+<li><a href="http://stackoverflow.com/questions/30453269/maven-provided-dependency-will-cause-noclassdeffounderror-in-intellij">http://stackoverflow.com/questions/30453269/maven-provided-dependency-will-cause-noclassdeffounderror-in-intellij</a></li>
+</ul>
+
+
+<p><img src="/images/blogs/rrc-spark/idea-maven-provided.png" alt="" /></p>
+
+<p>IDEA运行时是从 <code>examples/spark-examples_2.10.iml</code> 文件中读取classpath的配置，所以我们直接把 <code>spark-examples_2.10.iml</code> 的 <code>scope="PROVIDED"</code> 全部删掉即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 一次全部删掉！
+</span><span class='line'>winse@Lenovo-PC ~/git/spark
+</span><span class='line'>$ find . -name "*.iml"  | xargs -I{} sed -i 's/scope="PROVIDED"//' {}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>首先右键 [<strong>Run LogQuery</strong>] 运行（由于缺少master的配置会报错的），主要用于生成启动的 <code>LogQuery Configuration</code>：</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-logquery-firststart.png" alt="" /></p>
+
+<p>然后选择上图中下拉选项的 [<strong>Edit Configurations&hellip;</strong>] ，在弹出配置对话框为中为 <code>LogQuery</code> 添加 <strong>VM options</strong> 配置: <code>-Dspark.master=local</code> ，接下来我们就可以打断点，Debug调试了。</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-logquery-config.png" alt="" /></p>
+
+<p>运行结果如下：</p>
+
+<p><img src="/images/blogs/rrc-spark/spark-logquery-result.png" alt="" /></p>
+
+<p>遇到IDEA导入maven依赖有问题的，可以参考下 <a href="http://stackoverflow.com/questions/11454822/import-maven-dependencies-in-intellij-idea">Import Maven dependencies in IntelliJ IDEA</a> 。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1356,1123 +2031,6 @@ NOTE: 2018-03-09 再实践</p>
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/05/03/hiera-and-facts/">Hiera and Facts</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-05-03T18:30:41+08:00" pubdate data-updated="true">Tue 2016-05-03 18:30</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>为什么用hiera： <a href="https://docs.puppet.com/hiera/3.1/#why-hiera">https://docs.puppet.com/hiera/3.1/#why-hiera</a></p>
-
-<ul>
-<li>hierarchy层级体系。可以设置公共属性，也可以覆写！</li>
-<li>&ldquo;注入&#8221;设置 class 中的属性值。</li>
-<li>hiera_include 通过配置来完成site.pp同样的功能，并且比 <code>node</code> 更加强大灵活（数组值可以合并）。</li>
-</ul>
-
-
-<p>基本概念：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/configuring.html">hiera.yaml</a> 默认配置文件放在 $codedir/hiera.yaml 。 结合puppet使用时可以通过修改 puppet.conf 的 hiera_config 自定义配置的文件。</li>
-<li><a href="https://docs.puppet.com/hiera/3.1/hierarchy.html">hierarchy</a> hierarchy定义好可以简化很多工作量。如需要根据操作系统 %{::osfamily} 进行适配。</li>
-<li><a href="https://docs.puppet.com/hiera/3.1/data_sources.html#yaml">datasource</a> yaml格式介绍。</li>
-</ul>
-
-
-<h2>windows cygwin命令行环境配置</h2>
-
-<pre><code>winse@Lenovo-PC ~
-$ cat bin/hiera
-#!/bin/sh
-
-# default puppetlabs config in c:\Users\winse\Puppetlabs
-export HOME=/cygdrive/c/Users/winse
-
-name=`basename $0`
-
-# execute
-"C:/Progra~1/Puppet~1/Puppet/bin"/$name.bat "$@"
-
-
-winse@Lenovo-PC ~
-$ cat .bash_profile
-...
-function hiera_look(){
-  code_dir=`puppet config print codedir | sed 's/\r//' `
-  ~/bin/hiera -c "$code_dir/hiera.yaml" --debug "$@" ::environment=production
-}
-</code></pre>
-
-<h2>HelloWorld</h2>
-
-<pre><code>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat /cygdrive/c/Users/winse/.puppetlabs/etc/puppet/puppet.conf
-[main]
-codedir = D:/eshore-shells/puppet/dta/code
-hiera_config = $codedir/hiera.yaml
-
-certname = winse
-
-winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat hiera.yaml
----
-:backends:
-  - yaml
-:hierarchy:
-  - "nodes/%{::trusted.certname}"
-  - common
-
-:yaml:
-  :datadir: "D:/eshore-shells/puppet/dta/code/environments/%{::environment}/hieradata"
-
-
-winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-$ cat environments/production/hieradata/common.yaml
-whoami: winse
-
-
-winse@Lenovo-PC ~
-$ hiera_look whoami
-DEBUG: 2016-05-03 11:27:41 +0100: Hiera YAML backend starting
-DEBUG: 2016-05-03 11:27:41 +0100: Looking up whoami in YAML backend
-DEBUG: 2016-05-03 11:27:41 +0100: Looking for data source common
-DEBUG: 2016-05-03 11:27:41 +0100: Found whoami in common
-winse
-</code></pre>
-
-<h2><strong>与Puppet结合使用</strong></h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/puppet.html">https://docs.puppet.com/hiera/3.1/puppet.html</a></li>
-<li><a href="https://docs.puppet.com/hiera/3.1/puppet.html#assigning-classes-to-nodes-with-hiera-hierainclude">https://docs.puppet.com/hiera/3.1/puppet.html#assigning-classes-to-nodes-with-hiera-hierainclude</a></li>
-<li>单值属性重复优先级：就近原则 <a href="https://docs.puppet.com/hiera/3.1/hierarchy.html#example">https://docs.puppet.com/hiera/3.1/hierarchy.html#example</a></li>
-</ul>
-
-
-<h4>参考案例</h4>
-
-<ul>
-<li><a href="https://docs.puppet.com/hiera/3.1/complete_example.html">https://docs.puppet.com/hiera/3.1/complete_example.html</a></li>
-<li><a href="https://kisspuppet.gitbooks.io/puppet/content/puppet_learning_ext1.html">https://kisspuppet.gitbooks.io/puppet/content/puppet_learning_ext1.html</a></li>
-</ul>
-
-
-<h4>主要功能</h4>
-
-<ul>
-<li>hiera获取puppet-facts的属性</li>
-<li>puppet读取hiera中的属性</li>
-<li>hiera注入设置puppet-module的属性：
-  获取到第一个就返回了(类似于hiera)，对于strings, arrays, hashes类型 cannot merge values from multiple hierarchy levels; 需要使用来 hiera_array or hiera_hash 代替。</li>
-<li>hiera_include</li>
-</ul>
-
-
-<h4>动手实践</h4>
-
-<pre><code>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code/environments/production
-$ tree .
-.
-├── hieradata
-│   ├── common.yaml
-│   └── nodes
-│       └── winse.yaml
-├── manifests
-│   └── site.pp
-└── modules
-    └── helloworld
-        └── manifests
-            └── init.pp
-
-$ cat hieradata/common.yaml
-whoami: "%{calling_module} - %{calling_class} - %{calling_class_path} - %{::domain}"
-
-$ cat hieradata/nodes/winse.yaml  | iconv -f gbk -t utf8
----
-classes:
-  - helloworld::hello
-  - helloworld::world
-
-# 文件编码需要与环境匹配，windows要GBK的
-helloworld::hello::hello: 你好
-
-$ cat modules/helloworld/manifests/init.pp
-
-class helloworld::hello ($hello = "hello"){
-
-  notify {$hello :
-  }
-
-}
-
-class helloworld::world {
-
-  notify {hiera('whoami') : # 不推荐在module中使用hiera方法，这里仅为了演示获取calling_module等
-  }
-
-}
-
-$ cat manifests/site.pp
-
-hiera_include('classes')
-
-$ puppet apply environments/production/manifests/site.pp
-Notice: Compiled catalog for winse in environment production in 0.28 seconds
-Notice: 你好
-Notice: /Stage[main]/Helloworld::Hello/Notify[你好]/message: defined 'message' as '你好'
-Notice: helloworld - helloworld::world - helloworld/world - DHCP HOST
-Notice: /Stage[main]/Helloworld::World/Notify[helloworld - helloworld::world - helloworld/world - DHCP HOST]/message: defined 'message' as 'helloworld - helloworld::world - helloworld/world - DHCP HOST'
-Notice: Applied catalog in 0.02 seconds
-
-# 测试获取hiera变量
-$ puppet apply -e "notice(hiera('whoami'))"
-Notice: Scope(Class[main]):  -  -  - DHCP HOST
-Notice: Compiled catalog for winse in environment production in 0.05 seconds
-Notice: Applied catalog in 0.03 seconds
-
-$ puppet apply -e "notice(hiera('classes'))"
-Notice: Scope(Class[main]): [helloworld::hello, helloworld::world]
-Notice: Compiled catalog for winse in environment production in 0.05 seconds
-Notice: Applied catalog in 0.02 seconds
-</code></pre>
-
-<h2>facts</h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/facter/3.1/">https://docs.puppet.com/facter/3.1/</a></li>
-<li>系统自带指标 <a href="https://docs.puppet.com/facter/3.1/core_facts.html">https://docs.puppet.com/facter/3.1/core_facts.html</a></li>
-</ul>
-
-
-<h4>自定义指标</h4>
-
-<ul>
-<li><a href="https://docs.puppet.com/facter/3.1/custom_facts.html">https://docs.puppet.com/facter/3.1/custom_facts.html</a></li>
-<li>Example <a href="https://docs.puppet.com/facter/3.1/fact_overview.html">https://docs.puppet.com/facter/3.1/fact_overview.html</a></li>
-<li>《Learning Puppet4》</li>
-</ul>
-
-
-<p>三种方式：</p>
-
-<ul>
-<li>文件: yaml/json/txt。推荐放置到 modules/[name]/facts.d 目录下</li>
-<li>可执行脚本输出键值对。推荐放置到 modules/[name]/facts.d 目录下，可执行脚本！</li>
-<li>ruby。放置到 modules/[name]/lib/facter 。<a href="https://docs.puppet.com/guides/plugins_in_modules.html">custom facts should go in lib/facter/</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ cat environments/production/modules/helloworld/facts.d/simple_facts.yaml
-</span><span class='line'>---
-</span><span class='line'>my_fact: my_value
-</span><span class='line'>
-</span><span class='line'>$ puppet facts find --debug | grep -iE "my_fact|helloworld"
-</span><span class='line'>Debug: Loading external facts from D:/eshore-shells/puppet/dta/code/environments/production/modules/helloworld/facts.d
-</span><span class='line'>Debug: Facter: searching "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d" for external facts.
-</span><span class='line'>Debug: Facter: resolving facts from YAML file "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d\simple_facts.yaml".
-</span><span class='line'>Debug: Facter: fact "my_fact" has resolved to "my_value".
-</span><span class='line'>Debug: Facter: completed resolving facts from YAML file "D:/eshore-shells\puppet\dta\code\environments\production\modules\helloworld\facts.d\simple_facts.yaml".
-</span><span class='line'>    "my_fact": "my_value",
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>winse@Lenovo-PC /cygdrive/d/eshore-shells/puppet/dta/code
-</span><span class='line'>$ cat environments/production/modules/helloworld/lib/facter/users.rb
-</span><span class='line'>Facter.add('users') do
-</span><span class='line'>  setcode do
-</span><span class='line'>    ["winse", "winseliu"]
-</span><span class='line'>  end
-</span><span class='line'>end
-</span><span class='line'>
-</span><span class='line'>$ puppet facts | grep -3 users
-</span><span class='line'>    "uptime_days": 0,
-</span><span class='line'>    "uptime_hours": 1,
-</span><span class='line'>    "uptime_seconds": 6980,
-</span><span class='line'>    "users": [
-</span><span class='line'>      "winse",
-</span><span class='line'>      "winseliu"
-</span><span class='line'>    ],
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/04/28/mcollective-plugins/">MCollective Plugins</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-04-28T21:37:51+08:00" pubdate data-updated="true">Thu 2016-04-28 21:37</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>上一篇介绍了mcollective的安装。乘着这股热情把 mco 命令行和插件的安装弄通，记录下来。</p>
-
-<h2>基本命令使用</h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html">https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 ~]# mco help
-</span><span class='line'>The Marionette Collective version 2.8.8
-</span><span class='line'>
-</span><span class='line'>  completion      Helper for shell completion systems
-</span><span class='line'>  describe_filter Display human readable interpretation of filters
-</span><span class='line'>  facts           Reports on usage for a specific fact
-</span><span class='line'>  find            Find hosts using the discovery system matching filter criteria
-</span><span class='line'>  help            Application list and help
-</span><span class='line'>  inventory       General reporting tool for nodes, collectives and subcollectives
-</span><span class='line'>  ping            Ping all nodes
-</span><span class='line'>  plugin          MCollective Plugin Application
-</span><span class='line'>  rpc             Generic RPC agent client application
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>自带的插件只能用来查看环境情况(下面列出来的命令<a href="/blog/2016/04/28/mcollective-quick-start/#cli-simple-usage">上一篇:MCollective安装配置</a>都已记录过)。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mco ping
-</span><span class='line'>mco inventory [server_host]
-</span><span class='line'>mco facts [fact]</span></code></pre></td></tr></table></div></figure>
-
-
-<p>mcollective 的 filter（适配节点）功能很强大，具体查看文档：<a href="https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html#selecting-request-targets-using-filters">Selecting Request Targets Using Filters</a></p>
-
-<p><strong> 使用filter功能需要结合facts，需要先把节点的信息写入到mcollective/facts.yaml文件 </strong></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mco ping -I /^hadoop/
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mco puppet runall 8 -I /^hadoop/
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mco service iptables status -I "/cu-ud.*/"
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master1 manifests]# mco ping -S "hostname=hadoop-master2"
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mco ping -S 'hostname=/hadoop.*/'
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mco facts hostname</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>插件安装</h2>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/deploy/standard.html#install-agent-plugins">https://docs.puppet.com/mcollective/deploy/standard.html#install-agent-plugins</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/plugins.html">Installing Plugins</a></li>
-<li><a href="https://docs.puppet.com/mcollective/deploy/plugins.html#example">https://docs.puppet.com/mcollective/deploy/plugins.html#example</a></li>
-</ul>
-
-
-<p>文档中描述了 <code>Use packages</code> 和 <code>Put files directly into the libdir</code> 两种安装插件的方式。但是 Packages 都是放在 <a href="http://yum.puppetlabs.com/el/6/products/x86_64/">旧的repo</a> 里面，我们这里使用第二种方式把github下载源码放到libdir来安装。</p>
-
-<h4>安装mcollective-puppet-agent</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 使用文档 https://github.com/puppetlabs/mcollective-puppet-agent#readme
-</span><span class='line'># 直接下载release版本 
-</span><span class='line'>[root@hadoop-master2 ~]# cd /usr/libexec/mcollective/
-</span><span class='line'>[root@hadoop-master2 mcollective]# ll
-</span><span class='line'>total 44
-</span><span class='line'>-rw-r--r-- 1 root root 44759 Apr 29 11:53 mcollective-puppet-agent-1.10.0.tar.gz
-</span><span class='line'>[root@hadoop-master2 mcollective]# tar zxf mcollective-puppet-agent-1.10.0.tar.gz  
-</span><span class='line'>[root@hadoop-master2 mcollective]# ll mcollective-puppet-agent-1.10.0
-</span><span class='line'>total 60
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 agent
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 aggregate
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 application
-</span><span class='line'>-rw-rw-r-- 1 root root  3456 Apr 13  2015 CHANGELOG.md
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 data
-</span><span class='line'>drwxrwxr-x 4 root root  4096 Apr 13  2015 ext
-</span><span class='line'>-rw-rw-r-- 1 root root   349 Apr 13  2015 Gemfile
-</span><span class='line'>-rw-rw-r-- 1 root root  3036 Apr 13  2015 Rakefile
-</span><span class='line'>-rw-rw-r-- 1 root root 14739 Apr 13  2015 README.md
-</span><span class='line'>drwxrwxr-x 9 root root  4096 Apr 13  2015 spec
-</span><span class='line'>drwxrwxr-x 3 root root  4096 Apr 13  2015 util
-</span><span class='line'>drwxrwxr-x 2 root root  4096 Apr 13  2015 validator
-</span><span class='line'># 官网提供example有区分服务端和客户端文件。反正多了没问题，直接全部放就行咯。。。
-</span><span class='line'>[root@hadoop-master2 mcollective]# mv mcollective-puppet-agent-1.10.0 mcollective
-</span><span class='line'>
-</span><span class='line'># 验证
-</span><span class='line'># 多了puppet的命令！
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco help
-</span><span class='line'>The Marionette Collective version 2.8.8
-</span><span class='line'>
-</span><span class='line'>  completion      Helper for shell completion systems
-</span><span class='line'>  describe_filter Display human readable interpretation of filters
-</span><span class='line'>  facts           Reports on usage for a specific fact
-</span><span class='line'>  find            Find hosts using the discovery system matching filter criteria
-</span><span class='line'>  help            Application list and help
-</span><span class='line'>  inventory       General reporting tool for nodes, collectives and subcollectives
-</span><span class='line'>  ping            Ping all nodes
-</span><span class='line'>  plugin          MCollective Plugin Application
-</span><span class='line'>  puppet          Schedule runs, enable, disable and interrogate the Puppet Agent
-</span><span class='line'>  rpc             Generic RPC agent client application
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 同步到mcollective-servers （172.17.0.2对应hadoop-slaver1）
-</span><span class='line'>[root@hadoop-master2 mcollective]# rsync -az /usr/libexec/mcollective 172.17.0.2:/usr/libexec/
-</span><span class='line'>
-</span><span class='line'># mcollective-server添加插件后，重启mcollective服务
-</span><span class='line'># 也可以使用 reload-agents 来重新加载agents： service mcollective reload-agents
-</span><span class='line'>[root@hadoop-slaver1 libexec]# service mcollective restart
-</span><span class='line'>Shutting down mcollective:                                 [  OK  ]
-</span><span class='line'>Starting mcollective:                                      [  OK  ]
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 验证server，已经可以看到新添加的puppet命令了
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco inventory hadoop-slaver1
-</span><span class='line'>Inventory for hadoop-slaver1:
-</span><span class='line'>
-</span><span class='line'>   Server Statistics:
-</span><span class='line'>                      Version: 2.8.8
-</span><span class='line'>                   Start Time: 2016-04-29 12:01:40 +0800
-</span><span class='line'>                  Config File: /etc/puppetlabs/mcollective/server.cfg
-</span><span class='line'>                  Collectives: mcollective
-</span><span class='line'>              Main Collective: mcollective
-</span><span class='line'>                   Process ID: 123
-</span><span class='line'>               Total Messages: 1
-</span><span class='line'>      Messages Passed Filters: 1
-</span><span class='line'>            Messages Filtered: 0
-</span><span class='line'>             Expired Messages: 0
-</span><span class='line'>                 Replies Sent: 0
-</span><span class='line'>         Total Processor Time: 0.67 seconds
-</span><span class='line'>                  System Time: 0.8 seconds
-</span><span class='line'>
-</span><span class='line'>   Agents:
-</span><span class='line'>      discovery       puppet          rpcutil        
-</span><span class='line'>
-</span><span class='line'>   Data Plugins:
-</span><span class='line'>      agent           collective      fact           
-</span><span class='line'>      fstat           puppet          resource       
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco help puppet
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco puppet status    
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>   hadoop-slaver1: Currently stopped; last completed run 10 hours 57 minutes 20 seconds ago
-</span><span class='line'>   hadoop-master1: Currently stopped; last completed run 11 hours 1 minutes 05 seconds ago
-</span><span class='line'>   hadoop-slaver2: Currently stopped; last completed run 10 hours 57 minutes 16 seconds ago
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 配置server.conf
-</span><span class='line'># 注意：真正要执行puppet命令，为了适配puppet4需要添加/修改配置
-</span><span class='line'>-bash-4.1# cat /etc/puppetlabs/mcollective/server.cfg 
-</span><span class='line'>...
-</span><span class='line'>plugin.puppet.command = /opt/puppetlabs/bin/puppet agent
-</span><span class='line'>plugin.puppet.config = /etc/puppetlabs/puppet/puppet.conf
-</span><span class='line'>
-</span><span class='line'># 重启所有mcollective（重新加载agent也可以不重启，使用 mco shell run service mcollective reload-agents 来重新加载）
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco puppet runall 1
-</span><span class='line'>2016-04-29 16:52:46: Running all nodes with a concurrency of 1
-</span><span class='line'>2016-04-29 16:52:46: Discovering enabled Puppet nodes to manage
-</span><span class='line'>2016-04-29 16:52:49: Found 3 enabled nodes
-</span><span class='line'>2016-04-29 16:52:50: hadoop-slaver1 schedule status: Started a Puppet run using the '/opt/puppetlabs/bin/puppet agent --onetime --no-daemonize --color=false --show_diff --verbose --no-splay' command
-</span><span class='line'>2016-04-29 16:52:55: hadoop-slaver2 schedule status: Started a Puppet run using the '/opt/puppetlabs/bin/puppet agent --onetime --no-daemonize --color=false --show_diff --verbose --no-splay' command
-</span><span class='line'>2016-04-29 16:52:59: hadoop-master1 schedule status: Started a Puppet run using the '/opt/puppetlabs/bin/puppet agent --onetime --no-daemonize --color=false --show_diff --verbose --no-splay' command
-</span><span class='line'>2016-04-29 16:52:59: Iteration complete. Initiated a Puppet run on 3 nodes.
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 puppetlabs]# mco puppet status
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>   hadoop-master1: Currently stopped; last completed run 10 seconds ago
-</span><span class='line'>   hadoop-slaver1: Currently stopped; last completed run 15 seconds ago
-</span><span class='line'>   hadoop-slaver2: Currently stopped; last completed run 04 seconds ago
-</span><span class='line'>...
-</span><span class='line'># 或者通过 puppetexplorer 查看节点最后的更新时间
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h4>安装 package / service 插件</h4>
-
-<p>为了更好的管理，再添加 package 和 service 两个插件</p>
-
-<ul>
-<li><a href="https://github.com/puppetlabs/mcollective-package-agent#readme">https://github.com/puppetlabs/mcollective-package-agent#readme</a></li>
-<li><a href="https://github.com/puppetlabs/mcollective-service-agent#readme">https://github.com/puppetlabs/mcollective-service-agent#readme</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># http://stackoverflow.com/questions/8488253/how-to-force-cp-to-overwrite-without-confirmation
-</span><span class='line'>[root@hadoop-master2 mcollective]# unalias cp
-</span><span class='line'>[root@hadoop-master2 mcollective]# cp -rf mcollective-service-agent-3.1.3/* mcollective/   
-</span><span class='line'>[root@hadoop-master2 mcollective]# cp -rf mcollective-package-agent-4.4.0/* mcollective/
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# rsync -az /usr/libexec/mcollective 172.17.0.2:/usr/libexec/
-</span><span class='line'>
-</span><span class='line'># 重启mcollective服务（或者 mco shell run service mcollective reload-agents 重新加载）
-</span><span class='line'>
-</span><span class='line'># updated 2016-5-11 17:15:08
-</span><span class='line'># 还是重启比较好，reload-agents Data Plugins 没有重新加载
-</span><span class='line'>[root@hadoop-master1 puppet]# mco inventory hadoop-master2
-</span><span class='line'>Inventory for hadoop-master2:
-</span><span class='line'>
-</span><span class='line'>   Server Statistics:
-</span><span class='line'>                      Version: 2.8.8
-</span><span class='line'>                   Start Time: 2016-05-11 17:12:45 +0800
-</span><span class='line'>                  Config File: /etc/puppetlabs/mcollective/server.cfg
-</span><span class='line'>                  Collectives: mcollective
-</span><span class='line'>              Main Collective: mcollective
-</span><span class='line'>                   Process ID: 39878
-</span><span class='line'>               Total Messages: 1
-</span><span class='line'>      Messages Passed Filters: 1
-</span><span class='line'>            Messages Filtered: 0
-</span><span class='line'>             Expired Messages: 0
-</span><span class='line'>                 Replies Sent: 0
-</span><span class='line'>         Total Processor Time: 1.17 seconds
-</span><span class='line'>                  System Time: 0.1 seconds
-</span><span class='line'>
-</span><span class='line'>   Agents:
-</span><span class='line'>      discovery       package         puppet         
-</span><span class='line'>      rpcutil         service         shell          
-</span><span class='line'>
-</span><span class='line'>   Data Plugins:
-</span><span class='line'>      agent           collective      fact           
-</span><span class='line'>      fstat           puppet          resource       
-</span><span class='line'>      service                                        
-</span><span class='line'>
-</span><span class='line'>   Configuration Management Classes:
-</span><span class='line'>      No classes applied
-</span><span class='line'>
-</span><span class='line'>   Facts:
-</span><span class='line'>      mcollective =&gt; 1
-</span><span class='line'>[root@hadoop-master1 puppet]# mco inventory hadoop-slaver2
-</span><span class='line'>Inventory for hadoop-slaver2:
-</span><span class='line'>
-</span><span class='line'>   Server Statistics:
-</span><span class='line'>                      Version: 2.8.8
-</span><span class='line'>                   Start Time: 2016-05-11 16:56:09 +0800
-</span><span class='line'>                  Config File: /etc/puppetlabs/mcollective/server.cfg
-</span><span class='line'>                  Collectives: mcollective
-</span><span class='line'>              Main Collective: mcollective
-</span><span class='line'>                   Process ID: 14062
-</span><span class='line'>               Total Messages: 9
-</span><span class='line'>      Messages Passed Filters: 7
-</span><span class='line'>            Messages Filtered: 2
-</span><span class='line'>             Expired Messages: 0
-</span><span class='line'>                 Replies Sent: 6
-</span><span class='line'>         Total Processor Time: 1.31 seconds
-</span><span class='line'>                  System Time: 0.23 seconds
-</span><span class='line'>
-</span><span class='line'>   Agents:
-</span><span class='line'>      discovery       package         puppet         
-</span><span class='line'>      rpcutil         service         shell          
-</span><span class='line'>
-</span><span class='line'>   Data Plugins:
-</span><span class='line'>      agent           collective      fact           
-</span><span class='line'>      fstat                                          
-</span><span class='line'>
-</span><span class='line'>   Configuration Management Classes:
-</span><span class='line'>      No classes applied
-</span><span class='line'>
-</span><span class='line'>   Facts:
-</span><span class='line'>      mcollective =&gt; 1
-</span><span class='line'>
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>验证下package的实力：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master2 mcollective]# mco package lrzsz status
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>   hadoop-slaver1: lrzsz-0.12.20-27.1.el6.x86_64
-</span><span class='line'>   hadoop-master1: -purged.
-</span><span class='line'>   hadoop-slaver2: -purged.
-</span><span class='line'>
-</span><span class='line'>Summary of Arch:
-</span><span class='line'>
-</span><span class='line'>   x86_64 = 1
-</span><span class='line'>
-</span><span class='line'>Summary of Ensure:
-</span><span class='line'>
-</span><span class='line'>             purged = 2
-</span><span class='line'>   0.12.20-27.1.el6 = 1
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>Finished processing 3 / 3 hosts in 1488.41 ms
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco rpc package install package=lrzsz
-</span><span class='line'>Discovering hosts using the mc method for 2 second(s) .... 3
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>hadoop-slaver1                           Unknown Request Status
-</span><span class='line'>   Package is already installed
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>Summary of Ensure:
-</span><span class='line'>
-</span><span class='line'>   0.12.20-27.1.el6 = 3
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>Finished processing 3 / 3 hosts in 14525.03 ms
-</span><span class='line'>[root@hadoop-master2 mcollective]# mco package lrzsz status
-</span><span class='line'>
-</span><span class='line'> * [ ============================================================&gt; ] 3 / 3
-</span><span class='line'>
-</span><span class='line'>   hadoop-master1: lrzsz-0.12.20-27.1.el6.x86_64
-</span><span class='line'>   hadoop-slaver2: lrzsz-0.12.20-27.1.el6.x86_64
-</span><span class='line'>   hadoop-slaver1: lrzsz-0.12.20-27.1.el6.x86_64
-</span><span class='line'>
-</span><span class='line'>Summary of Arch:
-</span><span class='line'>
-</span><span class='line'>   x86_64 = 3
-</span><span class='line'>
-</span><span class='line'>Summary of Ensure:
-</span><span class='line'>
-</span><span class='line'>   0.12.20-27.1.el6 = 3
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>Finished processing 3 / 3 hosts in 572.13 ms
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>还有很多的插件：</p>
-
-<ul>
-<li><a href="https://docs.puppet.com/mcollective/plugin_directory/index.html">https://docs.puppet.com/mcollective/plugin_directory/index.html</a></li>
-<li>shell插件也不错，安装的时刻注意一下目录结构！<a href="https://github.com/puppetlabs/mcollective-shell-agent">https://github.com/puppetlabs/mcollective-shell-agent</a></li>
-</ul>
-
-
-<p>添加了 service，package，shell，puppet 插件后，用 mco 来执行管理集群太爽了！！</p>
-
-<h4>后期统一安装</h4>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@hadoop-master1 mcollective]# ll
-</span><span class='line'>total 100
-</span><span class='line'>-rw-r--r-- 1 root root 17101 Apr 29 12:15 mcollective-package-agent-4.4.0.tar.gz
-</span><span class='line'>-rw-r--r-- 1 root root 44759 Apr 29 11:53 mcollective-puppet-agent-1.10.0.tar.gz
-</span><span class='line'>-rw-r--r-- 1 root root 12483 Apr 29 12:15 mcollective-service-agent-3.1.3.tar.gz
-</span><span class='line'>-rw-r--r-- 1 root root 17984 Apr 29 19:24 mcollective-shell-agent-0.0.2.tar.gz
-</span><span class='line'>[root@hadoop-master1 mcollective]# ls | xargs -I{} tar zxf {}
-</span><span class='line'>
-</span><span class='line'># TODO 可以考虑打包成rpm
-</span><span class='line'>[root@hadoop-master1 mcollective]# mkdir mcollective
-</span><span class='line'>[root@hadoop-master1 mcollective]# unalias cp
-</span><span class='line'>[root@hadoop-master1 mcollective]# cp -rf mcollective-package-agent-4.4.0/* mcollective/
-</span><span class='line'>[root@hadoop-master1 mcollective]# cp -rf mcollective-puppet-agent-1.10.0/* mcollective/
-</span><span class='line'>[root@hadoop-master1 mcollective]# cp -rf mcollective-service-agent-3.1.3/* mcollective/
-</span><span class='line'>[root@hadoop-master1 mcollective]# cp -rf mcollective-shell-agent-0.0.2/lib/mcollective/* mcollective/
-</span><span class='line'>[root@hadoop-master1 mcollective]# rm -rf mcollective-*
-</span><span class='line'>
-</span><span class='line'># 验证
-</span><span class='line'>[root@hadoop-master1 mcollective]# mco help
-</span><span class='line'>The Marionette Collective version 2.8.8
-</span><span class='line'>
-</span><span class='line'>  completion      Helper for shell completion systems
-</span><span class='line'>  describe_filter Display human readable interpretation of filters
-</span><span class='line'>  facts           Reports on usage for a specific fact
-</span><span class='line'>  find            Find hosts using the discovery system matching filter criteria
-</span><span class='line'>  help            Application list and help
-</span><span class='line'>  inventory       General reporting tool for nodes, collectives and subcollectives
-</span><span class='line'>  package         Install, uninstall, update, purge and perform other actions to packages
-</span><span class='line'>  ping            Ping all nodes
-</span><span class='line'>  plugin          MCollective Plugin Application
-</span><span class='line'>  puppet          Schedule runs, enable, disable and interrogate the Puppet Agent
-</span><span class='line'>  rpc             Generic RPC agent client application
-</span><span class='line'>  service         Manages system services
-</span><span class='line'>  shell           Run shell commands
-</span><span class='line'>
-</span><span class='line'># 同步
-</span><span class='line'>[root@hadoop-master1 mcollective]# cd ..
-</span><span class='line'>[root@hadoop-master1 libexec]# rsync -az mcollective hadoop-master2:/usr/libexec/
-</span><span class='line'>
-</span><span class='line'># filter
-</span><span class='line'>[root@hadoop-master1 manifests]# mco shell run hostname -S "hostname=hadoop-master2"
-</span><span class='line'>[root@hadoop-master1 manifests]# mco ping -S "not hostname=hadoop-master1"
-</span><span class='line'>[root@hadoop-master1 manifests]# mco ping -S "! hostname=hadoop-master1"
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ sudo mco shell --sort -I /cu-ud[1234]{1}$/ run -- ' ls /home/ud/ftpxdr | wc -l  '
-</span><span class='line'>
-</span><span class='line'># 少配置了
-</span><span class='line'>[root@hadoop-master1 manifests]# mco shell run "echo -e '\n\nplugin.puppet.command = /opt/puppetlabs/bin/puppet agent\nplugin.puppet.config = /etc/puppetlabs/puppet/puppet.conf' &gt;&gt; /etc/puppetlabs/mcollective/server.cfg" 
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 重启 mcollective 服务
-</span><span class='line'>[root@hadoop-master1 manifests]# mco shell run "echo service mcollective restart &gt;/tmp/mcollective_restart.sh ; nohup sh /tmp/mcollective_restart.sh "
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># ---
-</span><span class='line'>[root@hadoop-master1 dtarepo]# mco rpc package install package=lrzsz -I cu-omc1
-</span><span class='line'>[root@hadoop-master1 dtarepo]# mco rpc package install package=gmetad -I cu-omc1
-</span><span class='line'>
-</span><span class='line'>mco rpc service start service=puppet
-</span><span class='line'>=&gt; mco rpc --agent service --action start --argument service=puppet
-</span><span class='line'>
-</span><span class='line'>mco plugin doc package
-</span><span class='line'>
-</span><span class='line'>mco rpc service status service=puppet -S "environment=development"
-</span><span class='line'>
-</span><span class='line'>mco puppet status
-</span><span class='line'>mco rpc puppet status
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[root@hadoop-master1 gmond]# mco shell -I cu-ud2 run -- "/opt/puppetlabs/bin/puppet agent -t"
-</span><span class='line'>[root@hadoop-master1 production]# mco shell -I /^cu-omc2/ run -- "/opt/puppetlabs/bin/puppet agent -t"
-</span><span class='line'>
-</span><span class='line'># gmond 多网卡情况确认
-</span><span class='line'>[root@hadoop-master1 production]# route add -host 239.2.11.71 dev bond0
-</span><span class='line'>
-</span><span class='line'># puppet 基本语法
-</span><span class='line'># https://docs.puppet.com/puppet/latest/reference/lang_conditional.html#if-statements
-</span><span class='line'># https://docs.puppet.com/puppet/latest/reference/lang_relationships.html
-</span><span class='line'>
-</span><span class='line'># puppet使用tag可以更灵活的使用
-</span><span class='line'># https://docs.puppet.com/puppet/latest/reference/lang_tags.html
-</span><span class='line'>apache::vhost {'docs.puppetlabs.com':
-</span><span class='line'>  port =&gt; 80,
-</span><span class='line'>  tag  =&gt; ['us_mirror1', 'us_mirror2'],
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>$ sudo puppet agent --test --tags apache,us_mirror1
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>再次强调Filter ： <a href="https://docs.puppet.com/mcollective/reference/basic/basic_cli_usage.html#selecting-request-targets-using-filters">Selecting Request Targets Using Filters</a></p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/16">&larr; Older</a>
@@ -2573,6 +2131,14 @@ Notice: Applied catalog in 0.02 seconds
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/05/01/heatmap-base-on-baidu/">解读百度的Heatmap</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2018/04/07/java-webstart-jnlp-with-jvmti/">WebStart的使用以及如何结合JVMTI</a>
       </li>
     
@@ -2594,14 +2160,6 @@ Notice: Applied catalog in 0.02 seconds
     
       <li class="post">
         <a href="/blog/2017/11/20/sed-debug-sedsed/">Sed Debug: Sedsed</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/11/20/gitlab-on-docker/">Gitlab on Docker</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
       </li>
     
   </ul>
@@ -2706,7 +2264,7 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/map/'>map</a> (1) 
+			<a class='category' href='/blog/categories/map/'>map</a> (2) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2750,7 +2308,7 @@ Notice: Applied catalog in 0.02 seconds
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (62) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (63) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2767,7 +2325,7 @@ Notice: Applied catalog in 0.02 seconds
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (204)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (206)</li>
 	</ul>
 	
 </section>

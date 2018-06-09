@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Map | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/map/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2018-04-07T01:49:26+08:00</updated>
+  <updated>2018-06-09T16:57:13+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,305 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[解读百度的Heatmap]]></title>
+    <link href="http://winseliu.com/blog/2018/05/01/heatmap-base-on-baidu/"/>
+    <updated>2018-05-01T12:26:43+08:00</updated>
+    <id>http://winseliu.com/blog/2018/05/01/heatmap-base-on-baidu</id>
+    <content type="html"><![CDATA[<p>前面通过Map的学习，了解到了瓦片的一些知识点。地图里面热图是一个比较典型的功能。通过对聚集数据不同颜色显示，直观形象的洞察数据的规律，比如说高危区等的热点分析，有点类似于arcgis的核密度。接下来结合百度里面的热图分析下它的实现。</p>
+
+<ul>
+<li><a href="http://lbsyun.baidu.com/jsdemo/demo/c1_15.htm">热力图功能示例</a></li>
+<li><a href="http://desktop.arcgis.com/zh-cn/arcmap/10.3/tools/spatial-analyst-toolbox/differences-between-point-line-and-kernel-density.htm">点密度分析、线密度分析与核密度分析之间的区别</a></li>
+</ul>
+
+
+<pre><code>    var points =[
+    {"lng":116.418261,"lat":39.921984,"count":50},
+    ...
+    ]
+
+    //详细的参数,可以查看heatmap.js的文档 https://github.com/pa7/heatmap.js/blob/master/README.md
+    heatmapOverlay = new BMapLib.HeatmapOverlay({"radius":20});
+    map.addOverlay(heatmapOverlay);
+    heatmapOverlay.setDataSet({data:points,max:100});
+</code></pre>
+
+<h2>setDataSet</h2>
+
+<p>把经纬度数据先转成界面的坐标(不在界面bounds内的点会被忽略掉)，然后调用setData</p>
+
+<pre><code>    HeatmapOverlay.prototype.setDataSet = function(data) {
+        this.data = data;
+        ...
+        var currentBounds = this._map.getBounds();
+        var mapdata = {
+            max: data.max,
+            data: []
+        };
+        var d = data.data,
+            dlen = d.length;
+
+        while (dlen--) {
+            ...
+            if (!currentBounds.containsPoint(latlng)) {
+                continue;
+            }            
+            ...
+            mapdata.data.push({
+                x: point.x,
+                y: point.y,
+                count: d[dlen].count
+            });
+        }
+        this.heatmap.setData(mapdata);
+    }
+</code></pre>
+
+<h2>setData</h2>
+
+<p>计算最大最小，合并（对同一坐标的对应的count值求和），其中 _organiseData 根据坐标构建一个稀疏矩阵，最后emit给renderall</p>
+
+<pre><code>    setData: function(data) {
+      var dataPoints = data.data;
+      var pointsLen = dataPoints.length;
+
+
+      // reset data arrays
+      this._data = [];
+      this._radi = [];
+
+      for(var i = 0; i &lt; pointsLen; i++) {
+        this._organiseData(dataPoints[i], false);
+      }
+      this._max = data.max;
+      this._min = data.min || 0;
+
+      this._onExtremaChange();
+      this._coordinator.emit('renderall', this._getInternalData());
+      return this;
+    },
+
+    _organiseData: function(dataPoint, forceRender) {
+        var x = dataPoint[this._xField];
+        var y = dataPoint[this._yField];
+        var radi = this._radi;
+        var store = this._data;
+        var max = this._max;
+        var min = this._min;
+        var value = dataPoint[this._valueField] || 1;
+        var radius = dataPoint.radius || this._cfgRadius || defaultRadius;
+
+        ...
+
+        if (!store[x][y]) {
+          store[x][y] = value;
+          radi[x][y] = radius;
+        } else {
+          store[x][y] += value;
+        }
+    ...
+
+    _getInternalData: function() {
+      return { 
+        max: this._max,
+        min: this._min, 
+        data: this._data,
+        radi: this._radi 
+      };
+    },
+</code></pre>
+
+<h2>renderall 渲染</h2>
+
+<p>这个是重点，下面一个步骤一个步骤的讲。</p>
+
+<pre><code>    renderAll: function(data) {
+      // reset render boundaries
+      this._clear();
+      this._drawAlpha(_prepareData(data));
+      this._colorize();
+    },
+</code></pre>
+
+<h3>_prepareData</h3>
+
+<p>把上面合并数据创建的稀疏矩阵，再转回成对象 <code>{ x: ,y: ,value: , radius: }</code> ，然后交给 _drawAlpha 进行画图。</p>
+
+<pre><code>  var _prepareData = function(data) {
+    var renderData = [];
+    var min = data.min;
+    var max = data.max;
+    var radi = data.radi;
+    var data = data.data;
+
+    var xValues = Object.keys(data);
+    var xValuesLen = xValues.length;
+
+    while(xValuesLen--) {
+      var xValue = xValues[xValuesLen];
+      var yValues = Object.keys(data[xValue]);
+      var yValuesLen = yValues.length;
+      while(yValuesLen--) {
+        var yValue = yValues[yValuesLen];
+        var value = data[xValue][yValue];
+        var radius = radi[xValue][yValue];
+        renderData.push({
+          x: xValue,
+          y: yValue,
+          value: value,
+          radius: radius
+        });
+      }
+    }
+
+    return {
+      min: min,
+      max: max,
+      data: renderData
+    };
+  };
+</code></pre>
+
+<h3>_drawAlpha</h3>
+
+<p>然后根据处理整合后的数据画alpha的圆（由于透明度可以进行叠加处理，shadowCtx.globalAlpha = (value-min)/(max-min); ），同时统计会有数据的最大边界rect。</p>
+
+<p>特定半径的密度衰减圆通过 _getPointTemplate  获得，每个数据以其x,y的坐标为圆心，根据count的百分比叠加模板密度圆的透明度进行绘制。由于透明度的叠加，起到 被影响的点 密度相加的效果。</p>
+
+<pre><code>    _drawAlpha: function(data) {
+      var min = this._min = data.min;
+      var max = this._max = data.max;
+      var data = data.data || [];
+      var dataLen = data.length;
+      // on a point basis?
+      var blur = 1 - this._blur;
+
+      while(dataLen--) {
+
+        var point = data[dataLen];
+
+        var x = point.x;
+        var y = point.y;
+        var radius = point.radius;
+        // if value is bigger than max
+        // use max as value
+        var value = Math.min(point.value, max);
+        var rectX = x - radius;
+        var rectY = y - radius;
+        var shadowCtx = this.shadowCtx;
+
+        var tpl;
+        if (!this._templates[radius]) {
+          this._templates[radius] = tpl = _getPointTemplate(radius, blur);
+        } else {
+          tpl = this._templates[radius];
+        }
+        // value from minimum / value range
+        // =&gt; [0, 1]
+        shadowCtx.globalAlpha = (value-min)/(max-min);
+
+        shadowCtx.drawImage(tpl, rectX, rectY);
+
+        // update renderBoundaries
+        if (rectX &lt; this._renderBoundaries[0]) {
+            this._renderBoundaries[0] = rectX;
+          } 
+          if (rectY &lt; this._renderBoundaries[1]) {
+            this._renderBoundaries[1] = rectY;
+          }
+          if (rectX + 2*radius &gt; this._renderBoundaries[2]) {
+            this._renderBoundaries[2] = rectX + 2*radius;
+          }
+          if (rectY + 2*radius &gt; this._renderBoundaries[3]) {
+            this._renderBoundaries[3] = rectY + 2*radius;
+          }
+
+      }
+    },
+</code></pre>
+
+<h3>_colorize</h3>
+
+<p>最后根据rect的边界范围，然后结合palette的颜色条进行染色（palette 是一个 256 * 4（rgba） 的数组）。</p>
+
+<pre><code>
+    _colorize: function() {
+      var x = this._renderBoundaries[0];
+      var y = this._renderBoundaries[1];
+      var width = this._renderBoundaries[2] - x;
+      var height = this._renderBoundaries[3] - y;
+      var maxWidth = this._width;
+      var maxHeight = this._height;
+      var opacity = this._opacity;
+      var maxOpacity = this._maxOpacity;
+      var minOpacity = this._minOpacity;
+      var useGradientOpacity = this._useGradientOpacity;
+
+      if (x &lt; 0) {
+        x = 0;
+      }
+      if (y &lt; 0) {
+        y = 0;
+      }
+      if (x + width &gt; maxWidth) {
+        width = maxWidth - x;
+      }
+      if (y + height &gt; maxHeight) {
+        height = maxHeight - y;
+      }
+
+      var img = this.shadowCtx.getImageData(x, y, width, height);
+      var imgData = img.data;
+      var len = imgData.length;
+      var palette = this._palette;
+
+
+      for (var i = 3; i &lt; len; i+= 4) {
+        var alpha = imgData[i];
+        var offset = alpha * 4;
+
+
+        if (!offset) {
+          continue;
+        }
+
+        var finalAlpha;
+        if (opacity &gt; 0) {
+          finalAlpha = opacity;
+        } else {
+          if (alpha &lt; maxOpacity) {
+            if (alpha &lt; minOpacity) {
+              finalAlpha = minOpacity;
+            } else {
+              finalAlpha = alpha;
+            }
+          } else {
+            finalAlpha = maxOpacity;
+          }
+        }
+
+        imgData[i-3] = palette[offset];
+        imgData[i-2] = palette[offset + 1];
+        imgData[i-1] = palette[offset + 2];
+        imgData[i] = useGradientOpacity ? palette[offset + 3] : finalAlpha;
+
+      }
+
+      img.data = imgData;
+      this.ctx.putImageData(img, x, y);
+
+      this._renderBoundaries = [1000, 1000, 0, 0];
+
+    },
+</code></pre>
+
+<p>最终绘制到canvas上，呈现热图效果。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Map入门指南]]></title>
