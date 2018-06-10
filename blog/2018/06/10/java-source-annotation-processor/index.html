@@ -1,0 +1,1073 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>使用注解生成代码 - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="Java里面随处可见annotation（注解），RetentionPolicy 指示了注解使用的情况： SOURCE，比如 @Override, @SuppressWarnings
+RUNTIME，最熟悉的莫过于Spring Bean中使用的 @Controller, @Service &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winseliu.com/blog/2018/06/10/java-source-annotation-processor">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="//cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winseliu.com" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">使用注解生成代码</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2018-06-10T12:51:39+08:00" pubdate data-updated="true">Sun 2018-06-10 12:51</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><p>Java里面随处可见annotation（注解），RetentionPolicy 指示了注解使用的情况：</p>
+
+<ul>
+<li>SOURCE，比如 @Override, @SuppressWarnings</li>
+<li>RUNTIME，最熟悉的莫过于Spring Bean中使用的 @Controller, @Service 一般和反射同时使用。</li>
+<li>CLASS</li>
+</ul>
+
+
+<p>而 CLASS 则是用于 compile 编译阶段的注解。一个注解的处理器，以Java代码（或编译过的字节码）作为输入，生成Java文件。这些生成的Java文件，会同其他普通的手动编写的Java源代码一样被javac编译。</p>
+
+<p>可以自己实现一些类似groovy语法糖的功能（lombok框架修改bytecode为类生成新方法getter/setter、或者使用生成新的辅助类等）；减少机械的、冗余代码的管理，使得代码更简洁便于阅读。</p>
+
+<h2>代码生成</h2>
+
+<p>先来了解下整个过程，javac 从 ServiceLoader 获取一个 Processor 标注处理类，判断是否为符合条件的标注，再收集类的相关信息，然后使用 Filer 创建新的类。<a href="http://www.baeldung.com/java-annotation-processing-builder">Java Annotation Processing and Creating a Builder</a> ，<a href="https://liuzhengyang.github.io/2017/10/20/annotation-processing/">java annotation processor</a> 主要涉及到如下三部分：</p>
+
+<ul>
+<li>Annotation: @BuilderProperty</li>
+<li>Processor: BuilderProcessor</li>
+<li><p>Service:</p>
+
+<p>通过google的auto-service来注册服务，最终会在 META-INF/services/ 生成名称为 javax.annotation.processing.Processor 的文件，内容为当前被标注的类名。</p></li>
+</ul>
+
+
+<p>项目的目录结构如下：</p>
+
+<p><img src="/images/blogs/annotation-processor-projects.png" alt="" /></p>
+
+<h3>具体实现：</h3>
+
+<ul>
+<li>BuilderProperty 注解</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>package com.github.winse.annotation;
+</span><span class='line'>
+</span><span class='line'>import java.lang.annotation.ElementType;
+</span><span class='line'>import java.lang.annotation.Retention;
+</span><span class='line'>import java.lang.annotation.RetentionPolicy;
+</span><span class='line'>import java.lang.annotation.Target;
+</span><span class='line'>
+</span><span class='line'>@Target(ElementType.METHOD)
+</span><span class='line'>@Retention(RetentionPolicy.SOURCE)
+</span><span class='line'>public @interface BuilderProperty {
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>BuilderProcessor</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+<span class='line-number'>100</span>
+<span class='line-number'>101</span>
+<span class='line-number'>102</span>
+<span class='line-number'>103</span>
+<span class='line-number'>104</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>package com.github.winse.processor;
+</span><span class='line'>
+</span><span class='line'>import com.github.winse.annotation.BuilderProperty;
+</span><span class='line'>import com.google.auto.service.AutoService;
+</span><span class='line'>
+</span><span class='line'>import javax.annotation.processing.*;
+</span><span class='line'>import javax.lang.model.SourceVersion;
+</span><span class='line'>import javax.lang.model.element.Element;
+</span><span class='line'>import javax.lang.model.element.TypeElement;
+</span><span class='line'>import javax.lang.model.type.ExecutableType;
+</span><span class='line'>import javax.tools.Diagnostic;
+</span><span class='line'>import javax.tools.JavaFileObject;
+</span><span class='line'>import java.io.IOException;
+</span><span class='line'>import java.io.PrintWriter;
+</span><span class='line'>import java.util.List;
+</span><span class='line'>import java.util.Map;
+</span><span class='line'>import java.util.Set;
+</span><span class='line'>import java.util.stream.Collectors;
+</span><span class='line'>
+</span><span class='line'>/**
+</span><span class='line'> * @see BuilderProperty
+</span><span class='line'> */
+</span><span class='line'>@SupportedAnnotationTypes("com.github.winse.annotation.BuilderProperty")
+</span><span class='line'>@SupportedSourceVersion(SourceVersion.RELEASE_8)
+</span><span class='line'>@AutoService(Processor.class)
+</span><span class='line'>public class BuilderProcessor extends AbstractProcessor {
+</span><span class='line'>
+</span><span class='line'>    @Override
+</span><span class='line'>    public boolean process(Set&lt;? extends TypeElement&gt; annotations, RoundEnvironment roundEnv) {
+</span><span class='line'>        for (TypeElement annotation : annotations) {
+</span><span class='line'>            Set&lt;? extends Element&gt; annotationElements = roundEnv.getElementsAnnotatedWith(annotation);
+</span><span class='line'>
+</span><span class='line'>            Map&lt;Boolean, List&lt;Element&gt;&gt; annotationMethods = annotationElements.stream()
+</span><span class='line'>                    .collect(Collectors.partitioningBy(element -&gt; ((ExecutableType) element.asType()).getParameterTypes().size() == 1 && element.getSimpleName().toString().startsWith("set")));
+</span><span class='line'>
+</span><span class='line'>            List&lt;Element&gt; setters = annotationMethods.get(true);
+</span><span class='line'>            List&lt;Element&gt; otherMethods = annotationMethods.get(false);
+</span><span class='line'>
+</span><span class='line'>            otherMethods.forEach(element -&gt; processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, "@BuildProperty must be applied to a setXxx method with a single argument", element));
+</span><span class='line'>
+</span><span class='line'>            if (setters.isEmpty()) {
+</span><span class='line'>                continue;
+</span><span class='line'>            }
+</span><span class='line'>
+</span><span class='line'>            String className = ((TypeElement) setters.get(0).getEnclosingElement()).getQualifiedName().toString();
+</span><span class='line'>
+</span><span class='line'>            Map&lt;String, String&gt; setterMap = setters.stream().collect(Collectors.toMap(
+</span><span class='line'>                    setter -&gt; setter.getSimpleName().toString(),
+</span><span class='line'>                    setter -&gt; ((ExecutableType) setter.asType()).getParameterTypes().get(0).toString()
+</span><span class='line'>            ));
+</span><span class='line'>
+</span><span class='line'>            try {
+</span><span class='line'>                writeBuilderType(className, setterMap);
+</span><span class='line'>            } catch (IOException e) {
+</span><span class='line'>                processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, e.getMessage());
+</span><span class='line'>            }
+</span><span class='line'>        }
+</span><span class='line'>        return true;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    private void writeBuilderType(String className, Map&lt;String, String&gt; setterMap) throws IOException {
+</span><span class='line'>        String packageName = null;
+</span><span class='line'>        int lastDot = className.lastIndexOf(".");
+</span><span class='line'>        if (lastDot &gt; 0) {
+</span><span class='line'>            packageName = className.substring(0, lastDot);
+</span><span class='line'>        }
+</span><span class='line'>
+</span><span class='line'>        String simpleClassName = className.substring(lastDot + 1);
+</span><span class='line'>        String builderClassName = className + "Builder";
+</span><span class='line'>        String builderSimpleClassName = builderClassName.substring(lastDot + 1);
+</span><span class='line'>
+</span><span class='line'>        JavaFileObject builderFile = processingEnv.getFiler().createSourceFile(builderClassName);
+</span><span class='line'>        try (PrintWriter out = new PrintWriter(builderFile.openWriter())) {
+</span><span class='line'>            if (packageName != null) {
+</span><span class='line'>                out.printf("package %s;\n", packageName);
+</span><span class='line'>                out.println();
+</span><span class='line'>            }
+</span><span class='line'>
+</span><span class='line'>            out.printf("public class %s {\n", builderSimpleClassName);
+</span><span class='line'>            out.println();
+</span><span class='line'>            out.printf("  private %s object = new %s();\n", simpleClassName, simpleClassName);
+</span><span class='line'>            out.println();
+</span><span class='line'>            out.printf("  public %s build() {\n", simpleClassName);
+</span><span class='line'>            out.printf("    return object;\n");
+</span><span class='line'>            out.printf("  }\n");
+</span><span class='line'>            out.println();
+</span><span class='line'>
+</span><span class='line'>            setterMap.entrySet().forEach(setter -&gt; {
+</span><span class='line'>                String methodName = setter.getKey();
+</span><span class='line'>                String argumentType = setter.getValue();
+</span><span class='line'>
+</span><span class='line'>                out.printf("  public %s %s(%s value){\n", builderSimpleClassName, methodName, argumentType);
+</span><span class='line'>                out.printf("    object.%s(value);\n", methodName);
+</span><span class='line'>                out.printf("    return this;\n");
+</span><span class='line'>                out.printf("  }\n");
+</span><span class='line'>                out.println();
+</span><span class='line'>            });
+</span><span class='line'>
+</span><span class='line'>            out.printf("}\n");
+</span><span class='line'>
+</span><span class='line'>        }
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>测试使用：</h3>
+
+<ul>
+<li>build.gradle</li>
+</ul>
+
+
+<p>我使用的是4.7的版本，4.7以上版本可以直接使用 annotationProcessor 来添加标注处理器。（其他版本可以使用 apt 来处理）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>plugins {
+</span><span class='line'>    id "net.ltgt.apt" version "0.10"
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>sourceSets.main.java.srcDirs += ['build/generated/source/apt/main']
+</span><span class='line'>
+</span><span class='line'>dependencies {
+</span><span class='line'>    compile rootProject
+</span><span class='line'>    annotationProcessor project(':compiler')
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>Person</li>
+</ul>
+
+
+<p>这是一个POJO类，BuilderProcessor处理器会根据BuilderProperty注解来生成PersonBuilder类。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>package com.github.winse.example;
+</span><span class='line'>
+</span><span class='line'>import com.github.winse.annotation.BuilderProperty;
+</span><span class='line'>
+</span><span class='line'>public class Person {
+</span><span class='line'>    private int age;
+</span><span class='line'>    private String name;
+</span><span class='line'>
+</span><span class='line'>    @BuilderProperty
+</span><span class='line'>    public void setAge(int age) {
+</span><span class='line'>        this.age = age;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    @BuilderProperty
+</span><span class='line'>    public void setName(String name) {
+</span><span class='line'>        this.name = name;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    public int getAge() {
+</span><span class='line'>        return age;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    public String getName() {
+</span><span class='line'>        return name;
+</span><span class='line'>    }
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>生成代码效果</h3>
+
+<p>在 gradle 面板中选择子项目 <code>:example</code> ，然后选择 Tasks 下的 build 任务进行构建。构建完后在 <code>example/build/generated/source/apt</code> 目录下生成了对应的 Builder 代码。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>package com.github.winse.example;
+</span><span class='line'>
+</span><span class='line'>public class PersonBuilder {
+</span><span class='line'>
+</span><span class='line'>  private Person object = new Person();
+</span><span class='line'>
+</span><span class='line'>  public Person build() {
+</span><span class='line'>    return object;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public PersonBuilder setName(java.lang.String value){
+</span><span class='line'>    object.setName(value);
+</span><span class='line'>    return this;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public PersonBuilder setAge(int value){
+</span><span class='line'>    object.setAge(value);
+</span><span class='line'>    return this;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>注解处理器调试</h2>
+
+<p>不会调试说明还没有真正的入门。并且没有调试的情况下，解决异常、错误也是一件异常痛苦的事情。注解处理器生成代码是在编译阶段来生成代码的，所以调试的选项配置添加到 javac 。而 gradle 提供了一种相对简单的方式来进行。</p>
+
+<p>参考</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/8587096/how-do-you-debug-java-annotation-processors-using-intellij">how do you debug java annotation processors using intellij?
+</a></li>
+<li><a href="https://discuss.gradle.org/t/how-do-you-attach-a-debugger-to-gradle-so-that-i-can-debug-it-running-a-task/7526/5">How do you attach a debugger to gradle so that I can debug it running a task?</a></li>
+</ul>
+
+
+<p>具体步骤如下：</p>
+
+<ol>
+<li><p>在命令行运行构建</p>
+
+<p>添加调试参数后，gradle 会 <strong>暂停等待远程调试</strong> ，相当于添加了 JVM 调试参数。<a href="https://docs.gradle.org/current/userguide/build_environment.html#sec:gradle_configuration_properties">Gradle properties</a></p>
+
+<pre><code>hello-annotation-processor\example&gt;gradle clean build --no-daemon -Dorg.gradle.debug=true
+或者
+hello-annotation-processor&gt;gradle example:clean example:compileJava --no-daemon -Dorg.gradle.debug=true
+</code></pre>
+
+<p>注： &ndash;no-daemon 不加也是可以的，但是运行该次构建后不会停止。</p>
+
+<p><img src="/images/blogs/annotation-processor-debug-s1.png" alt="" /></p></li>
+<li><p>远程调试</p>
+
+<p><img src="/images/blogs/annotation-processor-debug-s2.png" alt="" /></p></li>
+</ol>
+
+
+<h3>其他调试配置方式</h3>
+
+<ul>
+<li><p>通过环境变量</p>
+
+<pre><code>example&gt;set GRADLE_OPTS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005
+
+example&gt;gradle clean build
+Listening for transport dt_socket at address: 5005
+</code></pre></li>
+<li><p>修改 ~/.gradle/gradle.properties</p>
+
+<p>这种方式不推荐，因为它是全局的。</p>
+
+<pre><code>org.gradle.daemon=false
+org.gradle.debug=true
+</code></pre>
+
+<p>或者</p>
+
+<pre><code>org.gradle.daemon=true
+org.gradle.jvmargs=-XX:MaxPermSize=4g -XX:+HeapDumpOnOutOfMemoryError -Xmx4g -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5006
+
+$ gradle --daemon
+</code></pre>
+
+<p>Then attach your debugger client to port 5006, set your breakpoint, then run your test.</p>
+
+<p>注：该配置放到项目目录下没用。</p></li>
+</ul>
+
+
+<h2>其他</h2>
+
+<ul>
+<li>Gradle参数优化 <a href="https://stackoverflow.com/questions/16775197/building-and-running-app-via-gradle-and-android-studio-is-slower-than-via-eclips/19500539#19500539">Building and running app via Gradle and Android Studio is slower than via Eclipse</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2018-06-10T12:51:39+08:00" pubdate data-updated="true">Sun 2018-06-10 12:51</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/java/'>java</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2018-06-10-java-source-annotation-processor.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2018/06/09/reasonable-way-to-access-the-internet/" title="Previous Post: 科学上网（续）">&laquo; 科学上网（续）</a>
+      
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+	
+  
+<!-- gitalk评论 start -->
+    <div id="gitalk-container"></div> 
+<!-- gitalk评论 end -->
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/08/10/java-bytecode-security/">保护/加密JAVA代码</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/01/23/install-and-config-ganglia-on-redhat-2/">安装配置Ganglia(2)</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2018/06/10/java-source-annotation-processor/">使用注解生成代码</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/05/01/heatmap-base-on-baidu/">解读百度的Heatmap</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/04/07/java-webstart-jnlp-with-jvmti/">WebStart的使用以及如何结合JVMTI</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/01/30/map-started-guide/">Map入门指南</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/01/26/proxy-on-java-via-shandowsocks/">Java中使用代理-基于Shandowsocks</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/01/20/logstash-monitor-myself-blog-accesslog/">Logstash采集网站的访问日志</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/bigdata/'>bigdata</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (15) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/es/'>es</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (44) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jenkins/'>jenkins</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kubeadm/'>kubeadm</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/logstash/'>logstash</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/map/'>map</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (18) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/staf/'>staf</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (63) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/vagrant/'>vagrant</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/zookeeper/'>zookeeper</a> (1) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (207)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2018 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+<script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+
+<script>
+
+var time=location.pathname.substring(6).substring(0,11);
+var eName=location.pathname.substring(17);
+var gitalk = new Gitalk({
+  clientID: 'c14f68eac6330d15d984',
+  clientSecret: '73b7c1fffa98e299ff0cdd332821201933858e6e',
+  repo: 'winse.github.com',
+  owner: 'winse',
+  admin: ['winse'],
+  id: eName,
+  labels: ['Gitalk', time],
+  body: "http://winseliu.com" + location.pathname,
+  createIssueManually: true,
+  
+  // facebook-like distraction free mode
+  distractionFreeMode: false
+})
+
+gitalk.render('gitalk-container')
+
+</script>
+
+
+
+<script>
+
+$.ajax({
+  type: "POST",
+  url: "http://log.winseliu.com:20000",
+  data: JSON.stringify({
+    title: document.title,
+    location: JSON.stringify(location),
+    referrer: document.referrer,
+    userAgent: navigator.userAgent
+  }),
+  contentType: "application/json; charset=utf-8",
+  dataType: "json"
+});
+
+</script>
+
+
+
+
+
+
+
+
+
+</body>
+</html>

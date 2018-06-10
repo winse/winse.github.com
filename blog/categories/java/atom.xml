@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Java | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/java/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2018-06-09T17:49:13+08:00</updated>
+  <updated>2018-06-10T16:49:37+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,334 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[使用注解生成代码]]></title>
+    <link href="http://winseliu.com/blog/2018/06/10/java-source-annotation-processor/"/>
+    <updated>2018-06-10T12:51:39+08:00</updated>
+    <id>http://winseliu.com/blog/2018/06/10/java-source-annotation-processor</id>
+    <content type="html"><![CDATA[<p>Java里面随处可见annotation（注解），RetentionPolicy 指示了注解使用的情况：</p>
+
+<ul>
+<li>SOURCE，比如 @Override, @SuppressWarnings</li>
+<li>RUNTIME，最熟悉的莫过于Spring Bean中使用的 @Controller, @Service 一般和反射同时使用。</li>
+<li>CLASS</li>
+</ul>
+
+
+<p>而 CLASS 则是用于 compile 编译阶段的注解。一个注解的处理器，以Java代码（或编译过的字节码）作为输入，生成Java文件。这些生成的Java文件，会同其他普通的手动编写的Java源代码一样被javac编译。</p>
+
+<p>可以自己实现一些类似groovy语法糖的功能（lombok框架修改bytecode为类生成新方法getter/setter、或者使用生成新的辅助类等）；减少机械的、冗余代码的管理，使得代码更简洁便于阅读。</p>
+
+<h2>代码生成</h2>
+
+<p>先来了解下整个过程，javac 从 ServiceLoader 获取一个 Processor 标注处理类，判断是否为符合条件的标注，再收集类的相关信息，然后使用 Filer 创建新的类。<a href="http://www.baeldung.com/java-annotation-processing-builder">Java Annotation Processing and Creating a Builder</a> ，<a href="https://liuzhengyang.github.io/2017/10/20/annotation-processing/">java annotation processor</a> 主要涉及到如下三部分：</p>
+
+<ul>
+<li>Annotation: @BuilderProperty</li>
+<li>Processor: BuilderProcessor</li>
+<li><p>Service:</p>
+
+<p>通过google的auto-service来注册服务，最终会在 META-INF/services/ 生成名称为 javax.annotation.processing.Processor 的文件，内容为当前被标注的类名。</p></li>
+</ul>
+
+
+<p>项目的目录结构如下：</p>
+
+<p><img src="/images/blogs/annotation-processor-projects.png" alt="" /></p>
+
+<h3>具体实现：</h3>
+
+<ul>
+<li>BuilderProperty 注解</li>
+</ul>
+
+
+<pre><code>package com.github.winse.annotation;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
+@Target(ElementType.METHOD)
+@Retention(RetentionPolicy.SOURCE)
+public @interface BuilderProperty {
+}
+</code></pre>
+
+<ul>
+<li>BuilderProcessor</li>
+</ul>
+
+
+<pre><code>package com.github.winse.processor;
+
+import com.github.winse.annotation.BuilderProperty;
+import com.google.auto.service.AutoService;
+
+import javax.annotation.processing.*;
+import javax.lang.model.SourceVersion;
+import javax.lang.model.element.Element;
+import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.ExecutableType;
+import javax.tools.Diagnostic;
+import javax.tools.JavaFileObject;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * @see BuilderProperty
+ */
+@SupportedAnnotationTypes("com.github.winse.annotation.BuilderProperty")
+@SupportedSourceVersion(SourceVersion.RELEASE_8)
+@AutoService(Processor.class)
+public class BuilderProcessor extends AbstractProcessor {
+
+    @Override
+    public boolean process(Set&lt;? extends TypeElement&gt; annotations, RoundEnvironment roundEnv) {
+        for (TypeElement annotation : annotations) {
+            Set&lt;? extends Element&gt; annotationElements = roundEnv.getElementsAnnotatedWith(annotation);
+
+            Map&lt;Boolean, List&lt;Element&gt;&gt; annotationMethods = annotationElements.stream()
+                    .collect(Collectors.partitioningBy(element -&gt; ((ExecutableType) element.asType()).getParameterTypes().size() == 1 &amp;&amp; element.getSimpleName().toString().startsWith("set")));
+
+            List&lt;Element&gt; setters = annotationMethods.get(true);
+            List&lt;Element&gt; otherMethods = annotationMethods.get(false);
+
+            otherMethods.forEach(element -&gt; processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, "@BuildProperty must be applied to a setXxx method with a single argument", element));
+
+            if (setters.isEmpty()) {
+                continue;
+            }
+
+            String className = ((TypeElement) setters.get(0).getEnclosingElement()).getQualifiedName().toString();
+
+            Map&lt;String, String&gt; setterMap = setters.stream().collect(Collectors.toMap(
+                    setter -&gt; setter.getSimpleName().toString(),
+                    setter -&gt; ((ExecutableType) setter.asType()).getParameterTypes().get(0).toString()
+            ));
+
+            try {
+                writeBuilderType(className, setterMap);
+            } catch (IOException e) {
+                processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, e.getMessage());
+            }
+        }
+        return true;
+    }
+
+    private void writeBuilderType(String className, Map&lt;String, String&gt; setterMap) throws IOException {
+        String packageName = null;
+        int lastDot = className.lastIndexOf(".");
+        if (lastDot &gt; 0) {
+            packageName = className.substring(0, lastDot);
+        }
+
+        String simpleClassName = className.substring(lastDot + 1);
+        String builderClassName = className + "Builder";
+        String builderSimpleClassName = builderClassName.substring(lastDot + 1);
+
+        JavaFileObject builderFile = processingEnv.getFiler().createSourceFile(builderClassName);
+        try (PrintWriter out = new PrintWriter(builderFile.openWriter())) {
+            if (packageName != null) {
+                out.printf("package %s;\n", packageName);
+                out.println();
+            }
+
+            out.printf("public class %s {\n", builderSimpleClassName);
+            out.println();
+            out.printf("  private %s object = new %s();\n", simpleClassName, simpleClassName);
+            out.println();
+            out.printf("  public %s build() {\n", simpleClassName);
+            out.printf("    return object;\n");
+            out.printf("  }\n");
+            out.println();
+
+            setterMap.entrySet().forEach(setter -&gt; {
+                String methodName = setter.getKey();
+                String argumentType = setter.getValue();
+
+                out.printf("  public %s %s(%s value){\n", builderSimpleClassName, methodName, argumentType);
+                out.printf("    object.%s(value);\n", methodName);
+                out.printf("    return this;\n");
+                out.printf("  }\n");
+                out.println();
+            });
+
+            out.printf("}\n");
+
+        }
+    }
+
+}
+</code></pre>
+
+<h3>测试使用：</h3>
+
+<ul>
+<li>build.gradle</li>
+</ul>
+
+
+<p>我使用的是4.7的版本，4.7以上版本可以直接使用 annotationProcessor 来添加标注处理器。（其他版本可以使用 apt 来处理）</p>
+
+<pre><code>plugins {
+    id "net.ltgt.apt" version "0.10"
+}
+
+sourceSets.main.java.srcDirs += ['build/generated/source/apt/main']
+
+dependencies {
+    compile rootProject
+    annotationProcessor project(':compiler')
+}
+</code></pre>
+
+<ul>
+<li>Person</li>
+</ul>
+
+
+<p>这是一个POJO类，BuilderProcessor处理器会根据BuilderProperty注解来生成PersonBuilder类。</p>
+
+<pre><code>package com.github.winse.example;
+
+import com.github.winse.annotation.BuilderProperty;
+
+public class Person {
+    private int age;
+    private String name;
+
+    @BuilderProperty
+    public void setAge(int age) {
+        this.age = age;
+    }
+
+    @BuilderProperty
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public int getAge() {
+        return age;
+    }
+
+    public String getName() {
+        return name;
+    }
+}
+</code></pre>
+
+<h3>生成代码效果</h3>
+
+<p>在 gradle 面板中选择子项目 <code>:example</code> ，然后选择 Tasks 下的 build 任务进行构建。构建完后在 <code>example/build/generated/source/apt</code> 目录下生成了对应的 Builder 代码。</p>
+
+<pre><code>package com.github.winse.example;
+
+public class PersonBuilder {
+
+  private Person object = new Person();
+
+  public Person build() {
+    return object;
+  }
+
+  public PersonBuilder setName(java.lang.String value){
+    object.setName(value);
+    return this;
+  }
+
+  public PersonBuilder setAge(int value){
+    object.setAge(value);
+    return this;
+  }
+
+}
+</code></pre>
+
+<h2>注解处理器调试</h2>
+
+<p>不会调试说明还没有真正的入门。并且没有调试的情况下，解决异常、错误也是一件异常痛苦的事情。注解处理器生成代码是在编译阶段来生成代码的，所以调试的选项配置添加到 javac 。而 gradle 提供了一种相对简单的方式来进行。</p>
+
+<p>参考</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/8587096/how-do-you-debug-java-annotation-processors-using-intellij">how do you debug java annotation processors using intellij?
+</a></li>
+<li><a href="https://discuss.gradle.org/t/how-do-you-attach-a-debugger-to-gradle-so-that-i-can-debug-it-running-a-task/7526/5">How do you attach a debugger to gradle so that I can debug it running a task?</a></li>
+</ul>
+
+
+<p></p>
+
+<p>具体步骤如下：</p>
+
+<ol>
+<li><p>在命令行运行构建</p>
+
+<p>添加调试参数后，gradle 会 <strong>暂停等待远程调试</strong> ，相当于添加了 JVM 调试参数。<a href="https://docs.gradle.org/current/userguide/build_environment.html#sec:gradle_configuration_properties">Gradle properties</a></p>
+
+<pre><code>hello-annotation-processor\example&gt;gradle clean build --no-daemon -Dorg.gradle.debug=true
+或者
+hello-annotation-processor&gt;gradle example:clean example:compileJava --no-daemon -Dorg.gradle.debug=true
+</code></pre>
+
+<p>注： &ndash;no-daemon 不加也是可以的，但是运行该次构建后不会停止。</p>
+
+<p><img src="/images/blogs/annotation-processor-debug-s1.png" alt="" /></p></li>
+<li><p>远程调试</p>
+
+<p><img src="/images/blogs/annotation-processor-debug-s2.png" alt="" /></p></li>
+</ol>
+
+
+<h3>其他调试配置方式</h3>
+
+<ul>
+<li><p>通过环境变量</p>
+
+<pre><code>example&gt;set GRADLE_OPTS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005
+
+example&gt;gradle clean build
+Listening for transport dt_socket at address: 5005
+</code></pre></li>
+<li><p>修改 ~/.gradle/gradle.properties</p>
+
+<p>这种方式不推荐，因为它是全局的。</p>
+
+<pre><code>org.gradle.daemon=false
+org.gradle.debug=true
+</code></pre>
+
+<p>或者</p>
+
+<pre><code>org.gradle.daemon=true
+org.gradle.jvmargs=-XX:MaxPermSize=4g -XX:+HeapDumpOnOutOfMemoryError -Xmx4g -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5006
+
+$ gradle --daemon
+</code></pre>
+
+<p>Then attach your debugger client to port 5006, set your breakpoint, then run your test.</p>
+
+<p>注：该配置放到项目目录下没用。</p></li>
+</ul>
+
+
+<h2>其他</h2>
+
+<ul>
+<li>Gradle参数优化 <a href="https://stackoverflow.com/questions/16775197/building-and-running-app-via-gradle-and-android-studio-is-slower-than-via-eclips/19500539#19500539">Building and running app via Gradle and Android Studio is slower than via Eclipse</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[WebStart的使用以及如何结合JVMTI]]></title>
@@ -634,123 +962,6 @@ URLConnection conn = url.openConnection(proxy);
 <li><code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code></li>
 <li><code>jmap -histo PID &gt; /tmp/s.txt</code></li>
 <li><code>jstack -l PID</code></li>
-</ul>
-
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[巧用Equals和Hashcode]]></title>
-    <link href="http://winseliu.com/blog/2014/08/20/magical-use-java-equals-hashcode/"/>
-    <updated>2014-08-20T11:03:54+08:00</updated>
-    <id>http://winseliu.com/blog/2014/08/20/magical-use-java-equals-hashcode</id>
-    <content type="html"><![CDATA[<p>java中让人疑惑的一点就是等于的判断，有使用<code>==</code>和<code>equals</code>， 有一些专门字符串初始化的资料来考你在是否已经真正的掌握判断两个对象是否一致。</p>
-
-<p>同时，在重写equals时很多资料都强调要重写hashcode。</p>
-
-<p>java中HashMap就是基于equals和hashcode来实现拉链的键值对。Map中存储了entry&lt;K,V>的数组，数组的下标是基于对象的hashcode再对entry长度[并]<code>&amp;</code>的结果。</p>
-
-<p><img src="http://file.bmob.cn/M00/08/55/wKhkA1P0OO-AE9u3AABNzQK0pr8747.png" alt="" /></p>
-
-<p>使用set/map来实现集合，并且对象重写了equals但没有重写hashcode的情况下，得到的结果与你臆想的不同。同时，在特定场景结合hashcode和equals可以实现很酷的效果。</p>
-
-<ul>
-<li>第一个例子A 重写了equals但是没有重写hashcode(ERROR)，此时判断元素是否在集合中结果可能并不是你想要的。</li>
-<li>第二个B的例子 重写hashcode和equals对应后就正确了。</li>
-<li>第三个AA是个很酷的例子 equals的条件更强，可以实现类似<code>map&lt;string, list&lt;string&gt;&gt;</code>的效果。</li>
-</ul>
-
-
-<pre><code>    static class A {
-
-        String name;
-        int age;
-
-        public A(String name, int age) {
-            this.name = name;
-            this.age = age;
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            return new EqualsBuilder().append(getClass(), obj.getClass()).append(name, ((A) obj).name).isEquals();
-        }
-
-    }
-
-    @Test
-    public void testA() {
-        Set&lt;A&gt; set = new HashSet&lt;&gt;();
-
-        set.add(new A("abc", 12));
-        set.add(new A("abc", 14));
-
-        System.out.println(set.size());
-
-        System.out.println(set.contains(new A("abc", 0)));
-    }
-
-    static class B extends A {
-
-        public B(String name, int age) {
-            super(name, age);
-        }
-
-        @Override
-        public int hashCode() {
-            return this.name.hashCode();
-        }
-    }
-
-    @Test
-    public void testB() {
-        /* Set&lt;A&gt; */Set&lt;B&gt; set = new HashSet&lt;&gt;();
-
-        set.add(new B("abc", 12));
-        set.add(new B("abc", 14));
-
-        System.out.println(set.size());
-
-        System.out.println(set.contains(new B("abc", 0)));
-    }
-
-    static class AA extends A {
-        public AA(String name, int age) {
-            super(name, age);
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            return new EqualsBuilder().append(getClass(), obj.getClass()).append(name, ((A) obj).name)
-                    .append(age, ((A) obj).age).isEquals();
-        }
-
-        @Override
-        public int hashCode() {
-            return this.name.hashCode();
-        }
-    }
-
-    @Test
-    public void testAA() {
-        // 实现Map&lt;String, Set&lt;String&gt;&gt;的效果
-        Set&lt;AA&gt; set = new HashSet&lt;&gt;();
-
-        set.add(new AA("abc", 12));
-        set.add(new AA("abc", 14));
-
-        System.out.println(set.size());
-
-        System.out.println(set.contains(new AA("abc", 0)));
-    }
-</code></pre>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://java.chinaitlab.com/base/879319.html">java中HashMap详解</a></li>
 </ul>
 
 
