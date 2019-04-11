@@ -9,33 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="其实部署一个hadoop集群不难，按照步骤一步步的操作： 无密钥登录，防火墙(以及selinux)，JDK，配置，启动(包括format)。 集群机器准备 1
-2
-3
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-17
-18
-19
-20
-21
-22
-23
-24
-25
-26
-27 &hellip;">
+  <meta name="description" content="官网的文档[HDFSHighAvailabilityWithQJM.html]和[HdfsRollingUpgrade.html]（Note that rolling upgrade is supported only from Hadoop-2.4.0 onwards.）很详细， &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -108,6 +82,928 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/01/07/hadoop-install-and-upgrade-4-ha-upgrade/">Hadoop安装与升级-(4)HA升级</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-01-07T23:04:27+08:00" pubdate data-updated="true">Thu 2016-01-07 23:04</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>官网的文档[HDFSHighAvailabilityWithQJM.html]和[HdfsRollingUpgrade.html]（Note that rolling upgrade is supported only from Hadoop-2.4.0 onwards.）很详细，但是没有一个整体的案例。这里整理下操作记录下来。</p>
+
+<ol>
+<li>关闭所有的namenode，部署新版本的hadoop</li>
+<li>启动所有的journalnode，是所有！！升级namenode的同时，也会升级所有journalnode！！</li>
+<li>使用-upgrade选项启动一台namenode。启动的这台namenode会直接进入active状态，升级本地的元数据，同时会升级shared edit log（也就是journalnode的数据）</li>
+<li>使用-bootstrapStandby启动其他namenode，同步更新。不能使用-upgrade选项！（我也没试，不知道试了是啥效果）</li>
+</ol>
+
+
+<h2>关闭集群，部署新版本的hadoop</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+</span><span class='line'>16/01/08 09:10:25 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Stopping namenodes on [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master2: stopping namenode
+</span><span class='line'>hadoop-master1: stopping namenode
+</span><span class='line'>hadoop-slaver1: stopping datanode
+</span><span class='line'>hadoop-slaver2: stopping datanode
+</span><span class='line'>hadoop-slaver3: stopping datanode
+</span><span class='line'>Stopping journal nodes [hadoop-master1]
+</span><span class='line'>hadoop-master1: stopping journalnode
+</span><span class='line'>16/01/08 09:10:43 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Stopping ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master1: stopping zkfc
+</span><span class='line'>hadoop-master2: stopping zkfc
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ 
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ cd ~/hadoop-2.6.3
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ ll
+</span><span class='line'>total 52
+</span><span class='line'>drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 bin
+</span><span class='line'>lrwxrwxrwx 1 hadoop hadoop    32 Jan  8 06:05 etc -&gt; /home/hadoop/hadoop-2.2.0/ha-etc
+</span><span class='line'>drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 include
+</span><span class='line'>drwxr-xr-x 3 hadoop hadoop  4096 Dec 18 01:52 lib
+</span><span class='line'>drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 libexec
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 15429 Dec 18 01:52 LICENSE.txt
+</span><span class='line'>drwxrwxr-x 2 hadoop hadoop  4096 Jan  8 03:37 logs
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   101 Dec 18 01:52 NOTICE.txt
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  1366 Dec 18 01:52 README.txt
+</span><span class='line'>drwxr-xr-x 2 hadoop hadoop  4096 Dec 18 01:52 sbin
+</span><span class='line'>drwxr-xr-x 3 hadoop hadoop  4096 Jan  7 08:00 share
+</span><span class='line'>
+</span><span class='line'>#// 同步
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs ~/hadoop-2.6.3 $h:~/ ; done</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>启动所有Journalnode</h2>
+
+<p>2.6和2.2用的是一份配置！etc通过软链接到2.2的ha-etc配置。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/hadoop-daemons.sh --hostnames "hadoop-master1" --script /home/hadoop/hadoop-2.2.0/bin/hdfs start journalnode
+</span><span class='line'>hadoop-master1: starting journalnode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-journalnode-hadoop-master1.out
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ jps
+</span><span class='line'>31047 JournalNode
+</span><span class='line'>244 QuorumPeerMain
+</span><span class='line'>31097 Jps</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>升级一台namenode</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ bin/hdfs namenode -upgrade
+</span><span class='line'>...
+</span><span class='line'>16/01/08 09:13:54 INFO namenode.NameNode: createNameNode [-upgrade]
+</span><span class='line'>...
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.FSImage: Starting upgrade of local storage directories.
+</span><span class='line'>   old LV = -47; old CTime = 0.
+</span><span class='line'>   new LV = -60; new CTime = 1452244437060
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.NNUpgradeUtil: Starting upgrade of storage directory /data/tmp/dfs/name
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.FSImageTransactionalStorageInspector: No version file in /data/tmp/dfs/name
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/tmp/dfs/name
+</span><span class='line'>16/01/08 09:13:57 INFO namenode.FSNamesystem: Need to save fs image? false (staleImage=false, haEnabled=true, isRollingUpgrade=false)
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>官网文档上说，除了升级了namenode的本地元数据外，sharededitlog也被升级了的。</p>
+
+<p>查看journalnode的日志，确实journalnode也升级了：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ less logs/hadoop-hadoop-journalnode-hadoop-master1.log 
+</span><span class='line'>...
+</span><span class='line'>2016-01-08 09:13:57,070 INFO org.apache.hadoop.hdfs.server.namenode.FileJournalManager: Starting upgrade of edits directory /data/journal/zfcluster
+</span><span class='line'>2016-01-08 09:13:57,072 INFO org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil: Starting upgrade of storage directory /data/journal/zfcluster
+</span><span class='line'>2016-01-08 09:13:57,185 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Starting upgrade of edits directory: .
+</span><span class='line'>   old LV = -47; old CTime = 0.
+</span><span class='line'>   new LV = -60; new CTime = 1452244437060
+</span><span class='line'>2016-01-08 09:13:57,185 INFO org.apache.hadoop.hdfs.server.namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/journal/zfcluster
+</span><span class='line'>2016-01-08 09:13:57,222 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Updating lastWriterEpoch from 2 to 3 for client /172.17.0.1
+</span><span class='line'>2016-01-08 09:16:57,731 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Updating lastPromisedEpoch from 3 to 4 for client /172.17.0.1
+</span><span class='line'>2016-01-08 09:16:57,735 INFO org.apache.hadoop.hdfs.qjournal.server.Journal: Scanning storage FileJournalManager(root=/data/journal/zfcluster)
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>升级的namenode是前台运行的，不要关闭这个进程。接下来把另一台namenode同步一下。</p>
+
+<h2>同步另一台namenode</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hadoop-2.6.3]$ bin/hdfs namenode -bootstrapStandby
+</span><span class='line'>...
+</span><span class='line'>=====================================================
+</span><span class='line'>About to bootstrap Standby ID nn2 from:
+</span><span class='line'>           Nameservice ID: zfcluster
+</span><span class='line'>        Other Namenode ID: nn1
+</span><span class='line'>  Other NN's HTTP address: http://hadoop-master1:50070
+</span><span class='line'>  Other NN's IPC  address: hadoop-master1/172.17.0.1:8020
+</span><span class='line'>             Namespace ID: 639021326
+</span><span class='line'>            Block pool ID: BP-1695500896-172.17.0.1-1452152050513
+</span><span class='line'>               Cluster ID: CID-7d5c31d8-5cd4-46c8-8e04-49151578e5bb
+</span><span class='line'>           Layout version: -60
+</span><span class='line'>       isUpgradeFinalized: false
+</span><span class='line'>=====================================================
+</span><span class='line'>16/01/08 09:15:19 INFO ha.BootstrapStandby: The active NameNode is in Upgrade. Prepare the upgrade for the standby NameNode as well.
+</span><span class='line'>16/01/08 09:15:19 INFO common.Storage: Lock on /data/tmp/dfs/name/in_use.lock acquired by nodename 5008@hadoop-master2
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.TransferFsImage: Opening connection to http://hadoop-master1:50070/imagetransfer?getimage=1&txid=1126&storageInfo=-60:639021326:1452244437060:CID-7d5c31d8-5cd4-46c8-8e04-49151578e5bb
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.TransferFsImage: Image Transfer timeout configured to 60000 milliseconds
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.TransferFsImage: Transfer took 0.00s at 0.00 KB/s
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.TransferFsImage: Downloaded file fsimage.ckpt_0000000000000001126 size 977 bytes.
+</span><span class='line'>16/01/08 09:15:21 INFO namenode.NNUpgradeUtil: Performing upgrade of storage directory /data/tmp/dfs/name
+</span><span class='line'>...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>重新启动集群</h2>
+
+<p>ctrl+c关闭hadoop-master1 upgrade的namenode。启动整个集群。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh
+</span><span class='line'>16/01/08 09:16:44 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Starting namenodes on [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master1: starting namenode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-namenode-hadoop-master1.out
+</span><span class='line'>hadoop-master2: starting namenode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-namenode-hadoop-master2.out
+</span><span class='line'>hadoop-slaver3: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver3.out
+</span><span class='line'>hadoop-slaver2: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver2.out
+</span><span class='line'>hadoop-slaver1: starting datanode, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-datanode-hadoop-slaver1.out
+</span><span class='line'>Starting journal nodes [hadoop-master1]
+</span><span class='line'>hadoop-master1: journalnode running as process 31047. Stop it first.
+</span><span class='line'>16/01/08 09:16:55 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Starting ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master2: starting zkfc, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-zkfc-hadoop-master2.out
+</span><span class='line'>hadoop-master1: starting zkfc, logging to /home/hadoop/hadoop-2.6.3/logs/hadoop-hadoop-zkfc-hadoop-master1.out
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ jps
+</span><span class='line'>31047 JournalNode
+</span><span class='line'>244 QuorumPeerMain
+</span><span class='line'>31596 DFSZKFailoverController
+</span><span class='line'>31655 Jps
+</span><span class='line'>31294 NameNode
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>后记：Journalnode重置</h2>
+
+<p>在HA和non-HA环境来回的切换，最后启动HA时master起不来，执行bootstrapStandby也不行。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2016-01-08 06:15:36,746 WARN org.apache.hadoop.hdfs.server.namenode.FSEditLog: Unable to determine input streams from QJM to [172.17.0.1:8485]. Skipping.
+</span><span class='line'>org.apache.hadoop.hdfs.qjournal.client.QuorumException: Got too many exceptions to achieve quorum size 1/1. 1 exceptions thrown:
+</span><span class='line'>172.17.0.1:8485: Asked for firstTxId 1022 which is in the middle of file /data/journal/zfcluster/current/edits_0000000000000001021-0000000000000001022
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FileJournalManager.getRemoteEditLogs(FileJournalManager.java:198)
+</span><span class='line'>        at org.apache.hadoop.hdfs.qjournal.server.Journal.getEditLogManifest(Journal.java:640)
+</span><span class='line'>        at org.apache.hadoop.hdfs.qjournal.server.JournalNodeRpcServer.getEditLogManifest(JournalNodeRpcServer.java:181)
+</span><span class='line'>        at org.apache.hadoop.hdfs.qjournal.protocolPB.QJournalProtocolServerSideTranslatorPB.getEditLogManifest(QJournalProtocolServerSideTranslatorPB.java:203)
+</span><span class='line'>        at org.apache.hadoop.hdfs.qjournal.protocol.QJournalProtocolProtos$QJournalProtocolService$2.callBlockingMethod(QJournalProtocolProtos.java:17453)
+</span><span class='line'>        at org.apache.hadoop.ipc.ProtobufRpcEngine$Server$ProtoBufRpcInvoker.call(ProtobufRpcEngine.java:585)</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>关闭集群，启动journalnode，跳转到没有问题的namenode机器，执行initializeSharedEdits命令。然后在有问题的namenode上重新初始化！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start journalnode
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ bin/hdfs namenode -initializeSharedEdits
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start namenode
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs namenode -bootstrapStandby
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh</span></code></pre></td></tr></table></div></figure>
+
+
+<p>后话： 其实上面HA升级的步骤，如果upgrade时没有启动journalnode，导致出了问题的话，把journalnode重置应该也是可以的（谨慎，没有试验过，猜想而已）。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html#HDFS_UpgradeFinalizationRollback_with_HA_Enabled">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html#HDFS_UpgradeFinalizationRollback_with_HA_Enabled</a></li>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html#Upgrade_and_Rollback">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html#Upgrade_and_Rollback</a></li>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsRollingUpgrade.html">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsRollingUpgrade.html</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/01/07/hadoop-install-and-upgrade-3-ha/">Hadoop安装与升级-(3)HA配置</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-01-07T23:04:27+08:00" pubdate data-updated="true">Thu 2016-01-07 23:04</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>官网的文档[HDFSHighAvailabilityWithQJM.html]很详细，但是没有一个整体的案例。这里整理下操作记录下来。</p>
+
+<h2>配置</h2>
+
+<p>hadoop-master1和hadoop-master2之间无密钥登录（failover要用到）：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-keygen
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-copy-id hadoop-master2
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ ssh-copy-id hadoop-master1</span></code></pre></td></tr></table></div></figure>
+
+
+<p>配置文件修改：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ vi etc/hadoop/core-site.xml 
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;fs.defaultFS&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;hdfs://zfcluster&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;ha.zookeeper.quorum&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;hadoop-master1&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;hadoop.tmp.dir&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;/data/tmp&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ vi etc/hadoop/hdfs-site.xml 
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.replication&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;1&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.namenode.secondary.http-address&lt;/name&gt;
+</span><span class='line'>&lt;value&gt; &lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.nameservices&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;zfcluster&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.ha.namenodes.zfcluster&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;nn1,nn2&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.namenode.rpc-address.zfcluster.nn1&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;hadoop-master1:8020&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.namenode.rpc-address.zfcluster.nn2&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;hadoop-master2:8020&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.namenode.http-address.zfcluster.nn1&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;hadoop-master1:50070&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.namenode.http-address.zfcluster.nn2&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;hadoop-master2:50070&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.namenode.shared.edits.dir&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;qjournal://hadoop-master1:8485/zfcluster&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.client.failover.proxy.provider.zfcluster&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.journalnode.edits.dir&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;/data/journal&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.ha.fencing.methods&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;sshfence&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.ha.fencing.ssh.private-key-files&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;/home/hadoop/.ssh/id_rsa&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;dfs.ha.automatic-failover.enabled&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>启动</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ cd ..
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs hadoop-2.2.0 $h:~/ ; done
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ cd hadoop-2.2.0/
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start journalnode
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start namenode
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ bin/hdfs namenode -bootstrapStandby
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs namenode -initializeSharedEdits
+</span><span class='line'>
+</span><span class='line'>#// 此时可以启动datanode，通过50070端口看namenode的状态
+</span><span class='line'>
+</span><span class='line'>#// Automatic failover，zkfc和namenode没有启动顺序的问题！
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs zkfc -formatZK
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start zkfc
+</span><span class='line'>[hadoop@hadoop-master2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start zkfc
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hdfs haadmin -failover nn1 nn2
+</span><span class='line'>
+</span><span class='line'>#// 测试failover，把一个active的namenode直接kill掉，看看另一个是否变成active！
+</span><span class='line'>
+</span><span class='line'># 重启
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+</span><span class='line'>16/01/07 10:57:50 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Stopping namenodes on [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master1: stopping namenode
+</span><span class='line'>hadoop-master2: stopping namenode
+</span><span class='line'>hadoop-slaver1: stopping datanode
+</span><span class='line'>hadoop-slaver2: stopping datanode
+</span><span class='line'>hadoop-slaver3: stopping datanode
+</span><span class='line'>Stopping journal nodes [hadoop-master1]
+</span><span class='line'>hadoop-master1: stopping journalnode
+</span><span class='line'>16/01/07 10:58:08 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Stopping ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master2: no zkfc to stop
+</span><span class='line'>hadoop-master1: no zkfc to stop
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh
+</span><span class='line'>16/01/07 10:59:14 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Starting namenodes on [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master2: starting namenode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-namenode-hadoop-master2.out
+</span><span class='line'>hadoop-master1: starting namenode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-namenode-hadoop-master1.out
+</span><span class='line'>hadoop-slaver1: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver1.out
+</span><span class='line'>hadoop-slaver3: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver3.out
+</span><span class='line'>hadoop-slaver2: starting datanode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-datanode-hadoop-slaver2.out
+</span><span class='line'>Starting journal nodes [hadoop-master1]
+</span><span class='line'>hadoop-master1: starting journalnode, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-journalnode-hadoop-master1.out
+</span><span class='line'>16/01/07 10:59:30 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+</span><span class='line'>Starting ZK Failover Controllers on NN hosts [hadoop-master1 hadoop-master2]
+</span><span class='line'>hadoop-master2: starting zkfc, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-zkfc-hadoop-master2.out
+</span><span class='line'>hadoop-master1: starting zkfc, logging to /home/hadoop/hadoop-2.2.0/logs/hadoop-hadoop-zkfc-hadoop-master1.out
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ jps
+</span><span class='line'>15241 DFSZKFailoverController
+</span><span class='line'>14882 NameNode
+</span><span class='line'>244 QuorumPeerMain
+</span><span class='line'>18715 Jps
+</span><span class='line'>15076 JournalNode</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html">http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HDFSHighAvailabilityWithQJM.html</a></li>
+<li><a href="http://www.xlgps.com/article/40993.html">http://www.xlgps.com/article/40993.html</a></li>
+<li><a href="http://hbase.apache.org/book.html#basic.prerequisites">http://hbase.apache.org/book.html#basic.prerequisites</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/01/07/hadoop-install-and-upgrade-2-hadoop-upgrade/">Hadoop安装与升级-(2)2.2升级到2.6</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-01-07T22:04:27+08:00" pubdate data-updated="true">Thu 2016-01-07 22:04</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>升级的命令很简单，但是不要瞎整！升级就一个命令就搞定了！</p>
+
+<h2>部署2.6.3</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 ~]$ tar zxvf hadoop-2.6.3.tar.gz 
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ cd hadoop-2.6.3/share/
+</span><span class='line'>[hadoop@hadoop-master1 share]$ rm -rf doc/
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ rm -rf lib/native/*
+</span><span class='line'>
+</span><span class='line'>#// 拷贝四个配置文件到hadoop-2.6.3
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ cd etc/hadoop/
+</span><span class='line'>[hadoop@hadoop-master1 hadoop]$ cp -f ~/hadoop-2.2.0/etc/hadoop/*-site.xml ./
+</span><span class='line'>[hadoop@hadoop-master1 hadoop]$ cp -f ~/hadoop-2.2.0/etc/hadoop/slaves ./
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop]$ cd 
+</span><span class='line'>[hadoop@hadoop-master1 ~]$ for h in hadoop-master2 hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs hadoop-2.6.3 $h:~/ ; done
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>升级（最佳方式）</h2>
+
+<p>直接使用upgrade选项启动dfs即可。（secondarynamenode不要单独操作来升级，反正就是执行upgrade启动dfs就好了）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh -upgrade
+</span><span class='line'>
+</span><span class='line'>// 2.2和2.6都没有这个命令
+</span><span class='line'>// hadoop dfsadmin -upgradeProgress status
+</span><span class='line'>hadoop dfsadmin -finalizeUpgrade
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>参考[Hadoop: The Definitive Guide/Chapter 10. Administering Hadoop/Maintenance/Upgrades]</p>
+
+<h2>瞎整1</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 先停集群
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>直接在原来的2.2基础上启动，datanode启动没问题，但是namenode报错：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-hadoop-master1.log 
+</span><span class='line'>...
+</span><span class='line'>2016-01-07 08:05:23,582 FATAL org.apache.hadoop.hdfs.server.namenode.NameNode: Failed to start namenode.
+</span><span class='line'>java.io.IOException: 
+</span><span class='line'>File system image contains an old layout version -47.
+</span><span class='line'>An upgrade to version -60 is required.
+</span><span class='line'>Please restart NameNode with the "-rollingUpgrade started" option if a rolling upgrade is already started; or restart NameNode with the "-upgrade" option to start a new upgrade.
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSImage.recoverTransitionRead(FSImage.java:232)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.loadFSImage(FSNamesystem.java:1022)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.loadFromDisk(FSNamesystem.java:741)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.NameNode.loadNamesystem(NameNode.java:538)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.NameNode.initialize(NameNode.java:597)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.NameNode.&lt;init&gt;(NameNode.java:764)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.NameNode.&lt;init&gt;(NameNode.java:748)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.NameNode.createNameNode(NameNode.java:1441)
+</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.NameNode.main(NameNode.java:1507)
+</span><span class='line'>2016-01-07 08:05:23,583 INFO org.apache.hadoop.util.ExitUtil: Exiting with status 1
+</span><span class='line'>2016-01-07 08:05:23,585 INFO org.apache.hadoop.hdfs.server.namenode.NameNode: SHUTDOWN_MSG: 
+</span><span class='line'>/************************************************************
+</span><span class='line'>SHUTDOWN_MSG: Shutting down NameNode at hadoop-master1/172.17.0.1
+</span><span class='line'>************************************************************/</span></code></pre></td></tr></table></div></figure>
+
+
+<p>重新启动，使用upgrade选项启动：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-dfs.sh
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-dfs.sh -upgrade</span></code></pre></td></tr></table></div></figure>
+
+
+<p>或者还原到2.2：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># **所有**slaver节点的VERSION改回47
+</span><span class='line'>[hadoop@hadoop-slaver3 ~]$ vi /data/tmp/dfs/data/current/VERSION 
+</span><span class='line'>...
+</span><span class='line'>layoutVersion=-47
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/stop-dfs.sh
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ sbin/start-dfs.sh -rollback
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>原理</h2>
+
+<p>升级的时刻，首先备份原来的数据到previous目录下，升级后的放置到current目录下。namenode这样没啥大问题，但是datanode也是这样结构current和previous，那相当有问题，那数据量不是翻倍了？</p>
+
+<p>查看数据后，发现一个名字的文件current和previous里面使用的是一个inode。也就是说用的是<strong>硬链接</strong>，数据只有一份！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.2.0]$ bin/hadoop fs -put *.txt /
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-slaver3 ~]$ cd /data/tmp/dfs/data/
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ test current/finalized/subdir0/subdir0/blk_1073741825 -ef previous/finalized/blk_1073741825
+</span><span class='line'>[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ echo $?
+</span><span class='line'>0
+</span><span class='line'>[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ ls -i current/finalized/subdir0/subdir0/blk_1073741825 
+</span><span class='line'>142510 current/finalized/subdir0/subdir0/blk_1073741825
+</span><span class='line'>[hadoop@hadoop-slaver3 BP-1695500896-172.17.0.1-1452152050513]$ ls -i previous/finalized/blk_1073741825
+</span><span class='line'>142510 previous/finalized/blk_1073741825
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1212,599 +2108,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2015-11-22T20:51:35+08:00" pubdate data-updated="true">Sun 2015-11-22 20:51</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>准备一个SSH账号</h2>
-
-<ul>
-<li><a href="http://www.99ssh.net/">http://www.99ssh.net/</a> 更改为 <a href="http://99ss.in/">http://99ss.in/</a></li>
-</ul>
-
-
-<p>2017年1月25日11:20:55 -
-现在都换成Shadowsocks了，下载 <a href="http://www.tomato8.net/help/newsshow.php?cid=17&amp;id=22">Shadowsocks使用教程合集及相关客户端下载</a> 然后配置地址就行了。多配几个地址开启 <strong>高可用</strong> 完美。</p>
-
-<p>2017年6月19日09:50:22 - 域名经常改啊，也苦了人家了，搭梯人不易。<a href="http://www.moonss.club">http://www.moonss.club</a> 咨询QQ：58277266</p>
-
-<p>2018年6月9日14:10:44 - 在aliyun买了一台国外的服务器，安装Shadowsocks-server。</p>
-
-<h2>SSH -N -D 或者MyEnTunnel</h2>
-
-<ul>
-<li><code>ssh -N -D [PORT] [USER@IP]</code></li>
-<li><a href="http://www.99ssh.net/help/newsshow.php?cid=19&amp;id=21">http://www.99ssh.net/help/newsshow.php?cid=19&amp;id=21</a></li>
-</ul>
-
-
-<p>使用MyEnTunel的话，设置程序为【启动软件时自动连接】，同时把程序的快捷方式加到【C:\Users\winse\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\】目录下。</p>
-
-<h2>浏览器智能访问</h2>
-
-<p>Chrome的版本速度快一点。配置好后，等待一段时间就智能的适配了，firefox的等的时间略长。</p>
-
-<h3>Chrome + SwitchyOmega + gfwlist</h3>
-
-<ul>
-<li><a href="https://github.com/FelisCatus/SwitchyOmega/releases">https://github.com/FelisCatus/SwitchyOmega/releases</a> SwitchySharp升级版本</li>
-<li><a href="https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt">https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt</a></li>
-</ul>
-
-
-<p>可以做到智能代理功能，gfwlist的才会走代理。加速访问国内网站，同时减少不必要的流量。</p>
-
-<h3>Firefox + FoxyProxy + gfwlist</h3>
-
-<ul>
-<li><a href="http://mozilla.com.cn/thread-230260-1-1.html">http://mozilla.com.cn/thread-230260-1-1.html</a></li>
-<li><a href="https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt">https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/11/11/nginx-build-unified-access/">Nginx再折腾&#8212;统一访问入口</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2015-11-11T11:04:04+08:00" pubdate data-updated="true">Wed 2015-11-11 11:04</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>快照目录文件太多，准备安装一个方式分目录。但是又要能保证原来的访问方式不变化！使用rewrite和try_files成功实现。</p>
-
-<h2>目录结构:</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@Lenovo-PC /cygdrive/f/temp
-</span><span class='line'>$ ls -R
-</span><span class='line'>.:
-</span><span class='line'>1.jpg  snapshot  snapshot-1  snapshot-2  snapshot-3  snapshot-4
-</span><span class='line'>
-</span><span class='line'>./snapshot:
-</span><span class='line'>0.html
-</span><span class='line'>
-</span><span class='line'>./snapshot-1:
-</span><span class='line'>1.html
-</span><span class='line'>
-</span><span class='line'>./snapshot-2:
-</span><span class='line'>2.html
-</span><span class='line'>
-</span><span class='line'>./snapshot-3:
-</span><span class='line'>3.html
-</span><span class='line'>
-</span><span class='line'>./snapshot-4:
-</span><span class='line'>4.html</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>Nginx配置尝试一:</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>    location /snapshot {
-</span><span class='line'>        root   /home/hadoop/html-snapshot;
-</span><span class='line'>        add_header content-type "text/html";
-</span><span class='line'>
-</span><span class='line'>        rewrite ^/snapshot/.*/(.*)$  /snapshot/$1 break ;
-</span><span class='line'>        
-</span><span class='line'>        try_files $uri /snapshot-1/$uri /snapshot-3/$uri;
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    location ~ /snapshot-\d+ {
-</span><span class='line'>        root   /home/hadoop/html-snapshot;
-</span><span class='line'>
-</span><span class='line'>        rewrite ^/(.*)/.*/(.*)$ /$1/$2 break;
-</span><span class='line'>    }</span></code></pre></td></tr></table></div></figure>
-
-
-<p>这种方式是不行的，try_files要求除最后一个配置外其他都是文件！</p>
-
-<blockquote><p>It is possible to check directory’s existence by specifying a slash at the end of a name, e.g. “$uri/”. If none of the files were found, an internal redirect to the uri specified in the last parameter is made.  [<a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#try_files">http://nginx.org/en/docs/http/ngx_http_core_module.html#try_files</a>]</p></blockquote>
-
-<p>也就是说，中间配置路径，nginx只把他们当做本地的去看待！文件存在就返回结果，否则直接重定向到最后一个路径！！</p>
-
-<h2>Nginx配置尝试二：</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>    location /snapshot {
-</span><span class='line'>        root   F:/temp;
-</span><span class='line'>        add_header content-type "text/html";
-</span><span class='line'>
-</span><span class='line'>        rewrite ^/snapshot/.*/(.*)$  /snapshot/$1 break ;
-</span><span class='line'>
-</span><span class='line'>        try_files $uri @backup;
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    location ~ /snapshot-\d+ {
-</span><span class='line'>        root   F:/temp;
-</span><span class='line'>
-</span><span class='line'>      try_files $uri @backup;
-</span><span class='line'>    }
-</span><span class='line'>  
-</span><span class='line'>    location @backup {
-</span><span class='line'>      # 这里的顺序不能颠倒，[.*]会匹配所有的！
-</span><span class='line'>        rewrite ^/(.*)-3/(.*)$ /$1-4/$2 last;
-</span><span class='line'>        rewrite ^/(.*)-2/(.*)$ /$1-3/$2 last;
-</span><span class='line'>        rewrite ^/(.*)-1/(.*)$ /$1-2/$2 last;
-</span><span class='line'>        rewrite ^/(.*)/(.*)$ /$1-1/$2 last;
-</span><span class='line'>    }</span></code></pre></td></tr></table></div></figure>
-
-
-<p>这里使用循环的方式在backup的location中进行处理，一个个的循环查找。使用了正则表达式和一个统一rewrite的location。</p>
-
-<h2>Nginx配置尝试三：</h2>
-
-<p>上面发现，其实try_files都是去查找文件，其实目录结构和访问路径是匹配的，只是请求一开始就带snaphost，倒是每次都需要处理。如果请求过来的就没有带snaphost的话！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>    location / {
-</span><span class='line'>        root   F:/temp;
-</span><span class='line'>        add_header content-type "text/html";
-</span><span class='line'>
-</span><span class='line'>        try_files /snapshot/$uri /snapshot-1/$uri  /snapshot-2/$uri  /snapshot-3/$uri  /snapshot-4/$uri;
-</span><span class='line'>    }</span></code></pre></td></tr></table></div></figure>
-
-
-<p>一个location配置就行了！</p>
-
-<h2>Nginx配置完善版：</h2>
-
-<p>转变思路后，最开始就把请求的前置snapshot去掉rewrite去掉就行了！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>    location /snapshot {
-</span><span class='line'>        root   F:/temp;
-</span><span class='line'>        add_header content-type "text/html";
-</span><span class='line'>      
-</span><span class='line'>      rewrite ^/snapshot/.*/(.*)$  /$1 break ;
-</span><span class='line'>
-</span><span class='line'>        try_files /snapshot/$uri /snapshot-1/$uri  /snapshot-2/$uri  /snapshot-3/$uri  /snapshot-4/$uri;
-</span><span class='line'>    }</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>nginx添加模块</h2>
-
-<p>当我们启用 &ndash;with-debug 选项重新构建好调试版的 Nginx 之后，还需要同时在配置文件中通过标准的 error_log 配置指令为错误日志使用 debug 日志级别（这同时也是最低的日志级别）：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>error_log logs/error.log debug;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>添加echo模块：</p>
-
-<p>下载zlib、pcre、echo：</p>
-
-<ul>
-<li><a href="http://www.zlib.net/">http://www.zlib.net/</a></li>
-<li><a href="http://www.pcre.org/">http://www.pcre.org/</a></li>
-<li><a href="https://github.com/openresty/echo-nginx-module">https://github.com/openresty/echo-nginx-module</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>tar zxvf zlib-1.2.8.tar.gz 
-</span><span class='line'>mv zlib-1.2.8 src/zlib
-</span><span class='line'>tar zxvf pcre-8.36.tar.gz 
-</span><span class='line'>mv pcre-8.36 src/pcre
-</span><span class='line'>
-</span><span class='line'>./configure --prefix=/home/hadoop/nginx --add-module=/home/hadoop/echo-nginx-module-0.58  --with-pcre=src/pcre --with-zlib=src/zlib --with-debug 
-</span><span class='line'>#[hadoop@cu2 nginx-1.7.10]$ ./configure --prefix=/home/hadoop/nginx --with-http_ssl_module --with-pcre=src/pcre/ --with-zlib=src/zlib/ --with-debug
-</span><span class='line'>make -j2
-</span><span class='line'>make install</span></code></pre></td></tr></table></div></figure>
-
-
-<p>编译成功后，就能在location里面直接echo，页面访问时就能看到echo内容了。</p>
-
-<h2>更新编译1.9</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu1 ~]# yum install openssl openssl-devel -y
-</span><span class='line'>[root@cu1 ~]# yum install gcc gcc-c++ -y
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu1 nginx-1.9.12]$ ./configure --prefix=/home/hadoop/nginx --with-pcre=/home/hadoop/pcre-8.36  --with-http_ssl_module
-</span><span class='line'>[hadoop@cu1 nginx-1.9.12]$ make && make install</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://www.cnblogs.com/cgli/archive/2011/05/16/2047920.html">http://www.cnblogs.com/cgli/archive/2011/05/16/2047920.html</a></li>
-<li><a href="http://www.cnblogs.com/tohilary/archive/2012/08/24/2653904.html">http://www.cnblogs.com/tohilary/archive/2012/08/24/2653904.html</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2015/11/04/raspberrypi-start-guide/">树莓派raspberrypi2简单使用</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2015-11-04T11:52:18+08:00" pubdate data-updated="true">Wed 2015-11-04 11:52</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>买的东西地址：</h2>
-
-<p>现在想来，其实可以多加100，买一整套的比较方便。内存卡还有外壳都在里面。</p>
-
-<ul>
-<li><p><a href="https://item.taobao.com/item.htm?id=520179324500&amp;ali_refid=a3_420434_1006:1103723226:N:%E6%A0%91%E8%8E%93%E6%B4%BE2+b%2B:fc636846d2212679077e26f5f9f14118&amp;ali_trackid=1_fc636846d2212679077e26f5f9f14118&amp;spm=a230r.1.0.0.vhiQsb&amp;qq-pf-to=pcqq.c2c">树莓派2b 树莓派raspberry Pi 2代B型四核开发板 官方正品 树莓派</a></p></li>
-<li><p><a href="http://item.jd.com/679773.html">闪迪（SanDisk）至尊高速移动MicroSDHC UHS-I存储卡 TF卡 32GB Class10 读速48Mb/s</a></p></li>
-<li><a href="http://item.jd.com/667570.html">迅捷（FAST）FW150US 超小型150M无线USB网卡</a></li>
-<li><p><a href="https://detail.tmall.com/item.htm?_u=4jgup6l1c31&amp;id=45729451918">USB转TTL PL2303HX模块 STC单片机下载线刷机线 升级串口模块</a></p></li>
-<li><p><a href="http://item.jd.com/629794.html">雷柏（Rapoo）1860 无线光学键鼠套装</a>  质量一般。临时用用，可以考虑不买！</p></li>
-</ul>
-
-
-<h2>安装系统</h2>
-
-<ul>
-<li>显示器： 恰好同时有HDMI的接口和显示器。如果没有，那就要考虑直接把系统写到SD卡了！！</li>
-<li>无线键盘、鼠标</li>
-<li>电源： 一般的手机充电器都可以，用充电宝也是OK的</li>
-<li><a href="https://www.raspberrypi.org/help/noobs-setup/">NOOBS</a>
-
-<ul>
-<li>NOOBS_v1_4_2.zip</li>
-<li>SDFormatterv4.zip</li>
-</ul>
-</li>
-</ul>
-
-
-<p>插上SD卡，安装系统就行了。</p>
-
-<p><img src="/images/blogs/raspberrypi-os-install.png" alt="" /></p>
-
-<h2>无线网卡</h2>
-
-<p>网站上没说有linux的驱动，但是直接插上后是能检测到设备的！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>pi@raspberrypi:~$ lsusb
-</span><span class='line'>Bus 001 Device 004: ID 0bda:8179 Realtek Semiconductor Corp. 
-</span><span class='line'>Bus 001 Device 003: ID 0424:ec00 Standard Microsystems Corp. SMSC9512/9514 Fast Ethernet Adapter
-</span><span class='line'>Bus 001 Device 002: ID 0424:9514 Standard Microsystems Corp. 
-</span><span class='line'>Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub</span></code></pre></td></tr></table></div></figure>
-
-
-<p>ifconfig也能查看到wlan0的无线网卡。接下来修改配置，添加用户密码即可。</p>
-
-<p>配置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>pi@raspberrypi:~$ cat /etc/network/interfaces
-</span><span class='line'># Please note that this file is written to be used with dhcpcd.
-</span><span class='line'># For static IP, consult /etc/dhcpcd.conf and 'man dhcpcd.conf'.
-</span><span class='line'>
-</span><span class='line'>auto lo
-</span><span class='line'>iface lo inet loopback
-</span><span class='line'>
-</span><span class='line'>auto eth0
-</span><span class='line'>allow-hotplug eth0
-</span><span class='line'>#iface eth0 inet manual
-</span><span class='line'>iface eth0 inet dhcp
-</span><span class='line'>
-</span><span class='line'>auto wlan0
-</span><span class='line'>allow-hotplug wlan0
-</span><span class='line'>#iface wlan0 inet manual
-</span><span class='line'>iface wlan0 inet dhcp
-</span><span class='line'>wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
-</span><span class='line'>
-</span><span class='line'>auto wlan1
-</span><span class='line'>allow-hotplug wlan1
-</span><span class='line'>iface wlan1 inet manual
-</span><span class='line'>wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf
-</span><span class='line'>
-</span><span class='line'>pi@raspberrypi:~$ sudo cat /etc/wpa_supplicant/wpa_supplicant.conf
-</span><span class='line'>ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
-</span><span class='line'>update_config=1
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>network={
-</span><span class='line'>ssid="winse.liu"
-</span><span class='line'>psk="MIMA"
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>network={
-</span><span class='line'>ssid="1108"
-</span><span class='line'>psk="MIMA"
-</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>USB转串口使用COM控制raspberry</h2>
-
-<p>在淘宝上面买的，我系统是win10，抱着尝试下的心态也很便宜就买了一个。买来后，安装了win7的驱动<a href="https://detail.tmall.com/item.htm?_u=4jgup6l1c31&amp;id=45729451918">PL-2303 Vista&amp;Win7 Driver Installer.exe</a>， 能用。</p>
-
-<p>配置见图：</p>
-
-<p><img src="/images/blogs/raspberrypi-gpio.png" alt="" /></p>
-
-<p><img src="/images/blogs/raspberrypi-usb-com-install.jpg" alt="" /></p>
-
-<p><img src="/images/blogs/raspberrypi-usb-com-config.jpg" alt="" /></p>
-
-<p>连接后按enter才会出现登录提示！<strong> pi默认密码raspberry </strong>。</p>
-
-<p>最终效果：</p>
-
-<p><img src="/images/blogs/raspberrypi-finished.jpg" alt="" /></p>
-
-<h2>用到的一些命令</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>sudo raspi-config
-</span><span class='line'>修改配置，默认使用图形界面登录，可以使用`Boot Options`修改为文本console模式
-</span><span class='line'>
-</span><span class='line'>sudo iwlist wlan0 scan | grep ESSID
-</span><span class='line'>查看可用的无线
-</span><span class='line'>
-</span><span class='line'>systemctl list-units
-</span><span class='line'>
-</span><span class='line'>sudo apt-get install screen
-</span><span class='line'>
-</span><span class='line'>sudo apt-get -y install vim
-</span><span class='line'>sudo apt-get install nginx
-</span><span class='line'>systemctl status nginx.service
-</span><span class='line'>sudo cp /etc/skel/.* /home/robot/</span></code></pre></td></tr></table></div></figure>
-
-
-<p>手机放一个热点出来，然后手机安装一个ssh的工具(JuiceSSH v2.0.2)就可以控制树莓派了。</p>
-
-<p>网上有用手机当屏幕，然后键盘连树莓派usb，结合来控制树莓派。一开始挺新奇的，后来感觉挺扯淡的！不过学习到了screen的程序，自动登录啥的没弄成，直接输入用户密码登录也行了。在boot选项看到有自动登录，不知道有没有用。现在有无线网卡和com来控制，感觉已经够用了。</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://www.raspberrypi.org/forums/viewtopic.php?f=91&amp;t=4751&amp;sid=661d1a59e4f85f333b40e6e46db58d32">Getting Started with the Raspberry Pi</a></li>
-<li><a href="http://blog.csdn.net/c80486/article/details/8545307">树莓派(raspberry pi)学习15: 使用WIFI网卡连接无线网络</a></li>
-<li><a href="http://blog.csdn.net/cugbabybear/article/details/23048741">windows下 用串行连接控制树莓派</a></li>
-<li><a href="http://www.alsrobot.cn/article-141.html">【创客学堂】如何在windows系统下用串口通信完爆raspberry pi（树莓派）</a></li>
-<li><a href="http://shumeipai.nxez.com/2013/10/10/raspberry-pi-pick-kindle-display.html">视频详解树莓派如何外接Kindle显示器</a></li>
-<li><p><a href="http://www.ibm.com/developerworks/cn/linux/l-cn-screen/index.html">linux 技巧：使用 screen 管理你的远程会话</a></p></li>
-<li><p><a href="http://www.bkjia.com/Pythonjc/818142.html">RASPBERRY PI wifi配置</a></p></li>
-<li><p><a href="http://blog.sina.com.cn/s/blog_3cb6a78c0101a0fe.html">Raspberry Pi 连接无线网卡</a></p></li>
-<li><p><a href="http://davidrobot.com/2014/11/raspberry_pi_model_b_plus_startup.html">开机篇 – 树莓派 Raspberry Pi Model B+ 入手折腾记 (1)</a></p></li>
-<li><p><a href="http://shumeipai.nxez.com/2013/09/07/no-screen-unknow-ip-login-pi.html#more-184">没有显示器且IP未知的情况下登录树莓派</a></p></li>
-<li><p><a href="http://www.pc6.com/az/104761.html">JuiceSSH v2.0.2</a></p></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/24">&larr; Older</a>
@@ -1905,6 +2208,18 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2019/04/10/try-bk-dot-tencent-dot-com/">Try bk.tencent.com</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/10/20/jcef-build-on-win64/">编译JCEF - Win64</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
       </li>
     
@@ -1922,18 +2237,6 @@
     
       <li class="post">
         <a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2018/05/01/heatmap-base-on-baidu/">解读百度的Heatmap</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2018/04/07/java-webstart-jnlp-with-jvmti/">WebStart的使用以及如何结合JVMTI</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2018/01/30/map-started-guide/">Map入门指南</a>
       </li>
     
   </ul>
@@ -1967,6 +2270,14 @@
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/deprecated/'>deprecated</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/devops/'>devops</a> (1) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2010,7 +2321,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/java/'>java</a> (12) 
+			<a class='category' href='/blog/categories/java/'>java</a> (13) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2022,7 +2333,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (8) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2082,7 +2393,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (65) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (66) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2099,7 +2410,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (210)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (213)</li>
 	</ul>
 	
 </section>
@@ -2157,7 +2468,7 @@
     </div>
   </div>
   <footer role="contentinfo"><p>
-  Copyright &copy; 2018 - Winse Liu -
+  Copyright &copy; 2019 - Winse Liu -
   <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
   <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
 </p>
@@ -2195,7 +2506,7 @@ gitalk.render('gitalk-container')
 
 
 <script>
-
+/*
 $.ajax({
   type: "POST",
   url: "http://log.winseliu.com:20000",
@@ -2208,7 +2519,7 @@ $.ajax({
   contentType: "application/json; charset=utf-8",
   dataType: "json"
 });
-
+*/
 </script>
 
 
