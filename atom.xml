@@ -4,7 +4,7 @@
   <title><![CDATA[Winse Blog]]></title>
   <link href="http://winseliu.com/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2019-07-28T14:39:04+08:00</updated>
+  <updated>2020-05-11T11:53:36+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,909 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[在树莓派上部署redmine]]></title>
+    <link href="http://winseliu.com/blog/2020/05/11/redmine-on-arm-pi/"/>
+    <updated>2020-05-11T10:33:44+08:00</updated>
+    <id>http://winseliu.com/blog/2020/05/11/redmine-on-arm-pi</id>
+    <content type="html"><![CDATA[<p>变废为宝。</p>
+
+<p>服务器没怎么用，但是偶尔又想访问下文档或者redmine，狠狠心咬咬牙最后把x64上的迁移到了树莓派2： Raspbian GNU/Linux 9 (stretch) 。</p>
+
+<p>温故下原来redmine的安装过程： <a href="http://www.winseliu.com/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a></p>
+
+<p>过程中涉及到了docker的重新编译，这其中主要使用ubuntu apt源码在本地arm上进行再编译。其中涉及的镜像有：</p>
+
+<ul>
+<li><a href="https://github.com/sameersbn/docker-ubuntu/tree/14.04">https://github.com/sameersbn/docker-ubuntu/tree/14.04</a></li>
+<li><a href="https://github.com/sameersbn/docker-postgresql/tree/9.6-2">https://github.com/sameersbn/docker-postgresql/tree/9.6-2</a></li>
+<li><a href="https://github.com/sameersbn/docker-redmine/tree/3.4.6">https://github.com/sameersbn/docker-redmine/tree/3.4.6</a></li>
+</ul>
+
+
+<h2>备份</h2>
+
+<p>redmine直接整个目录打包 /srv/docker/redmine/redmine 。数据库的要备份出来，架构不同不兼容。</p>
+
+<p>这是编译后arm postgres直接用x64的/srv/docker/redmine/postgresql的报错信息：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~# docker run --rm -ti --entrypoint="bash" -v /srv/docker/redmine/postgresql:/var/lib/postgresql sameersbn/postgresql:9.6-2 
+</span><span class='line'>
+</span><span class='line'>root@8f39c2904607:/var/lib/postgresql# sudo -HEu postgres /usr/lib/postgresql/9.6/bin/pg_ctl -D /var/lib/postgresql/9.6/main -w start
+</span><span class='line'>waiting for server to start....FATAL:  database files are incompatible with server
+</span><span class='line'>DETAIL:  The database cluster was initialized with USE_FLOAT8_BYVAL but the server was compiled without USE_FLOAT8_BYVAL.
+</span><span class='line'>HINT:  It looks like you need to recompile or initdb.
+</span><span class='line'>LOG:  database system is shut down
+</span><span class='line'>stopped waiting
+</span><span class='line'>pg_ctl: could not start server
+</span><span class='line'>Examine the log output.</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>编译ubuntu镜像</h2>
+
+<p>直接使用最新的trusty发布版镜像。由于低版本的可能会没有 linux/arm/v7 : <a href="https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty">https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~/docker-ubuntu# vi Dockerfile
+</span><span class='line'>FROM ubuntu:trusty
+</span><span class='line'>
+</span><span class='line'>docker build -t sameersbn/ubuntu:14.04.20170123 . 
+</span><span class='line'>docker tag sameersbn/ubuntu:14.04.20170123 sameersbn/ubuntu:14.04.20170711 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>编译postgres镜像</h2>
+
+<p>由于postgresql apt的库中没有armhf的deb，需要先手动编译好对应的deb。先运行一个容器，再里面编译好postgres。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+</span><span class='line'> && apt-get update
+</span><span class='line'>
+</span><span class='line'>root@7d55994af11e:/# apt-get build-dep dh-exec postgresql-common  pgdg-keyring     
+</span><span class='line'>root@7d55994af11e:/# apt-get source --compile dh-exec postgresql-common  pgdg-keyring   
+</span><span class='line'>
+</span><span class='line'>root@7d55994af11e:/# apt-get build-dep postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} dh-exec
+</span><span class='line'>root@7d55994af11e:/# apt-get source --compile postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>再测试安装一下这些deb：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+</span><span class='line'> && apt-get update
+</span><span class='line'>
+</span><span class='line'>apt-get install -y acl \
+</span><span class='line'>    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6
+</span><span class='line'>
+</span><span class='line'>dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb
+</span><span class='line'>
+</span><span class='line'>dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>修改Dockerfile，直接通过dpkg安装postgresql的deb：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~/docker-postgresql# less Dockerfile 
+</span><span class='line'>...
+</span><span class='line'>COPY deb/ /tmp/psql/
+</span><span class='line'>
+</span><span class='line'>RUN wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+</span><span class='line'> && apt-get update \
+</span><span class='line'> && DEBIAN_FRONTEND=noninteractive apt-get install -y acl \
+</span><span class='line'>    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6 \
+</span><span class='line'> && cd /tmp/psql \
+</span><span class='line'> && dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb \
+</span><span class='line'> && dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb \
+</span><span class='line'> && rm -rf /tmp/psql \
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'>root@raspberrypi:~/docker-postgresql# docker build -t sameersbn/postgresql:9.6-2 .</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>编译redmine镜像</h2>
+
+<p>redmine主要是缺少ruby2.3的包，跟上面的步骤类似。先编译出arm的ruby2.3，再编译镜像。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'>&& sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list
+</span><span class='line'>
+</span><span class='line'>apt-get build-dep ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
+</span><span class='line'>apt-get source --compile ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>root@raspberrypi:~/docker-redmine# vi Dockerfile 
+</span><span class='line'>...
+</span><span class='line'>COPY deb/ /tmp/ruby/
+</span><span class='line'>
+</span><span class='line'>RUN apt-key adv --keyserver keyserver.ubuntu.com --recv E1DD270288B4E6030699E45FA1715D88E1DF1F24 \
+</span><span class='line'> && echo "deb http://ppa.launchpad.net/git-core/ppa/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+</span><span class='line'> && apt-key adv --keyserver keyserver.ubuntu.com --recv 80F70E11F0F0D5F10CB20E62F5DA5F09C3173AA6 \
+</span><span class='line'> && echo "deb http://ppa.launchpad.net/brightbox/ruby-ng/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+</span><span class='line'> && apt-key adv --keyserver keyserver.ubuntu.com --recv 8B3981E7A6852F782CC4951600A6F0A3C300EE8C \
+</span><span class='line'> && echo "deb http://ppa.launchpad.net/nginx/stable/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+</span><span class='line'> && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+</span><span class='line'> && echo 'deb-src http://apt.postgresql.org/pub/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+</span><span class='line'> && apt-get update \
+</span><span class='line'> && DEBIAN_FRONTEND=noninteractive apt-get install -y supervisor logrotate nginx mysql-client postgresql-client \
+</span><span class='line'>      imagemagick subversion git cvs bzr mercurial darcs rsync   locales openssh-client \
+</span><span class='line'>      gcc g++ make patch pkg-config gettext-base   libc6-dev zlib1g-dev libxml2-dev \
+</span><span class='line'>      libmysqlclient18 libpq5 libyaml-0-2 libcurl3 libssl1.0.0 uuid-dev xz-utils \
+</span><span class='line'>      libxslt1.1 libffi6 zlib1g gsfonts \
+</span><span class='line'>      libgmpxx4ldbl libgmp-dev libtk8.5 libxft2 libxrender1 libxss1 x11-common libtcl8.5 rubygems-integration \
+</span><span class='line'> && dpkg -i /tmp/ruby/*.deb \
+</span><span class='line'> && rm -rf /tmp/ruby \
+</span><span class='line'> && update-locale LANG=C.UTF-8 LC_MESSAGES=POSIX \
+</span><span class='line'> && gem install --no-document --version '&lt; 2.0' bundler \
+</span><span class='line'> && rm -rf /var/lib/apt/lists/*
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'>root@raspberrypi:~/docker-redmine# docker build -t sameersbn/redmine:3.4.6 .</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果docker构建失败，可以通过以下两种方式来进行调试：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 1
+</span><span class='line'>docker commit $container-id image-id
+</span><span class='line'>docker run -ti $image-id bash
+</span><span class='line'>
+</span><span class='line'># 2 
+</span><span class='line'>失败也会有前一步骤的镜像已经提交，再次基础上检查后面的步骤
+</span><span class='line'>The last successful step is 2. It produced an image a3acfa4ab179. Now you start a container
+</span><span class='line'>docker run -it a3acfa4ab179 bash</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>结合原有数据进行迁移</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 备份
+</span><span class='line'>psql -U postgres -cC --if-exists -d redmine_production &gt;redmine.dump 
+</span><span class='line'>
+</span><span class='line'># 安装compose
+</span><span class='line'>root@raspberrypi:~/redmine/bin# python -m pip install --upgrade pip
+</span><span class='line'>root@raspberrypi:~/redmine/bin# pip install docker-compose
+</span><span class='line'>
+</span><span class='line'># 启动
+</span><span class='line'>root@raspberrypi:~/redmine/bin# docker-compose up -d 
+</span><span class='line'>
+</span><span class='line'># 数据库还原
+</span><span class='line'>docker cp redmine.dump e472d9ec3124:/var/lib/postgresql/
+</span><span class='line'>psql -U postgres &lt;redmine.dump
+</span><span class='line'>
+</span><span class='line'># redmine修复
+</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libmysqlclient-dev                                    
+</span><span class='line'>
+</span><span class='line'>https://stackoverflow.com/questions/13086073/rails-install-pg-cant-find-the-libpq-fe-h-header
+</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libpq-dev
+</span><span class='line'>https://stackoverflow.com/questions/38200015/package-magickcore-was-not-found-in-the-pkg-config-search-path
+</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libmagickwand-dev
+</span><span class='line'>
+</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# bundle install                    
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>后面就直接安装docker-compose.yml中的端口映射配置访问即可。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[appium-Android自动化测试]]></title>
+    <link href="http://winseliu.com/blog/2020/04/12/appium-android-auto-test/"/>
+    <updated>2020-04-12T17:11:41+08:00</updated>
+    <id>http://winseliu.com/blog/2020/04/12/appium-android-auto-test</id>
+    <content type="html"><![CDATA[<h2>参考链接</h2>
+
+<ul>
+<li><a href="https://github.com/appium/appium-desktop">https://github.com/appium/appium-desktop</a></li>
+<li><a href="https://github.com/appium/java-client">https://github.com/appium/java-client</a></li>
+<li><a href="https://www.jianshu.com/p/2912482dba0b">移动端自动化测试-Appium Desktop</a></li>
+<li>√<a href="https://zhuanlan.zhihu.com/p/37798611">工具应用：使用Appium测试Android应用程序/小米计算器进行测试</a></li>
+<li><a href="https://blog.csdn.net/ouyanggengcheng/article/details/88353836">Appium-Desktop使用/Java测试代码</a></li>
+<li><a href="https://www.toolsqa.com/mobile-automation/appium/findelement-and-findelements-commands/">https://www.toolsqa.com/mobile-automation/appium/findelement-and-findelements-commands/</a></li>
+<li><a href="https://appiumpro.com/editions/44-working-with-web-components-shadow-dom">https://appiumpro.com/editions/44-working-with-web-components-shadow-dom</a></li>
+</ul>
+
+
+<h2>步骤</h2>
+
+<h4>手机端开发这模式需要进行如下设置：</h4>
+
+<ul>
+<li>(可选)不锁定屏幕</li>
+<li>USB调试</li>
+<li>USB安装</li>
+<li>USB调试（安全设置）</li>
+</ul>
+
+
+<h4>安装启动Appium Desktop</h4>
+
+<ol>
+<li>点击编辑配置</li>
+</ol>
+
+
+<p>设置ANDROID_HOME
+C:\Android\Sdk</p>
+
+<ol>
+<li><p>启动服务</p></li>
+<li><p>使用/应用</p></li>
+</ol>
+
+
+<p>按步骤操作，先用[检查器会话]的执行一次。这里会<strong>给手机安装两个应用</strong>，最开始开发者模式的设置就是为安装应用来修改的。</p>
+
+<p>3.1 启动检查器会话</p>
+
+<p>启动服务后，会进入到黑窗口日志界面。点击界面右上角第一个放大镜按钮：[启动检查器会话]，编辑[所需功能]</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>{
+</span><span class='line'>  "platformName": "Android",
+</span><span class='line'>  "platformVersion": "7.1",
+</span><span class='line'>  "appPackage": "com.miui.calculator",
+</span><span class='line'>  "appActivity": ".cal.CalculatorActivity"
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果不需要录制脚本，可以使用 C:\Android\Sdk\tools\bin\uiautomatorviewer.bat 查看也可以的。</p>
+
+<p>3.2 Java客户端</p>
+
+<ul>
+<li><a href="https://github.com/appium/java-client/blob/master/src/test/java/io/appium/java_client/android/BaseAndroidTest.java">BaseAndroidTest.java</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+<span class='line-number'>100</span>
+<span class='line-number'>101</span>
+<span class='line-number'>102</span>
+<span class='line-number'>103</span>
+<span class='line-number'>104</span>
+<span class='line-number'>105</span>
+<span class='line-number'>106</span>
+<span class='line-number'>107</span>
+<span class='line-number'>108</span>
+<span class='line-number'>109</span>
+<span class='line-number'>110</span>
+<span class='line-number'>111</span>
+<span class='line-number'>112</span>
+<span class='line-number'>113</span>
+<span class='line-number'>114</span>
+<span class='line-number'>115</span>
+<span class='line-number'>116</span>
+<span class='line-number'>117</span>
+<span class='line-number'>118</span>
+<span class='line-number'>119</span>
+<span class='line-number'>120</span>
+<span class='line-number'>121</span>
+<span class='line-number'>122</span>
+<span class='line-number'>123</span>
+<span class='line-number'>124</span>
+<span class='line-number'>125</span>
+<span class='line-number'>126</span>
+<span class='line-number'>127</span>
+<span class='line-number'>128</span>
+<span class='line-number'>129</span>
+<span class='line-number'>130</span>
+<span class='line-number'>131</span>
+<span class='line-number'>132</span>
+<span class='line-number'>133</span>
+<span class='line-number'>134</span>
+<span class='line-number'>135</span>
+<span class='line-number'>136</span>
+<span class='line-number'>137</span>
+<span class='line-number'>138</span>
+<span class='line-number'>139</span>
+<span class='line-number'>140</span>
+<span class='line-number'>141</span>
+<span class='line-number'>142</span>
+<span class='line-number'>143</span>
+<span class='line-number'>144</span>
+<span class='line-number'>145</span>
+<span class='line-number'>146</span>
+<span class='line-number'>147</span>
+<span class='line-number'>148</span>
+<span class='line-number'>149</span>
+<span class='line-number'>150</span>
+<span class='line-number'>151</span>
+<span class='line-number'>152</span>
+<span class='line-number'>153</span>
+<span class='line-number'>154</span>
+<span class='line-number'>155</span>
+<span class='line-number'>156</span>
+<span class='line-number'>157</span>
+<span class='line-number'>158</span>
+<span class='line-number'>159</span>
+<span class='line-number'>160</span>
+<span class='line-number'>161</span>
+<span class='line-number'>162</span>
+<span class='line-number'>163</span>
+<span class='line-number'>164</span>
+<span class='line-number'>165</span>
+<span class='line-number'>166</span>
+<span class='line-number'>167</span>
+<span class='line-number'>168</span>
+<span class='line-number'>169</span>
+<span class='line-number'>170</span>
+<span class='line-number'>171</span>
+<span class='line-number'>172</span>
+<span class='line-number'>173</span>
+<span class='line-number'>174</span>
+<span class='line-number'>175</span>
+<span class='line-number'>176</span>
+<span class='line-number'>177</span>
+<span class='line-number'>178</span>
+<span class='line-number'>179</span>
+<span class='line-number'>180</span>
+<span class='line-number'>181</span>
+<span class='line-number'>182</span>
+<span class='line-number'>183</span>
+<span class='line-number'>184</span>
+<span class='line-number'>185</span>
+<span class='line-number'>186</span>
+<span class='line-number'>187</span>
+<span class='line-number'>188</span>
+<span class='line-number'>189</span>
+<span class='line-number'>190</span>
+<span class='line-number'>191</span>
+<span class='line-number'>192</span>
+<span class='line-number'>193</span>
+<span class='line-number'>194</span>
+<span class='line-number'>195</span>
+<span class='line-number'>196</span>
+<span class='line-number'>197</span>
+<span class='line-number'>198</span>
+<span class='line-number'>199</span>
+<span class='line-number'>200</span>
+<span class='line-number'>201</span>
+<span class='line-number'>202</span>
+<span class='line-number'>203</span>
+<span class='line-number'>204</span>
+<span class='line-number'>205</span>
+<span class='line-number'>206</span>
+<span class='line-number'>207</span>
+<span class='line-number'>208</span>
+<span class='line-number'>209</span>
+<span class='line-number'>210</span>
+<span class='line-number'>211</span>
+<span class='line-number'>212</span>
+<span class='line-number'>213</span>
+<span class='line-number'>214</span>
+<span class='line-number'>215</span>
+<span class='line-number'>216</span>
+<span class='line-number'>217</span>
+<span class='line-number'>218</span>
+<span class='line-number'>219</span>
+<span class='line-number'>220</span>
+<span class='line-number'>221</span>
+<span class='line-number'>222</span>
+<span class='line-number'>223</span>
+<span class='line-number'>224</span>
+<span class='line-number'>225</span>
+<span class='line-number'>226</span>
+<span class='line-number'>227</span>
+<span class='line-number'>228</span>
+<span class='line-number'>229</span>
+<span class='line-number'>230</span>
+<span class='line-number'>231</span>
+<span class='line-number'>232</span>
+<span class='line-number'>233</span>
+<span class='line-number'>234</span>
+<span class='line-number'>235</span>
+<span class='line-number'>236</span>
+<span class='line-number'>237</span>
+<span class='line-number'>238</span>
+<span class='line-number'>239</span>
+<span class='line-number'>240</span>
+<span class='line-number'>241</span>
+<span class='line-number'>242</span>
+<span class='line-number'>243</span>
+<span class='line-number'>244</span>
+<span class='line-number'>245</span>
+<span class='line-number'>246</span>
+<span class='line-number'>247</span>
+<span class='line-number'>248</span>
+<span class='line-number'>249</span>
+<span class='line-number'>250</span>
+<span class='line-number'>251</span>
+<span class='line-number'>252</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public static final String APP_ID = "com.taobao.idlefish";
+</span><span class='line'>
+</span><span class='line'>private static AppiumDriverLocalService service;
+</span><span class='line'>
+</span><span class='line'>private static AndroidDriver&lt;AndroidElement&gt; driver;
+</span><span class='line'>private static WebDriverWait wait;
+</span><span class='line'>
+</span><span class='line'>private void initialization() throws MalformedURLException {
+</span><span class='line'>  initialization(APP_ID, "com.taobao.idlefish.router.JumpActivity", true, false);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private void initialization1() throws MalformedURLException {
+</span><span class='line'>  initialization("com.miui.calculator", ".cal.CalculatorActivity", null, null);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>/**
+</span><span class='line'> * @param noReset    null will remove from the caps.
+</span><span class='line'> * @param autoLaunch null will remove from the caps.
+</span><span class='line'> */
+</span><span class='line'>protected void initialization(String appPackage, String appActivity, Boolean noReset, Boolean autoLaunch) throws MalformedURLException {
+</span><span class='line'>  URL url = new URL("http://localhost:4723/wd/hub");
+</span><span class='line'>
+</span><span class='line'>  DesiredCapabilities capabilities = new DesiredCapabilities();
+</span><span class='line'>  capabilities.setCapability("automationName", "UiAutomator2" /* "Appium" */);
+</span><span class='line'>  capabilities.setCapability(MobileCapabilityType.PLATFORM_NAME, "Android");
+</span><span class='line'>  capabilities.setCapability(MobileCapabilityType.PLATFORM_VERSION, "7.1");
+</span><span class='line'>
+</span><span class='line'>  capabilities.setCapability("appPackage", appPackage);
+</span><span class='line'>  capabilities.setCapability("appActivity", appActivity);
+</span><span class='line'>  // http://appium.io/docs/en/writing-running-appium/caps/
+</span><span class='line'>  capabilities.setCapability("noReset", noReset);
+</span><span class='line'>  capabilities.setCapability("autoLaunch", autoLaunch);
+</span><span class='line'>  
+</span><span class='line'>  capabilities.setCapability(MobileCapabilityType.NEW_COMMAND_TIMEOUT, 100);
+</span><span class='line'>
+</span><span class='line'>  driver = new AndroidDriver&lt;&gt;(url, capabilities);
+</span><span class='line'>  wait = new WebDriverWait(driver, 20);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>protected void finishing() {
+</span><span class='line'>  try {
+</span><span class='line'>      if (driver != null) {
+</span><span class='line'>          driver.quit();
+</span><span class='line'>      }
+</span><span class='line'>      if (service != null) {
+</span><span class='line'>          service.stop();
+</span><span class='line'>      }
+</span><span class='line'>  } catch (Exception e) {
+</span><span class='line'>  } finally {
+</span><span class='line'>      driver = null;
+</span><span class='line'>      service = null;
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>protected void swiping() {
+</span><span class='line'>  Dimension windowSize = getSize();
+</span><span class='line'>
+</span><span class='line'>  int startX = windowSize.width / 2;
+</span><span class='line'>  int startY = (int) (windowSize.height * 0.8);
+</span><span class='line'>  int endX = windowSize.width / 2;
+</span><span class='line'>  int endY = (int) (windowSize.height * 0.1);
+</span><span class='line'>
+</span><span class='line'>  swipe(startX, startY, endX, endY, 1200);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>protected void swipe(int x1, int y1, int x2, int y2, int waitMillis) {
+</span><span class='line'>  new TouchAction&lt;&gt;(driver) //
+</span><span class='line'>          .press(ElementOption.point(x1, y1))
+</span><span class='line'>          .waitAction(WaitOptions.waitOptions(Duration.ofMillis(waitMillis)))
+</span><span class='line'>          .moveTo(ElementOption.point(x2, y2))
+</span><span class='line'>          .release()
+</span><span class='line'>          .perform();
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>protected void touch(int x, int y) {
+</span><span class='line'>  new TouchAction&lt;&gt;(driver).tap(TapOptions.tapOptions().withPosition(PointOption.point(x, y))).perform();
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>protected void touch(Point p) {
+</span><span class='line'>  touch(p.x, p.y);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>protected Dimension getSize() {
+</span><span class='line'>  return driver.manage().window().getSize();
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>protected Point getCenter() {
+</span><span class='line'>  Dimension size = getSize();
+</span><span class='line'>  return new Point(size.width / 2, size.height / 2);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private void touchAndWait() throws InterruptedException {
+</span><span class='line'>  touchAndWait(null);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private void touchAndWait(By by) throws InterruptedException {
+</span><span class='line'>  // 等一下界面效果
+</span><span class='line'>//        Thread.sleep(500);
+</span><span class='line'>  TimeUnit.MILLISECONDS.sleep(500);
+</span><span class='line'>
+</span><span class='line'>  try {
+</span><span class='line'>      swiping();
+</span><span class='line'>  } catch (Exception e) {
+</span><span class='line'>      touch(getCenter());
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  if (by != null) {
+</span><span class='line'>      wait.until(ExpectedConditions.presenceOfElementLocated(by));
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private void doCalculator() throws InterruptedException {
+</span><span class='line'>  By btn_9_s = By.id("com.miui.calculator:id/btn_9_s");
+</span><span class='line'>  By btn_plus_s = By.id("com.miui.calculator:id/btn_plus_s");
+</span><span class='line'>  By btn_3_s = By.id("com.miui.calculator:id/btn_3_s");
+</span><span class='line'>  By btn_equal_s = By.id("com.miui.calculator:id/btn_equal_s");
+</span><span class='line'>  By textViews = By.className("android.widget.TextView");
+</span><span class='line'>
+</span><span class='line'>  touchAndWait(btn_9_s);
+</span><span class='line'>  driver.findElement(btn_9_s).click();
+</span><span class='line'>  // driver.findElementByAccessibilityId("加");
+</span><span class='line'>  driver.findElement(btn_plus_s).click();
+</span><span class='line'>  driver.findElement(btn_3_s).click();
+</span><span class='line'>  driver.findElement(btn_equal_s).click();
+</span><span class='line'>
+</span><span class='line'>  touchAndWait(textViews);
+</span><span class='line'>  List&lt;? extends WebElement&gt; allText = driver.findElements(textViews);
+</span><span class='line'>  boolean isOk = false;
+</span><span class='line'>  for (int i = 0; i &lt; allText.size(); i++) {
+</span><span class='line'>      String txt = allText.get(i).getText();
+</span><span class='line'>      System.out.println(txt);
+</span><span class='line'>
+</span><span class='line'>      // 由于第一次无法根据元素的ClassName确定顺序，所以使用遍历的方式进行断言
+</span><span class='line'>      if (txt.equals("= 12")) {
+</span><span class='line'>          isOk = true;
+</span><span class='line'>          break;
+</span><span class='line'>      }
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  if (isOk) {
+</span><span class='line'>      System.out.println("测试成功.");
+</span><span class='line'>  } else {
+</span><span class='line'>      System.out.println("测试失败.");
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>public void testCalculator() throws Exception {
+</span><span class='line'>  try {
+</span><span class='line'>      initialization1();
+</span><span class='line'>
+</span><span class='line'>      doCalculator();
+</span><span class='line'>  } finally {
+</span><span class='line'>      finishing();
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>public void testHello() throws InterruptedException, MalformedURLException {
+</span><span class='line'>  try {
+</span><span class='line'>      this.initialization1();
+</span><span class='line'>
+</span><span class='line'>      doCalculator();
+</span><span class='line'>
+</span><span class='line'>      driver.activateApp(APP_ID);
+</span><span class='line'>//            driver.startActivity(new Activity(APP_ID, "com.taobao.idlefish.router.JumpActivity"));
+</span><span class='line'>
+</span><span class='line'>      test0();
+</span><span class='line'>      test1();
+</span><span class='line'>  } finally {
+</span><span class='line'>      this.finishing();
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private String toString(Rectangle rect) {
+</span><span class='line'>  return String.format("(%s,%s,%s,%s)", rect.x, rect.y, rect.width, rect.height);
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private void printAllView() throws Exception {
+</span><span class='line'>  try {
+</span><span class='line'>      List&lt;AndroidElement&gt; allText = driver.findElementsByXPath("//*");
+</span><span class='line'>      for (int i = 0; i &lt; allText.size(); i++) {
+</span><span class='line'>          AndroidElement ele = allText.get(i);
+</span><span class='line'>          
+</span><span class='line'>          System.out.println("===========================");
+</span><span class='line'>          System.out.println(ele.getTagName() + ","
+</span><span class='line'>                  + ele.isSelected() + "," 
+</span><span class='line'>                  + ele.isEnabled() + "," 
+</span><span class='line'>                  + ele.isDisplayed() + "," 
+</span><span class='line'>                  + ele.getText() + "," 
+</span><span class='line'>                  + toString(ele.getRect()));
+</span><span class='line'>          
+</span><span class='line'>          System.out.println(ele.getAttribute("class"));
+</span><span class='line'>          System.out.println(ele.getAttribute("content-desc"));
+</span><span class='line'>          System.out.println(ele.getAttribute("text"));
+</span><span class='line'>      }
+</span><span class='line'>      
+</span><span class='line'>  } catch (Exception e) {
+</span><span class='line'>      String errMsg = e.getMessage();
+</span><span class='line'>      System.err.println(errMsg);
+</span><span class='line'>
+</span><span class='line'>      if (errMsg.contains("A session is either terminated or not started")) {
+</span><span class='line'>          try {
+</span><span class='line'>              this.finishing();
+</span><span class='line'>          } catch (Exception ex) {
+</span><span class='line'>          }
+</span><span class='line'>
+</span><span class='line'>          this.initialization();
+</span><span class='line'>      }
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private void doProcessManual() throws Exception {
+</span><span class='line'>  while (true) {
+</span><span class='line'>      printAllView();
+</span><span class='line'>
+</span><span class='line'>      swiping();
+</span><span class='line'>
+</span><span class='line'>      Thread.sleep(1000);
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>public void testXianyu() throws Exception {
+</span><span class='line'>  try {
+</span><span class='line'>      this.initialization();
+</span><span class='line'>
+</span><span class='line'>      doProcessManual();
+</span><span class='line'>  } finally {
+</span><span class='line'>      this.finishing();
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private void test0() {
+</span><span class='line'>  System.out.println("appId: " + driver.getCurrentPackage());
+</span><span class='line'>  System.out.println("activity: " + driver.currentActivity());
+</span><span class='line'>  
+</span><span class='line'>  System.out.println(APP_ID + " installed?: " + driver.isAppInstalled(APP_ID));
+</span><span class='line'>
+</span><span class='line'>//        driver.runAppInBackground(Duration.ofSeconds(-1));
+</span><span class='line'>//        driver.activateApp(appId);
+</span><span class='line'>//        driver.closeApp();
+</span><span class='line'>//        driver.resetApp();
+</span><span class='line'>//        driver.rotate(new DeviceRotation(0, 0, 0));
+</span><span class='line'>//        driver.launchApp();
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>private void test1() {
+</span><span class='line'>  System.out.println("AppStringMap size: " + driver.getAppStringMap().size());
+</span><span class='line'>  System.out.println("en AppStringMap size: " + driver.getAppStringMap("en").size());
+</span><span class='line'>  
+</span><span class='line'>  System.out.println("build: " + driver.getStatus().get("build"));
+</span><span class='line'>  
+</span><span class='line'>  System.out.println("DeviceTime: " + driver.getDeviceTime());
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Android Linux via Termux]]></title>
@@ -2753,7 +3656,7 @@ root@K2:/overlay# rm -rf usr/lib/opkg
 
 <p>参考： <a href="https://wiki.openwrt.org/doc/howto/dropbear.public-key.auth">Dropbear public-key authentication HowTo</a></p>
 
-<blockquote><p>ssh <a href="&#109;&#x61;&#105;&#108;&#116;&#111;&#x3a;&#114;&#111;&#x6f;&#116;&#64;&#x31;&#x39;&#50;&#46;&#x31;&#54;&#56;&#46;&#x31;&#x2e;&#49;">&#x72;&#x6f;&#x6f;&#116;&#64;&#49;&#57;&#50;&#46;&#x31;&#54;&#56;&#x2e;&#x31;&#x2e;&#x31;</a> &ldquo;tee -a /etc/dropbear/authorized_keys&rdquo; &lt; ~/.ssh/id_rsa.pub</p></blockquote>
+<blockquote><p>ssh <a href="&#x6d;&#x61;&#x69;&#108;&#116;&#111;&#x3a;&#x72;&#x6f;&#111;&#x74;&#64;&#49;&#57;&#50;&#x2e;&#49;&#54;&#56;&#x2e;&#x31;&#x2e;&#49;">&#114;&#x6f;&#x6f;&#x74;&#x40;&#49;&#57;&#50;&#x2e;&#x31;&#54;&#56;&#x2e;&#49;&#x2e;&#49;</a> &ldquo;tee -a /etc/dropbear/authorized_keys&rdquo; &lt; ~/.ssh/id_rsa.pub</p></blockquote>
 
 <p>把 authorized_keys 文件移到 /etc/dropbear 下面就可以了！</p>
 
@@ -6182,506 +7085,6 @@ $ gradle --daemon
 <li><a href="http://openalea.gforge.inria.fr/doc/openalea/doc/_build/html/source/sphinx/rest_syntax.html#tables">table</a></li>
 <li><a href="http://www.tablesgenerator.com/text_tables#">tablesgenerator</a> <a href="https://stackoverflow.com/questions/26609816/some-online-tool-or-automation-plugin-for-sublimetext-for-generating-sphinx-rst">&lt;-</a></li>
 </ul>
-
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[使用TeamviewerVPN访问公司内网]]></title>
-    <link href="http://winseliu.com/blog/2017/11/04/teamviewer-vpn-on-windows/"/>
-    <updated>2017-11-04T22:26:50+08:00</updated>
-    <id>http://winseliu.com/blog/2017/11/04/teamviewer-vpn-on-windows</id>
-    <content type="html"><![CDATA[<p>一直以来都只是用Teamviewer的图形界面，如果仅仅针对单台机器操作还是蛮OK的。但是如果想要访问远程的整个集群，那就为难了。</p>
-
-<p>以前通过 <strong> 公司的跳板机 </strong>，然后连接 <strong> 内网搭建的VPN </strong> 来实现 <strong> 透明 </strong> 的访问公司的环境。也折腾过自己买一台aliyun的机器搞一个外网IP，然后通过SSH的反向代理来间接的跳转访问公司内网，但成本都还是比较高的。</p>
-
-<p>既然Teamviewer提供了一种远程访问的方式，那么能不能通过Teamviewer来实现代理，继而类似于VPN的方式在家访问公司内网呢？</p>
-
-<p>备注：一般最好双保险啊，Teamviewer和Anydesk都放一个！！！</p>
-
-<h2>安装</h2>
-
-<p>Teamviewer是提供了VPN的访问方式，需要在安装的时刻 选择【显示高级设置】，在下一步中选择【使用Teamviewer VPN】。连接的 <strong> 两台主机都需要安装Teamviewer VPN </strong> 的功能！！！</p>
-
-<p><img src="http://winseliu.com/images/teamviewer-vpn-install.png" alt="" /></p>
-
-<h2>使用VPN</h2>
-
-<p><img src="http://winseliu.com/images/teamviewer-vpn-connect.png" alt="" /></p>
-
-<p>更详细一点的：</p>
-
-<p><img src="http://winseliu.com/images/teamviewvpn-123.png" alt="" /></p>
-
-<h2>访问内网</h2>
-
-<p>如果是Linux的话，可以在iptables上面配置SNAT，但是Linux Teamviewer暂时不支持VPN功能。
-并且公司运行Teamviewer的机器是WIN7，不能通过运行nat命令（server版本才有）来设置转发。最后功夫不负有心人，找到了在win7下可以设置NAT的方法：</p>
-
-<ul>
-<li><a href="https://social.technet.microsoft.com/Forums/windows/en-US/30c1affa-cc6b-4eeb-9377-7600cc3f333a/nat-in-windows7?forum=w7itpronetworking">NAT in windows7</a></li>
-<li><a href="https://www.onlinekosten.de/forum/showthread.php?p=2278439">AW: mit Teamviewer VPN ins interne Netzwerk?</a></li>
-</ul>
-
-
-<h4>转发配置</h4>
-
-<ol>
-<li><del>连接的两台机器都启动 <strong> Routing an Remote Access </strong> 系统服务</del>。（修改注册表IPEnableRouter的，不弄也行）</li>
-<li>在公司Teamviwer机器上，下载并安装 <a href="http://www.nat32.com/download2/nat32v2.zip">NAT</a> ，<a href="https://www.ntkernel.com/downloads/winpkflt_rtl.zip">配置工具</a></li>
-<li>在公司Teamviwer机器上，打开配置工具 <strong> WinpkFilter - Internet Gateway </strong>，配置 <em>本地连接</em> 为Provider， <em>Teamviewer VPN</em> 为Client，然后启动 Start NAT。</li>
-</ol>
-
-
-<p><img src="http://winseliu.com/images/teamviewer-vpn-nat-config.png" alt="" /></p>
-
-<ol>
-<li>在本地机器上，添加route，把访问 公司内网IP 的数据转到公司Teamviewer VPN，这样我们就可以透明的访问公司的所有机器了。</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>#网关填公司Teamviewer端的IP地址！！！
-</span><span class='line'>C:\Windows\system32&gt;route add 192.168.193.0 mask 255.255.255.0 7.138.125.65 metric 1
-</span><span class='line'>
-</span><span class='line'>C:\Windows\system32&gt;ping 192.168.193.110
-</span><span class='line'>
-</span><span class='line'>正在 Ping 192.168.193.110 具有 32 字节的数据:
-</span><span class='line'>来自 192.168.193.110 的回复: 字节=32 时间=22ms TTL=63
-</span><span class='line'>来自 192.168.193.110 的回复: 字节=32 时间=21ms TTL=63
-</span><span class='line'>来自 192.168.193.110 的回复: 字节=32 时间=21ms TTL=63
-</span><span class='line'>
-</span><span class='line'>192.168.193.110 的 Ping 统计信息:
-</span><span class='line'>    数据包: 已发送 = 3，已接收 = 3，丢失 = 0 (0% 丢失)，
-</span><span class='line'>往返行程的估计时间(以毫秒为单位):
-</span><span class='line'>    最短 = 21ms，最长 = 22ms，平均 = 21ms</span></code></pre></td></tr></table></div></figure>
-
-
-<p>完美，所有的事情Teamviewer都帮想到，并且实现了。</p>
-
-<p>把上面的全部操作写到一个脚本，以后直接使用管理员权限运行即可：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@DESKTOP-ADH7K1Q:~/bigendian$ cat VPN-Route.bat
-</span><span class='line'>@setlocal enableextensions enabledelayedexpansion
-</span><span class='line'>@echo on
-</span><span class='line'>
-</span><span class='line'>rem https://community.teamviewer.com/t5/Knowledge-Base/Are-there-parameters-to-start-TeamViewer/ta-p/4135
-</span><span class='line'>rem teamviewer.exe -i &lt;ID&gt; -P &lt;Password&gt; [-m fileTransfer/vpn]
-</span><span class='line'>start "teamviewer" "C:\Program Files (x86)\TeamViewer\TeamViewer.exe"
-</span><span class='line'>
-</span><span class='line'>set teamvpnipaddr=7.138.125.65
-</span><span class='line'>
-</span><span class='line'>:loop
-</span><span class='line'>ping -n 1 !teamvpnipaddr! | find "TTL"
-</span><span class='line'>if not errorlevel 1 goto :run
-</span><span class='line'>if errorlevel 1 goto :endloop
-</span><span class='line'>:endloop
-</span><span class='line'>ping -n 2 127.0.0.1 &gt;nul: 2&gt;nul:
-</span><span class='line'>cls
-</span><span class='line'>goto :loop
-</span><span class='line'>
-</span><span class='line'>:run
-</span><span class='line'>route delete 192.168.193.0
-</span><span class='line'>route add 192.168.193.0 mask 255.255.255.0 !teamvpnipaddr! metric 1
-</span><span class='line'>
-</span><span class='line'>endlocal
-</span><span class='line'>
-</span><span class='line'>pause
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考的原文：</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>Hello everybody, I investigated a lot for this issue.
-</span><span class='line'>Establish a VPN session with TeamViewer to my home pc (remote side) and try to get access to this local network from my working place (local side).
-</span><span class='line'>I found an solution i never read anywhere before. Since Windows 7 has removed NAT option using netsh it is difficult to solve it with windows on board tools only.
-</span><span class='line'>- Install TeamViewer incl. VPN driver on both sides, activate unattended access on the remote side (my home pc). Use the button Show advanced options, and go to Advanced network options … Install VPN driver
-</span><span class='line'>- Install WinPkFilter Device Driver on remote side (my home pc) and restart (http://www.nat32.com/v2/install.htm Download installer: http://www.ntkernel.com/downloads/winpkflt_rtl.zip . NAT32 you don't need. This WinPkFilter package contains a simple GUI to configure the NAT between the VPN interface (client) and the remote side LAN interface (provider). see following hints ...
-</span><span class='line'>- Windows: Start RemoteAccess - service 'Routing an Remote Access'  and set to automatic (local/remote side).
-</span><span class='line'>- Optional: On the remote side (my home pc), the registry has to be modified. Start the registry editor for example by Regedt32, and browse to HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters Set the parameter IPEnableRouter to “1”. Using console or batch as admin: reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" /v "IPEnableRouter" /t REG_DWORD /d "1". On my system it worked without this option, but according internet forums it seems to be recommended.
-</span><span class='line'>- Now create a remote desktop session to your home pc and start also the VPN connection within this TeamViewer session (Menu / Extras / VPN). I created a free TeamViewer account and added all pc's to my computers to make the access to my machines easier.
-</span><span class='line'>- On remode side (my home pc) where WinPkFilter is installed start the Internet Gateway GUI of WinPkFilter: Start / Programms / WinpkFilter / Internet Gateway. Select (double click) the ethernet adapter of your local privat lan and set NAT Status to 'Provider'. Select the TeamViewer VPN adapter and set NAT Status to 'client'. Press 'Start NAT'
-</span><span class='line'> - On local side (my working place) Add a route to the local side (my working place) to give access to several devices that have the same subnet, add the route like this:
-</span><span class='line'>
-</span><span class='line'>route add &lt;base IP of remote devices&gt; mask 255.255.255.0 &lt;IP of Teamviewer VPN on remote PC&gt; 
-</span><span class='line'>metric 1
-</span><span class='line'>
-</span><span class='line'>Example (home lan ip range: 192.168.2.x / TeamViewer VPN IP in home pc (remote side) 7.37.88.245
-</span><span class='line'>route add 192.168.2.0 mask 255.255.255.0 7.37.88.245 metric 1 &lt;ENTER&gt;
-</span><span class='line'>route add 192.168.2.0 mask 255.255.255.0 7.37.88.245 metric 1 -p &lt;ENTER&gt; (if persistent)
-</span><span class='line'>Do delete the route route delete 192.168.2.0
-</span><span class='line'>Now you should have access to your private home network. Good luck and have fun.
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Windows Run Ubuntu]]></title>
-    <link href="http://winseliu.com/blog/2017/10/30/windows-run-ubuntu/"/>
-    <updated>2017-10-30T07:17:53+08:00</updated>
-    <id>http://winseliu.com/blog/2017/10/30/windows-run-ubuntu</id>
-    <content type="html"><![CDATA[<p>最新版的Windows已经可以安装ubuntu了，算是微软开源后的一个阶段性的成果了。</p>
-
-<p>功能和windows兼容性很强（不像cygwin），软链接、文件权限都是和系统一致的。并且基本所有ubuntu的功能都可以使用，安装jekyll、docker都很顺利。同时打开系统的程序也很方便。非常赞和值得程序员去尝试！！</p>
-
-<p>本文后面会逐渐增加使用过程中的一些操作，今天先更新系统安装、octopress安装、docker安装。</p>
-
-<h2>系统安装</h2>
-
-<p>直接去微软的官网下载最新版系统ISO，然后安装系统 <strong> 专业版 </strong>（教育版比较干净一些，但是网上没有破解方式啊）。</p>
-
-<h2>Ubuntu</h2>
-
-<ul>
-<li><a href="https://docs.microsoft.com/en-us/windows/wsl/about">Windows Subsystem for Linux Documentation</a></li>
-</ul>
-
-
-<blockquote><p>The Windows Subsystem for Linux lets developers run Linux environments &ndash; including most command-line tools, utilities, and applications &ndash; directly on Windows, unmodified, without the overhead of a virtual machine.</p></blockquote>
-
-<h4>安装Ubuntu</h4>
-
-<p>最新版的Ubuntu已经进入到稳定版。直接打开商店，搜索Ubuntu，然后安装即可。大概200M的样子，很快就安装了。然后Launch会初始化创建用户。</p>
-
-<p>相关的一些有用的文档：</p>
-
-<ul>
-<li><a href="https://msdn.microsoft.com/zh-cn/commandline/wsl/user-support">https://msdn.microsoft.com/zh-cn/commandline/wsl/user-support</a></li>
-<li>权限相关 <a href="https://github.com/Microsoft/WSL/issues/81">https://github.com/Microsoft/WSL/issues/81</a></li>
-</ul>
-
-
-<h4>安装mintty</h4>
-
-<ul>
-<li><a href="https://superuser.com/questions/1110045/windows-10-bash-and-mintty">https://superuser.com/questions/1110045/windows-10-bash-and-mintty</a></li>
-<li><a href="https://zhuanlan.zhihu.com/p/22033219">https://zhuanlan.zhihu.com/p/22033219</a></li>
-</ul>
-
-
-<p>CMD方式操作Ubuntu太难受了，mintty操作就像SecurtCRT一样，简单方便。安装 <a href="https://github.com/mintty/wsltty">wsltty-1.8.0-install</a> ，使用mintty来运行ubuntu。</p>
-
-<p>默认mintty的配置放在 <code>%APPDATA%\wsltty</code>。在子目录theme下可以 <a href="http://ciembor.github.io/4bit/">http://ciembor.github.io/4bit/</a> 下载一个主题放到该目录下，然后在mintty配置页面选择该主题。</p>
-
-<h4>系统文件</h4>
-
-<ul>
-<li><a href="https://github.com/Microsoft/WSL/issues/402">https://github.com/Microsoft/WSL/issues/402</a></li>
-</ul>
-
-
-<p>root挂载点：<code>C:\Users\&lt;user&gt;\AppData\Local\lxss</code> or <code>C:\Users\&lt;username&gt;\AppData\Local\Packages\CanonicalGroupLimited.UbuntuonWindows_79rhkp1fndgsc\LocalState</code></p>
-
-<h2>安装Jekyll</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># https://superuser.com/questions/116625/recursively-change-owner-windows-7
-</span><span class='line'>#takeown /f "C:\path\to\folder" /r
-</span><span class='line'>#icacls "C:\path\to\folder" /reset /T
-</span><span class='line'>用powershell管理员权限 "提"权
-</span><span class='line'>PS E:\winsegit\octopress&gt; takeown /F . /R
-</span><span class='line'>修改就旧系统的文件属性：
-</span><span class='line'>PS E:\winsegit\octopress&gt; cacls *.* /T /G Everyone:F
-</span><span class='line'>
-</span><span class='line'>sudo apt-get update
-</span><span class='line'>sudo apt-get install ruby-bundler
-</span><span class='line'>sudo apt-get install ruby-dev
-</span><span class='line'>sudo apt-get install make
-</span><span class='line'>sudo apt-get install gcc
-</span><span class='line'>bundle install
-</span><span class='line'>
-</span><span class='line'>sudo gem update
-</span><span class='line'>sudo gem uninstall rake
-</span><span class='line'>sudo gem install rake -v 10.5.0
-</span><span class='line'>sudo apt-get install nodejs
-</span><span class='line'>   
-</span><span class='line'>rake preview
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/winsegit/octopress$ rake preview
-</span><span class='line'>/usr/lib/ruby/vendor_ruby/bundler/shared_helpers.rb:78: warning: Insecure world writable dir /mnt/c/Windows/System32 in PATH, mode 040777
-</span><span class='line'>Starting to watch source with Jekyll and Compass. Starting Rack on port 4000
-</span><span class='line'>/usr/lib/ruby/vendor_ruby/bundler/shared_helpers.rb:78: warning: Insecure world writable dir /mnt/c/Windows/System32 in PATH, mode 040777
-</span><span class='line'>/usr/lib/ruby/vendor_ruby/bundler/shared_helpers.rb:78: warning: Insecure world writable dir /mnt/c/Windows/System32 in PATH, mode 040777
-</span><span class='line'>/var/lib/gems/2.3.0/gems/liquid-2.6.1/lib/liquid/htmltags.rb:43: warning: key "index0" is duplicated and overwritten on line 46
-</span><span class='line'>[2017-10-29 22:48:09] INFO  WEBrick 1.3.1
-</span><span class='line'>[2017-10-29 22:48:09] INFO  ruby 2.3.1 (2016-04-26) [x86_64-linux-gnu]
-</span><span class='line'>[2017-10-29 22:48:09] INFO  WEBrick::HTTPServer#start: pid=39 port=4000
-</span><span class='line'>Configuration file: /mnt/e/winsegit/octopress/_config.yml
-</span><span class='line'>            Source: source
-</span><span class='line'>       Destination: public
-</span><span class='line'>      Generating...
-</span><span class='line'>                    done.
-</span><span class='line'>                  </span></code></pre></td></tr></table></div></figure>
-
-
-<p>上面warning提示也有对应的Issue，但也没所谓暂时不理： <a href="https://github.com/Microsoft/WSL/issues/1426">https://github.com/Microsoft/WSL/issues/1426</a></p>
-
-<h2>安装docker</h2>
-
-<ul>
-<li><a href="https://docs.docker.com/engine/installation/linux/docker-ce/ubuntu/#install-docker-ce-1">https://docs.docker.com/engine/installation/linux/docker-ce/ubuntu/#install-docker-ce-1</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@DESKTOP-ADH7K1Q:~$ uname -r
-</span><span class='line'>4.4.0-43-Microsoft
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ uname -a
-</span><span class='line'>Linux DESKTOP-ADH7K1Q 4.4.0-43-Microsoft #1-Microsoft Wed Dec 31 14:42:53 PST 2014 x86_64 x86_64 x86_64 GNU/Linux
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$  sudo apt-get install \
-</span><span class='line'>     apt-transport-https \
-</span><span class='line'>     ca-certificates \
-</span><span class='line'>     curl \
-</span><span class='line'>     software-properties-common
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ lsb_release -cs
-</span><span class='line'>xenial
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-</span><span class='line'>OK
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ sudo add-apt-repository \
-</span><span class='line'>   "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
-</span><span class='line'>   $(lsb_release -cs) \
-</span><span class='line'>   stable"
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ sudo apt-get update
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ sudo apt-get install docker-ce
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ sudo service docker start
-</span><span class='line'> * Starting Docker: docker                                                                                                                     [ OK ]
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ sudo docker images
-</span><span class='line'>REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ sudo docker ps
-</span><span class='line'>CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>运行windows系统应用</h2>
-
-<ul>
-<li><a href="https://www.howtogeek.com/285082/how-to-run-windows-programs-from-windows-10s-bash-shell/">https://www.howtogeek.com/285082/how-to-run-windows-programs-from-windows-10s-bash-shell/</a></li>
-<li><a href="https://github.com/Microsoft/WSL/issues/333">https://github.com/Microsoft/WSL/issues/333</a></li>
-<li><a href="https://msdn.microsoft.com/en-us/commandline/wsl/interop">https://msdn.microsoft.com/en-us/commandline/wsl/interop</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>winse@DESKTOP-ADH7K1Q:~$ ln -s /mnt/e/local/usr/share/npp/notepad++.exe text
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ cp -r ../winse-cygwin/new_post.sh ./
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ cat new_post.sh
-</span><span class='line'>cd ~/winsegit/octopress/
-</span><span class='line'>rake new_post["$1"] | tail -1 | awk -F: '{print $2}' | while read line
-</span><span class='line'>do
-</span><span class='line'>name=${line#source/_posts/}
-</span><span class='line'>newpath=source/_stash/$name
-</span><span class='line'>mv $line $newpath
-</span><span class='line'>
-</span><span class='line'>echo -e "\n\n--END" &gt;&gt;$newpath
-</span><span class='line'>
-</span><span class='line'>~/text $newpath &
-</span><span class='line'>done
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ ./new_post.sh "windows run ubuntu"
-</span><span class='line'>/usr/lib/ruby/vendor_ruby/bundler/shared_helpers.rb:78: warning: Insecure world writable dir /mnt/c in PATH, mode 040777
-</span><span class='line'>mkdir -p source/_posts
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>重新配置git</h2>
-
-<p>用powershell修改原来的权限后，然后用shell来进行设置。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>#powershell
-</span><span class='line'>takeown /F . /R
-</span><span class='line'>cacls *.* /T /G Everyone:F
-</span><span class='line'>
-</span><span class='line'>#ubuntu shell
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ cp -r ../winse-cygwin/.ssh ./
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~$ cd .ssh
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/.ssh$ chmod 600 id_rsa authorized_keys
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/.ssh$ chmod 644 id_rsa.pub config
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/winsegit/octopress/_deploy$ rm -rf *
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/winsegit/octopress/_deploy$ git clone git@github.com:winse/winse.github.com.git ./
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/winsegit/octopress$ git config --global user.email winseliu@qq.com
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/winsegit/octopress$ git config --global user.name winse
-</span><span class='line'>
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/winsegit/octopress$ rake preview
-</span><span class='line'>winse@DESKTOP-ADH7K1Q:~/winsegit/octopress$ sh public.git.sh
-</span></code></pre></td></tr></table></div></figure>
 
 
 <p>&ndash;END</p>

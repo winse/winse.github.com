@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Tools | Winse Blog]]></title>
   <link href="http://winseliu.com/blog/categories/tools/atom.xml" rel="self"/>
   <link href="http://winseliu.com/"/>
-  <updated>2019-07-28T14:39:04+08:00</updated>
+  <updated>2020-05-11T11:53:36+08:00</updated>
   <id>http://winseliu.com/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,197 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[在树莓派上部署redmine]]></title>
+    <link href="http://winseliu.com/blog/2020/05/11/redmine-on-arm-pi/"/>
+    <updated>2020-05-11T10:33:44+08:00</updated>
+    <id>http://winseliu.com/blog/2020/05/11/redmine-on-arm-pi</id>
+    <content type="html"><![CDATA[<p>变废为宝。</p>
+
+<p>服务器没怎么用，但是偶尔又想访问下文档或者redmine，狠狠心咬咬牙最后把x64上的迁移到了树莓派2： Raspbian GNU/Linux 9 (stretch) 。</p>
+
+<p>温故下原来redmine的安装过程： <a href="http://www.winseliu.com/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a></p>
+
+<p>过程中涉及到了docker的重新编译，这其中主要使用ubuntu apt源码在本地arm上进行再编译。其中涉及的镜像有：</p>
+
+<ul>
+<li><a href="https://github.com/sameersbn/docker-ubuntu/tree/14.04">https://github.com/sameersbn/docker-ubuntu/tree/14.04</a></li>
+<li><a href="https://github.com/sameersbn/docker-postgresql/tree/9.6-2">https://github.com/sameersbn/docker-postgresql/tree/9.6-2</a></li>
+<li><a href="https://github.com/sameersbn/docker-redmine/tree/3.4.6">https://github.com/sameersbn/docker-redmine/tree/3.4.6</a></li>
+</ul>
+
+
+<h2>备份</h2>
+
+<p>redmine直接整个目录打包 /srv/docker/redmine/redmine 。数据库的要备份出来，架构不同不兼容。</p>
+
+<p>这是编译后arm postgres直接用x64的/srv/docker/redmine/postgresql的报错信息：
+```
+root@raspberrypi:~# docker run &ndash;rm -ti &ndash;entrypoint=&ldquo;bash&rdquo; -v /srv/docker/redmine/postgresql:/var/lib/postgresql sameersbn/postgresql:9.6-2</p>
+
+<p>root@8f39c2904607:/var/lib/postgresql# sudo -HEu postgres /usr/lib/postgresql/9.6/bin/pg_ctl -D /var/lib/postgresql/9.6/main -w start
+waiting for server to start&hellip;.FATAL:  database files are incompatible with server
+DETAIL:  The database cluster was initialized with USE_FLOAT8_BYVAL but the server was compiled without USE_FLOAT8_BYVAL.
+HINT:  It looks like you need to recompile or initdb.
+LOG:  database system is shut down
+stopped waiting
+pg_ctl: could not start server
+Examine the log output.
+```</p>
+
+<h2>编译ubuntu镜像</h2>
+
+<p>直接使用最新的trusty发布版镜像。由于低版本的可能会没有 linux/arm/v7 : <a href="https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty">https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty</a></p>
+
+<pre><code>root@raspberrypi:~/docker-ubuntu# vi Dockerfile
+FROM ubuntu:trusty
+
+docker build -t sameersbn/ubuntu:14.04.20170123 . 
+docker tag sameersbn/ubuntu:14.04.20170123 sameersbn/ubuntu:14.04.20170711 
+</code></pre>
+
+<h2>编译postgres镜像</h2>
+
+<p>由于postgresql apt的库中没有armhf的deb，需要先手动编译好对应的deb。先运行一个容器，再里面编译好postgres。</p>
+
+<pre><code>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+ &amp;&amp; echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+ &amp;&amp; sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+ &amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+ &amp;&amp; apt-get update
+
+root@7d55994af11e:/# apt-get build-dep dh-exec postgresql-common  pgdg-keyring     
+root@7d55994af11e:/# apt-get source --compile dh-exec postgresql-common  pgdg-keyring   
+
+root@7d55994af11e:/# apt-get build-dep postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} dh-exec
+root@7d55994af11e:/# apt-get source --compile postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} 
+</code></pre>
+
+<p>再测试安装一下这些deb：</p>
+
+<pre><code>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+ &amp;&amp; echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+ &amp;&amp; sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+ &amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+ &amp;&amp; apt-get update
+
+apt-get install -y acl \
+    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6
+
+dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb
+
+dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb
+</code></pre>
+
+<p>修改Dockerfile，直接通过dpkg安装postgresql的deb：</p>
+
+<pre><code>root@raspberrypi:~/docker-postgresql# less Dockerfile 
+...
+COPY deb/ /tmp/psql/
+
+RUN wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+ &amp;&amp; echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+ &amp;&amp; sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+ &amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+ &amp;&amp; apt-get update \
+ &amp;&amp; DEBIAN_FRONTEND=noninteractive apt-get install -y acl \
+    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6 \
+ &amp;&amp; cd /tmp/psql \
+ &amp;&amp; dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb \
+ &amp;&amp; dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb \
+ &amp;&amp; rm -rf /tmp/psql \
+...
+
+root@raspberrypi:~/docker-postgresql# docker build -t sameersbn/postgresql:9.6-2 .
+</code></pre>
+
+<h2>编译redmine镜像</h2>
+
+<p>redmine主要是缺少ruby2.3的包，跟上面的步骤类似。先编译出arm的ruby2.3，再编译镜像。</p>
+
+<pre><code>sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+&amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list
+
+apt-get build-dep ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
+apt-get source --compile ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
+
+
+root@raspberrypi:~/docker-redmine# vi Dockerfile 
+...
+COPY deb/ /tmp/ruby/
+
+RUN apt-key adv --keyserver keyserver.ubuntu.com --recv E1DD270288B4E6030699E45FA1715D88E1DF1F24 \
+ &amp;&amp; echo "deb http://ppa.launchpad.net/git-core/ppa/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+ &amp;&amp; apt-key adv --keyserver keyserver.ubuntu.com --recv 80F70E11F0F0D5F10CB20E62F5DA5F09C3173AA6 \
+ &amp;&amp; echo "deb http://ppa.launchpad.net/brightbox/ruby-ng/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+ &amp;&amp; apt-key adv --keyserver keyserver.ubuntu.com --recv 8B3981E7A6852F782CC4951600A6F0A3C300EE8C \
+ &amp;&amp; echo "deb http://ppa.launchpad.net/nginx/stable/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+ &amp;&amp; wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+ &amp;&amp; echo 'deb-src http://apt.postgresql.org/pub/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+ &amp;&amp; sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+ &amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+ &amp;&amp; apt-get update \
+ &amp;&amp; DEBIAN_FRONTEND=noninteractive apt-get install -y supervisor logrotate nginx mysql-client postgresql-client \
+      imagemagick subversion git cvs bzr mercurial darcs rsync   locales openssh-client \
+      gcc g++ make patch pkg-config gettext-base   libc6-dev zlib1g-dev libxml2-dev \
+      libmysqlclient18 libpq5 libyaml-0-2 libcurl3 libssl1.0.0 uuid-dev xz-utils \
+      libxslt1.1 libffi6 zlib1g gsfonts \
+      libgmpxx4ldbl libgmp-dev libtk8.5 libxft2 libxrender1 libxss1 x11-common libtcl8.5 rubygems-integration \
+ &amp;&amp; dpkg -i /tmp/ruby/*.deb \
+ &amp;&amp; rm -rf /tmp/ruby \
+ &amp;&amp; update-locale LANG=C.UTF-8 LC_MESSAGES=POSIX \
+ &amp;&amp; gem install --no-document --version '&lt; 2.0' bundler \
+ &amp;&amp; rm -rf /var/lib/apt/lists/*
+...
+
+root@raspberrypi:~/docker-redmine# docker build -t sameersbn/redmine:3.4.6 .
+</code></pre>
+
+<p>如果docker构建失败，可以通过以下两种方式来进行调试：</p>
+
+<pre><code># 1
+docker commit $container-id image-id
+docker run -ti $image-id bash
+
+# 2 
+失败也会有前一步骤的镜像已经提交，再次基础上检查后面的步骤
+The last successful step is 2. It produced an image a3acfa4ab179. Now you start a container
+docker run -it a3acfa4ab179 bash
+</code></pre>
+
+<h2>结合原有数据进行迁移</h2>
+
+<pre><code># 备份
+psql -U postgres -cC --if-exists -d redmine_production &gt;redmine.dump 
+
+# 安装compose
+root@raspberrypi:~/redmine/bin# python -m pip install --upgrade pip
+root@raspberrypi:~/redmine/bin# pip install docker-compose
+
+# 启动
+root@raspberrypi:~/redmine/bin# docker-compose up -d 
+
+# 数据库还原
+docker cp redmine.dump e472d9ec3124:/var/lib/postgresql/
+psql -U postgres &lt;redmine.dump
+
+# redmine修复
+root@3f0774db222d:/home/redmine/redmine# apt-get install libmysqlclient-dev                                    
+
+https://stackoverflow.com/questions/13086073/rails-install-pg-cant-find-the-libpq-fe-h-header
+root@3f0774db222d:/home/redmine/redmine# apt-get install libpq-dev
+https://stackoverflow.com/questions/38200015/package-magickcore-was-not-found-in-the-pkg-config-search-path
+root@3f0774db222d:/home/redmine/redmine# apt-get install libmagickwand-dev
+
+root@3f0774db222d:/home/redmine/redmine# bundle install                    
+</code></pre>
+
+<p>后面就直接安装docker-compose.yml中的端口映射配置访问即可。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Android Linux via Termux]]></title>
@@ -920,7 +1111,7 @@ root@K2:~#
 
 <p>参考： <a href="https://wiki.openwrt.org/doc/howto/dropbear.public-key.auth">Dropbear public-key authentication HowTo</a></p>
 
-<blockquote><p>ssh <a href="&#109;&#x61;&#x69;&#x6c;&#116;&#x6f;&#x3a;&#x72;&#111;&#111;&#x74;&#64;&#x31;&#x39;&#x32;&#46;&#49;&#54;&#x38;&#x2e;&#49;&#46;&#49;">&#x72;&#x6f;&#111;&#x74;&#64;&#49;&#x39;&#x32;&#46;&#49;&#54;&#56;&#x2e;&#x31;&#x2e;&#49;</a> &ldquo;tee -a /etc/dropbear/authorized_keys&rdquo; &lt; ~/.ssh/id_rsa.pub</p></blockquote>
+<blockquote><p>ssh <a href="&#x6d;&#x61;&#105;&#108;&#116;&#x6f;&#x3a;&#114;&#111;&#x6f;&#116;&#64;&#49;&#57;&#50;&#x2e;&#49;&#x36;&#56;&#x2e;&#x31;&#46;&#49;">&#x72;&#x6f;&#x6f;&#x74;&#64;&#49;&#x39;&#50;&#46;&#49;&#54;&#56;&#x2e;&#49;&#46;&#x31;</a> &ldquo;tee -a /etc/dropbear/authorized_keys&rdquo; &lt; ~/.ssh/id_rsa.pub</p></blockquote>
 
 <p>把 authorized_keys 文件移到 /etc/dropbear 下面就可以了！</p>
 
@@ -1027,134 +1218,6 @@ sleep 5
 <li>配置共享文件夹。进入系统后，<code>Finder - 偏好设置 -  已连接的服务器</code> 。</li>
 </ul>
 
-
-<p>&ndash;END</p>
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[科学上网（续）]]></title>
-    <link href="http://winseliu.com/blog/2018/06/09/reasonable-way-to-access-the-internet/"/>
-    <updated>2018-06-09T14:03:11+08:00</updated>
-    <id>http://winseliu.com/blog/2018/06/09/reasonable-way-to-access-the-internet</id>
-    <content type="html"><![CDATA[<p>到新的环境就会遇到新的问题，需要不断的学习更新来适应新的环境。上网也是一样，工作地点和家里存在了一道鸿沟。过去断断续续的有一些解决的方式，但是总是有点间接。</p>
-
-<ul>
-<li><a href="http://www.winseliu.com/blog/2017/11/04/teamviewer-vpn-on-windows/">使用TeamviewerVPN访问公司内网</a></li>
-<li><a href="http://www.winseliu.com/blog/2017/02/04/privoxy-http-proxy-for-shadowsocks/">使用Privoxy把shadowsocks转换为Http代理</a></li>
-<li><a href="http://www.winseliu.com/blog/2016/03/11/install-and-config-openvpn/">安装配置OpenVPN</a></li>
-<li><a href="http://www.winseliu.com/blog/2015/11/22/gfw-ladder/">搭梯笔记</a></li>
-<li><a href="http://www.ruanyifeng.com/blog/2011/12/ssh_port_forwarding.html">SSH原理与运用（二）：远程操作与端口转发</a></li>
-<li><a href="http://www.winseliu.com/blog/2015/09/06/squid-http-proxy-server-install/">安装http代理服务器squid</a></li>
-<li><a href="http://www.winseliu.com/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a></li>
-</ul>
-
-
-<p>上周和同事讨论到在家访问公司服务器的方式时，可以通过花生壳的DDNS来实现域名动态绑定，相当于了把家里的宽带看做一个公网IP，花生壳实时的把域名解析更新为最新的IP。</p>
-
-<p>其实有了公网IP绑定域名后，就可以在公司访问自己的域名（绑定到了家里的IP），公司连自己域名做一个 <em>反向代理</em> ，然后就可以在家直接访问公司的环境了。</p>
-
-<p>但是查了下对于花生壳的口碑都不咋的，其实只要能自动的更新绑定域名和宽带的IP（电信宽带给的是动态IP，使用动态域名绑定），和花生壳的效果是一样。然后在 github 查到了 <code>aliyun-ddns</code> 可以同时定时检测来更新阿里云上的域名解析。</p>
-
-<p>首先通过域名映射到家里电信宽带的公网IP，ddns用来适配电信IP的动态分配； <br/>
-然后在家里局域网的一台机器开个SSH的服务；  <br/>
-再在家里路由上做端口转发到ssh主机。这样就可以在公司通过 <code>ssh -p port my-domain</code> 连回家了。</p>
-
-<h2>DDNS配置：映射域名到自己的公网IP</h2>
-
-<p><a href="https://github.com/yyqian/aliyun-ddns">aliyun-ddns</a> 老版本有些复杂，我在此基础上一个<a href="https://github.com/winse/aliyun-ddns">本地命令行的版本</a> ，直接运行一个脚本就可以更新域名解析了：</p>
-
-<pre><code>./client.sh myhome.winseliu.com
-</code></pre>
-
-<p><img src="/images/blogs/aliyun-dns.png" alt="" /></p>
-
-<p>注：默认电信宽带给你分配的内网IP的，你可以打10000号要他们给你分配改成公网IP。</p>
-
-<h2>本地环境配置</h2>
-
-<ul>
-<li>本地SSHD配置</li>
-</ul>
-
-
-<pre><code>winse@DESKTOP-ADH7K1Q:~$ sudo dpkg-reconfigure openssh-server
-winse@DESKTOP-ADH7K1Q:~$ sudo service ssh start
-</code></pre>
-
-<ul>
-<li>无秘密登录配置</li>
-</ul>
-
-
-<p>为了安全，通过公网的SSH访问最好通过秘钥登录，把SSH密码登录的方式给关掉。</p>
-
-<pre><code>winse@DESKTOP-ADH7K1Q:~/.ssh$ cat /business/server/id_rsa.pub &gt;&gt;authorized_keys
-</code></pre>
-
-<p></p>
-
-<ul>
-<li>本机防火墙开放22端口</li>
-</ul>
-
-
-<p>参考 <a href="https://blog.csdn.net/zzq900503/article/details/11936379">开放windows服务器端口&mdash;&ndash;以打开端口8080为例</a></p>
-
-<p><img src="/images/blogs/ddns-local-firewall.png" alt="" /></p>
-
-<ul>
-<li>路由器端口映射配置</li>
-</ul>
-
-
-<p><img src="/images/blogs/ddns-route-portforwarding.png" alt="" /></p>
-
-<h2>穿透：配置反向代理</h2>
-
-<p>在公司(机器)访问自己的域名，使用ssh的 <code>-R</code> 反向代理参数连接在家里电脑，在家里电脑新建一个5432的端口绑定(数据转发)到服务器的5432端口。这样当你在家电脑连本地的 <code>127.0.0.1:5432</code> 就相当于连接了服务器的 5432 端口。</p>
-
-<pre><code>/usr/bin/autossh -M 0 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no \
--N -R 5432:localhost:5432 -i ~/.ssh/id_rsa autossh@myhome.winseliu.com 
-</code></pre>
-
-<p></p>
-
-<p>当autossh连接太慢、并且SSH提示信息一直不出来，你完全有理由怀疑本地端口被占用了！！查看本地端口状态：</p>
-
-<pre><code>C:\Users\winse&gt;netstat /?
-
-C:\Users\winse&gt;netstat -ano |findstr 5432
-</code></pre>
-
-<p>如果端口被占用了，需要去任务管理器中关掉对应PID的程序。</p>
-
-<p></p>
-
-<h2>小结</h2>
-
-<p>速度比 teamviewer vpn 的方式快狠多狠多！！这个10000号值得打，这个ddns值得一试。</p>
-
-<h2>后记</h2>
-
-<h3>说说 VS Code调试</h3>
-
-<p>在写脚本bat/sh的过程中，需要用到nodejs的调试。</p>
-
-<p>使用Windows Ubuntu中安装的Node：</p>
-
-<ul>
-<li><a href="https://blogs.msdn.microsoft.com/commandline/2017/10/27/running-node-js-on-wsl-from-visual-studio-code/">Running Node.js on WSL from Visual Studio Code</a></li>
-<li><a href="https://stackoverflow.com/a/47495710/5697508">Using Visual Studio Code on Windows with Ubuntu-Bash and NodeJS</a></li>
-</ul>
-
-
-<pre><code>"useWSL": true
-</code></pre>
-
-<p><a href="https://code.visualstudio.com/docs/nodejs/nodejs-debugging">https://code.visualstudio.com/docs/nodejs/nodejs-debugging</a></p>
-
-<p>注意：这种外部启动的方式，会通过bash.sh运行node，所以就算停止调试后，Node进程还是一直存在的！！！需要通过任务管理器关闭。</p>
 
 <p>&ndash;END</p>
 ]]></content>

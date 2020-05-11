@@ -9,7 +9,8 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="javadoc 在一些节点满了或者加入了新的节点情况下，使用balancer工具可以平衡HDFS集群磁盘空间使用率。该功能作为一个单独的程序，能同时与集群的其他文件操作一起进行。 threshold（阀值）参数是个介于1%~100%的值，默认情况下是10%。指定了集群达到平衡的指标值。 &hellip;">
+  <meta name="description" content="类C语言，继C++之后的最辉煌耀眼的明星都属Java，其中最突出的又数内存管理。JVM对运行在其上的程序进行内存自动化分配和管理，减少开发人员的工作量之外便于统一的维护和管理。JDK提供了各种各样的工具来让开发实施人员了解运行的运行状态。 jps -l -v -m
+jstat -gcutil &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -82,6 +83,403 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-08-25T21:12:13+08:00" pubdate data-updated="true">Mon 2014-08-25 21:12</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>类C语言，继C++之后的最辉煌耀眼的明星都属Java，其中最突出的又数内存管理。JVM对运行在其上的程序进行内存自动化分配和管理，减少开发人员的工作量之外便于统一的维护和管理。JDK提供了各种各样的工具来让开发实施人员了解运行的运行状态。</p>
+
+<ul>
+<li>jps -l -v -m</li>
+<li>jstat -gcutil 2000 100</li>
+<li>jmap</li>
+<li>jinfo <a href="http://file.bmob.cn/M00/03/AD/wKhkA1PE2MGAB4-fAAGTqUeu-cE940.png">查看参数例子</a></li>
+<li>jstack</li>
+<li>jvisualvm/jconsole</li>
+<li>mat(MemoryAnalyzer)</li>
+<li>btrace</li>
+<li>jclasslib（查看局部变量表）</li>
+</ul>
+
+
+<p>前段时间，接手(前面已经有成型的东西)使用Hadoop存储转换的项目，但是生产环境的程序总是隔三差五的OOM，同时使用的hive0.12.0也偶尔出现内存异常。这对于运维来说就是灭顶之灾！搞不好什么时刻程序就挂了！！必须咬咬牙把这个问题处理解决，开始把老古董们请出来，翻来基本不看的后半部分&ndash;Java内存管理。</p>
+
+<ul>
+<li>《Java程序性能优化-让你的Java程序更快、更稳定》第5章JVM调优/第6章Java性能调优工具</li>
+<li>《深入理解Java虚拟机-JVM高级特性与最佳实践》第二部分自动内存管理机制</li>
+</ul>
+
+
+<p>这里用到的理论知识比较少。主要用Java自带的工具，加上内存堆分析工具（mat/jvisualvm）找出大对象，同时结合源代码定位问题。</p>
+
+<p>下面主要讲讲实践，查找问题的思路。在本地进行测试的话，我们可以打断点，可以通过jvisualvm来查看整个运行过程内存的变化趋势图。但是到了linux服务器，并且还是生产环境的话，想要有本地一样的图形化工具来监控是比较困难的！一般服务器的内存都设置的比较大，而windows设置的内存又有限！所以内存达到1G左右，立马dump一个堆的内存快照然后下载到本地进行来分析（可以通过<code>-J-Xmx</code><a href="http://file.bmob.cn/M00/09/83/wKhkA1P7TV-ABDnOAAB-OnVBQic050.png">调整jvisualvm的内存</a>）。</p>
+
+<ul>
+<li>首先，由于报错是在Configuration加载配置文件时抛出OOM，第一反应肯定Configuraiton对象太多导致！同时查看dump的堆内存也佐证了这一点。直接把程序中的Configuration改成单例。</li>
+</ul>
+
+
+<p>程序对象内存占比排行（<code>jmap -histo PID</code>）：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7S8yARYSkAAiFW9cVN5w526.png" alt="" /></p>
+
+<p>使用mat或者jvisualvm查看堆，确实Configuration对象过多（<code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code>）：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TbmAIdDEAAq3ktPBs6Q266.png" alt="" /></p>
+
+<ul>
+<li><p>修改后再次运行，但是没多大用！还是OOM！！</p></li>
+<li><p>进一步分析，发现在Configuration中的属性/缓冲的都是弱引用是weakhashmap。</p></li>
+</ul>
+
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TfaAf4nwAAbcdgFiyXs804.png" alt="" /></p>
+
+<p>OOM最终问题不在Configuration对象中的属性，哪谁hold住了Configuration对象呢？？</p>
+
+<ul>
+<li>再次从根源开始查找问题。程序中FileSystem对象使用<code>FileSystem.get(URI, Configuration, String)</code>获取，然后调用<code>get(URI,Configuration)</code>方法，其中的<strong>CACHE</strong>很是刺眼啊！</li>
+</ul>
+
+
+<p><img src="http://file.bmob.cn/M00/09/8D/wKhkA1P72pmAAMdnAAEYMjHFUAI853.png" alt="" /></p>
+
+<p>缓冲FileSystem的Cache对象的Key是URI和UserGroupInformation两个属性来判断是否相等的。对于一个程序来说一般就读取一个HDFS的数据即URI前部分是确定的，重点在UserGroupInformation是通过<code>UserGroupInformation.getCurrentUser()</code>来获取的。</p>
+
+<p>即获取在get时<code>UserGroupInformation.getBestUGI</code>得到的对象。而这个对象在UnSecure情况下每次都是调用<code>createRemoteUser</code>创建新的对象！也就是每调用一次<code>FileSystem.get(URI, Configuration, String)</code>就会缓存一个FileSystem对象，以及其hold住的Configuration都会被保留在内存中。
+<img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TBSAaYEoAAhzUA5j5MI991.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TJ2AfwJzAAhEVFjK7Ek367.png" alt="" /></p>
+
+<p>只消耗不释放终究会坐吃山空啊！到最后也就必然OOM了。从mat的UserGroupInformation的个数查询，以及Cache对象的总量可以印证。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TNeAB7JAAAdMg-udeR8285.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TU-ACoaCAApK4n-52hI027.png" alt="" /></p>
+
+<h2>问题处理</h2>
+
+<p>把程序涉及到FileSystem.get调用去掉user参数，使两个参数的方法。由于都使用getCurrentUser获取对象，也就是说程序整个运行过程中就一个FileSystem对象，但是与此同时就不能关闭获取到的FileSystem，如果当前运行的用户与集群所属用户不同，需要设置环境变量指定当前操作的用户！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>System.setProperty("HADOOP_USER_NAME", "hadoop");</span></code></pre></td></tr></table></div></figure>
+
+
+<p>查找代码中调用了FileSystem#close是一个痛苦的过程，由于FileSystem实现的是Closeable的close方法，用<strong>Open Call Hierarchy</strong>基本是大海捞中啊，根本不知道那个代码是自己的！！这里用btrace神器让咋也高大上一把。。。</p>
+
+<p>当时操作的步骤找不到了，下图是调用Cache#getInternal方法监控代码<a href="https://gist.github.com/winse/161f6fe9120f2ec6b024">GIST</a>：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7UD2AFk2cAAXRQWzniL0296.png" alt="" /></p>
+
+<h2>hive0.12内存溢出问题</h2>
+
+<p>hive0.12.0查询程序MR内容溢出</p>
+
+<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7StSAOgX1AAoW9v-Fd4s439.png" alt="" /></p>
+
+<p>在hive-0.13前官网文档中有提到内存溢出这一点，可以对应到FileSystem中代码的判断。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/85/wKhkA1P7UP-ACRVdAAJHBKNTq94580.png" alt="" /></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>String disableCacheName = String.format("fs.%s.impl.disable.cache", scheme);
+</span><span class='line'>if (conf.getBoolean(disableCacheName, false)) {
+</span><span class='line'>  return createFileSystem(uri, conf);
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>hive0.13.1处理</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T_CAcxVqAARr7CGiDvY177.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T6KAKoUiAAvODPwh1po815.png" alt="" /></p>
+
+<p>新版本在每次查询（session）结束后都会把本次涉及到的FileSystem关闭掉。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T9uAQQB3AAWrj_efwZU495.png" alt="" /></p>
+
+<h2>理论知识</h2>
+
+<p>从GC类型开始讲，对自动化内存的垃圾收集有个整体的感知： 新生代/s0（survivor space0、from space）/s1（survivor space1、to space）/永久代。虚拟机参数<code>-Xmx</code>,<code>-Xms</code>,<code>-Xmn</code>（<code>-Xss</code>）来调节各个代的大小和比例。</p>
+
+<ul>
+<li><code>-Xss</code> 参数来设置栈的大小。栈的大小直接决定了函数的调用可达深度</li>
+<li><code>-XX:PrintGCDetails -XX:SurvivorRatio=8 -XX:MaxTenuringThreshold=15 -Xms40m -Xmx40m -Xmn20m</code></li>
+<li><code>-XX:NewSize</code>和<code>-XX:MaxNewSize</code></li>
+<li><code>-XX:NewRatio</code>和<code>-XX:SurvivorRatio</code></li>
+<li><code>-XX:PermSize=2m -XX:MaxPermSize=4m -XX:+PrintGCDetails</code></li>
+<li><code>-verbose:gc</code></li>
+<li><code>-XX:+PrintGC</code></li>
+<li><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/bug.hprof -XX:OnOutOfMemoryError=/reset.sh</code></li>
+<li><code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code></li>
+<li><code>jmap -histo PID &gt; /tmp/s.txt</code></li>
+<li><code>jstack -l PID</code></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/08/20/magical-use-java-equals-hashcode/">巧用Equals和Hashcode</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-08-20T11:03:54+08:00" pubdate data-updated="true">Wed 2014-08-20 11:03</time>
+        
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>java中让人疑惑的一点就是等于的判断，有使用<code>==</code>和<code>equals</code>， 有一些专门字符串初始化的资料来考你在是否已经真正的掌握判断两个对象是否一致。</p>
+
+<p>同时，在重写equals时很多资料都强调要重写hashcode。</p>
+
+<p>java中HashMap就是基于equals和hashcode来实现拉链的键值对。Map中存储了entry&lt;K,V>的数组，数组的下标是基于对象的hashcode再对entry长度[并]<code>&amp;</code>的结果。</p>
+
+<p><img src="http://file.bmob.cn/M00/08/55/wKhkA1P0OO-AE9u3AABNzQK0pr8747.png" alt="" /></p>
+
+<p>使用set/map来实现集合，并且对象重写了equals但没有重写hashcode的情况下，得到的结果与你臆想的不同。同时，在特定场景结合hashcode和equals可以实现很酷的效果。</p>
+
+<ul>
+<li>第一个例子A 重写了equals但是没有重写hashcode(ERROR)，此时判断元素是否在集合中结果可能并不是你想要的。</li>
+<li>第二个B的例子 重写hashcode和equals对应后就正确了。</li>
+<li>第三个AA是个很酷的例子 equals的条件更强，可以实现类似<code>map&lt;string, list&lt;string&gt;&gt;</code>的效果。</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>static class A {
+</span><span class='line'>
+</span><span class='line'>  String name;
+</span><span class='line'>  int age;
+</span><span class='line'>
+</span><span class='line'>  public A(String name, int age) {
+</span><span class='line'>      this.name = name;
+</span><span class='line'>      this.age = age;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public boolean equals(Object obj) {
+</span><span class='line'>      return new EqualsBuilder().append(getClass(), obj.getClass()).append(name, ((A) obj).name).isEquals();
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>@Test
+</span><span class='line'>public void testA() {
+</span><span class='line'>  Set&lt;A&gt; set = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>  set.add(new A("abc", 12));
+</span><span class='line'>  set.add(new A("abc", 14));
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.size());
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.contains(new A("abc", 0)));
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>static class B extends A {
+</span><span class='line'>
+</span><span class='line'>  public B(String name, int age) {
+</span><span class='line'>      super(name, age);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public int hashCode() {
+</span><span class='line'>      return this.name.hashCode();
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>@Test
+</span><span class='line'>public void testB() {
+</span><span class='line'>  /* Set&lt;A&gt; */Set&lt;B&gt; set = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>  set.add(new B("abc", 12));
+</span><span class='line'>  set.add(new B("abc", 14));
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.size());
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.contains(new B("abc", 0)));
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>static class AA extends A {
+</span><span class='line'>  public AA(String name, int age) {
+</span><span class='line'>      super(name, age);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public boolean equals(Object obj) {
+</span><span class='line'>      return new EqualsBuilder().append(getClass(), obj.getClass()).append(name, ((A) obj).name)
+</span><span class='line'>              .append(age, ((A) obj).age).isEquals();
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public int hashCode() {
+</span><span class='line'>      return this.name.hashCode();
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>@Test
+</span><span class='line'>public void testAA() {
+</span><span class='line'>  // 实现Map&lt;String, Set&lt;String&gt;&gt;的效果
+</span><span class='line'>  Set&lt;AA&gt; set = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>  set.add(new AA("abc", 12));
+</span><span class='line'>  set.add(new AA("abc", 14));
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.size());
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.contains(new AA("abc", 0)));
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://java.chinaitlab.com/base/879319.html">java中HashMap详解</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -949,302 +1347,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 ShortCircuit Local Reading</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2014-07-29T20:11:58+08:00" pubdate data-updated="true">Tue 2014-07-29 20:11</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白，最终大致就是通过linux的<strong>文件描述符</strong>来实现功能同时保证文件的权限。</p>
-
-<p>由于仅在自己的机器上面配置来查询hbase的数据，性能方面提升感觉不是很明显。等以后整到正式环境再对比对比。</p>
-
-<ul>
-<li>2016-1 添加测试方法数据是否通过short-circuit读取</li>
-</ul>
-
-
-<p>配置如下。</p>
-
-<p>1 修改hdfs-site.xml</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的写权限，要么仅root可写。</p>
-
-<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png" alt="" /></p>
-
-<p>2 修改hbase的配置，并添加HADOOP_HOME（hbase查找hadoop-native）</p>
-
-<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXhRKAZDs6AAChrEauBoU738.png" alt="" /></p>
-
-<p>hbase的脚本找到hadoop命令后，会把hadoop的java.library.path配置加入到hbase的启动脚本中。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>// 更好的方式是Hbase直接共享HADOOP_CONF_DIR
-</span><span class='line'>[hadoop@master1 ~]$ tail -15 hbase-0.98.3-hadoop2/conf/hbase-site.xml 
-</span><span class='line'>    &lt;name&gt;hbase.tmp.dir&lt;/name&gt;
-</span><span class='line'>    &lt;value&gt;/home/hadoop/data/hbase&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>
-</span><span class='line'>// IBM部署是直接把一系列的bigdata的环境变量写到一个FILE，然后加入到/etc/profile.d/FILE。
-</span><span class='line'>[hadoop@master1 ~]$ cat hbase-0.98.3-hadoop2/conf/hbase-env.sh
-</span><span class='line'>...
-</span><span class='line'>export HADOOP_HOME=/home/hadoop/hadoop-2.2.0
-</span><span class='line'>...
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>3 同步到其他节点，然后重启hdfs,hbase</p>
-
-<h2>测试</h2>
-
-<ul>
-<li><a href="https://www.zybuluo.com/jewes/note/37713">https://www.zybuluo.com/jewes/note/37713</a></li>
-</ul>
-
-
-<p>在datanode读取该机器上的block（fsck命令可以查看文件的块在哪些机器）。通过查看日志，或者通过HdfsDataInputStream.getReadStatistics().getTotalShortCircuitBytesRead()来获取从ShortCircuit读取数据量。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># datanode.log
-</span><span class='line'>2017-05-05 09:53:16,089 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: cliID: DFSClient_attempt_1492660490127_17873_m_001534_0_698465397_1, src: 127.0.0.1, dest: 127.0.
-</span><span class='line'>0.1, op: REQUEST_SHORT_CIRCUIT_SHM, shmId: 3a2653121c6cb5acd0050fbb6a086fcf, srvID: 732ce1ee-3f4f-4be5-b806-22edcab58e6b, success: true
-</span><span class='line'>2017-05-05 09:53:16,095 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: cliID: DFSClient_attempt_1492660490127_17873_m_001469_0_936154908_1, src: 127.0.0.1, dest: 127.0.
-</span><span class='line'>0.1, op: REQUEST_SHORT_CIRCUIT_SHM, shmId: c9082d6420bc980b60bde78a437a90fd, srvID: 732ce1ee-3f4f-4be5-b806-22edcab58e6b, success: true
-</span><span class='line'>2017-05-05 09:53:16,122 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: src: 127.0.0.1, dest: 127.0.0.1, op: REQUEST_SHORT_CIRCUIT_FDS, blockid: 1211094391, srvID: 732ce
-</span><span class='line'>1ee-3f4f-4be5-b806-22edcab58e6b, success: true
-</span><span class='line'>2017-05-05 09:53:16,126 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: src: 127.0.0.1, dest: 127.0.0.1, op: REQUEST_SHORT_CIRCUIT_FDS, blockid: 1211095681, srvID: 732ce
-</span><span class='line'>1ee-3f4f-4be5-b806-22edcab58e6b, success: true
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu3 ~]$ ~/hadoop-2.6.3/bin/hdfs fsck /spark-assembly-1.6.0-hadoop2.6.3.jar -files -blocks -locations</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://vdisk.weibo.com/s/z_44nz36hNM3Z">hive-tuning</a></li>
-<li><a href="http://blog.cloudera.com/blog/2013/08/how-improved-short-circuit-local-reads-bring-better-performance-and-security-to-hadoop/">How Improved Short-Circuit Local Reads Bring Better Performance and Security to Hadoop</a></li>
-<li><a href="http://hbase.apache.org/book/perf.hdfs.html">HDFS&ndash;Apache HBase Performance Tuning</a></li>
-<li><a href="http://archive.cloudera.com/cdh4/cdh/4/hadoop/hadoop-project-dist/hadoop-hdfs/ShortCircuitLocalReads.html">HDFS Short-Circuit Local Reads</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/07/29/safely-remove-datanode/">Hadoop安全的关闭datanode节点</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-07-29T15:08:41+08:00" pubdate data-updated="true">Tue 2014-07-29 15:08</time>
-        
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>hadoop默认就有冗余（dfs.replication）的机制，所以一般情况下，一台机器挂了也没所谓。集群会自动的进行复制均衡处理。</p>
-
-<p>作为测试，如果dfs.replication设置为1的情况下，怎么安全的把datanode节点服务关闭呢？例如说，刚刚开始搭建环境是把namenode、datanode放在一台机器上，后面增加了机器如何把datanode分离出来呢？</p>
-
-<p>借助于<strong>dfs.hosts.exclude</strong>即可完成顺序的完成此项任务。</p>
-
-<p>修改hdfs-site.xml配置。我操作的时刻仅修改了master1上的hdfs-site.xml。把<strong>master1</strong>值写入到对应的文件中。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ cat hdfs-site.xml 
-</span><span class='line'>...
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.hosts.exclude&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;/home/hadoop/hadoop-2.2.0/etc/hadoop/exclude&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>[hadoop@master1 hadoop]$ cat /home/hadoop/hadoop-2.2.0/etc/hadoop/exclude
-</span><span class='line'>master1
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>修改完成后，刷新节点即可(完全没有必要重启集dfs)。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>hadoop dfsadmin -refreshNodes</span></code></pre></td></tr></table></div></figure>
-
-
-<p>可以通过<code>dfsadmin -report</code>或者网页查看master1已经变成<em>Decommission In Progress</em>了。</p>
-
-<p><img src="http://file.bmob.cn/M00/05/4C/wKhkA1PXUMOAVvvWAAED6CN-3Rg187.png" alt="" /></p>
-
-<p>注：</p>
-
-<p>问题一： 在新建节点是slaver1的防火墙没关闭，由于master1已经被exclude，而slaver1不能提供服务，上传文件时报错：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ hadoop fs -put slaves  /
-</span><span class='line'>14/07/29 15:18:21 WARN hdfs.DFSClient: DataStreamer Exception
-</span><span class='line'>org.apache.hadoop.ipc.RemoteException(java.io.IOException): File /slaves._COPYING_ could only be replicated to 0 nodes instead of minReplication (=1).  There are 2 datanode(s) running and no node(s) are excluded in this operation.
-</span><span class='line'>        at org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.chooseTarget(BlockManager.java:1384)
-</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getAdditionalBlock(FSNamesystem.java:2477)</span></code></pre></td></tr></table></div></figure>
-
-
-<p>关闭防火墙一样再次上传，还是报同样的错误。此时，也可以通过刷新节点<code>hadoop dfsadmin -refreshNodes</code>来解决。</p>
-
-<p>问题二： 设置备份数量</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ hadoop fs -setrep 3 /slaves 
-</span><span class='line'>Replication 3 set: /slaves</span></code></pre></td></tr></table></div></figure>
-
-
-<p></p>
-
-<p>问题三： 新增节点</p>
-
-<p>拷贝程序到新增节点，然后启动</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ tar zc hadoop-2.2.0 --exclude=logs | ssh slaver2 'cat | tar zx'
-</span><span class='line'>
-</span><span class='line'>[hadoop@slaver2 ~]$ cd hadoop-2.2.0/
-</span><span class='line'>[hadoop@slaver2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start datanode</span></code></pre></td></tr></table></div></figure>
-
-
-<p>也可以修改master上的slavers文件再<code>sbin/start-dfs.sh</code>启动。</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/35">&larr; Older</a>
@@ -1357,6 +1459,14 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/04/12/appium-android-auto-test/">appium-Android自动化测试</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2019/07/26/android-linux-via-termux/">Android Linux via Termux</a>
       </li>
     
@@ -1378,14 +1488,6 @@
     
       <li class="post">
         <a href="/blog/2018/06/20/k2-reburn/">斐讯K2刷机记录</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2018/06/19/install-macosx-on-vmware/">使用VMWare安装Mac OS X</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2018/06/10/java-source-annotation-processor/">使用注解生成代码</a>
       </li>
     
   </ul>
@@ -1542,7 +1644,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (67) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (68) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1559,7 +1661,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (214)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (216)</li>
 	</ul>
 	
 </section>
@@ -1619,7 +1721,7 @@
     </div>
   </div>
   <footer role="contentinfo"><p>
-  Copyright &copy; 2019 - Winse Liu -
+  Copyright &copy; 2020 - Winse Liu -
   <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
   <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
 </p>
