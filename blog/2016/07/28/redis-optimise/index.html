@@ -1,0 +1,1178 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>Redis使用优化 - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="最近对生产的Redis做了两个优化：Redis扩展、以及对简单键值对的存储优化（string改成hash形式） Redis扩展 上一篇介绍的Codis安装。但是使用Pipeline操作时间比较长、连接数比较多的情况下，经常出现连接重置的情况。感觉不踏实，go也不懂感觉短时间处理不了这种问题。 &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winse.github.io/blog/2016/07/28/redis-optimise">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="//cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winse.github.io" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">Redis使用优化</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-07-28T08:22:26+08:00" pubdate data-updated="true">Thu 2016-07-28 08:22</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><p>最近对生产的Redis做了两个优化：Redis扩展、以及对简单键值对的存储优化（string改成hash形式）</p>
+
+<h2>Redis扩展</h2>
+
+<p>上一篇介绍的Codis安装。但是使用Pipeline操作时间比较长、连接数比较多的情况下，经常出现连接重置的情况。感觉不踏实，go也不懂感觉短时间处理不了这种问题。</p>
+
+<p>寻求它法。前期是把不同业务数据写入不同的redis实例，根据业务来分。对于同一个业务来说，得根据key的hash来写入不同的实例，但是自己写的话得包装一堆东西。</p>
+
+<p>jedis工具包括Shared的功能，根据写入key的hash映射到不同的redis实例。截取了部分Shared的主要代码:</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public class Sharded&lt;R, S extends ShardInfo&lt;R&gt;&gt; {
+</span><span class='line'>...
+</span><span class='line'>    private void initialize(List&lt;S&gt; shards) {
+</span><span class='line'>  nodes = new TreeMap&lt;Long, S&gt;();
+</span><span class='line'>
+</span><span class='line'>  for (int i = 0; i != shards.size(); ++i) {
+</span><span class='line'>      final S shardInfo = shards.get(i);
+</span><span class='line'>      if (shardInfo.getName() == null)
+</span><span class='line'>      for (int n = 0; n &lt; 160 * shardInfo.getWeight(); n++) {
+</span><span class='line'>          nodes.put(this.algo.hash("SHARD-" + i + "-NODE-" + n),
+</span><span class='line'>              shardInfo);
+</span><span class='line'>      }
+</span><span class='line'>      else
+</span><span class='line'>      for (int n = 0; n &lt; 160 * shardInfo.getWeight(); n++) {
+</span><span class='line'>          nodes.put(
+</span><span class='line'>              this.algo.hash(shardInfo.getName() + "*"
+</span><span class='line'>                  + shardInfo.getWeight() + n), shardInfo);
+</span><span class='line'>      }
+</span><span class='line'>      resources.put(shardInfo, shardInfo.createResource());
+</span><span class='line'>  }
+</span><span class='line'>    }
+</span><span class='line'>...   
+</span><span class='line'>    public S getShardInfo(byte[] key) {
+</span><span class='line'>  SortedMap&lt;Long, S&gt; tail = nodes.tailMap(algo.hash(key));
+</span><span class='line'>  if (tail.isEmpty()) {
+</span><span class='line'>      return nodes.get(nodes.firstKey());
+</span><span class='line'>  }
+</span><span class='line'>  return tail.get(tail.firstKey());
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    public S getShardInfo(String key) {
+</span><span class='line'>  return getShardInfo(SafeEncoder.encode(getKeyTag(key)));
+</span><span class='line'>    }
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>使用的时刻很简单，通过ShardedJedis来进读写，大部分的操作与Jedis类似。只是有部分整个集群的操作不能用：keys/scan等。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public List&lt;JedisShardInfo&gt; getShards(String sValue) {
+</span><span class='line'>    String[] servers = sValue.split(",");
+</span><span class='line'>
+</span><span class='line'>    List&lt;JedisShardInfo&gt; shards = new ArrayList&lt;&gt;();
+</span><span class='line'>    for (String server : servers) {
+</span><span class='line'>      Pair&lt;String, Integer&gt; hp = parseServer(server);
+</span><span class='line'>      shards.add(new JedisShardInfo(hp.getLeft(), hp.getRight(), Integer.MAX_VALUE));
+</span><span class='line'>    }
+</span><span class='line'>    return shards;
+</span><span class='line'>  }
+</span><span class='line'>  private ShardedJedisPool createRedisPool(String server) {
+</span><span class='line'>    return new ShardedJedisPool(new GenericObjectPoolConfig(), getShards(server));
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果使用过程中要使用keys，可以通过getAllShards得到所有Jedis实例的键再进行处理：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public Double zscore(String key, String member) {
+</span><span class='line'>    try (ShardedJedis redis = getRedis()) {
+</span><span class='line'>      return redis.zscore(key, member);
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  public void expires(List&lt;String&gt; patterns, int seconds) {
+</span><span class='line'>    try (ShardedJedis shardedJedis = getRedis()) {
+</span><span class='line'>      Set&lt;String&gt; keys = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>      for (Jedis redis : shardedJedis.getAllShards()) {
+</span><span class='line'>        for (String p : patterns) {
+</span><span class='line'>          keys.addAll(redis.keys(p)); // 调用单独实例的keys命令获取匹配的键
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      ShardedJedisPipeline pipeline = shardedJedis.pipelined();
+</span><span class='line'>      for (String key : keys) {
+</span><span class='line'>        pipeline.expire(key, seconds);
+</span><span class='line'>      }
+</span><span class='line'>      pipeline.sync();
+</span><span class='line'>    }
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>进行多实例(集群)切分后，效果还是挺明显的。写入高峰期分流效果显著，负载均摊，可使用的内存也翻翻，键也基本平均分布（ <code>--maxmemory-policy volatile-lru</code> ）。生产实际效果：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 redis]$ sh stat_cluster.sh 
+</span><span class='line'>
+</span><span class='line'> * [ ============================================================&gt; ] 4 / 4
+</span><span class='line'>
+</span><span class='line'>hadoop-master1:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:44287785776
+</span><span class='line'>used_memory_human:41.25G
+</span><span class='line'>used_memory_rss:67458658304
+</span><span class='line'>used_memory_peak:67981990576
+</span><span class='line'>used_memory_peak_human:63.31G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.52
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=72729777,expires=11967,avg_ttl=63510023
+</span><span class='line'>
+</span><span class='line'>hadoop-master2:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:50667945344
+</span><span class='line'>used_memory_human:47.19G
+</span><span class='line'>used_memory_rss:66036752384
+</span><span class='line'>used_memory_peak:64424543672
+</span><span class='line'>used_memory_peak_human:60.00G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.30
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=100697581,expires=13426,avg_ttl=63509903
+</span><span class='line'>
+</span><span class='line'>hadoop-master3:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:56763389184
+</span><span class='line'>used_memory_human:52.87G
+</span><span class='line'>used_memory_rss:66324045824
+</span><span class='line'>used_memory_peak:64424546136
+</span><span class='line'>used_memory_peak_human:60.00G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.17
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=94363547,expires=13544,avg_ttl=63505693
+</span><span class='line'>
+</span><span class='line'>hadoop-master4:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:54513952832
+</span><span class='line'>used_memory_human:50.77G
+</span><span class='line'>used_memory_rss:67257393152
+</span><span class='line'>used_memory_peak:64820124928
+</span><span class='line'>used_memory_peak_human:60.37G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.23
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=83297543,expires=12418,avg_ttl=63507046
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Finished processing 4 / 4 hosts in 298.89 ms</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>存储优化</h2>
+
+<p>实际环境中存在会大量的用到简单string键值对，挺耗内存的。其实使用hash（内部存储ziplist）能更有效的利用内存。</p>
+
+<p>注意是ziplist形式的hash才能省内存！！如果是skiplist的hash会浪费内存。</p>
+
+<ul>
+<li><a href="http://webcache.googleusercontent.com/search?q=cache:yr96Qf3F0e4J:heylinux.com/archives/1920.html+&amp;cd=1&amp;hl=zh-CN&amp;ct=clnk&amp;gl=jp">内存优化之Redis数据结构的设计优化实践</a> heylinux.com/archives/1920.html 这篇文章可能访问不了，可以通过google/baidu的快照来查看</li>
+<li><a href="http://redis4you.com/articles.php?id=008&amp;name=Understanding+hash-max-zipmap-entries+and+">Understanding hash-max-zipmap-entries and &ldquo;hash of hashes&rdquo; optimization</a></li>
+<li><a href="http://redis.io/topics/memory-optimization">http://redis.io/topics/memory-optimization</a></li>
+<li><a href="http://redis.io/topics/lru-cache">http://redis.io/topics/lru-cache</a></li>
+<li><a href="https://segmentfault.com/a/1190000004708270">Redis内存优化</a></li>
+</ul>
+
+
+<p>下面引用官网对简单键值对和Hash的一个比较（Redis中key的相关特性不关注）: 对于小数据量的hash进行了优化</p>
+
+<blockquote><p> a few keys use a lot more memory than a single key containing a hash with a few fields.</p>
+
+<p> We use a trick.</p>
+
+<p> But many times hashes contain just a few fields. When hashes are small we can instead just encode them in an O(N) data structure, like a linear array with length-prefixed key value pairs. Since we do this only when N is small</p>
+
+<p> This does not work well just from the point of view of time complexity, but also from the point of view of constant times, since a linear array of key value pairs happens to play very well with the CPU cache (it has a better cache locality than a hash table).</p></blockquote>
+
+<p>优化主要涉及到ziplist的两个参数，是一个cpu/memory之间的均衡关系。entries直接用默认的就好了，value最好不要大于254（ziplist节点entry大于254需要增加4个到5字节，来存储前一个entry的长度）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hash-max-zipmap-entries 512 (hash-max-ziplist-entries for Redis &gt;= 2.6)
+</span><span class='line'>hash-max-zipmap-value 64  (hash-max-ziplist-value for Redis &gt;= 2.6)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>简单列几条数据：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com  -&gt;  1469584847
+</span><span class='line'>3:co4hk52ia0b1.5buzd.com                                          -&gt;  1468859527
+</span><span class='line'>1:119.84.110.82_39502                                             -&gt;  1469666877</span></code></pre></td></tr></table></div></figure>
+
+
+<p>原始key内容可以不需要，鉴于包括域名的key太长，直接对数据key取md5。以1亿键值对来进行估算，取md5的前五位作为key，后27位作为hash键值对的key。</p>
+
+<p>扫描原始redis实例，然后把键值对转换后存储到新的实例。转换Scala代码如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>import java.util.{List =&gt; JList}
+</span><span class='line'>import org.apache.commons.codec.digest.DigestUtils
+</span><span class='line'>import redis.clients.jedis._
+</span><span class='line'>import scala.collection.JavaConversions._
+</span><span class='line'>
+</span><span class='line'>trait RedisUtils {
+</span><span class='line'>
+</span><span class='line'>  def md5(data: String): String = {
+</span><span class='line'>    DigestUtils.md5Hex(data)
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  def Type(redis: Jedis, key: String) = redis.`type`(key)
+</span><span class='line'>
+</span><span class='line'>  def scan(redis: Jedis)(action: JList[String] =&gt; Unit): Unit = {
+</span><span class='line'>    import scala.util.control.Breaks._
+</span><span class='line'>
+</span><span class='line'>    var cursor = "0"
+</span><span class='line'>    breakable {
+</span><span class='line'>      while (true) {
+</span><span class='line'>        val res = redis.scan(cursor)
+</span><span class='line'>
+</span><span class='line'>        action(res.getResult())
+</span><span class='line'>
+</span><span class='line'>        cursor = res.getStringCursor
+</span><span class='line'>        if (cursor.equals("0")) {
+</span><span class='line'>          break
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  def printInfo(redis: Jedis): Unit = {
+</span><span class='line'>    println(redis.info())
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  // 验证：
+</span><span class='line'>  //  打印 **总共** 的键值对数量
+</span><span class='line'>  //  eval "local aks=redis.call('keys', '*'); local res=0; for i,r in ipairs(aks) do res=res+redis.call('hlen', r) end; return res" 0
+</span><span class='line'>  //  打印 **每个** hash包括的键值对个数
+</span><span class='line'>  //  eval "local aks=redis.call('keys', '*'); local res={}; for i,r in ipairs(aks) do res[i]=redis.call('hlen', r) end; return res" 0
+</span><span class='line'>  //
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>Object RedisTransfer extends RedisUtils {
+</span><span class='line'>
+</span><span class='line'>  def handle(key: String, value: String, tp: Pipeline): Unit = {
+</span><span class='line'>    val m5 = md5(key)
+</span><span class='line'>    tp.hset(m5.substring(0, 5), m5.substring(5), value)
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  def main(args: Array[String]) {
+</span><span class='line'>    val Array(sHost, sPort, tHost, tPort) = args
+</span><span class='line'>
+</span><span class='line'>    val timeout = 60 * 1000
+</span><span class='line'>    val source = new Jedis(sHost, sPort.toInt, timeout)
+</span><span class='line'>    val sp = source.pipelined()
+</span><span class='line'>    val target = new Jedis(tHost, tPort.toInt, timeout)
+</span><span class='line'>    val tp = target.pipelined()
+</span><span class='line'>
+</span><span class='line'>    scan(source) { keys =&gt;
+</span><span class='line'>      // 仅处理 string类型 的记录
+</span><span class='line'>      val requests = for (key &lt;- keys) yield Some((key, sp.get(key)))
+</span><span class='line'>      sp.sync()
+</span><span class='line'>
+</span><span class='line'>      for (
+</span><span class='line'>        request &lt;- requests;
+</span><span class='line'>        (key, resp) &lt;- request
+</span><span class='line'>      ) {
+</span><span class='line'>        try {
+</span><span class='line'>          handle(key, resp.get(), tp)
+</span><span class='line'>        } catch {
+</span><span class='line'>          case e: Exception =&gt; println(s"fetch $key with exception, ${e.getMessage}")
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    tp.sync()
+</span><span class='line'>
+</span><span class='line'>    printInfo(target)
+</span><span class='line'>
+</span><span class='line'>    target.close()
+</span><span class='line'>    source.close()
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>由于对数据进行了处理，对比不是很清晰，不能直接说省了多少空间。但是添加上面的处理后，原来30G（大概3亿多）的实例变成了15G。</p>
+
+<h2>另一个案例</h2>
+
+<p>另外对域名的实例做了下测试，6.4百万的键值对：707.29M内存：</p>
+
+<p>md5前4个字符作为key，总共产生65536个键值对。每个hash大概包括100个kv。</p>
+
+<ul>
+<li>hash的key使用原来的键
+
+<ul>
+<li>不调ziplist_value的值，实际的转换成hash(skiplist)：939.6M，</li>
+<li>ziplist_value修改成1024，转换成hash(ziplist)：513.78M</li>
+</ul>
+</li>
+<li>md5的作为hash的新key：344.7M</li>
+<li>md5的后28位作为hash的新key： 259.09M</li>
+</ul>
+
+
+<p>如：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>MD5:
+</span><span class='line'>  3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com
+</span><span class='line'>  1356de078028ddf266c962533760b27c
+</span><span class='line'>
+</span><span class='line'>1356 -&gt; hash( 3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com -&gt; 1469584847 )
+</span><span class='line'>1356 -&gt; hash( 1356de078028ddf266c962533760b27c -&gt; 1469584847 )
+</span><span class='line'>1356 -&gt; hash( de078028ddf266c962533760b27c -&gt; 1469584847 )</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-07-28T08:22:26+08:00" pubdate data-updated="true">Thu 2016-07-28 08:22</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/redis/'>redis</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2016-07-28-redis-optimise.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2016/07/19/xss-blocked-by-naxsi/" title="Previous Post: 使用 naxsi 处理 XSS">&laquo; 使用 naxsi 处理 XSS</a>
+      
+      
+        <a class="basic-alignment right" href="/blog/2016/08/17/redis-batch-operate/" title="Next Post: Redis批量操作">Redis批量操作 &raquo;</a>
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+	
+  
+<!-- gitalk评论 start -->
+    <div id="gitalk-container"></div> 
+<!-- gitalk评论 end -->
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/27/vnc-server-on-centos7/">在Centos7上安装VNC Server</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/25/develop-environment-prepare/">[整理] 环境准备工具集</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2021/10/31/"></a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2021/09/15/k2-again/">斐讯K2刷机padavan</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/04/12/appium-android-auto-test/">appium-Android自动化测试</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/07/26/android-linux-via-termux/">Android Linux via Termux</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-bk-dot-tencent-dot-com/">Try bk.tencent.com</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/10/20/jcef-build-on-win64/">编译JCEF - Win64</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/bigdata/'>bigdata</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/deprecated/'>deprecated</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/devops/'>devops</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (15) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/es/'>es</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (44) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (13) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jenkins/'>jenkins</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k2/'>k2</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kubeadm/'>kubeadm</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/logstash/'>logstash</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/map/'>map</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (27) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/staf/'>staf</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (69) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/vagrant/'>vagrant</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/wsl/'>wsl</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/zookeeper/'>zookeeper</a> (1) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (218)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+<!--
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+-->
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2021 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+<script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+
+<script>
+
+var time=location.pathname.substring(6).substring(0,11);
+var eName=location.pathname.substring(17);
+var gitalk = new Gitalk({
+  clientID: 'c14f68eac6330d15d984',
+  clientSecret: '73b7c1fffa98e299ff0cdd332821201933858e6e',
+  repo: 'winse.github.com',
+  owner: 'winse',
+  admin: ['winse'],
+  id: eName,
+  labels: ['Gitalk', time],
+  body: "http://winse.github.io" + location.pathname,
+  createIssueManually: true,
+  
+  // facebook-like distraction free mode
+  distractionFreeMode: false
+})
+
+gitalk.render('gitalk-container')
+
+</script>
+
+
+
+<script>
+/*
+$.ajax({
+  type: "POST",
+  url: "http://log.winseliu.com:20000",
+  data: JSON.stringify({
+    title: document.title,
+    location: JSON.stringify(location),
+    referrer: document.referrer,
+    userAgent: navigator.userAgent
+  }),
+  contentType: "application/json; charset=utf-8",
+  dataType: "json"
+});
+*/
+</script>
+
+
+
+
+
+
+
+
+
+</body>
+</html>

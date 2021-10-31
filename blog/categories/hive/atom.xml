@@ -1,0 +1,1400 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+
+  <title><![CDATA[Category: Hive | Winse Blog]]></title>
+  <link href="http://winse.github.io/blog/categories/hive/atom.xml" rel="self"/>
+  <link href="http://winse.github.io/"/>
+  <updated>2021-10-31T12:08:09+08:00</updated>
+  <id>http://winse.github.io/</id>
+  <author>
+    <name><![CDATA[Winse Liu]]></name>
+    <email><![CDATA[winseliu@foxmail.com]]></email>
+  </author>
+  <generator uri="http://octopress.org/">Octopress</generator>
+
+  
+  <entry>
+    <title type="html"><![CDATA[Hive on Spark预测性执行BUG一枚]]></title>
+    <link href="http://winse.github.io/blog/2017/05/23/spark-on-hive-speculation-shit-bug/"/>
+    <updated>2017-05-23T20:11:49+08:00</updated>
+    <id>http://winse.github.io/blog/2017/05/23/spark-on-hive-speculation-shit-bug</id>
+    <content type="html"><![CDATA[<p>为了平复难以平复的痛苦，难以掩饰的激动，把这次遇到并解决的记录下。尽管最终解决的patch是官网的: <a href="https://issues.apache.org/jira/browse/HIVE-13066">Hive on Spark gives incorrect results when speculation is on</a>。</p>
+
+<p>版本说明下：</p>
+
+<ul>
+<li>hive-1.2.1</li>
+<li>spark-1.3.1</li>
+</ul>
+
+
+<p>在没有启动spark.speculation前，有个别任务执行非常慢，非常之讨厌。而启用预测性执行后，时不时任务会有些会失败，让人很烦躁。但是吧，也不算故障，说来也奇怪，重启下后再次查询问题就不出现了，也就没太在意。</p>
+
+<p>今天数据量比较大，并且是上头检查。妈蛋，搞成了故障，没得办法，必须把原因找出来了。下来就帖日志了：</p>
+
+<p>应用SQL查询报错日志：啥也看不到，就知道Hive查询报错，只能拿着时间去查Hive日志</p>
+
+<p></p>
+
+<pre><code>[ERROR] 14:19:56.685 [RMI TCP Connection(7)-192.168.31.11] c.e.z.h.s.BaseHiveQueryService | Error while processing statement: FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+java.sql.SQLException: Error while processing statement: FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+        at org.apache.hive.jdbc.HiveStatement.execute(HiveStatement.java:296)
+        at org.apache.hive.jdbc.HiveStatement.executeQuery(HiveStatement.java:392)
+        at org.apache.hive.jdbc.HivePreparedStatement.executeQuery(HivePreparedStatement.java:109)
+        at org.apache.commons.dbcp.DelegatingPreparedStatement.executeQuery(DelegatingPreparedStatement.java:96)
+        at org.apache.commons.dbcp.DelegatingPreparedStatement.executeQuery(DelegatingPreparedStatement.java:96)
+        at com.eshore.zhfx.hbase.service.BaseHiveQueryService.listIteratorInternal(BaseHiveQueryService.java:101)
+        at com.eshore.zhfx.hbase.service.BaseHiveQueryService.listIterator(BaseHiveQueryService.java:80)
+        at com.eshore.zhfx.hbase.QueryService.getAccessLogIterator(QueryService.java:140)
+        at com.eshore.zhfx.hbase.QueryService$$FastClassByCGLIB$$a60bf6f7.invoke(&lt;generated&gt;)
+        at net.sf.cglib.proxy.MethodProxy.invoke(MethodProxy.java:191)
+        at org.springframework.aop.framework.Cglib2AopProxy$CglibMethodInvocation.invokeJoinpoint(Cglib2AopProxy.java:688)
+        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+        at org.springframework.aop.framework.adapter.AfterReturningAdviceInterceptor.invoke(AfterReturningAdviceInterceptor.java:50)
+        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+        at org.springframework.aop.framework.adapter.MethodBeforeAdviceInterceptor.invoke(MethodBeforeAdviceInterceptor.java:50)
+        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+        at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:89)
+        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+        at org.springframework.aop.framework.Cglib2AopProxy$DynamicAdvisedInterceptor.intercept(Cglib2AopProxy.java:621)
+        at com.eshore.zhfx.hbase.QueryService$$EnhancerByCGLIB$$9a4ab584.getAccessLogIterator(&lt;generated&gt;)
+        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+        at java.lang.reflect.Method.invoke(Method.java:601)
+        at org.springframework.aop.support.AopUtils.invokeJoinpointUsingReflection(AopUtils.java:309)
+        at org.springframework.aop.framework.ReflectiveMethodInvocation.invokeJoinpoint(ReflectiveMethodInvocation.java:183)
+        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+        at org.springframework.remoting.support.RemoteInvocationTraceInterceptor.invoke(RemoteInvocationTraceInterceptor.java:77)
+        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+        at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:202)
+        at com.sun.proxy.$Proxy22.getAccessLogIterator(Unknown Source)
+        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+</code></pre>
+
+<p>HIVE服务日志：rename错了，但是也好像看不到啥。知道那个节点有问题了，去查节点日志</p>
+
+<pre><code>2017-05-23 14:19:20,509 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - 2017-05-23 14:19:20,508 WARN  [task-result-getter-1] scheduler.TaskSetManager: Lost task 2199.1 in stage 2.0 (TID 4517, hadoop-slaver41): java.lang.IllegalStateException: Hit error while closing operators - failing tree: org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+2017-05-23 14:19:20,509 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:195)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.HiveMapFunctionResultList.closeRecordProcessor(HiveMapFunctionResultList.java:58)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.HiveBaseFunctionResultList$ResultIterator.hasNext(HiveBaseFunctionResultList.java:106)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.convert.Wrappers$JIteratorWrapper.hasNext(Wrappers.scala:41)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.Iterator$class.foreach(Iterator.scala:727)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.AbstractIterator.foreach(Iterator.scala:1157)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:61)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.scheduler.Task.run(Task.scala:64)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:203)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.lang.Thread.run(Thread.java:722)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - Caused by: org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.commit(FileSinkOperator.java:237)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.access$200(FileSinkOperator.java:143)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator.closeOp(FileSinkOperator.java:1051)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:616)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:172)
+2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  ... 15 more
+2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - 
+</code></pre>
+
+<p>Task错误节点错误日志：这日志没啥。重名，拿名称去查namenode日志看看是啥子？</p>
+
+<pre><code>17/05/23 14:19:18 INFO exec.FileSinkOperator: FS[24]: records written - 0
+17/05/23 14:19:18 INFO exec.FileSinkOperator: Final Path: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0
+17/05/23 14:19:18 INFO exec.FileSinkOperator: Writing to temp file: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0
+17/05/23 14:19:18 INFO exec.FileSinkOperator: New Final Path: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+17/05/23 14:19:19 INFO compress.CodecPool: Got brand-new compressor [.snappy]
+org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+        at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.commit(FileSinkOperator.java:237)
+        at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.access$200(FileSinkOperator.java:143)
+        at org.apache.hadoop.hive.ql.exec.FileSinkOperator.closeOp(FileSinkOperator.java:1051)
+        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:616)
+        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+        at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:172)
+        at org.apache.hadoop.hive.ql.exec.spark.HiveMapFunctionResultList.closeRecordProcessor(HiveMapFunctionResultList.java:58)
+        at org.apache.hadoop.hive.ql.exec.spark.HiveBaseFunctionResultList$ResultIterator.hasNext(HiveBaseFunctionResultList.java:106)
+        at scala.collection.convert.Wrappers$JIteratorWrapper.hasNext(Wrappers.scala:41)
+        at scala.collection.Iterator$class.foreach(Iterator.scala:727)
+        at scala.collection.AbstractIterator.foreach(Iterator.scala:1157)
+        at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+        at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+        at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+        at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+        at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:61)
+        at org.apache.spark.scheduler.Task.run(Task.scala:64)
+        at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:203)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+        at java.lang.Thread.run(Thread.java:722)
+</code></pre>
+
+<p>Namenode日志：有点点线索了，分配了两次，导致了第二个任务写入的时刻报错！</p>
+
+<pre><code>[hadoop@hadoop-master2 ~]$ grep '_tmp.002199' hadoop/logs/hadoop-hadoop-namenode-hadoop-master2.log.1
+2017-05-23 14:19:01,591 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0. BP-1414312971-192.168.32.11-1392479369615 blk_1219124858_145508182{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-ad2eac59-1e38-4019-a5ac-64c465366186:NORMAL:192.168.32.93:50010|RBW], ReplicaUnderConstruction[[DISK]DS-90c8cbe3-fd70-4ad7-938a-4248b4435df7:NORMAL:192.168.32.136:50010|RBW], ReplicaUnderConstruction[[DISK]DS-9da76df9-47f0-4e25-b375-e1bf32f4cf52:NORMAL:192.168.36.58:50010|RBW]]}
+2017-05-23 14:19:14,939 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 is closed by DFSClient_attempt_201705231411_0000_m_001585_0_1316598676_51
+2017-05-23 14:19:20,368 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0. BP-1414312971-192.168.32.11-1392479369615 blk_1219125517_145508841{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-4d4c90f0-1ddf-4800-b33a-e776e58dc744:NORMAL:192.168.32.61:50010|RBW], ReplicaUnderConstruction[[DISK]DS-948cd823-5a4c-4673-8ace-99f02a26522b:NORMAL:192.168.32.52:50010|RBW], ReplicaUnderConstruction[[DISK]DS-7818addb-3881-446e-abb3-2c178be6bb63:NORMAL:192.168.32.176:50010|RBW]]}
+2017-05-23 14:19:20,478 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 is closed by DFSClient_attempt_201705231411_0000_m_001345_1_1292482540_51
+2017-05-23 14:19:20,480 WARN org.apache.hadoop.hdfs.StateChange: DIR* FSDirectory.unprotectedRenameTo: failed to rename /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy because destination exists
+</code></pre>
+
+<p>好了，看到这里，驴脑袋还没怀疑到是预测性执行导致的问题。当时想为啥会出现同一个文件名呢：SPARK ON HIVE多个stage执行导致的? 但是重启后报一样的错误，002199是哪里产生，怎么产生的？</p>
+
+<p>MAP太多了000000又循环了一轮？看了执行的map数也就2600啊，不应该啊。</p>
+
+<p>那么这个文件名是哪里产生的呢？然后就搞了下远程调试：没啥用，错误是在task上发生的，调试hive-driver没啥用，但是有意外收获</p>
+
+<p></p>
+
+<ul>
+<li><a href="http://www.winseliu.com/blog/2014/06/21/upgrade-hive/">http://www.winseliu.com/blog/2014/06/21/upgrade-hive/</a></li>
+<li><a href="https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started">https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started</a></li>
+</ul>
+
+
+<pre><code>[hadoop@hadoop-master2 hive]$ DEBUG=true bin/hive
+Listening for transport dt_socket at address: 8000
+
+Logging initialized using configuration in file:/home/hadoop/apache-hive-1.2.1-bin/conf/hive-log4j.properties
+hive&gt; set hive.execution.engine=spark; '查询之前需要设置下引擎，故障得先处理。搞成默认的mr跑是成功的
+hive&gt;                                  'SQLSQLSQL...执行刚报错的SQL
+Query ID = hadoop_20170523173748_7660d9fb-9683-4792-8315-a51f6dcc270b
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Starting Spark Job = 48a8668b-1c59-4cbf-b1e2-e19612ee77d0
+
+Query Hive on Spark job[0] stages:
+0
+
+Status: Running (Hive on Spark job[0])
+Job Progress Format
+CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+2017-05-23 17:38:15,730 Stage-0_0: 0/2609
+2017-05-23 17:38:16,739 Stage-0_0: 0(+159)/2609
+...
+2017-05-23 17:39:23,182 Stage-0_0: 2162(+447)/2609
+2017-05-23 17:39:24,188 Stage-0_0: 2167(+608)/2609
+2017-05-23 17:39:25,195 Stage-0_0: 2201(+836,-1)/2609
+2017-05-23 17:39:26,201 Stage-0_0: 2215(+832,-2)/2609
+2017-05-23 17:39:27,207 Stage-0_0: 2227(+820,-2)/2609
+2017-05-23 17:39:28,213 Stage-0_0: 2250(+797,-2)/2609
+2017-05-23 17:39:29,219 Stage-0_0: 2280(+767,-2)/2609
+2017-05-23 17:39:30,224 Stage-0_0: 2338(+709,-2)/2609
+2017-05-23 17:39:31,230 Stage-0_0: 2350(+696,-3)/2609
+2017-05-23 17:39:32,236 Stage-0_0: 2359(+684,-6)/2609
+2017-05-23 17:39:33,243 Stage-0_0: 2363(+676,-10)/2609
+2017-05-23 17:39:34,249 Stage-0_0: 2365(+673,-12)/2609
+...
+</code></pre>
+
+<p>有报错了，赶紧去web页面看了下结果，好家伙，全部是Speculation的报错：</p>
+
+<p><img src="/images/blogs/hive-on-spark-speculation.jpg" alt="" /></p>
+
+<p>在结合前面的namenode的日志，基本就走到正道上面。然后 <strong> hive spark speculation </strong> 一股沟，没错第一条就是hive官网的bug啊。</p>
+
+<ul>
+<li><a href="https://issues.apache.org/jira/browse/HIVE-13066">https://issues.apache.org/jira/browse/HIVE-13066</a></li>
+</ul>
+
+
+<p>然后就是打patch修改HivePairFlatMapFunction，验证是OK的。至少原来出错的语句完美跑完。</p>
+
+<h2>总结下</h2>
+
+<p>就是前段集成攻城狮把网络回环的问题处理了，导致网络状态好的不要不要的啊！把那些有备用10M网卡全部停了，集群的机器的网络好了N倍。第二个就是数据量实在大，其实speculation有启动，但是最先完成的还是先启动的，又没有把预测执行kill掉并且还运行完了最终还保存到同名文件。最后让我又一次体验了一把找开源软件BUG激情四射的半天。</p>
+
+<p>记录聊以慰藉！！</p>
+
+<hr />
+
+<p>other : SparkClientImpl LeaseExpiredException No lease on  File does not exist</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/26842933/leaseexpiredexception-no-lease-error-on-hdfs-failed-to-close-file">LeaseExpiredException: No lease error on HDFS (Failed to close file)</a></li>
+<li><a href="https://stackoverflow.com/questions/7559880/leaseexpiredexception-no-lease-error-on-hdfs">LeaseExpiredException: No lease error on HDFS</a></li>
+<li><a href="http://www.jianshu.com/p/f5ec6c7bb176">http://www.jianshu.com/p/f5ec6c7bb176</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Hiveserver2 Ui and Upgrade hive2.0.0]]></title>
+    <link href="http://winse.github.io/blog/2016/04/13/hiveserver2-ui-and-upgrade-hive2-dot-0-0/"/>
+    <updated>2016-04-13T12:03:43+08:00</updated>
+    <id>http://winse.github.io/blog/2016/04/13/hiveserver2-ui-and-upgrade-hive2-dot-0-0</id>
+    <content type="html"><![CDATA[<p>升级hive的标准动作：</p>
+
+<ul>
+<li>更新metadata，就是执行sql语句。更新前先备份原来的库！！</li>
+<li>调整依赖，我这里是升级spark，编译参考<a href="/blog/2016/03/28/hive-on-spark/">spark-without-hive</a></li>
+<li>修改参数(hive/spark/hadoop)来适应新版本</li>
+<li>hiveserver2 ui：启动hiveserver2服务，访问10002端口即可。<a href="https://cwiki.apache.org/confluence/display/Hive/Setting+Up+HiveServer2#SettingUpHiveServer2-WebUIforHiveServer2">UI配置</a></li>
+</ul>
+
+
+<p>环境说明：</p>
+
+<ul>
+<li>centos5</li>
+<li>hadoop-2.6.3</li>
+<li>spark-1.6.0-without-hive</li>
+<li>hive-2.0.0</li>
+</ul>
+
+
+<h2>操作详情</h2>
+
+<pre><code># 备份
+[hadoop@file1 tools]$ mysqldump -uroot -p hive &gt;hive1.2.1-20160413.backup.sql
+
+# 准备好程序后的目录结构
+[hadoop@file1 ~]$ ll
+总计 20
+drwxrwxr-x 3 hadoop hadoop 4096 04-13 11:59 collect
+drwx------ 3 hadoop hadoop 4096 04-07 16:43 dfs
+lrwxrwxrwx 1 hadoop hadoop   18 04-11 10:09 hadoop -&gt; tools/hadoop-2.6.3
+lrwxrwxrwx 1 hadoop hadoop   40 04-13 10:26 hive -&gt; /home/hadoop/tools/apache-hive-2.0.0-bin
+lrwxrwxrwx 1 hadoop hadoop   42 04-13 10:52 spark -&gt; tools/spark-1.6.0-bin-hadoop2-without-hive
+drwxrwxr-x 6 hadoop hadoop 4096 04-13 12:10 tmp
+drwxrwxr-x 9 hadoop hadoop 4096 04-13 11:48 tools
+[hadoop@file1 tools]$ ll
+总计 84
+drwxrwxr-x  8 hadoop hadoop  4096 04-08 09:25 apache-hive-1.2.1-bin
+drwxrwxr-x  8 hadoop hadoop  4096 04-13 10:16 apache-hive-2.0.0-bin
+drwxr-xr-x 11 hadoop hadoop  4096 04-07 16:34 hadoop-2.6.3
+-rw-rw-r--  1 hadoop hadoop 46879 04-13 10:11 hive1.2.1-20160413.backup.sql
+drwxrwxr-x  2 hadoop hadoop  4096 03-31 15:28 mysql
+lrwxrwxrwx  1 hadoop hadoop    36 04-13 10:17 spark -&gt; spark-1.6.0-bin-hadoop2-without-hive
+drwxrwxr-x 11 hadoop hadoop  4096 04-07 18:23 spark-1.3.1-bin-hadoop2.6.3-without-hive
+drwxrwxr-x 11 hadoop hadoop  4096 03-28 11:15 spark-1.6.0-bin-hadoop2-without-hive
+drwxr-xr-x 11 hadoop hadoop  4096 03-31 16:14 zookeeper-3.4.6
+
+# 环境变量我直接加载的是link软链接的，我这直接修改软链就行了。根据情况调整。
+# apache-hive-2.0.0-bin同级目录建立spark软链接，或者再hive-env.sh中指定SPARK_HOME的位置
+
+# hive-1.2.1并没有txn的表，所有要单独执行下hive-txn-schema-2.0.0.mysql.sql，
+# 然后再更新（后面的Duplicate column的错没问题的）
+[hadoop@file1 tools]$ cd apache-hive-2.0.0-bin/scripts/metastore/upgrade/mysql/
+[hadoop@file1 mysql]$ mysql -uroot -p
+Enter password: 
+Welcome to the MySQL monitor.  Commands end with ; or \g.
+Your MySQL connection id is 10765
+Server version: 5.5.48 MySQL Community Server (GPL)
+
+Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
+
+Oracle is a registered trademark of Oracle Corporation and/or its
+affiliates. Other names may be trademarks of their respective
+owners.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+mysql&gt; use hive;
+Reading table information for completion of table and column names
+You can turn off this feature to get a quicker startup with -A
+
+Database changed
+mysql&gt; source hive-txn-schema-2.0.0.mysql.sql
+Query OK, 0 rows affected (0.01 sec)
+
+Query OK, 0 rows affected (0.00 sec)
+
+Query OK, 0 rows affected (0.04 sec)
+
+Query OK, 0 rows affected (0.03 sec)
+
+Query OK, 1 row affected (0.04 sec)
+
+Query OK, 0 rows affected (0.00 sec)
+
+Query OK, 0 rows affected (0.03 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+Query OK, 0 rows affected (0.01 sec)
+
+Query OK, 1 row affected (0.00 sec)
+
+Query OK, 0 rows affected (0.01 sec)
+
+Query OK, 0 rows affected (0.01 sec)
+
+Query OK, 0 rows affected (0.00 sec)
+
+Query OK, 1 row affected (0.00 sec)
+
+Query OK, 0 rows affected (0.01 sec)
+
+mysql&gt; source upgrade-1.2.0-to-2.0.0.mysql.sql
++------------------------------------------------+
+|                                                |
++------------------------------------------------+
+| Upgrading MetaStore schema from 1.2.0 to 2.0.0 |
++------------------------------------------------+
+1 row in set, 1 warning (0.00 sec)
+
++---------------------------------------------------------------------------------------------------------------+
+|                                                                                                               |
++---------------------------------------------------------------------------------------------------------------+
+| &lt; HIVE-7018 Remove Table and Partition tables column LINK_TARGET_ID from Mysql for other DBs do not have it &gt; |
++---------------------------------------------------------------------------------------------------------------+
+1 row in set, 1 warning (0.00 sec)
+
+Query OK, 0 rows affected, 1 warning (0.03 sec)
+
+Query OK, 0 rows affected, 1 warning (0.00 sec)
+
+Query OK, 0 rows affected, 1 warning (0.00 sec)
+
+Query OK, 0 rows affected (0.00 sec)
+
+Query OK, 0 rows affected (0.00 sec)
+
+Query OK, 0 rows affected (0.00 sec)
+
++---------------------------------+
+| Completed remove LINK_TARGET_ID |
++---------------------------------+
+| Completed remove LINK_TARGET_ID |
++---------------------------------+
+1 row in set (0.02 sec)
+
+Query OK, 0 rows affected (0.02 sec)
+
+Query OK, 31 rows affected (0.01 sec)
+Records: 31  Duplicates: 0  Warnings: 0
+
+Query OK, 0 rows affected (0.05 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+Query OK, 0 rows affected (0.02 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+Query OK, 0 rows affected (0.00 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+Query OK, 0 rows affected (0.03 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+Query OK, 0 rows affected (0.00 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+ERROR 1060 (42S21): Duplicate column name 'CQ_HIGHEST_TXN_ID'
+ERROR 1060 (42S21): Duplicate column name 'CQ_META_INFO'
+ERROR 1060 (42S21): Duplicate column name 'CQ_HADOOP_JOB_ID'
+ERROR 1050 (42S01): Table 'COMPLETED_COMPACTIONS' already exists
+ERROR 1060 (42S21): Duplicate column name 'TXN_AGENT_INFO'
+ERROR 1060 (42S21): Duplicate column name 'TXN_HEARTBEAT_COUNT'
+ERROR 1060 (42S21): Duplicate column name 'HL_HEARTBEAT_COUNT'
+ERROR 1060 (42S21): Duplicate column name 'TXN_META_INFO'
+ERROR 1060 (42S21): Duplicate column name 'HL_AGENT_INFO'
+ERROR 1060 (42S21): Duplicate column name 'HL_BLOCKEDBY_EXT_ID'
+ERROR 1060 (42S21): Duplicate column name 'HL_BLOCKEDBY_INT_ID'
+ERROR 1050 (42S01): Table 'AUX_TABLE' already exists
+Query OK, 1 row affected (0.01 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
++---------------------------------------------------------+
+|                                                         |
++---------------------------------------------------------+
+| Finished upgrading MetaStore schema from 1.2.0 to 2.0.0 |
++---------------------------------------------------------+
+1 row in set, 1 warning (0.00 sec)
+
+# 拷贝hive原来的配置和依赖jar
+
+[hadoop@file1 mysql]$ cd ~/tools/apache-hive-2.0.0-bin/conf/
+[hadoop@file1 conf]$ cp ~/tools/apache-hive-1.2.1-bin/conf/hive-site.xml ./
+[hadoop@file1 conf]$ cp ~/tools/apache-hive-1.2.1-bin/conf/spark-defaults.conf ./
+[hadoop@file1 conf]$ cp ~/tools/apache-hive-1.2.1-bin/conf/hive-env.sh ./
+
+# 用到spark需要加大PermSize
+[hadoop@file1 hive]$ vi conf/hive-env.sh
+export HADOOP_USER_CLASSPATH_FIRST=true
+export HADOOP_OPTS="$HADOOP_OPTS -XX:MaxPermSize=256m"
+
+[hadoop@file1 conf]$ cd ../lib/
+[hadoop@file1 lib]$ cp ~/tools/apache-hive-1.2.1-bin/lib/mysql-connector-java-5.1.34.jar ./
+
+# centos5需要删除下面两个jar，centos6没必要删
+[hadoop@file1 apache-hive-2.0.0-bin]$ rm lib/hive-jdbc-2.0.0-standalone.jar 
+[hadoop@file1 apache-hive-2.0.0-bin]$ rm lib/snappy-java-1.0.5.jar 
+
+# spark-1.6.0更新
+
+# http://spark.apache.org/docs/latest/hadoop-provided.html
+# http://stackoverflow.com/questions/30906412/noclassdeffounderror-com-apache-hadoop-fs-fsdatainputstream-when-execute-spark-s
+[hadoop@file1 apache-hive-2.0.0-bin]$ cd ~/tools/spark-1.6.0-bin-hadoop2-without-hive/conf/
+[hadoop@file1 conf]$ cp spark-env.sh.template spark-env.sh
+[hadoop@file1 conf]$ vi spark-env.sh
+HADOOP_HOME=/home/hadoop/hadoop
+SPARK_DIST_CLASSPATH=`$HADOOP_HOME/bin/hadoop classpath`
+
+[hadoop@file1 ~]$ cp ~/tools/spark-1.6.0-bin-hadoop2-without-hive/lib/spark-1.6.0-yarn-shuffle.jar ~/tools/hadoop-2.6.3/share/hadoop/yarn/
+[hadoop@file1 ~]$ rm ~/tools/hadoop-2.6.3/share/hadoop/yarn/spark-1.3.1-yarn-shuffle.jar 
+
+[hadoop@file1 ~]$ rsync -vaz --delete ~/tools/hadoop-2.6.3/share file2:~/tools/hadoop-2.6.3/ 
+[hadoop@file1 ~]$ rsync -vaz --delete ~/tools/hadoop-2.6.3/share file3:~/tools/hadoop-2.6.3/ 
+
+[hadoop@file1 ~]$ hdfs dfs -put ~/tools/spark-1.6.0-bin-hadoop2-without-hive/lib/spark-assembly-1.6.0-hadoop2.6.3.jar /spark/
+
+[hadoop@file1 apache-hive-2.0.0-bin]$ vi conf/spark-defaults.conf 
+spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3.jar
+
+# 重启yarn（如果你用hiveserver2，先往下看，后面还会修改配置重启的）
+
+[hadoop@file1 apache-hive-2.0.0-bin]$ cd ~/tools/hadoop-2.6.3/
+[hadoop@file1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
+[hadoop@file1 hadoop-2.6.3]$ sbin/start-yarn.sh 
+</code></pre>
+
+<p>更新到这里，执行hive命令是ok了的。但是hiveserver还有问题。</p>
+
+<pre><code># 启动hiveserver2
+[hadoop@file1 hive]$ nohup bin/hiveserver2 &amp;
+
+# 启动spark historyserver
+[hadoop@file1 spark]$ cat start-historyserver.sh 
+source $HADOOP_HOME/libexec/hadoop-config.sh
+sbin/start-history-server.sh hdfs:///spark-eventlogs
+
+[hadoop@file1 hive]$ bin/beeline -u jdbc:hive2://file1:10000/ -n hadoop -p hadoop
+which: no hbase in (/home/hadoop/hadoop/bin:/home/hadoop/hive/bin:/opt/jdk1.7.0_60/bin:/usr/kerberos/bin:/usr/local/bin:/bin:/usr/bin:/home/hadoop/tools/hadoop-2.6.3/bin:/home/hadoop/tools/hadoop-2.6.3:/home/hadoop/tools/apache-hive-1.2.1-bin:/home/hadoop/bin)
+ls: /home/hadoop/hive/lib/hive-jdbc-*-standalone.jar: 没有那个文件或目录
+SLF4J: Class path contains multiple SLF4J bindings.
+SLF4J: Found binding in [jar:file:/home/hadoop/tools/apache-hive-2.0.0-bin/lib/log4j-slf4j-impl-2.4.1.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+SLF4J: Found binding in [jar:file:/home/hadoop/tools/hadoop-2.6.3/share/hadoop/common/lib/slf4j-log4j12-1.7.5.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J: Actual binding is of type [org.apache.logging.slf4j.Log4jLoggerFactory]
+Connecting to jdbc:hive2://file1:10000/
+Error: Failed to open new session: java.lang.RuntimeException: org.apache.hadoop.ipc.RemoteException(org.apache.hadoop.security.authorize.AuthorizationException): User: hadoop is not allowed to impersonate hadoop (state=,code=0)
+Beeline version 2.0.0 by Apache Hive
+beeline&gt; 
+</code></pre>
+
+<p>Beeline连接hiveserver2失败，模拟的hadoop用户授权失败。需要修改hadoop的参数。</p>
+
+<pre><code># https://community.hortonworks.com/questions/4905/error-while-running-hive-queries-from-zeppelin.html
+# http://stackoverflow.com/questions/25073792/error-e0902-exception-occured-user-root-is-not-allowed-to-impersonate-root
+# core-site.xml添加，并重启集群hdfs &amp; yarn
+&lt;property&gt;
+&lt;name&gt;hadoop.proxyuser.hadoop.hosts&lt;/name&gt;&lt;value&gt;*&lt;/value&gt;
+&lt;/property&gt;
+&lt;property&gt;
+&lt;name&gt;hadoop.proxyuser.hadoop.groups&lt;/name&gt;&lt;value&gt;*&lt;/value&gt;
+&lt;/property&gt;
+
+[hadoop@file1 hadoop-2.6.3]$ sbin/stop-all.sh
+[hadoop@file1 hadoop-2.6.3]$ sbin/start-all.sh 
+
+[hadoop@file1 hive]$ bin/beeline -u jdbc:hive2://file1:10000 -n hadoop -p hadoop
+...
+0: jdbc:hive2://file1:10000/&gt; set hive.execution.engine=spark;
+No rows affected (0.019 seconds)
+0: jdbc:hive2://file1:10000/&gt; select count(*) from t_info where edate=20160413;
+INFO  : Compiling command(queryId=hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea): select count(*) from t_info where edate=20160413
+INFO  : Semantic Analysis Completed
+INFO  : Returning Hive schema: Schema(fieldSchemas:[FieldSchema(name:c0, type:bigint, comment:null)], properties:null)
+INFO  : Completed compiling command(queryId=hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea); Time taken: 0.523 seconds
+INFO  : Executing command(queryId=hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea): select count(*) from t_info where edate=20160413
+INFO  : Query ID = hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea
+INFO  : Total jobs = 1
+INFO  : Launching Job 1 out of 1
+INFO  : Starting task [Stage-1:MAPRED] in serial mode
+
+INFO  : 
+Query Hive on Spark job[0] stages:
+INFO  : 0
+INFO  : 1
+INFO  : 
+Status: Running (Hive on Spark job[0])
+INFO  : Job Progress Format
+CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+INFO  : 2016-04-13 11:41:20,519 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:23,577 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:26,817 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:29,858 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:32,903 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:35,942 Stage-0_0: 0(+8)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:37,969 Stage-0_0: 0(+9)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:38,981 Stage-0_0: 1(+8)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:39,994 Stage-0_0: 3(+7)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:43,030 Stage-0_0: 3(+7)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:45,056 Stage-0_0: 5(+5)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:46,072 Stage-0_0: 6(+4)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:47,085 Stage-0_0: 8(+2)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:48,096 Stage-0_0: 9(+1)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:51,125 Stage-0_0: 9(+1)/10     Stage-1_0: 0/1
+INFO  : 2016-04-13 11:41:52,134 Stage-0_0: 10/10 Finished       Stage-1_0: 1/1 Finished
+INFO  : Status: Finished successfully in 64.78 seconds
+INFO  : Completed executing command(queryId=hadoop_20160413114039_f930d3e7-af83-4b12-a536-404a4e20eeea); Time taken: 71.767 seconds
+INFO  : OK
++-----------+--+
+|    c0     |
++-----------+--+
+| 89867722  |
++-----------+--+
+1 row selected (72.45 seconds)
+</code></pre>
+
+<p>本来升级是想看看UI长什么样子，有点失望，功能太少了。只能看当前执行的SQL和session，历史记录不能查看。期待新版本UI更强大。</p>
+
+<p>升级后beeline上下键切换历史的也不起作用了，hive-2.0.0没也啥吸引的功能（<strong>hive2准备淘汰mr了</strong>），觉得不爽可以直接替换 软链 退回hive1.2.1-spark1.3.1（实践后没问题，spark.yarn.jar记得改）</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Hive-on-spark Snappy on Centos5]]></title>
+    <link href="http://winse.github.io/blog/2016/04/08/snappy-centos5-on-hive-on-spark/"/>
+    <updated>2016-04-08T22:27:06+08:00</updated>
+    <id>http://winse.github.io/blog/2016/04/08/snappy-centos5-on-hive-on-spark</id>
+    <content type="html"><![CDATA[<p>hive的assembly包就是一个坑货！既然是一个单独的可运行的jar放到lib包下面干嘛呢！！纯属记录工作过程总的经历，想找干货的飘过吧！！</p>
+
+<p><br/></p>
+
+<p>上周支撑部门其他项目的hadoop项目，由于 <strong>hive mr</strong> 比较慢，想用spark试一试看能不能优化。但是系统使用Centos5，我们项目使用的是Centos6。按部就班的编译呗，hive-on-saprk启用SNAPPY的必要条件：</p>
+
+<ul>
+<li>hadoop使用snappy需要native的支持，首先当然是Centos5上编译hadoop。(现在看来可以不必要，但每次hdfs命令都提示我native的错误就很不爽)</li>
+<li>hive增加spark。</li>
+</ul>
+
+
+<p>各程序版本信息：</p>
+
+<ul>
+<li>hadoop-2.6.3</li>
+<li>hive-1.2.1</li>
+<li>spark-1.3.1</li>
+<li>centos5.4</li>
+</ul>
+
+
+<h2>编译hadoop-snappy</h2>
+
+<ul>
+<li>centos5手动</li>
+</ul>
+
+
+<pre><code>[root@localhost snappy-1.1.3]# ./autogen.sh 
+Remember to add `AC_PROG_LIBTOOL' to `configure.ac'.
+You should update your `aclocal.m4' by running aclocal.
+libtoolize: `config.guess' exists: use `--force' to overwrite
+libtoolize: `config.sub' exists: use `--force' to overwrite
+libtoolize: `ltmain.sh' exists: use `--force' to overwrite
+Makefile.am:4: Libtool library used but `LIBTOOL' is undefined
+Makefile.am:4: 
+Makefile.am:4: The usual way to define `LIBTOOL' is to add `AC_PROG_LIBTOOL'
+Makefile.am:4: to `configure.ac' and run `aclocal' and `autoconf' again.
+Makefile.am:20: `dist_doc_DATA' is used but `docdir' is undefined
+</code></pre>
+
+<p>在centos5上面手动编译搞不定，不是专业写C的，这些问题就是天书啊(查了很多资料，试了很多方法都没通)！！ <strong>Snappy可以在centos6上面编译，编译好以后再centos5上面也能用，编译hadoop-snappy也是ok的</strong> 。</p>
+
+<ul>
+<li>centos5-rpm</li>
+</ul>
+
+
+<p>这里直接用rpm安装snappy。觉得创建虚拟机麻烦的话，也可以用docker。docker不同版本的centos下载： <a href="https://github.com/CentOS/sig-cloud-instance-images/">https://github.com/CentOS/sig-cloud-instance-images/</a> 。然后docker共享host主机的文件： <code>docker run -ti -v /home/hadoop:/home/hadoop -v /opt:/opt -v /data:/data centos:centos5 /bin/bash</code></p>
+
+<pre><code>[root@8fb11f6b3ced ~]# cat /etc/redhat-release 
+CentOS release 5.11 (Final)
+
+https://www.rpmfind.net/linux/rpm2html/search.php?query=snappy
+https://www.rpmfind.net/linux/rpm2html/search.php?query=snappy-devel
+
+[root@8fb11f6b3ced hadoop-2.6.3-src]# rpm -ivh snappy-1.0.5-1.el5.x86_64.rpm 
+[root@8fb11f6b3ced hadoop-2.6.3-src]# rpm -ivh snappy-devel-1.0.5-1.el5.x86_64.rpm                                                                                  
+
+[root@8fb11f6b3ced hadoop-2.6.3-src]# rpm -ql snappy-devel snappy
+/usr/include/snappy-c.h
+/usr/include/snappy-sinksource.h
+/usr/include/snappy-stubs-public.h
+/usr/include/snappy.h
+/usr/lib64/libsnappy.so
+/usr/share/doc/snappy-devel-1.0.5
+/usr/share/doc/snappy-devel-1.0.5/format_description.txt
+/usr/lib64/libsnappy.so.1
+/usr/lib64/libsnappy.so.1.1.3
+/usr/share/doc/snappy-1.0.5
+/usr/share/doc/snappy-1.0.5/AUTHORS
+/usr/share/doc/snappy-1.0.5/COPYING
+/usr/share/doc/snappy-1.0.5/ChangeLog
+/usr/share/doc/snappy-1.0.5/NEWS
+/usr/share/doc/snappy-1.0.5/README
+
+[root@8fb11f6b3ced hadoop-2.6.3-src]# export JAVA_HOME=/opt/jdk1.7.0_17
+[root@8fb11f6b3ced hadoop-2.6.3-src]# export MAVEN_HOME=/opt/apache-maven-3.3.9
+[root@8fb11f6b3ced hadoop-2.6.3-src]# export PATH=$JAVA_HOME/bin:$MAVEN_HOME/bin:$PATH
+[root@8fb11f6b3ced hadoop-2.6.3-src]#  
+[root@8fb11f6b3ced hadoop-2.6.3-src]# yum install which gcc gcc-c++ zlib-devel make -y
+[root@8fb11f6b3ced hadoop-2.6.3-src]# 
+[root@8fb11f6b3ced hadoop-2.6.3-src]# cd protobuf-2.5.0
+[root@8fb11f6b3ced hadoop-2.6.3-src]# ./configure 
+[root@8fb11f6b3ced hadoop-2.6.3-src]# make &amp;&amp; make install
+[root@8fb11f6b3ced hadoop-2.6.3-src]# 
+[root@8fb11f6b3ced hadoop-2.6.3-src]# which protoc
+[root@8fb11f6b3ced hadoop-2.6.3-src]# 
+[root@8fb11f6b3ced hadoop-2.6.3-src]# yum install cmake openssl openssl-devel -y
+[root@8fb11f6b3ced hadoop-2.6.3-src]# cd hadoop-2.6.3-src/
+# bundle.snappy和snappy.lib一起使用，可以把系统的snappy.so文件拷贝到lib/native下面（方便拷贝）
+# &lt;http://grepcode.com/file/repo1.maven.org/maven2/org.apache.hadoop/hadoop-project-dist/2.6.0/META-INF/maven/org.apache.hadoop/hadoop-project-dist/pom.xml&gt;
+[root@8fb11f6b3ced hadoop-2.6.3-src]# mvn clean package -Dmaven.javadoc.skip=true -DskipTests -Drequire.snappy=true -Dbundle.snappy=true -Dsnappy.lib=/usr/lib64 -Pdist,native
+
+[root@8fb11f6b3ced hadoop-2.6.3-src]# ll hadoop-dist/target/hadoop-2.6.3/lib/native/
+total 3808
+-rw-r--r-- 1 root root 1036552 Apr 12 09:35 libhadoop.a
+-rw-r--r-- 1 root root 1212600 Apr 12 09:36 libhadooppipes.a
+lrwxrwxrwx 1 root root      18 Apr 12 09:35 libhadoop.so -&gt; libhadoop.so.1.0.0
+-rwxr-xr-x 1 root root  613267 Apr 12 09:35 libhadoop.so.1.0.0
+-rw-r--r-- 1 root root  401836 Apr 12 09:36 libhadooputils.a
+-rw-r--r-- 1 root root  364026 Apr 12 09:35 libhdfs.a
+lrwxrwxrwx 1 root root      16 Apr 12 09:35 libhdfs.so -&gt; libhdfs.so.0.0.0
+-rwxr-xr-x 1 root root  229672 Apr 12 09:35 libhdfs.so.0.0.0
+lrwxrwxrwx 1 root root      18 Apr 12 09:35 libsnappy.so -&gt; libsnappy.so.1.1.3
+lrwxrwxrwx 1 root root      18 Apr 12 09:35 libsnappy.so.1 -&gt; libsnappy.so.1.1.3
+-rwxr-xr-x 1 root root   21568 Apr 12 09:35 libsnappy.so.1.1.3
+
+[root@8fb11f6b3ced hadoop-2.6.3-src]# cd hadoop-dist/target/hadoop-2.6.3/
+[root@8fb11f6b3ced hadoop-2.6.3]# bin/hadoop checknative -a
+16/04/12 09:38:29 WARN bzip2.Bzip2Factory: Failed to load/initialize native-bzip2 library system-native, will use pure-Java version
+16/04/12 09:38:29 INFO zlib.ZlibFactory: Successfully loaded &amp; initialized native-zlib library
+Native library checking:
+hadoop:  true /data/bigdata/sources/hadoop-2.6.3-src/hadoop-dist/target/hadoop-2.6.3/lib/native/libhadoop.so.1.0.0
+zlib:    true /lib64/libz.so.1
+snappy:  true /data/bigdata/sources/hadoop-2.6.3-src/hadoop-dist/target/hadoop-2.6.3/lib/native/libsnappy.so.1
+lz4:     true revision:99
+bzip2:   false 
+openssl: false org.apache.hadoop.crypto.OpensslCipher.initIDs()V
+16/04/12 09:38:29 INFO util.ExitUtil: Exiting with status 1
+</code></pre>
+
+<p>把native下面的打tar包，然后替换生产的。一切都是正常的。接下来坑爹的是spark-snappy，具体的说应该是hive-assmably坑！！</p>
+
+<h2>hive-on-spark snappy</h2>
+
+<p>spark官网也没讲使用snappy需要做什么额外的配置（默认spark.io.compression.codec默认为snappy）。部署后设置 <code>hive.execution.engine=spark</code> 执行spark查询，立马就报错了 <strong> Caused by: java.lang.UnsatisfiedLinkError: /tmp/snappy-1.0.5-libsn
+appyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9' not found (required by /tmp/snappy-1.0.5-libsnappyjava.so)</strong> 从错误堆栈看与hadoop-native-snappy没关系，而是一个snappy-java的包。</p>
+
+<pre><code>[hadoop@file1 ~]$ strings /usr/lib64/libstdc++.so.6 | grep GLIBCXX
+GLIBCXX_3.4
+GLIBCXX_3.4.1
+GLIBCXX_3.4.2
+GLIBCXX_3.4.3
+GLIBCXX_3.4.4
+GLIBCXX_3.4.5
+GLIBCXX_3.4.6
+GLIBCXX_3.4.7
+GLIBCXX_3.4.8
+GLIBCXX_FORCE_NEW
+</code></pre>
+
+<p>确实缺少GLIBCXX_3.4.9，最新版本的centos5.11也是一样输出的。</p>
+
+<p>spark的配置为：</p>
+
+<pre><code>spark.yarn.jar    hdfs:///spark/spark-assembly-1.3.1-hadoop2.6.3.jar
+
+spark.master  yarn-client
+
+spark.dynamicAllocation.enabled    true
+spark.shuffle.service.enabled      true
+spark.dynamicAllocation.minExecutors    2 
+spark.dynamicAllocation.maxExecutors    18
+
+spark.driver.maxResultSize   0
+spark.master=yarn-client
+spark.driver.memory=5g
+spark.eventLog.enabled  true
+spark.eventLog.compress  true
+spark.eventLog.dir    hdfs:///spark-eventlogs
+spark.yarn.historyServer.address file1:18080
+
+spark.serializer        org.apache.spark.serializer.KryoSerializer
+spark.kryoserializer.buffer.max    512m
+</code></pre>
+
+<p>报错的具体信息：</p>
+
+<pre><code>- 16/04/12 20:20:08 INFO storage.BlockManagerMaster: Registered BlockManager
+- java.lang.reflect.InvocationTargetException
+-        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+-        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+-        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+-        at java.lang.reflect.Method.invoke(Method.java:606)
+-        at org.xerial.snappy.SnappyLoader.loadNativeLibrary(SnappyLoader.java:322)
+-        at org.xerial.snappy.SnappyLoader.load(SnappyLoader.java:229)
+-        at org.xerial.snappy.Snappy.&lt;clinit&gt;(Snappy.java:48)
+-        at org.apache.spark.io.SnappyCompressionCodec.&lt;init&gt;(CompressionCodec.scala:150)
+-        at sun.reflect.NativeConstructorAccessorImpl.newInstance0(Native Method)
+-        at sun.reflect.NativeConstructorAccessorImpl.newInstance(NativeConstructorAccessorImpl.java:57)
+-        at sun.reflect.DelegatingConstructorAccessorImpl.newInstance(DelegatingConstructorAccessorImpl.java:45)
+-        at java.lang.reflect.Constructor.newInstance(Constructor.java:526)
+-        at org.apache.spark.io.CompressionCodec$.createCodec(CompressionCodec.scala:68)
+-        at org.apache.spark.io.CompressionCodec$.createCodec(CompressionCodec.scala:60)
+-        at org.apache.spark.scheduler.EventLoggingListener.&lt;init&gt;(EventLoggingListener.scala:67)
+-        at org.apache.spark.SparkContext.&lt;init&gt;(SparkContext.scala:400)
+-        at org.apache.spark.api.java.JavaSparkContext.&lt;init&gt;(JavaSparkContext.scala:61)
+-        at org.apache.hive.spark.client.RemoteDriver.&lt;init&gt;(RemoteDriver.java:169)
+-        at org.apache.hive.spark.client.RemoteDriver.main(RemoteDriver.java:556)
+-        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+-        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+-        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+-        at java.lang.reflect.Method.invoke(Method.java:606)
+-        at org.apache.spark.deploy.SparkSubmit$.org$apache$spark$deploy$SparkSubmit$$runMain(SparkSubmit.scala:569)
+-        at org.apache.spark.deploy.SparkSubmit$.doRunMain$1(SparkSubmit.scala:166)
+-        at org.apache.spark.deploy.SparkSubmit$.submit(SparkSubmit.scala:189)
+-        at org.apache.spark.deploy.SparkSubmit$.main(SparkSubmit.scala:110)
+-        at org.apache.spark.deploy.SparkSubmit.main(SparkSubmit.scala)
+- Caused by: java.lang.UnsatisfiedLinkError: /tmp/snappy-1.0.5-libsnappyjava.so: /usr/lib64/libstdc++.so.6: version `GLIBCXX_3.4.9' not found (required by /tmp/snappy-1.0.5-libs
+-        at java.lang.ClassLoader$NativeLibrary.load(Native Method)
+-        at java.lang.ClassLoader.loadLibrary1(ClassLoader.java:1965)
+-        at java.lang.ClassLoader.loadLibrary0(ClassLoader.java:1890)
+-        at java.lang.ClassLoader.loadLibrary(ClassLoader.java:1851)
+-        at java.lang.Runtime.load0(Runtime.java:795)
+-        at java.lang.System.load(System.java:1062)
+-        at org.xerial.snappy.SnappyNativeLoader.load(SnappyNativeLoader.java:39)
+-        ... 28 more
+</code></pre>
+
+<p>spark用到了snappy-java来处理snappy的解压缩。用jinfo获取SparkSubmit进程的classpath，用这个classpath跑helloworld确实是报错的，但是单独用hadoop-common下面的 snappy-java-1.0.4.1.jar 是没问题的。</p>
+
+<pre><code>[hadoop@file1 snappy-java-test]$ cat Hello.java 
+import org.xerial.snappy.Snappy;
+
+public class Hello { 
+public static void main(String[] args) throws Exception {
+String input = "Hello snappy-java!";
+
+byte[] compressed = Snappy.compress(input.getBytes("utf-8"));
+byte[] uncompressed = Snappy.uncompress(compressed);
+
+String result = new String(uncompressed, "utf-8");
+System.out.println(result);
+}
+}
+
+[hadoop@file1 snappy-java-test]$ java -cp .:/home/hadoop/tools/hadoop-2.6.3/share/hadoop/common/lib/snappy-java-1.0.4.1.jar Hello
+Hello snappy-java!
+</code></pre>
+
+<p>而而而，classpath中就只有hadoop-common和hadoop-mapreduce下面有snappy-java包，并且都是1.0.4.1，那TMD的使用SparkSubmit-classpath加载Snappy是哪个jar里面的呢？</p>
+
+<p>调整后的helloworld为：</p>
+
+<pre><code>[hadoop@file1 snappy-java-test]$ cat Hello.java 
+import org.xerial.snappy.Snappy;
+
+public class Hello { 
+public static void main(String[] args) throws Exception {
+String input = "Hello snappy-java!";
+
+System.out.println(Snappy.class.getProtectionDomain());
+byte[] compressed = Snappy.compress(input.getBytes("utf-8"));
+byte[] uncompressed = Snappy.uncompress(compressed);
+
+
+String result = new String(uncompressed, "utf-8");
+System.out.println(result);
+}
+}
+</code></pre>
+
+<p>添加getProtectionDomain查看加载类的jar。再编译跑一次，这次终于找到真凶了！！hive-assembly，assembly包还放在lib下面就tmd的是一个坑货！！hive-exec的guava已经坑了很多人了，这次换hive-jdbc了！！(我这里的环境是centos5，centos6是没有这个问题的！！)</p>
+
+<p><img src="/images/blogs/hive-on-spark-centos5-snappy-hive-jdbc.png" alt="" /></p>
+
+<p>如果指定使用hadoop编译依赖的snappy.so.1.1.3动态链接库会出现版本不兼容的问题。还是干掉hive-jdbc-standalone吧。。。囧</p>
+
+<pre><code># 查看源码SnappyLoader#loadSnappySystemProperties，可以通过配置指定使用系统动态链接库
+[hadoop@file1 snappy-java-test]$ cat org-xerial-snappy.properties 
+org.xerial.snappy.use.systemlib=true
+[hadoop@file1 snappy-java-test]$ ln -s /home/hadoop/tools/hadoop-2.6.3/lib/native/libsnappy.so libsnappyjava.so
+[hadoop@file1 snappy-java-test]$ ll
+总计 1240
+-rw-rw-r-- 1 hadoop hadoop     854 04-08 10:11 Hello.class
+-rw-rw-r-- 1 hadoop hadoop     408 04-08 10:11 Hello.java
+lrwxrwxrwx 1 hadoop hadoop      55 04-12 19:37 libsnappyjava.so -&gt; /home/hadoop/tools/hadoop-2.6.3/lib/native/libsnappy.so
+-rw-rw-r-- 1 hadoop hadoop      37 04-12 19:15 org-xerial-snappy.properties
+-rw-r--r-- 1 hadoop hadoop 1251514 2014-04-29 snappy-java-1.0.5.jar
+[hadoop@file1 snappy-java-test]$ java -cp .:snappy-java-1.0.5.jar -Djava.library.path=. Hello
+ProtectionDomain  (file:/home/hadoop/snappy-java-test/snappy-java-1.0.5.jar &lt;no signer certificates&gt;)
+ sun.misc.Launcher$AppClassLoader@333cb1eb
+ &lt;no principals&gt;
+ java.security.Permissions@7377711 (
+ ("java.io.FilePermission" "/home/hadoop/snappy-java-test/snappy-java-1.0.5.jar" "read")
+ ("java.lang.RuntimePermission" "exitVM")
+)
+
+
+Exception in thread "main" java.lang.UnsatisfiedLinkError: org.xerial.snappy.SnappyNative.maxCompressedLength(I)I
+        at org.xerial.snappy.SnappyNative.maxCompressedLength(Native Method)
+        at org.xerial.snappy.Snappy.maxCompressedLength(Snappy.java:320)
+        at org.xerial.snappy.Snappy.rawCompress(Snappy.java:333)
+        at org.xerial.snappy.Snappy.compress(Snappy.java:92)
+        at Hello.main(Hello.java:8)
+</code></pre>
+
+<p>删掉jdbc-standalone后，hive-on-spark就ok了。如果你无法下手删除 hive-jdbc-1.2.1-standalone.jar ，那就把 <code>spark.io.compression.codec</code> 改成 <code>lz4</code> 等压缩也是可以的。</p>
+
+<pre><code>[hadoop@file1 ~]$ hive
+
+Logging initialized using configuration in file:/home/hadoop/tools/apache-hive-1.2.1-bin/conf/hive-log4j.properties
+hive&gt; set hive.execution.engine=spark;
+hive&gt; select count(*) from t_info where edate=20160411;
+Query ID = hadoop_20160412205338_2c95c5fd-af50-42ba-8681-e154e4b74cb1
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Starting Spark Job = 69afc030-fa1f-4fdf-81ef-12bdca411a4f
+
+Query Hive on Spark job[0] stages:
+0
+1
+
+Status: Running (Hive on Spark job[0])
+Job Progress Format
+CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+2016-04-12 20:54:11,367 Stage-0_0: 0(+2)/234    Stage-1_0: 0/1
+2016-04-12 20:54:14,421 Stage-0_0: 0(+2)/234    Stage-1_0: 0/1
+2016-04-12 20:54:17,457 Stage-0_0: 0(+2)/234    Stage-1_0: 0/1
+2016-04-12 20:54:19,486 Stage-0_0: 2(+2)/234    Stage-1_0: 0/1
+2016-04-12 20:54:20,497 Stage-0_0: 3(+2)/234    Stage-1_0: 0/1
+2016-04-12 20:54:21,509 Stage-0_0: 5(+2)/234    Stage-1_0: 0/1
+2016-04-12 20:54:22,520 Stage-0_0: 6(+2)/234    Stage-1_0: 0/1
+2016-04-12 20:54:23,532 Stage-0_0: 7(+2)/234    Stage-1_0: 0/1
+</code></pre>
+
+<h2>小结</h2>
+
+<p>第一，hive的assembly的包太tmd的坑了。第二，以后找java具体加载那个类，可以通过 class.getProtectionDomain 来获取了。第三，又多尝试一个环境部署hadoop。呵呵</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[DBCP参数在Hive JDBC上的实践]]></title>
+    <link href="http://winse.github.io/blog/2016/04/08/dbcp-parameters/"/>
+    <updated>2016-04-08T19:48:01+08:00</updated>
+    <id>http://winse.github.io/blog/2016/04/08/dbcp-parameters</id>
+    <content type="html"><![CDATA[<p>查询程序一开始只是简单使用dbcp来做连接的限制。在实践的过程中遇到各种问题，本文记录DBCP的参数优化提高程序健壮性的两次过程。</p>
+
+<p>最开始的DBCP的配置：</p>
+
+<pre><code>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+    destroy-method="close" 
+    p:driverClassName="${hiveDriverClassName}"
+    p:url="${hiveUrl}" 
+    p:username="${hiveUsername}" 
+    p:password="${hivePassword}"
+    p:maxIdle="${hiveMaxIdle}" 
+    p:maxWait="${hiveMaxWait}" 
+    p:maxActive="${hiveMaxActive}" /&gt;
+
+&lt;bean id="hiveTemplate" class="org.springframework.jdbc.core.JdbcTemplate"&gt;
+    &lt;property name="dataSource"&gt;
+        &lt;ref bean="hiveDataSource" /&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+</code></pre>
+
+<p>第一个遇到的问题，就是每次hiveserver2重启后，这个查询程序也得重启。在实际使用过程中非常的麻烦！！</p>
+
+<h4>重启问题（连接断开后不能重连）</h4>
+
+<p>首先给出学习的链接 <a href="http://elf8848.iteye.com/blog/1931778">http://elf8848.iteye.com/blog/1931778</a> 巨详细，同时问题的场景都一模一样啊！！</p>
+
+<p>添加三个参数：</p>
+
+<ul>
+<li>testOnBorrow = &ldquo;true&rdquo;       借出连接时不要测试，否则很影响性能。如果需要可以把validation语句搞个性能消耗最少的</li>
+<li>testWhileIdle = &ldquo;true&rdquo;       指明连接是否被空闲连接回收器(如果有)进行检验.如果检测失败,则连接将被从池中去除.</li>
+<li>validationQuery = &ldquo;show databases&rdquo; 验证连接是否可用，使用的SQL语句</li>
+</ul>
+
+
+<p>解释：</p>
+
+<p>testWhileIdle = &ldquo;true&rdquo; 表示每 {timeBetweenEvictionRunsMillis} (默认-1，不执行)秒，取出 {numTestsPerEvictionRun} (默认值3)条连接，使用 {validationQuery} 进行测试 ，测试不成功就销毁连接。销毁连接后，连接数量就少了，如果小于minIdle数量，就新建连接。</p>
+
+<p>testOnBorrow = &ldquo;true&rdquo; 它的默认值是true，如果测试失败会drop掉然后再borrow。false表示每次从连接池中取出连接时，不需要执行 {validationQuery} 中的SQL进行测试。若配置为true,对性能有非常大的影响，性能会下降7-10倍。所在一定要配置为false.</p>
+
+<p>调整参数后hiveserver2重启，查询再连会先报错然后再连。在每次取连接的时刻使用 <code>show databases</code> 测试，如果失败则从pool中删掉这个连接，重新再取，实现了重连的效果。这里不用 <code>select 1</code> hive里面执行很慢， 同时testWhileIdle并没有生效，因为没有配置timeBetweenEvictionRunsMillis参数。</p>
+
+<p>调整后的：</p>
+
+<pre><code>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+destroy-method="close" 
+p:driverClassName="${hiveDriverClassName}"
+p:url="${hiveUrl}" 
+p:username="${hiveUsername}" 
+p:password="${hivePassword}"
+p:testOnBorrow="${hiveTestOnBorrow}"
+p:testWhileIdle="${hiveTestWhileIdle}" 
+p:validationQuery="${hiveValidationQuery}"
+p:maxIdle="${hiveMaxIdle}" 
+p:maxWait="${hiveMaxWait}" 
+p:maxActive="${hiveMaxActive}" 
+/&gt;
+</code></pre>
+
+<p>问题又来了，由于测试切换tez和spark才配置了上面的重连。但是切换到spark后，启动的spark会一直保持(连接创建的session不会主动关闭)，直到hiveserver2 session超时(默认6h检查一次，7h idle就关闭)。</p>
+
+<p>注意：有个隐忧，hive-on-spark每个连接都创建一个SESSION，这就退化到MR操作了。不能完全利用SPARK的优势！！例如业务中，即查询count、又获取一页数据，这里就是两个单独的spark程序！！N个session就N个 <strong>hive on spark</strong> 啊！！</p>
+
+<h4>第二个问题，服务端session强制关闭</h4>
+
+<p>问题其实和参考中的: <strong>MySQL8小时问题，Mysql服务器默认连接的“wait_timeout”是8小时，也就是说一个connection空闲超过8个小时，Mysql将自动断开该 connection</strong> 一模一样的。在增加 <strong>minEvictableIdleTimeMillis</strong> 和 <strong>timeBetweenEvictionRunsMillis</strong> 设置检查和回收的时间。</p>
+
+<ul>
+<li>timeBetweenEvictionRunsMillis = &ldquo;1800000&rdquo;  每30分钟运行一次空闲连接回收器，没必要那么频繁。</li>
+<li>minEvictableIdleTimeMillis = &ldquo;3600000&rdquo;  池中的连接空闲1个小时后被回收，如果1个半小时没有操作，这个session就会被客户端关闭。可以通过yarn-8088的scheduler页面查看。</li>
+</ul>
+
+
+<p>设置后的最终效果：</p>
+
+<pre><code>&lt;bean id="hiveDataSource" class="org.apache.commons.dbcp.BasicDataSource"
+destroy-method="close" 
+p:driverClassName="${hiveDriverClassName}"
+p:url="${hiveUrl}" 
+p:username="${hiveUsername}" 
+p:password="${hivePassword}"
+p:testOnBorrow="${hiveTestOnBorrow}"
+p:validationQuery="${hiveValidationQuery}"
+p:maxWait="${hiveMaxWait}" 
+p:maxIdle="${hiveMaxIdle}" 
+p:maxActive="${hiveMaxActive}" 
+p:testWhileIdle="${hiveTestWhileIdle}" 
+p:timeBetweenEvictionRunsMillis="${hiveTimeBetweenEvictionRunsMillis}" 
+p:minEvictableIdleTimeMillis="${hiveMinEvictableIdleTimeMillis}" 
+p:removeAbandoned="true"
+p:logAbandoned="true"
+/&gt;
+</code></pre>
+
+<p>很多程序都有很多参数，大部分能通过文档明白，但是一些参数不到实践真的很难真正体会它的含义。参考的文章两次改进我查看了，但是第一次看的时刻根本没去加其他参数，因为对我来说没用，解决当前问题用不到嘛。</p>
+
+<p>hadoop的参数更多，core/hdfs/mapred/yarn需要多用才能发现参数的功能和妙用。<strong>纸上得来终觉浅，绝知此事要躬行</strong> 。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Parquet学习]]></title>
+    <link href="http://winse.github.io/blog/2016/03/29/parquet-simple-view/"/>
+    <updated>2016-03-29T19:13:53+08:00</updated>
+    <id>http://winse.github.io/blog/2016/03/29/parquet-simple-view</id>
+    <content type="html"><![CDATA[<h2>经典文章</h2>
+
+<ul>
+<li><a href="http://parquet.apache.org/documentation/latest/">http://parquet.apache.org/documentation/latest/</a></li>
+<li><a href="https://blog.twitter.com/2013/dremel-made-simple-with-parquet">https://blog.twitter.com/2013/dremel-made-simple-with-parquet</a></li>
+<li><a href="https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL">https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL</a></li>
+</ul>
+
+
+<h2>概念</h2>
+
+<ul>
+<li>Row Group
+
+<ul>
+<li>Column Chunk
+
+<ul>
+<li>Page
+
+<ul>
+<li>Definition Levels: To support nested records we need to store the level for which the field is null. This is what the definition level is for: from 0 at the root of the schema up to the maximum level for this column. When a field is defined then all its parents are defined too, but <strong>when it is null we need to record the level at which it started being null to be able to reconstruct the record</strong>.</li>
+<li>Repetition Levels: To support repeated fields we need to store when new lists are starting in a column of values. This is what repetition level is for: it is the level at which we have to create a new list for the current value. <strong>In other words, the repetition level can be seen as a marker of when to start a new list and at which level</strong>.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li>FileMetaData</li>
+</ul>
+
+
+<p>The definition and repetition levels are optional, based on the schema definition. If the column is not nested (i.e. the path to the column has length 1), we do not encode the repetition levels (it would always have the value 1). For data that is required, the definition levels are skipped (if encoded, it will always have the value of the max definition level).</p>
+
+<p>For example, in the case where the column is non-nested and required, the data in the page is only the encoded values.</p>
+
+<p><strong>An optimized read setup would be: 1GB row groups, 1GB HDFS block size, 1 HDFS block per HDFS file.</strong></p>
+
+<h2>texfile转parquet</h2>
+
+<pre><code>[hadoop@hadoop-master2 ~]$ cd apache-hive-1.2.1-bin/
+[hadoop@hadoop-master2 apache-hive-1.2.1-bin]$ bin/hive
+hive&gt; CREATE TABLE `t_ods_access_log2_parquet`(   `houseid` string,    `sourceip` string,    `destinationip` string,    `sourceport` string,    `destinationport` string,    `domain` string,    `url` string,    `accesstime` string,    `logid` string,    `sourceipnum` bigint,    `timedetected` string,    `protocol` string,    `duration` string) ROW FORMAT DELIMITED    FIELDS TERMINATED BY '|'  STORED AS PARQUET LOCATION   '/user/hive/t_ods_access_log2_parquet'
+</code></pre>
+
+<p>关键 <strong>STORED AS PARQUET</strong>。</p>
+
+<p>关于压缩，可以通过mapreduce参数设置（ <code>mapreduce.output.fileoutputformat.compress</code> 和 <code>mapreduce.output.fileoutputformat.compress.codec</code> ），但是推荐使用 <code>parquet.compression</code> 属性来指定。</p>
+
+<p>reader/writer都会从 <code>CodecConfig.getCodec()</code> 获取压缩编码。代码中会从parquet属性和mapreduce获取压缩参数。</p>
+
+<pre><code>alter table t_ods_access_log2_parquet SET TBLPROPERTIES ('parquet.compression' = 'SNAPPY' );
+
+create table t_ods_access_log2_parquet_none like t_ods_access_log2_parquet TBLPROPERTIES ('parquet.compression' = 'UNCOMPRESSED' );
+create table t_ods_access_log2_parquet_gzip like t_ods_access_log2_parquet TBLPROPERTIES ('parquet.compression' = 'GZIP' );
+</code></pre>
+
+<p>直接使用hive的insert into语句就可以把原来的textfile的文件转成parquet格式。同时也转成gzip和uncompress比较了一下：</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">文件格式     </th>
+<th style="text-align:left;"> 压缩       </th>
+<th style="text-align:left;"> 大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> snappy     </td>
+<td style="text-align:left;"> 4.1G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> snappy     </td>
+<td style="text-align:left;"> 3.6G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> uncompress </td>
+<td style="text-align:left;"> 7.2G</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> gzip       </td>
+<td style="text-align:left;"> 2.2G</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>直接count整个数据表，使用parquet的输入1M不到数据，太环保了！！（文件都是几十M的，一个文件(block)可以都在一台机器上）。</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;">文件格式     </th>
+<th style="text-align:left;"> 运行引擎       </th>
+<th style="text-align:left;"> 大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> tez            </td>
+<td style="text-align:left;"> HDFS_BYTES_READ    4,454,071,542</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> tez            </td>
+<td style="text-align:left;"> HDFS_BYTES_READ    415,870</td>
+</tr>
+<tr>
+<td style="text-align:left;">textfile     </td>
+<td style="text-align:left;"> sparksql       </td>
+<td style="text-align:left;"> Input  4.1 GB</td>
+</tr>
+<tr>
+<td style="text-align:left;">parquet      </td>
+<td style="text-align:left;"> sparksql       </td>
+<td style="text-align:left;"> Input  384.9 KB</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>用sparksql跑textfile竟然更快。果然内存大暴力也很牛啊！！</p>
+
+<pre><code>hive&gt; insert into t_ods_access_log2_back select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 ;
+Query ID = hadoop_20160329200414_96f1de35-48c5-4b38-977f-05de8554f388
+Total jobs = 1
+Launching Job 1 out of 1
+
+
+Status: Running (Executing on YARN cluster with App id application_1458893800770_3955)
+
+--------------------------------------------------------------------------------
+        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+--------------------------------------------------------------------------------
+Map 1 ..........   SUCCEEDED    152        152        0        0       1       0
+--------------------------------------------------------------------------------
+VERTICES: 01/01  [==========================&gt;&gt;] 100%  ELAPSED TIME: 341.56 s   
+--------------------------------------------------------------------------------
+Loading data to table default.t_ods_access_log2_back
+Table default.t_ods_access_log2_back stats: [numFiles=152, numRows=57688987, totalSize=4454071542, rawDataSize=11018516544]
+OK
+Time taken: 347.997 seconds
+hive&gt; insert into t_ods_access_log2_parquet select houseid,  sourceip,  destinationip,  sourceport,  destinationport,  domain,  url,  accesstime,  logid,  sourceipnum,  timedetected,  protocol,  duration from t_ods_access_log2 where hour=2016032804 ;
+Query ID = hadoop_20160329212157_57b66595-5dfc-4fc9-9ad1-398e2b8ade6b
+Total jobs = 1
+Launching Job 1 out of 1
+Tez session was closed. Reopening...
+Session re-established.
+
+
+Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+
+--------------------------------------------------------------------------------
+        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+--------------------------------------------------------------------------------
+Map 1 ..........   SUCCEEDED    152        152        0        0       0       0
+--------------------------------------------------------------------------------
+VERTICES: 01/01  [==========================&gt;&gt;] 100%  ELAPSED TIME: 237.28 s   
+--------------------------------------------------------------------------------
+Loading data to table default.t_ods_access_log2_parquet
+Table default.t_ods_access_log2_parquet stats: [numFiles=0, numRows=1305035789, totalSize=0, rawDataSize=16965465257]
+OK
+Time taken: 260.515 seconds
+hive&gt; select count(*) from t_ods_access_log2_back;
+Query ID = hadoop_20160329212644_da8e7997-5bcc-41ab-8b63-f1a5919c5a2f
+Total jobs = 1
+Launching Job 1 out of 1
+
+
+Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+
+--------------------------------------------------------------------------------
+        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+--------------------------------------------------------------------------------
+Map 1 ..........   SUCCEEDED    107        107        0        0       0       0
+Reducer 2 ......   SUCCEEDED      1          1        0        0       0       0
+--------------------------------------------------------------------------------
+VERTICES: 02/02  [==========================&gt;&gt;] 100%  ELAPSED TIME: 59.01 s    
+--------------------------------------------------------------------------------
+OK
+57688987
+Time taken: 59.768 seconds, Fetched: 1 row(s)
+hive&gt; select count(*) from t_ods_access_log2_parquet;
+Query ID = hadoop_20160329212813_2fb8dafa-5c9a-40e8-a904-13e7cf865ec6
+Total jobs = 1
+Launching Job 1 out of 1
+
+
+Status: Running (Executing on YARN cluster with App id application_1458893800770_3992)
+
+--------------------------------------------------------------------------------
+        VERTICES      STATUS  TOTAL  COMPLETED  RUNNING  PENDING  FAILED  KILLED
+--------------------------------------------------------------------------------
+Map 1 ..........   SUCCEEDED    106        106        0        0       0       0
+Reducer 2 ......   SUCCEEDED      1          1        0        0       0       0
+--------------------------------------------------------------------------------
+VERTICES: 02/02  [==========================&gt;&gt;] 100%  ELAPSED TIME: 45.82 s    
+--------------------------------------------------------------------------------
+OK
+57688987
+Time taken: 47.275 seconds, Fetched: 1 row(s)
+
+hive&gt; set hive.execution.engine=spark;
+hive&gt; set spark.master=yarn-client;
+hive&gt; select count(*) from t_ods_access_log2_back;
+Query ID = hadoop_20160329214550_a58d1056-9c91-4bbe-be7d-122ec3efdd8d
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Starting Spark Job = 3a03d432-83a4-4d5a-a878-c9e52aa94bed
+
+Query Hive on Spark job[0] stages:
+0
+1
+
+Status: Running (Hive on Spark job[0])
+Job Progress Format
+CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+2016-03-29 21:46:26,523 Stage-0_0: 0(+114)/152  Stage-1_0: 0/1
+2016-03-29 21:46:27,535 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+2016-03-29 21:46:30,563 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+2016-03-29 21:46:33,582 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+2016-03-29 21:46:36,606 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+2016-03-29 21:46:39,624 Stage-0_0: 0(+115)/152  Stage-1_0: 0/1
+2016-03-29 21:46:41,637 Stage-0_0: 0(+118)/152  Stage-1_0: 0/1
+2016-03-29 21:46:42,644 Stage-0_0: 4(+115)/152  Stage-1_0: 0/1
+2016-03-29 21:46:43,651 Stage-0_0: 110(+41)/152 Stage-1_0: 0/1
+2016-03-29 21:46:44,658 Stage-0_0: 124(+28)/152 Stage-1_0: 0/1
+2016-03-29 21:46:45,665 Stage-0_0: 128(+24)/152 Stage-1_0: 0/1
+2016-03-29 21:46:46,671 Stage-0_0: 138(+14)/152 Stage-1_0: 0/1
+2016-03-29 21:46:47,677 Stage-0_0: 142(+10)/152 Stage-1_0: 0/1
+2016-03-29 21:46:48,684 Stage-0_0: 144(+8)/152  Stage-1_0: 0/1
+2016-03-29 21:46:49,691 Stage-0_0: 147(+5)/152  Stage-1_0: 0/1
+2016-03-29 21:46:50,698 Stage-0_0: 148(+4)/152  Stage-1_0: 0/1
+2016-03-29 21:46:51,705 Stage-0_0: 149(+3)/152  Stage-1_0: 0/1
+2016-03-29 21:46:52,712 Stage-0_0: 150(+2)/152  Stage-1_0: 0/1
+2016-03-29 21:46:55,731 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+2016-03-29 21:46:58,750 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+2016-03-29 21:47:01,769 Stage-0_0: 151(+1)/152  Stage-1_0: 0/1
+2016-03-29 21:47:02,776 Stage-0_0: 152/152 Finished     Stage-1_0: 0(+1)/1
+2016-03-29 21:47:05,793 Stage-0_0: 152/152 Finished     Stage-1_0: 1/1 Finished
+Status: Finished successfully in 70.33 seconds
+OK
+57688987
+Time taken: 75.211 seconds, Fetched: 1 row(s)
+hive&gt; select count(*) from t_ods_access_log2_back;
+Query ID = hadoop_20160329214723_9663eaf7-7014-46b1-b2ca-811ba64fc55c
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Starting Spark Job = f2dbcd55-b23c-4eb3-9439-8f1c825fbac3
+
+Query Hive on Spark job[1] stages:
+2
+3
+
+Status: Running (Hive on Spark job[1])
+Job Progress Format
+CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+2016-03-29 21:47:24,449 Stage-2_0: 0(+122)/152  Stage-3_0: 0/1
+2016-03-29 21:47:25,455 Stage-2_0: 96(+56)/152  Stage-3_0: 0/1
+2016-03-29 21:47:26,462 Stage-2_0: 123(+29)/152 Stage-3_0: 0/1
+2016-03-29 21:47:27,469 Stage-2_0: 128(+24)/152 Stage-3_0: 0/1
+2016-03-29 21:47:28,476 Stage-2_0: 132(+20)/152 Stage-3_0: 0/1
+2016-03-29 21:47:29,483 Stage-2_0: 137(+15)/152 Stage-3_0: 0/1
+2016-03-29 21:47:30,489 Stage-2_0: 145(+7)/152  Stage-3_0: 0/1
+2016-03-29 21:47:31,495 Stage-2_0: 146(+6)/152  Stage-3_0: 0/1
+2016-03-29 21:47:32,500 Stage-2_0: 150(+2)/152  Stage-3_0: 0/1
+2016-03-29 21:47:33,506 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+2016-03-29 21:47:36,524 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+2016-03-29 21:47:39,540 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+2016-03-29 21:47:42,557 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+2016-03-29 21:47:45,573 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+2016-03-29 21:47:48,589 Stage-2_0: 152/152 Finished     Stage-3_0: 0(+1)/1
+2016-03-29 21:47:49,594 Stage-2_0: 152/152 Finished     Stage-3_0: 1/1 Finished
+Status: Finished successfully in 26.15 seconds
+OK
+57688987
+Time taken: 26.392 seconds, Fetched: 1 row(s)
+hive&gt; select count(*) from t_ods_access_log2_parquet;
+Query ID = hadoop_20160329214758_25084e25-fdaf-4ef8-9c1a-2573515caca6
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Starting Spark Job = 4360be5c-4188-49c4-a2a7-e5bb80164646
+
+Query Hive on Spark job[2] stages:
+5
+4
+
+Status: Running (Hive on Spark job[2])
+Job Progress Format
+CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+2016-03-29 21:47:59,472 Stage-4_0: 0(+63)/65    Stage-5_0: 0/1
+2016-03-29 21:48:00,478 Stage-4_0: 1(+62)/65    Stage-5_0: 0/1
+2016-03-29 21:48:01,486 Stage-4_0: 49(+14)/65   Stage-5_0: 0/1
+2016-03-29 21:48:02,492 Stage-4_0: 51(+14)/65   Stage-5_0: 0/1
+2016-03-29 21:48:03,498 Stage-4_0: 57(+8)/65    Stage-5_0: 0/1
+2016-03-29 21:48:04,505 Stage-4_0: 62(+3)/65    Stage-5_0: 0/1
+2016-03-29 21:48:05,511 Stage-4_0: 63(+2)/65    Stage-5_0: 0/1
+2016-03-29 21:48:06,518 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+2016-03-29 21:48:09,537 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+2016-03-29 21:48:12,556 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+2016-03-29 21:48:15,574 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+2016-03-29 21:48:18,592 Stage-4_0: 65/65 Finished       Stage-5_0: 0(+1)/1
+2016-03-29 21:48:21,608 Stage-4_0: 65/65 Finished       Stage-5_0: 1/1 Finished
+Status: Finished successfully in 23.14 seconds
+OK
+57688987
+Time taken: 23.376 seconds, Fetched: 1 row(s)
+hive&gt; select count(*) from t_ods_access_log2_parquet;
+Query ID = hadoop_20160329214826_173311b1-0083-4e11-9a29-fe13f48bb649
+Total jobs = 1
+Launching Job 1 out of 1
+In order to change the average load for a reducer (in bytes):
+  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+In order to limit the maximum number of reducers:
+  set hive.exec.reducers.max=&lt;number&gt;
+In order to set a constant number of reducers:
+  set mapreduce.job.reduces=&lt;number&gt;
+Starting Spark Job = c452b02b-c68f-4c68-bc28-cb9748d7dcb2
+
+Query Hive on Spark job[3] stages:
+6
+7
+
+Status: Running (Hive on Spark job[3])
+Job Progress Format
+CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+2016-03-29 21:48:27,332 Stage-6_0: 3(+60)/65    Stage-7_0: 0/1
+2016-03-29 21:48:28,338 Stage-6_0: 53(+10)/65   Stage-7_0: 0/1
+2016-03-29 21:48:29,343 Stage-6_0: 60(+3)/65    Stage-7_0: 0/1
+2016-03-29 21:48:30,349 Stage-6_0: 61(+4)/65    Stage-7_0: 0/1
+2016-03-29 21:48:31,354 Stage-6_0: 63(+2)/65    Stage-7_0: 0/1
+2016-03-29 21:48:32,360 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+2016-03-29 21:48:35,377 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+2016-03-29 21:48:38,393 Stage-6_0: 65/65 Finished       Stage-7_0: 0(+1)/1
+2016-03-29 21:48:40,404 Stage-6_0: 65/65 Finished       Stage-7_0: 1/1 Finished
+Status: Finished successfully in 14.08 seconds
+OK
+57688987
+Time taken: 14.306 seconds, Fetched: 1 row(s)
+
+
+[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr 
+         &gt; select count(*) from t_ods_access_log2_parquet;
+57688987
+16/03/29 22:19:51 INFO CliDriver: Time taken: 21.82 seconds, Fetched 1 row(s)
+
+         &gt; select count(*) from t_ods_access_log2_back;
+57688987
+16/03/29 22:20:44 INFO CliDriver: Time taken: 6.634 seconds, Fetched 1 row(s)
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+</feed>

@@ -1,0 +1,1110 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>Docker多主机网络配置 - Pipework - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="前面使用nat+route的方式手动连通两台机器上的docker容器。pipework是通过脚本的方式（手动）设置网络以及修改路由来进行配置的。 参考： Docker网络详解及pipework源码解读与实践
+docker技术剖析&ndash;docker网络（二）docker宿主机之间容器互通 &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winse.github.io/blog/2017/10/07/docker-network-via-pipework">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="//cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winse.github.io" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">Docker多主机网络配置 - Pipework</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-10-07T23:24:23+08:00" pubdate data-updated="true">Sat 2017-10-07 23:24</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><p>前面使用nat+route的方式手动连通两台机器上的docker容器。pipework是通过脚本的方式（手动）设置网络以及修改路由来进行配置的。</p>
+
+<p>参考：</p>
+
+<ul>
+<li><a href="http://www.infoq.com/cn/articles/docker-network-and-pipework-open-source-explanation-practice">Docker网络详解及pipework源码解读与实践</a></li>
+<li><a href="http://hongge.blog.51cto.com/2083180/1843169">docker技术剖析&ndash;docker网络（二）docker宿主机之间容器互通 for centos7.2</a> 步骤更详细一点</li>
+<li><a href="http://tonybai.com/2016/02/15/understanding-docker-multi-host-networking/">理解Docker跨多主机容器网络</a></li>
+</ul>
+
+
+<blockquote><p>2、将物理网卡桥接到虚拟网桥，使得容器与宿主机配置在同一网段下</p>
+
+<p>在各个宿主机上都建立一个新虚拟网桥设备br0，将各自物理网卡eth0桥接br0上，eth0的IP地址赋给br0；同时修改Docker daemon的DOCKER_OPTS，设置-b=br0（替代docker0），并限制Container IP地址的分配范围为同物理段地址（–fixed-cidr）。重启各个主机的Docker Daemon后，处于与宿主机在同一网段的Docker容器就可以实现跨主机访问了。这个方案同样存在局限和扩展性差的问题：比如需将物理网段的地址划分 成小块，分布到各个主机上，防止IP冲突；子网划分依赖物理交换机设置；Docker容器的主机地址空间大小依赖物理网络划分等。</p></blockquote>
+
+<p>原理就是建立一条连接link，一端 <strong> 在主机 </strong> 一端 <strong> 在容器 </strong> ；然后手动配置容器ip和路由；最后把主机Ethernet和新建的Bridge桥接连接到物理网络。</p>
+
+<p>容器的ip地址和主机的ip地址在一个网段内，所以在同一交换机下的所有主机、里面的容器都互通。</p>
+
+<h2>查看原网络的信息：</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# nmcli d show ens33 
+</span><span class='line'>GENERAL.DEVICE:                         ens33
+</span><span class='line'>GENERAL.TYPE:                           ethernet
+</span><span class='line'>GENERAL.HWADDR:                         00:0C:29:2E:67:4D
+</span><span class='line'>GENERAL.MTU:                            1500
+</span><span class='line'>GENERAL.STATE:                          100 (connected)
+</span><span class='line'>GENERAL.CONNECTION:                     ens33
+</span><span class='line'>GENERAL.CON-PATH:                       /org/freedesktop/NetworkManager/ActiveConnection/0
+</span><span class='line'>WIRED-PROPERTIES.CARRIER:               on
+</span><span class='line'>IP4.ADDRESS[1]:                         192.168.191.141/24
+</span><span class='line'>IP4.GATEWAY:                            192.168.191.2
+</span><span class='line'>IP4.ROUTE[1]:                           dst = 172.17.3.0/24, nh = 192.168.191.140, mt = 100
+</span><span class='line'>IP4.DNS[1]:                             192.168.191.2
+</span><span class='line'>IP4.DOMAIN[1]:                          localdomain
+</span><span class='line'>IP6.ADDRESS[1]:                         fe80::3995:4490:e2e7:1d0f/64
+</span><span class='line'>IP6.GATEWAY:                            </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>安装pipework</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>git clone https://github.com/jpetazzo/pipework
+</span><span class='line'>cp ~/pipework/pipework /usr/local/bin/</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>运行docker</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#设置ip转发
+</span><span class='line'>echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+</span><span class='line'>
+</span><span class='line'>vi /etc/sysctl.conf
+</span><span class='line'>net.ipv4.ip_forward = 1  
+</span><span class='line'>
+</span><span class='line'>NAME=test1
+</span><span class='line'>
+</span><span class='line'>#如不需要安装软件，可以加 --net none
+</span><span class='line'>docker run -itd --name $NAME centos /bin/bash
+</span><span class='line'>
+</span><span class='line'>#docker ps -a -f name=$NAME | grep $NAME && docker start $NAME 
+</span><span class='line'>#docker exec test1 yum install -y iproute net-tools </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>配置网络</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>function docker_container_ip () {
+</span><span class='line'>  local name=$1
+</span><span class='line'>  local ip=$2
+</span><span class='line'>  local gateway=${3:-$GATEWAY}
+</span><span class='line'>  
+</span><span class='line'>  pipework br0 $name $ip@$gateway
+</span><span class='line'>  #docker exec $name ifconfig 
+</span><span class='line'>  #docker exec $name route -n 
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>function docker_hosted_bridge_network_reset () {
+</span><span class='line'>  local ip=$1
+</span><span class='line'>  local gateway=$2
+</span><span class='line'>  local iface=$3
+</span><span class='line'>  
+</span><span class='line'>  if nmcli d show $iface | grep -i ethernet ; then
+</span><span class='line'>    #把地址给网桥，然后把ethernet和bridge连起来：(SSH连接操作的话，需要一条命令搞定！修改br0地址后route会变)
+</span><span class='line'>    ip addr add $ip dev br0 ; \
+</span><span class='line'>    ip addr del $ip dev $iface ; \
+</span><span class='line'>    brctl addif br0 $iface ; \
+</span><span class='line'>    #ip route del default ; \
+</span><span class='line'>    ip route add default via $gateway 
+</span><span class='line'>  fi 
+</span><span class='line'>  
+</span><span class='line'>  brctl show br0
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>GATEWAY=$( route -n | grep '^0.0.0.0' | awk '{print $2}' )
+</span><span class='line'>IFACE=$( route -n | grep '^0.0.0.0' | awk '{print $8}' )
+</span><span class='line'>HOSTED_IPADDR=$( ip addr show $IFACE | grep "inet " | awk '{print $2}' )
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>设置容器的IP：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>NAME=test1
+</span><span class='line'>IP=192.168.191.210/24
+</span><span class='line'>
+</span><span class='line'>docker_container_ip $NAME $IP $GATEWAY
+</span><span class='line'>docker_hosted_bridge_network_reset $HOSTED_IPADDR $GATEWAY $IFACE</span></code></pre></td></tr></table></div></figure>
+
+
+<p>上面的方式配置方式<strong>重启就失效</strong>的，可以通过写配置文件的方式来永久生效。如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-ens33 
+</span><span class='line'>TYPE=Ethernet
+</span><span class='line'>DEVICE=ens33
+</span><span class='line'>BRIDGE=br0
+</span><span class='line'>[root@kube-worker1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-br0 
+</span><span class='line'>DEVICE=br0
+</span><span class='line'>TYPE=Bridge
+</span><span class='line'>ONBOOT=yes
+</span><span class='line'>BOOTPROTO=static
+</span><span class='line'>IPADDR=192.168.191.141
+</span><span class='line'>NETMASK=255.255.255.0
+</span><span class='line'>GATEWAY=192.168.191.2
+</span><span class='line'>DNS1=192.168.191.2
+</span><span class='line'>
+</span><span class='line'>USERCTL=no</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>测试</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# screen
+</span><span class='line'>
+</span><span class='line'>  GATEWAY=$( route -n | grep '^0.0.0.0' | awk '{print $2}' )
+</span><span class='line'>  IFACE=$( route -n | grep '^0.0.0.0' | awk '{print $8}' )
+</span><span class='line'>  HOSTED_IPADDR=$( ip addr show $IFACE | grep "inet " | awk '{print $2}' )
+</span><span class='line'>
+</span><span class='line'>  docker run -itd --name test21 centos /bin/bash
+</span><span class='line'>  docker run -itd --name test22 centos /bin/bash
+</span><span class='line'>
+</span><span class='line'>  docker_container_ip test21 192.168.191.231/24 $GATEWAY
+</span><span class='line'>  docker_container_ip test22 192.168.191.232/24 $GATEWAY
+</span><span class='line'>
+</span><span class='line'>  docker exec test21 ping  192.168.191.140
+</span><span class='line'>  docker exec test21 ping  192.168.191.141
+</span><span class='line'>
+</span><span class='line'>[root@kube-master ~]# screen #会话"不断"
+</span><span class='line'>
+</span><span class='line'>  docker_container_ip test11 192.168.191.221/24 $GATEWAY 
+</span><span class='line'>  docker_container_ip test12 192.168.191.222/24 $GATEWAY
+</span><span class='line'>
+</span><span class='line'>  docker_hosted_bridge_network_reset $HOSTED_IPADDR $GATEWAY $IFACE
+</span><span class='line'>
+</span><span class='line'>  docker exec test11 ping 192.168.191.233</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：容器重启后，这些配置的网卡/路由都没有了，要重新配置：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# docker stop test21
+</span><span class='line'>test21
+</span><span class='line'>[root@kube-worker1 ~]# docker start test21
+</span><span class='line'>test21
+</span><span class='line'>[root@kube-worker1 ~]# pipework route test21 show 
+</span><span class='line'>default via 172.18.0.1 dev eth0 
+</span><span class='line'>172.18.0.0/16 dev eth0  proto kernel  scope link  src 172.18.0.2 
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker1 ~]# docker_container_ip test21 192.168.191.231/24 $GATEWAY
+</span><span class='line'>[root@kube-worker1 ~]# pipework route test21 show                            
+</span><span class='line'>default via 192.168.191.2 dev eth1 
+</span><span class='line'>172.18.0.0/16 dev eth0  proto kernel  scope link  src 172.18.0.2 
+</span><span class='line'>192.168.191.0/24 dev eth1  proto kernel  scope link  src 192.168.191.231 
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker1 ~]# docker exec test21 ping 192.168.191.140</span></code></pre></td></tr></table></div></figure>
+
+
+<p>了解原理后，操作起来还是比较容易的。就是每次重启都要重新配置比较烦。可以写成脚本，启动docker容器的时刻就执行下网络配置。</p>
+
+<p>pipework还可以用来配置vlan，暂时没这个需求，并且基本的操作都类似就没有实际操作了。</p>
+
+<p>话说，<strong> pipework还可以用来创建多网卡的容器。用docker network connect其实更简单。 </strong></p>
+
+<h2>后记</h2>
+
+<p>除了通过pipework来实现共享物理网络外，docker network也可以实现这个功能：</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/35742807/docker-1-10-containers-ip-in-lan/35799206#35799206">Docker 1.10 container&rsquo;s IP in LAN</a></li>
+<li><p><a href="https://gist.github.com/dreamcat4/bc202ae175b367bcbe693da7a52851af">using bridge driver and brctrl.md</a> 感觉原理也类似pipework，就是那一堆的netns让 docker network + docker run &ndash;net 实现了而已。</p></li>
+<li><p>建立并配置Bridge：</p></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#中间会导致网络断掉，一条命令搞定才行
+</span><span class='line'>docker network create --gateway=192.168.191.141 --subnet 192.168.191.0/24 --aux-address "DefaultGatewayIPv4=192.168.191.2" -o com.docker.network.bridge.name=br-home-net homenet ; \
+</span><span class='line'>ip addr del 192.168.191.141/24 dev ens33 ; \
+</span><span class='line'>brctl addif br-home-net ens33 
+</span><span class='line'>
+</span><span class='line'>#主机不上外网可以不加
+</span><span class='line'>ip route add default via 192.168.191.2 ; 
+</span><span class='line'>echo "nameserver 114.114.114.114" &gt;&gt;/etc/resolv.conf ; </span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>测试 docker-net + bridge：</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# ip a
+</span><span class='line'>...
+</span><span class='line'>2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast master br-home-net state UP qlen 1000
+</span><span class='line'>    link/ether 00:0c:29:2e:67:4d brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>4: docker0: &lt;NO-CARRIER,BROADCAST,MULTICAST,UP&gt; mtu 1500 qdisc noqueue state DOWN 
+</span><span class='line'>    link/ether 02:42:44:ef:32:28 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 172.18.0.1/16 scope global docker0
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>11: br-home-net: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP 
+</span><span class='line'>    link/ether 02:42:84:97:c2:25 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 192.168.191.141/24 scope global br-home-net
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>    inet6 fe80::42:84ff:fe97:c225/64 scope link 
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>       
+</span><span class='line'>[root@kube-worker1 ~]# docker run -tid --name c200 --net homenet --ip 192.168.191.200 busybox /bin/sh 
+</span><span class='line'>2579c2ddd18d23322eb1e145ad630205933dbc527b8981169ec6b125da8d8f1e
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker1 ~]# docker exec -ti c200 sh 
+</span><span class='line'>/ # ip a
+</span><span class='line'>1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue qlen 1
+</span><span class='line'>    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+</span><span class='line'>    inet 127.0.0.1/8 scope host lo
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>12: eth0@if13: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+</span><span class='line'>    link/ether 02:42:c0:a8:bf:c8 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 192.168.191.200/24 scope global eth0
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>/ # route -n
+</span><span class='line'>Kernel IP routing table
+</span><span class='line'>Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+</span><span class='line'>0.0.0.0         192.168.191.2   0.0.0.0         UG    0      0        0 eth0
+</span><span class='line'>192.168.191.0   0.0.0.0         255.255.255.0   U     0      0        0 eth0
+</span><span class='line'>/ # ping baidu.com 
+</span><span class='line'>PING baidu.com (111.13.101.208): 56 data bytes
+</span><span class='line'>64 bytes from 111.13.101.208: seq=0 ttl=128 time=48.225 ms
+</span><span class='line'>^C
+</span><span class='line'>--- baidu.com ping statistics ---
+</span><span class='line'>1 packets transmitted, 1 packets received, 0% packet loss
+</span><span class='line'>round-trip min/avg/max = 48.225/48.225/48.225 ms
+</span><span class='line'>/ # ping 192.169.191.140
+</span><span class='line'>PING 192.169.191.140 (192.169.191.140): 56 data bytes
+</span><span class='line'>^C
+</span><span class='line'>--- 192.169.191.140 ping statistics ---
+</span><span class='line'>4 packets transmitted, 0 packets received, 100% packet loss
+</span><span class='line'>/ # ping 192.168.191.140
+</span><span class='line'>PING 192.168.191.140 (192.168.191.140): 56 data bytes
+</span><span class='line'>64 bytes from 192.168.191.140: seq=0 ttl=64 time=2.572 ms
+</span><span class='line'>64 bytes from 192.168.191.140: seq=1 ttl=64 time=1.076 ms
+</span><span class='line'>^C
+</span><span class='line'>--- 192.168.191.140 ping statistics ---
+</span><span class='line'>2 packets transmitted, 2 packets received, 0% packet loss
+</span><span class='line'>round-trip min/avg/max = 1.076/1.824/2.572 ms
+</span><span class='line'>/ # ping 192.168.191.141
+</span><span class='line'>PING 192.168.191.141 (192.168.191.141): 56 data bytes
+</span><span class='line'>64 bytes from 192.168.191.141: seq=0 ttl=64 time=0.474 ms
+</span><span class='line'>64 bytes from 192.168.191.141: seq=1 ttl=64 time=0.138 ms
+</span><span class='line'>^C
+</span><span class='line'>--- 192.168.191.141 ping statistics ---
+</span><span class='line'>2 packets transmitted, 2 packets received, 0% packet loss
+</span><span class='line'>round-trip min/avg/max = 0.138/0.306/0.474 ms
+</span><span class='line'>/ # ping 192.168.191.1
+</span><span class='line'>PING 192.168.191.1 (192.168.191.1): 56 data bytes
+</span><span class='line'>64 bytes from 192.168.191.1: seq=0 ttl=128 time=1.068 ms
+</span><span class='line'>64 bytes from 192.168.191.1: seq=1 ttl=128 time=0.603 ms
+</span><span class='line'>^C
+</span><span class='line'>--- 192.168.191.1 ping statistics ---
+</span><span class='line'>2 packets transmitted, 2 packets received, 0% packet loss
+</span><span class='line'>round-trip min/avg/max = 0.603/0.835/1.068 ms
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-10-07T23:24:23+08:00" pubdate data-updated="true">Sat 2017-10-07 23:24</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/docker/'>docker</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2017-10-07-docker-network-via-pipework.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2017/10/06/staf-start-guide/" title="Previous Post: STAF start guide">&laquo; STAF start guide</a>
+      
+      
+        <a class="basic-alignment right" href="/blog/2017/10/08/docker-network-via-macvlan/" title="Next Post: docker多主机网络配置 - Macvlan">docker多主机网络配置 - Macvlan &raquo;</a>
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+	
+  
+<!-- gitalk评论 start -->
+    <div id="gitalk-container"></div> 
+<!-- gitalk评论 end -->
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/27/vnc-server-on-centos7/">在Centos7上安装VNC Server</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/25/develop-environment-prepare/">[整理] 环境准备工具集</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2021/10/31/"></a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2021/09/15/k2-again/">斐讯K2刷机padavan</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/04/12/appium-android-auto-test/">appium-Android自动化测试</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/07/26/android-linux-via-termux/">Android Linux via Termux</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-bk-dot-tencent-dot-com/">Try bk.tencent.com</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/10/20/jcef-build-on-win64/">编译JCEF - Win64</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/bigdata/'>bigdata</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/deprecated/'>deprecated</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/devops/'>devops</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (15) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/es/'>es</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (44) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (13) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jenkins/'>jenkins</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k2/'>k2</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kubeadm/'>kubeadm</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/logstash/'>logstash</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/map/'>map</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (27) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/staf/'>staf</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (69) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/vagrant/'>vagrant</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/wsl/'>wsl</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/zookeeper/'>zookeeper</a> (1) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (218)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+<!--
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+-->
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2021 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+<script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+
+<script>
+
+var time=location.pathname.substring(6).substring(0,11);
+var eName=location.pathname.substring(17);
+var gitalk = new Gitalk({
+  clientID: 'c14f68eac6330d15d984',
+  clientSecret: '73b7c1fffa98e299ff0cdd332821201933858e6e',
+  repo: 'winse.github.com',
+  owner: 'winse',
+  admin: ['winse'],
+  id: eName,
+  labels: ['Gitalk', time],
+  body: "http://winse.github.io" + location.pathname,
+  createIssueManually: true,
+  
+  // facebook-like distraction free mode
+  distractionFreeMode: false
+})
+
+gitalk.render('gitalk-container')
+
+</script>
+
+
+
+<script>
+/*
+$.ajax({
+  type: "POST",
+  url: "http://log.winseliu.com:20000",
+  data: JSON.stringify({
+    title: document.title,
+    location: JSON.stringify(location),
+    referrer: document.referrer,
+    userAgent: navigator.userAgent
+  }),
+  contentType: "application/json; charset=utf-8",
+  dataType: "json"
+});
+*/
+</script>
+
+
+
+
+
+
+
+
+
+</body>
+</html>

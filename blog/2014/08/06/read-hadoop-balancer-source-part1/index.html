@@ -1,0 +1,682 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>[读码] Hadoop2 Balancer磁盘空间平衡（上） - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="javadoc 在一些节点满了或者加入了新的节点情况下，使用balancer工具可以平衡HDFS集群磁盘空间使用率。该功能作为一个单独的程序，能同时与集群的其他文件操作一起进行。 threshold（阀值）参数是个介于1%~100%的值，默认情况下是10%。指定了集群达到平衡的指标值。 &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winse.github.io/blog/2014/08/06/read-hadoop-balancer-source-part1">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="//cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winse.github.io" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">[读码] Hadoop2 Balancer磁盘空间平衡（上）</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-08-06T22:14:29+08:00" pubdate data-updated="true">Wed 2014-08-06 22:14</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><h2>javadoc</h2>
+
+<p>在一些节点满了或者加入了新的节点情况下，使用balancer工具可以平衡HDFS集群磁盘空间使用率。该功能作为一个单独的程序，能同时与集群的其他文件操作一起进行。</p>
+
+<p>threshold（阀值）参数是个介于1%~100%的值，默认情况下是10%。指定了集群达到平衡的指标值。当节点的利用率（所在节点的磁盘使用率，只HDFS可利用的部分）与集群利用率（集群HDFS的使用率）之间的差不大于阀值threshold就表示集群已经处于平衡状态。所以，阀值threshold越小，集群各节点数据分布越平衡（集群越平衡），当然这也会耗费更多的时间来达到小的平衡阀值。同时，当数据同时又在进行读写操作时，可能平衡并不能达到非常小的阀值。</p>
+
+<p><img src="http://file.bmob.cn/M00/0C/95/wKhkA1QJH2uAa8UEAABq7RCSLQ0452.png" alt="" /></p>
+
+<p>这个工具依次地把磁盘使用率高的机器的块移动到使用率低的数据节点上。每次迭代移动/接受的数据小于10G或者节点容量的阀值百分比（In each iteration a datanode moves or receives no more than the lesser of 10G bytes or the threshold fraction of its capacity. ）。每次迭代不会大于20分钟。每次迭代完成后，balancer把数据节点信息更新到namenode，重新计算利用率后，再进行下一次迭代直到集群利用率阀值。</p>
+
+<p>配置<code>dfs.balance.bandwidthPerSec</code>控制balancer操作传输的带宽，默认配置是1048576（1M/s）这个属性决定了一个块从一个数据节点移动到另一个节点的最大速率。默认是1M/s。bandwidth越高集群达到平衡越快，但是程序之间的竞争会更激烈。如果通过配置文件来修改这个属性，需要在下次启动HDFS才能生效。可以通过<code>hdfs dfsadmin -setBalancerBandwidth 10485760</code>来动态的设置。</p>
+
+<p>每次迭代会输出开始时间，迭代的次数，上一次迭代移动的数据量，集群达到平衡还需要移动的数据量，该次迭代将移动的数据量。一般情况下，“Bytes Already Moved”将会增加同时“Bytes Left To Move”将会减少（但是如果此时有大数据量写入，那么Bytes Left To Move可能不减反增）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Time Stamp               Iteration#  Bytes Already Moved  Bytes Left To Move  Bytes Being Moved</span></code></pre></td></tr></table></div></figure>
+
+
+<p>多个balancer程序不能同时运行。</p>
+
+<p>balancer程序会自动退出当存在以下情况：</p>
+
+<ul>
+<li>集群已经平衡</li>
+<li>没有块将会被移动</li>
+<li>连续5次的处理没有块移动</li>
+<li>连接namenode时出现IOException</li>
+<li>另一个balancer程序在跑</li>
+</ul>
+
+
+<p>根据上面的5中情况，balancer程序退出，同时会打印如下的信息：</p>
+
+<ul>
+<li>The cluster is balanced. Exiting</li>
+<li>No block can be moved. Exiting&hellip;</li>
+<li>No block has been moved for 5 iterations. Exiting&hellip;</li>
+<li>Received an IO exception: failure reason. Exiting&hellip;</li>
+<li>Another balancer is running. Exiting&hellip;</li>
+</ul>
+
+
+<p>当balancer运行时，管理员可以随时运行stop-balancer.sh来中断balancer程序。</p>
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-08-06T22:14:29+08:00" pubdate data-updated="true">Wed 2014-08-06 22:14</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/hadoop/'>hadoop</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2014-08-06-read-hadoop-balancer-source-part1.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2014/08/02/hadoop-datanode-config-should-equals/" title="Previous Post: hadoop的datanode数据节点软/硬件配置应该一致">&laquo; hadoop的datanode数据节点软/硬件配置应该一致</a>
+      
+      
+        <a class="basic-alignment right" href="/blog/2014/08/20/magical-use-java-equals-hashcode/" title="Next Post: 巧用Equals和Hashcode">巧用Equals和Hashcode &raquo;</a>
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+	
+  
+<!-- gitalk评论 start -->
+    <div id="gitalk-container"></div> 
+<!-- gitalk评论 end -->
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/27/vnc-server-on-centos7/">在Centos7上安装VNC Server</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/25/develop-environment-prepare/">[整理] 环境准备工具集</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2021/10/31/"></a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2021/09/15/k2-again/">斐讯K2刷机padavan</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/04/12/appium-android-auto-test/">appium-Android自动化测试</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/07/26/android-linux-via-termux/">Android Linux via Termux</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-bk-dot-tencent-dot-com/">Try bk.tencent.com</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/10/20/jcef-build-on-win64/">编译JCEF - Win64</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/bigdata/'>bigdata</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/deprecated/'>deprecated</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/devops/'>devops</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (15) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/es/'>es</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (44) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (13) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jenkins/'>jenkins</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k2/'>k2</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kubeadm/'>kubeadm</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/logstash/'>logstash</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/map/'>map</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (27) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/staf/'>staf</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (69) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/vagrant/'>vagrant</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/wsl/'>wsl</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/zookeeper/'>zookeeper</a> (1) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (218)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+<!--
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+-->
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2021 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+<script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+
+<script>
+
+var time=location.pathname.substring(6).substring(0,11);
+var eName=location.pathname.substring(17);
+var gitalk = new Gitalk({
+  clientID: 'c14f68eac6330d15d984',
+  clientSecret: '73b7c1fffa98e299ff0cdd332821201933858e6e',
+  repo: 'winse.github.com',
+  owner: 'winse',
+  admin: ['winse'],
+  id: eName,
+  labels: ['Gitalk', time],
+  body: "http://winse.github.io" + location.pathname,
+  createIssueManually: true,
+  
+  // facebook-like distraction free mode
+  distractionFreeMode: false
+})
+
+gitalk.render('gitalk-container')
+
+</script>
+
+
+
+<script>
+/*
+$.ajax({
+  type: "POST",
+  url: "http://log.winseliu.com:20000",
+  data: JSON.stringify({
+    title: document.title,
+    location: JSON.stringify(location),
+    referrer: document.referrer,
+    userAgent: navigator.userAgent
+  }),
+  contentType: "application/json; charset=utf-8",
+  dataType: "json"
+});
+*/
+</script>
+
+
+
+
+
+
+
+
+
+</body>
+</html>

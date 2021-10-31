@@ -1,0 +1,840 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>SparkSQL-on-YARN的Executors池(动态)配置 - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="官网配置资料 http://spark.apache.org/docs/latest/running-on-yarn.html
+http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup
+http &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winse.github.io/blog/2016/03/25/spark-sql-executors-dynamic-on-yarn">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="//cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winse.github.io" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">SparkSQL-on-YARN的Executors池(动态)配置</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-03-25T15:14:53+08:00" pubdate data-updated="true">Fri 2016-03-25 15:14</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><h2>官网配置资料</h2>
+
+<ul>
+<li><a href="http://spark.apache.org/docs/latest/running-on-yarn.html">http://spark.apache.org/docs/latest/running-on-yarn.html</a></li>
+<li><a href="http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup">http://spark.apache.org/docs/latest/job-scheduling.html#configuration-and-setup</a></li>
+<li><a href="http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation">http://spark.apache.org/docs/latest/configuration.html#dynamic-allocation</a></li>
+</ul>
+
+
+<h2>实战</h2>
+
+<h4>修改YARN配置，添加spark-yarn-shuffle.jar，同步配置和jar到nodemanager节点并重启。</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ vi etc/hadoop/yarn-site.xml 
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;mapreduce_shuffle,spark_shuffle&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.mapreduce.shuffle.class&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.hadoop.mapred.ShuffleHandler&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>&lt;name&gt;yarn.nodemanager.aux-services.spark_shuffle.class&lt;/name&gt;
+</span><span class='line'>&lt;value&gt;org.apache.spark.network.yarn.YarnShuffleService&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ cp ~/spark-1.6.0-bin-2.6.3/lib/spark-1.6.0-yarn-shuffle.jar share/hadoop/yarn/
+</span><span class='line'>
+</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az share $h:~/hadoop-2.6.3/ ; done 
+</span><span class='line'>for h in `cat etc/hadoop/slaves` ; do rsync -az etc $h:~/hadoop-2.6.3/ ; done 
+</span><span class='line'>
+</span><span class='line'>rsync -vaz etc hadoop-master2:~/hadoop-2.6.3/
+</span><span class='line'>rsync -vaz share hadoop-master2:~/hadoop-2.6.3/
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/stop-yarn.sh 
+</span><span class='line'>[hadoop@hadoop-master1 hadoop-2.6.3]$ sbin/start-yarn.sh </span></code></pre></td></tr></table></div></figure>
+
+
+<h4>原来已经部署了Hive-1.2.1（和spark-1.6.0的hive是匹配的），直接把hive-site.xml做一个软链到spark/conf下面：</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ cd conf/
+</span><span class='line'>[hadoop@hadoop-master1 conf]$ ln -s ~/hive/conf/hive-site.xml 
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ ll conf/hive-site.xml 
+</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop 36 3月  25 11:30 conf/hive-site.xml -&gt; /home/hadoop/hive/conf/hive-site.xml</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：如果原来配置了tez，把hive-site.xml的 <strong>hive.execution.engine</strong> 配置注释掉。或者启动的时刻换引擎： <code>bin/spark-sql --master yarn-client --hiveconf hive.execution.engine=mr</code></p>
+
+<h4>修改spark配置</h4>
+
+<p>spark-defaults.conf</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-defaults.conf 
+</span><span class='line'>spark.yarn.jar    hdfs:///spark/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar
+</span><span class='line'>
+</span><span class='line'>spark.dynamicAllocation.enabled    true
+</span><span class='line'>spark.shuffle.service.enabled      true
+</span><span class='line'>spark.dynamicAllocation.executorIdleTimeout    600s
+</span><span class='line'>spark.dynamicAllocation.minExecutors    160
+</span><span class='line'>spark.dynamicAllocation.maxExecutors    1800
+</span><span class='line'>spark.dynamicAllocation.schedulerBacklogTimeout   5s
+</span><span class='line'>
+</span><span class='line'>spark.driver.maxResultSize   0
+</span><span class='line'>
+</span><span class='line'>spark.eventLog.enabled  true
+</span><span class='line'>spark.eventLog.compress  true
+</span><span class='line'>spark.eventLog.dir    hdfs:///spark-eventlogs
+</span><span class='line'>spark.yarn.historyServer.address hadoop-master2:18080
+</span><span class='line'>
+</span><span class='line'>spark.serializer        org.apache.spark.serializer.KryoSerializer
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>spark.yarn.jar 配置后，spark启动后直接使用该文件作为executor的main-jar，不需要每次都上传一次spark.jar（每次都搞一下180M也不少资源了）</li>
+<li>enabled 启用动态两个都配置必须设置为true</li>
+<li>executorIdleTimeout 关闭不用executors需要等待的时间</li>
+<li>schedulerBacklogTimeout 增加积压的任务时间来判断是否增加executors</li>
+<li>minExecutors 至少存活的executors个数</li>
+</ul>
+
+
+<p>spark-env.sh环境变量</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 conf]$ cat spark-env.sh 
+</span><span class='line'>SPARK_CLASSPATH=/home/hadoop/hive/lib/mysql-connector-java-5.1.21-bin.jar:$SPARK_CLASSPATH
+</span><span class='line'>HADOOP_CONF_DIR=/home/hadoop/hadoop/etc/hadoop
+</span><span class='line'>SPARK_DRIVER_MEMORY=30g
+</span><span class='line'>SPARK_PID_DIR=/home/hadoop/tmp/pids</span></code></pre></td></tr></table></div></figure>
+
+
+<h4>启动</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 spark-1.6.0-bin-2.6.3]$ sbin/start-thriftserver.sh --master yarn-client
+</span><span class='line'>
+</span><span class='line'>[hadoop@hadoop-master2 spark-1.6.0-bin-2.6.3]$ sbin/start-history-server.sh hdfs:///spark-eventlogs
+</span><span class='line'>
+</span><span class='line'># 不包括hadoop jars的情况下，自己编写脚本把hadoop的依赖包加入classpath
+</span><span class='line'>[hadoop@hadoop-master2 spark-1.3.1-bin-hadoop2.6.3-without-hive]$ cat start-historyserver.sh 
+</span><span class='line'>#!/bin/sh
+</span><span class='line'>
+</span><span class='line'>bin=`dirname $0`
+</span><span class='line'>cd $bin
+</span><span class='line'>
+</span><span class='line'>source $HADOOP_HOME/libexec/hadoop-config.sh
+</span><span class='line'>
+</span><span class='line'>export SPARK_PID_DIR=/home/hadoop/tmp/pids
+</span><span class='line'>export SPARK_CLASSPATH=`hadoop classpath`
+</span><span class='line'>
+</span><span class='line'>export SPARK_PID_DIR=/home/hadoop/tmp/pids
+</span><span class='line'>
+</span><span class='line'># http://spark.apache.org/docs/latest/monitoring.html#viewing-after-the-fact
+</span><span class='line'>export SPARK_HISTORY_OPTS="-Dspark.history.fs.update.interval=30s -Dspark.history.fs.cleaner.enabled=true -Dspark.history.fs.logDirectory=hdfs:///spark-eventlogs"
+</span><span class='line'>sbin/start-history-server.sh 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>收工。</p>
+
+<p>整个过程就是：添加spark-shuffle到yarn，然后配置spark参数，最后就是重启任务（yarn/hiveserver）。</p>
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-03-25T15:14:53+08:00" pubdate data-updated="true">Fri 2016-03-25 15:14</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/spark/'>spark</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2016-03-25-spark-sql-executors-dynamic-on-yarn.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2016/03/17/hadoop-memory-opts-and-args/" title="Previous Post: hadoop内存环境变量和参数">&laquo; hadoop内存环境变量和参数</a>
+      
+      
+        <a class="basic-alignment right" href="/blog/2016/03/28/hive-on-spark/" title="Next Post: hive on spark">hive on spark &raquo;</a>
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+	
+  
+<!-- gitalk评论 start -->
+    <div id="gitalk-container"></div> 
+<!-- gitalk评论 end -->
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/27/vnc-server-on-centos7/">在Centos7上安装VNC Server</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/25/develop-environment-prepare/">[整理] 环境准备工具集</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2021/10/31/"></a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2021/09/15/k2-again/">斐讯K2刷机padavan</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/04/12/appium-android-auto-test/">appium-Android自动化测试</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/07/26/android-linux-via-termux/">Android Linux via Termux</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-bk-dot-tencent-dot-com/">Try bk.tencent.com</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/10/20/jcef-build-on-win64/">编译JCEF - Win64</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/bigdata/'>bigdata</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/deprecated/'>deprecated</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/devops/'>devops</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (15) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/es/'>es</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (44) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (13) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jenkins/'>jenkins</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k2/'>k2</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kubeadm/'>kubeadm</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/logstash/'>logstash</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/map/'>map</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (27) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/staf/'>staf</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (69) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/vagrant/'>vagrant</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/wsl/'>wsl</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/zookeeper/'>zookeeper</a> (1) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (218)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+<!--
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+-->
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2021 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+<script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+
+<script>
+
+var time=location.pathname.substring(6).substring(0,11);
+var eName=location.pathname.substring(17);
+var gitalk = new Gitalk({
+  clientID: 'c14f68eac6330d15d984',
+  clientSecret: '73b7c1fffa98e299ff0cdd332821201933858e6e',
+  repo: 'winse.github.com',
+  owner: 'winse',
+  admin: ['winse'],
+  id: eName,
+  labels: ['Gitalk', time],
+  body: "http://winse.github.io" + location.pathname,
+  createIssueManually: true,
+  
+  // facebook-like distraction free mode
+  distractionFreeMode: false
+})
+
+gitalk.render('gitalk-container')
+
+</script>
+
+
+
+<script>
+/*
+$.ajax({
+  type: "POST",
+  url: "http://log.winseliu.com:20000",
+  data: JSON.stringify({
+    title: document.title,
+    location: JSON.stringify(location),
+    referrer: document.referrer,
+    userAgent: navigator.userAgent
+  }),
+  contentType: "application/json; charset=utf-8",
+  dataType: "json"
+});
+*/
+</script>
+
+
+
+
+
+
+
+
+
+</body>
+</html>

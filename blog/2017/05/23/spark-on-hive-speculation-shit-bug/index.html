@@ -1,0 +1,991 @@
+
+<!DOCTYPE html>
+<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
+<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
+<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<head>
+  <meta charset="utf-8">
+  <title>Hive on Spark预测性执行BUG一枚 - Winse Blog</title>
+  <meta name="author" content="Winse Liu">
+
+  
+  <meta name="description" content="为了平复难以平复的痛苦，难以掩饰的激动，把这次遇到并解决的记录下。尽管最终解决的patch是官网的: Hive on Spark gives incorrect results when speculation is on。 版本说明下： hive-1.2.1
+spark-1.3.1 &hellip;">
+  
+
+  <!-- http://t.co/dKP3o1e -->
+  <meta name="HandheldFriendly" content="True">
+  <meta name="MobileOptimized" content="320">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  
+  <link rel="canonical" href="http://winse.github.io/blog/2017/05/23/spark-on-hive-speculation-shit-bug">
+  <link href="/favicon.png" rel="icon">
+  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
+  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
+  <script src="/javascripts/modernizr-2.0.js"></script>
+  <script src="//cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
+  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
+  <script src="/javascripts/octopress.js" type="text/javascript"></script>
+  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
+<!--
+<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
+-->
+
+
+  
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-43198550-1', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+
+
+</head>
+
+<body   >
+  <header role="banner"><hgroup>
+  <h1><a href="/">Winse Blog</a></h1>
+  
+    <h2>走走停停, 熙熙攘攘, 忙忙碌碌, 不知何畏.</h2>
+  
+</hgroup>
+
+</header>
+  <nav role="navigation"><ul class="subscription" data-subscription="rss">
+  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
+  
+</ul>
+  
+<form action="https://www.google.com/search" method="get">
+  <fieldset role="search">
+    <input type="hidden" name="q" value="site:winse.github.io" />
+    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
+  </fieldset>
+</form>
+  
+<ul class="main-navigation">
+  <li><a href="/">Blog</a></li>
+  <li><a href="/blog/archives">Archives</a></li>
+  <li><a href="/blog/archives/updated.html">Updated</a></li>
+</ul>
+
+</nav>
+  <div id="main">
+    <div id="content">
+      <div>
+<article class="hentry" role="article">
+  
+  <header>
+    
+      <h1 class="entry-title">Hive on Spark预测性执行BUG一枚</h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-05-23T20:11:49+08:00" pubdate data-updated="true">Tue 2017-05-23 20:11</time>
+        
+      </p>
+    
+  </header>
+
+
+<div class="entry-content"><p>为了平复难以平复的痛苦，难以掩饰的激动，把这次遇到并解决的记录下。尽管最终解决的patch是官网的: <a href="https://issues.apache.org/jira/browse/HIVE-13066">Hive on Spark gives incorrect results when speculation is on</a>。</p>
+
+<p>版本说明下：</p>
+
+<ul>
+<li>hive-1.2.1</li>
+<li>spark-1.3.1</li>
+</ul>
+
+
+<p>在没有启动spark.speculation前，有个别任务执行非常慢，非常之讨厌。而启用预测性执行后，时不时任务会有些会失败，让人很烦躁。但是吧，也不算故障，说来也奇怪，重启下后再次查询问题就不出现了，也就没太在意。</p>
+
+<p>今天数据量比较大，并且是上头检查。妈蛋，搞成了故障，没得办法，必须把原因找出来了。下来就帖日志了：</p>
+
+<p>应用SQL查询报错日志：啥也看不到，就知道Hive查询报错，只能拿着时间去查Hive日志</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ERROR] 14:19:56.685 [RMI TCP Connection(7)-192.168.31.11] c.e.z.h.s.BaseHiveQueryService | Error while processing statement: FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+</span><span class='line'>java.sql.SQLException: Error while processing statement: FAILED: Execution Error, return code 3 from org.apache.hadoop.hive.ql.exec.spark.SparkTask
+</span><span class='line'>        at org.apache.hive.jdbc.HiveStatement.execute(HiveStatement.java:296)
+</span><span class='line'>        at org.apache.hive.jdbc.HiveStatement.executeQuery(HiveStatement.java:392)
+</span><span class='line'>        at org.apache.hive.jdbc.HivePreparedStatement.executeQuery(HivePreparedStatement.java:109)
+</span><span class='line'>        at org.apache.commons.dbcp.DelegatingPreparedStatement.executeQuery(DelegatingPreparedStatement.java:96)
+</span><span class='line'>        at org.apache.commons.dbcp.DelegatingPreparedStatement.executeQuery(DelegatingPreparedStatement.java:96)
+</span><span class='line'>        at com.eshore.zhfx.hbase.service.BaseHiveQueryService.listIteratorInternal(BaseHiveQueryService.java:101)
+</span><span class='line'>        at com.eshore.zhfx.hbase.service.BaseHiveQueryService.listIterator(BaseHiveQueryService.java:80)
+</span><span class='line'>        at com.eshore.zhfx.hbase.QueryService.getAccessLogIterator(QueryService.java:140)
+</span><span class='line'>        at com.eshore.zhfx.hbase.QueryService$$FastClassByCGLIB$$a60bf6f7.invoke(&lt;generated&gt;)
+</span><span class='line'>        at net.sf.cglib.proxy.MethodProxy.invoke(MethodProxy.java:191)
+</span><span class='line'>        at org.springframework.aop.framework.Cglib2AopProxy$CglibMethodInvocation.invokeJoinpoint(Cglib2AopProxy.java:688)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+</span><span class='line'>        at org.springframework.aop.framework.adapter.AfterReturningAdviceInterceptor.invoke(AfterReturningAdviceInterceptor.java:50)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+</span><span class='line'>        at org.springframework.aop.framework.adapter.MethodBeforeAdviceInterceptor.invoke(MethodBeforeAdviceInterceptor.java:50)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+</span><span class='line'>        at org.springframework.aop.interceptor.ExposeInvocationInterceptor.invoke(ExposeInvocationInterceptor.java:89)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+</span><span class='line'>        at org.springframework.aop.framework.Cglib2AopProxy$DynamicAdvisedInterceptor.intercept(Cglib2AopProxy.java:621)
+</span><span class='line'>        at com.eshore.zhfx.hbase.QueryService$$EnhancerByCGLIB$$9a4ab584.getAccessLogIterator(&lt;generated&gt;)
+</span><span class='line'>        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+</span><span class='line'>        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)
+</span><span class='line'>        at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+</span><span class='line'>        at java.lang.reflect.Method.invoke(Method.java:601)
+</span><span class='line'>        at org.springframework.aop.support.AopUtils.invokeJoinpointUsingReflection(AopUtils.java:309)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.invokeJoinpoint(ReflectiveMethodInvocation.java:183)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:150)
+</span><span class='line'>        at org.springframework.remoting.support.RemoteInvocationTraceInterceptor.invoke(RemoteInvocationTraceInterceptor.java:77)
+</span><span class='line'>        at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:172)
+</span><span class='line'>        at org.springframework.aop.framework.JdkDynamicAopProxy.invoke(JdkDynamicAopProxy.java:202)
+</span><span class='line'>        at com.sun.proxy.$Proxy22.getAccessLogIterator(Unknown Source)
+</span><span class='line'>        at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+</span><span class='line'>        at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:57)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>HIVE服务日志：rename错了，但是也好像看不到啥。知道那个节点有问题了，去查节点日志</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>2017-05-23 14:19:20,509 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - 2017-05-23 14:19:20,508 WARN  [task-result-getter-1] scheduler.TaskSetManager: Lost task 2199.1 in stage 2.0 (TID 4517, hadoop-slaver41): java.lang.IllegalStateException: Hit error while closing operators - failing tree: org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+</span><span class='line'>2017-05-23 14:19:20,509 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:195)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.HiveMapFunctionResultList.closeRecordProcessor(HiveMapFunctionResultList.java:58)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.HiveBaseFunctionResultList$ResultIterator.hasNext(HiveBaseFunctionResultList.java:106)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.convert.Wrappers$JIteratorWrapper.hasNext(Wrappers.scala:41)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.Iterator$class.foreach(Iterator.scala:727)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at scala.collection.AbstractIterator.foreach(Iterator.scala:1157)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:61)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.scheduler.Task.run(Task.scala:64)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:203)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at java.lang.Thread.run(Thread.java:722)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - Caused by: org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.commit(FileSinkOperator.java:237)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.access$200(FileSinkOperator.java:143)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.FileSinkOperator.closeOp(FileSinkOperator.java:1051)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:616)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>2017-05-23 14:19:20,510 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:172)
+</span><span class='line'>2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) -  ... 15 more
+</span><span class='line'>2017-05-23 14:19:20,511 INFO  client.SparkClientImpl (SparkClientImpl.java:run(569)) - </span></code></pre></td></tr></table></div></figure>
+
+
+<p>Task错误节点错误日志：这日志没啥。重名，拿名称去查namenode日志看看是啥子？</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>17/05/23 14:19:18 INFO exec.FileSinkOperator: FS[24]: records written - 0
+</span><span class='line'>17/05/23 14:19:18 INFO exec.FileSinkOperator: Final Path: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0
+</span><span class='line'>17/05/23 14:19:18 INFO exec.FileSinkOperator: Writing to temp file: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0
+</span><span class='line'>17/05/23 14:19:18 INFO exec.FileSinkOperator: New Final Path: FS hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+</span><span class='line'>17/05/23 14:19:19 INFO compress.CodecPool: Got brand-new compressor [.snappy]
+</span><span class='line'>org.apache.hadoop.hive.ql.metadata.HiveException: Unable to rename output from: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to: hdfs://zfcluster/hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.commit(FileSinkOperator.java:237)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.FileSinkOperator$FSPaths.access$200(FileSinkOperator.java:143)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.FileSinkOperator.closeOp(FileSinkOperator.java:1051)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:616)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.Operator.close(Operator.java:630)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.spark.SparkMapRecordHandler.close(SparkMapRecordHandler.java:172)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.spark.HiveMapFunctionResultList.closeRecordProcessor(HiveMapFunctionResultList.java:58)
+</span><span class='line'>        at org.apache.hadoop.hive.ql.exec.spark.HiveBaseFunctionResultList$ResultIterator.hasNext(HiveBaseFunctionResultList.java:106)
+</span><span class='line'>        at scala.collection.convert.Wrappers$JIteratorWrapper.hasNext(Wrappers.scala:41)
+</span><span class='line'>        at scala.collection.Iterator$class.foreach(Iterator.scala:727)
+</span><span class='line'>        at scala.collection.AbstractIterator.foreach(Iterator.scala:1157)
+</span><span class='line'>        at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+</span><span class='line'>        at org.apache.spark.rdd.AsyncRDDActions$$anonfun$foreachAsync$2.apply(AsyncRDDActions.scala:114)
+</span><span class='line'>        at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+</span><span class='line'>        at org.apache.spark.SparkContext$$anonfun$33.apply(SparkContext.scala:1576)
+</span><span class='line'>        at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:61)
+</span><span class='line'>        at org.apache.spark.scheduler.Task.run(Task.scala:64)
+</span><span class='line'>        at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:203)
+</span><span class='line'>        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+</span><span class='line'>        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:615)
+</span><span class='line'>        at java.lang.Thread.run(Thread.java:722)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>Namenode日志：有点点线索了，分配了两次，导致了第二个任务写入的时刻报错！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 ~]$ grep '_tmp.002199' hadoop/logs/hadoop-hadoop-namenode-hadoop-master2.log.1
+</span><span class='line'>2017-05-23 14:19:01,591 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0. BP-1414312971-192.168.32.11-1392479369615 blk_1219124858_145508182{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-ad2eac59-1e38-4019-a5ac-64c465366186:NORMAL:192.168.32.93:50010|RBW], ReplicaUnderConstruction[[DISK]DS-90c8cbe3-fd70-4ad7-938a-4248b4435df7:NORMAL:192.168.32.136:50010|RBW], ReplicaUnderConstruction[[DISK]DS-9da76df9-47f0-4e25-b375-e1bf32f4cf52:NORMAL:192.168.36.58:50010|RBW]]}
+</span><span class='line'>2017-05-23 14:19:14,939 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 is closed by DFSClient_attempt_201705231411_0000_m_001585_0_1316598676_51
+</span><span class='line'>2017-05-23 14:19:20,368 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0. BP-1414312971-192.168.32.11-1392479369615 blk_1219125517_145508841{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-4d4c90f0-1ddf-4800-b33a-e776e58dc744:NORMAL:192.168.32.61:50010|RBW], ReplicaUnderConstruction[[DISK]DS-948cd823-5a4c-4673-8ace-99f02a26522b:NORMAL:192.168.32.52:50010|RBW], ReplicaUnderConstruction[[DISK]DS-7818addb-3881-446e-abb3-2c178be6bb63:NORMAL:192.168.32.176:50010|RBW]]}
+</span><span class='line'>2017-05-23 14:19:20,478 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 is closed by DFSClient_attempt_201705231411_0000_m_001345_1_1292482540_51
+</span><span class='line'>2017-05-23 14:19:20,480 WARN org.apache.hadoop.hdfs.StateChange: DIR* FSDirectory.unprotectedRenameTo: failed to rename /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_task_tmp.-ext-10001/_tmp.002199_0 to /hive/scratchdir/hadoop/64801461-94aa-4e17-afee-494e77b49998/hive_2017-05-23_14-18-38_278_4858034238266422677-2/-mr-10000/.hive-staging_hive_2017-05-23_14-18-38_278_4858034238266422677-2/_tmp.-ext-10001/002199_0.snappy because destination exists</span></code></pre></td></tr></table></div></figure>
+
+
+<p>好了，看到这里，驴脑袋还没怀疑到是预测性执行导致的问题。当时想为啥会出现同一个文件名呢：SPARK ON HIVE多个stage执行导致的? 但是重启后报一样的错误，002199是哪里产生，怎么产生的？</p>
+
+<p>MAP太多了000000又循环了一轮？看了执行的map数也就2600啊，不应该啊。</p>
+
+<p>那么这个文件名是哪里产生的呢？然后就搞了下远程调试：没啥用，错误是在task上发生的，调试hive-driver没啥用，但是有意外收获</p>
+
+<ul>
+<li><a href="http://www.winseliu.com/blog/2014/06/21/upgrade-hive/">http://www.winseliu.com/blog/2014/06/21/upgrade-hive/</a></li>
+<li><a href="https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started">https://cwiki.apache.org/confluence/display/Hive/Hive+on+Spark%3A+Getting+Started</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master2 hive]$ DEBUG=true bin/hive
+</span><span class='line'>Listening for transport dt_socket at address: 8000
+</span><span class='line'>
+</span><span class='line'>Logging initialized using configuration in file:/home/hadoop/apache-hive-1.2.1-bin/conf/hive-log4j.properties
+</span><span class='line'>hive&gt; set hive.execution.engine=spark; '查询之前需要设置下引擎，故障得先处理。搞成默认的mr跑是成功的
+</span><span class='line'>hive&gt;                                  'SQLSQLSQL...执行刚报错的SQL
+</span><span class='line'>Query ID = hadoop_20170523173748_7660d9fb-9683-4792-8315-a51f6dcc270b
+</span><span class='line'>Total jobs = 1
+</span><span class='line'>Launching Job 1 out of 1
+</span><span class='line'>In order to change the average load for a reducer (in bytes):
+</span><span class='line'>  set hive.exec.reducers.bytes.per.reducer=&lt;number&gt;
+</span><span class='line'>In order to limit the maximum number of reducers:
+</span><span class='line'>  set hive.exec.reducers.max=&lt;number&gt;
+</span><span class='line'>In order to set a constant number of reducers:
+</span><span class='line'>  set mapreduce.job.reduces=&lt;number&gt;
+</span><span class='line'>Starting Spark Job = 48a8668b-1c59-4cbf-b1e2-e19612ee77d0
+</span><span class='line'>
+</span><span class='line'>Query Hive on Spark job[0] stages:
+</span><span class='line'>0
+</span><span class='line'>
+</span><span class='line'>Status: Running (Hive on Spark job[0])
+</span><span class='line'>Job Progress Format
+</span><span class='line'>CurrentTime StageId_StageAttemptId: SucceededTasksCount(+RunningTasksCount-FailedTasksCount)/TotalTasksCount [StageCost]
+</span><span class='line'>2017-05-23 17:38:15,730 Stage-0_0: 0/2609
+</span><span class='line'>2017-05-23 17:38:16,739 Stage-0_0: 0(+159)/2609
+</span><span class='line'>...
+</span><span class='line'>2017-05-23 17:39:23,182 Stage-0_0: 2162(+447)/2609
+</span><span class='line'>2017-05-23 17:39:24,188 Stage-0_0: 2167(+608)/2609
+</span><span class='line'>2017-05-23 17:39:25,195 Stage-0_0: 2201(+836,-1)/2609
+</span><span class='line'>2017-05-23 17:39:26,201 Stage-0_0: 2215(+832,-2)/2609
+</span><span class='line'>2017-05-23 17:39:27,207 Stage-0_0: 2227(+820,-2)/2609
+</span><span class='line'>2017-05-23 17:39:28,213 Stage-0_0: 2250(+797,-2)/2609
+</span><span class='line'>2017-05-23 17:39:29,219 Stage-0_0: 2280(+767,-2)/2609
+</span><span class='line'>2017-05-23 17:39:30,224 Stage-0_0: 2338(+709,-2)/2609
+</span><span class='line'>2017-05-23 17:39:31,230 Stage-0_0: 2350(+696,-3)/2609
+</span><span class='line'>2017-05-23 17:39:32,236 Stage-0_0: 2359(+684,-6)/2609
+</span><span class='line'>2017-05-23 17:39:33,243 Stage-0_0: 2363(+676,-10)/2609
+</span><span class='line'>2017-05-23 17:39:34,249 Stage-0_0: 2365(+673,-12)/2609
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>有报错了，赶紧去web页面看了下结果，好家伙，全部是Speculation的报错：</p>
+
+<p><img src="/images/blogs/hive-on-spark-speculation.jpg" alt="" /></p>
+
+<p>在结合前面的namenode的日志，基本就走到正道上面。然后 <strong> hive spark speculation </strong> 一股沟，没错第一条就是hive官网的bug啊。</p>
+
+<ul>
+<li><a href="https://issues.apache.org/jira/browse/HIVE-13066">https://issues.apache.org/jira/browse/HIVE-13066</a></li>
+</ul>
+
+
+<p>然后就是打patch修改HivePairFlatMapFunction，验证是OK的。至少原来出错的语句完美跑完。</p>
+
+<h2>总结下</h2>
+
+<p>就是前段集成攻城狮把网络回环的问题处理了，导致网络状态好的不要不要的啊！把那些有备用10M网卡全部停了，集群的机器的网络好了N倍。第二个就是数据量实在大，其实speculation有启动，但是最先完成的还是先启动的，又没有把预测执行kill掉并且还运行完了最终还保存到同名文件。最后让我又一次体验了一把找开源软件BUG激情四射的半天。</p>
+
+<p>记录聊以慰藉！！</p>
+
+<hr />
+
+<p>other : SparkClientImpl LeaseExpiredException No lease on  File does not exist</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/26842933/leaseexpiredexception-no-lease-error-on-hdfs-failed-to-close-file">LeaseExpiredException: No lease error on HDFS (Failed to close file)</a></li>
+<li><a href="https://stackoverflow.com/questions/7559880/leaseexpiredexception-no-lease-error-on-hdfs">LeaseExpiredException: No lease error on HDFS</a></li>
+<li><a href="http://www.jianshu.com/p/f5ec6c7bb176">http://www.jianshu.com/p/f5ec6c7bb176</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+
+
+  <footer>
+    <p class="meta">
+      
+  
+
+<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
+
+      
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-05-23T20:11:49+08:00" pubdate data-updated="true">Tue 2017-05-23 20:11</time>
+      
+
+<span class="categories">
+  
+    <a class='category' href='/blog/categories/hive/'>hive</a>, <a class='category' href='/blog/categories/recommend/'>recommend</a>, <a class='category' href='/blog/categories/spark/'>spark</a>
+  
+</span>
+
+
+	  <span style="padding: 0 1em;">
+<a class="shellExecuteLink" href="npp-windows://e/_posts/2017-05-23-spark-on-hive-speculation-shit-bug.markdown" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
+</span>	
+    </p>
+    
+      <div class="sharing">
+  
+  
+  
+</div>
+
+    
+    <p class="meta">
+      
+        <a class="basic-alignment left" href="/blog/2017/05/05/puppet-automate-deploy-hosts/" title="Previous Post: Puppet批量自动化部署实战">&laquo; Puppet批量自动化部署实战</a>
+      
+      
+        <a class="basic-alignment right" href="/blog/2017/06/01/optimize-java-on-production-environment/" title="Next Post: 追生产的一次优化">追生产的一次优化 &raquo;</a>
+      
+    </p>
+  </footer>
+</article>
+
+  <section>
+    <h1>Comments</h1>
+	
+  
+<!-- gitalk评论 start -->
+    <div id="gitalk-container"></div> 
+<!-- gitalk评论 end -->
+  </section>
+
+</div>
+
+<aside class="sidebar">
+  
+    <section>
+  <h1>佛爷</h1>
+  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
+  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
+</section>
+<section>
+  <h1><a class='category' href='/blog/categories/recommend/'>Recommend</a></h1>
+	<ul role="list">
+		
+			<li class="post">
+				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/10/30/windows-run-ubuntu/">Windows Run Ubuntu</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/27/vnc-server-on-centos7/">在Centos7上安装VNC Server</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/25/develop-environment-prepare/">[整理] 环境准备工具集</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
+			</li>
+		
+	</ul>
+</section>
+<section>
+  <h1>Recent Posts</h1>
+  <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2021/10/31/"></a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2021/09/15/k2-again/">斐讯K2刷机padavan</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2020/04/12/appium-android-auto-test/">appium-Android自动化测试</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/07/26/android-linux-via-termux/">Android Linux via Termux</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-bk-dot-tencent-dot-com/">Try bk.tencent.com</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2018/10/20/jcef-build-on-win64/">编译JCEF - Win64</a>
+      </li>
+    
+  </ul>
+</section>
+<section>
+  <h1>Categories</h1>
+
+	 
+	<ul role="list">
+		
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/alluxio/'>alluxio</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/android/'>android</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/bigdata/'>bigdata</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/blabla/'>blabla</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/debug/'>debug</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/deprecated/'>deprecated</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/devops/'>devops</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/docker/'>docker</a> (15) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/elasticsearch/'>elasticsearch</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/es/'>es</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/flume/'>flume</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (44) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hbase/'>hbase</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hive/'>hive</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/hole/'>hole</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/java/'>java</a> (13) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (8) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/jenkins/'>jenkins</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k2/'>k2</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (9) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kafka/'>kafka</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/kubeadm/'>kubeadm</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/logstash/'>logstash</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/map/'>map</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (27) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (12) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/staf/'>staf</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tachyon/'>tachyon</a> (3) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tez/'>tez</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (69) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/topics/'>topics</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/vagrant/'>vagrant</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/wsl/'>wsl</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/zookeeper/'>zookeeper</a> (1) 
+		</li>
+		
+		
+		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
+		<li class="category"><a href="/blog/archives">All categories</a> (218)</li>
+	</ul>
+	
+</section>
+
+<section>
+  <h1>GitHub Repos</h1>
+  <ul id="gh_repos">
+    <li class="loading">Status updating...</li>
+  </ul>
+  
+  <a href="https://github.com/winse">@winse</a> on GitHub
+  
+  <script type="text/javascript">
+    $(document).ready(function(){
+        if (!window.jXHR){
+            var jxhr = document.createElement('script');
+            jxhr.type = 'text/javascript';
+            jxhr.src = '/javascripts/libs/jXHR.js';
+            var s = document.getElementsByTagName('script')[0];
+            s.parentNode.insertBefore(jxhr, s);
+        }
+
+        github.showRepos({
+            user: 'winse',
+            count: 4,
+            skip_forks: true,
+            target: '#gh_repos'
+        });
+    });
+  </script>
+  <script src="/javascripts/github.js" type="text/javascript"> </script>
+</section>
+
+<section>
+<!--
+  <h1>Softs, I'm using</h1>
+  <ul>
+    <li class="post">
+		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
+	</li>
+	<li class="post">
+		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
+	</li>
+	<li class="post">
+		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
+    </li>
+  </ul>
+-->
+</section>
+
+  
+</aside>
+
+
+    </div>
+  </div>
+  <footer role="contentinfo"><p>
+  Copyright &copy; 2021 - Winse Liu -
+  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
+  <script type="text/javascript">var cnzz_protocol = (("https:" == document.location.protocol) ? " https://" : " http://");document.write(unescape("%3Cspan id='cnzz_stat_icon_1253461959'%3E%3C/span%3E%3Cscript src='" + cnzz_protocol + "v1.cnzz.com/z_stat.php%3Fid%3D1253461959%26show%3Dpic' type='text/javascript'%3E%3C/script%3E"));</script>
+</p>
+
+</footer>
+  
+
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
+<script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
+
+<script>
+
+var time=location.pathname.substring(6).substring(0,11);
+var eName=location.pathname.substring(17);
+var gitalk = new Gitalk({
+  clientID: 'c14f68eac6330d15d984',
+  clientSecret: '73b7c1fffa98e299ff0cdd332821201933858e6e',
+  repo: 'winse.github.com',
+  owner: 'winse',
+  admin: ['winse'],
+  id: eName,
+  labels: ['Gitalk', time],
+  body: "http://winse.github.io" + location.pathname,
+  createIssueManually: true,
+  
+  // facebook-like distraction free mode
+  distractionFreeMode: false
+})
+
+gitalk.render('gitalk-container')
+
+</script>
+
+
+
+<script>
+/*
+$.ajax({
+  type: "POST",
+  url: "http://log.winseliu.com:20000",
+  data: JSON.stringify({
+    title: document.title,
+    location: JSON.stringify(location),
+    referrer: document.referrer,
+    userAgent: navigator.userAgent
+  }),
+  contentType: "application/json; charset=utf-8",
+  dataType: "json"
+});
+*/
+</script>
+
+
+
+
+
+
+
+
+
+</body>
+</html>

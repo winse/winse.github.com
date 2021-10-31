@@ -1,0 +1,1169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+
+  <title><![CDATA[Category: Docker | Winse Blog]]></title>
+  <link href="http://winse.github.io/blog/categories/docker/atom.xml" rel="self"/>
+  <link href="http://winse.github.io/"/>
+  <updated>2021-10-31T12:08:09+08:00</updated>
+  <id>http://winse.github.io/</id>
+  <author>
+    <name><![CDATA[Winse Liu]]></name>
+    <email><![CDATA[winseliu@foxmail.com]]></email>
+  </author>
+  <generator uri="http://octopress.org/">Octopress</generator>
+
+  
+  <entry>
+    <title type="html"><![CDATA[Docker多主机网络配置 - Macvlan]]></title>
+    <link href="http://winse.github.io/blog/2017/10/08/docker-network-via-macvlan/"/>
+    <updated>2017-10-08T10:27:54+08:00</updated>
+    <id>http://winse.github.io/blog/2017/10/08/docker-network-via-macvlan</id>
+    <content type="html"><![CDATA[<h2>参考</h2>
+
+<ul>
+<li><a href="https://docs.docker.com/engine/userguide/networking/get-started-macvlan/#macvlan-bridge-mode-example-usage">Get started with Macvlan network driver</a></li>
+<li><a href="https://github.com/alfredhuang211/study-docker-doc/blob/master/docker%E8%B7%A8%E4%B8%BB%E6%9C%BAmacvlan%E7%BD%91%E7%BB%9C%E9%85%8D%E7%BD%AE.md">docker跨主机macvlan网络配置</a></li>
+<li><a href="https://blog.jessfraz.com/post/ips-for-all-the-things/">ip static</a></li>
+<li><a href="https://stackoverflow.com/questions/35742807/docker-1-10-containers-ip-in-lan/39285950#39285950">Docker 1.12+ container&rsquo;s IP in LAN</a></li>
+<li><a href="http://hustcat.github.io/docker-macvlan/">Docker自定义网络——MacVLAN</a> 这篇内容有点类似pipework。</li>
+</ul>
+
+
+<blockquote><p>Note: In Macvlan you are not able to ping or communicate with the default namespace IP address. For example, if you create a container and try to ping the Docker host’s eth0 it will not work. That traffic is explicitly filtered by the kernel modules themselves to offer additional provider isolation and security.</p></blockquote>
+
+<h2>主机</h2>
+
+<pre><code>[root@kube-master140 ~]# ip addr show ens33
+2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
+    link/ether 00:0c:29:40:2d:15 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.140/24 brd 192.168.191.255 scope global dynamic ens33
+       valid_lft 1765sec preferred_lft 1765sec
+    inet6 fe80::1186:2fe5:9ee5:8790/64 scope link 
+       valid_lft forever preferred_lft forever
+
+[root@kube-worker141 ~]# ip addr show ens33
+2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
+    link/ether 00:0c:29:2e:67:4d brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.141/24 brd 192.168.191.255 scope global dynamic ens33
+       valid_lft 1779sec preferred_lft 1779sec
+    inet6 fe80::dd23:1df6:b37:efae/64 scope link 
+       valid_lft forever preferred_lft forever
+</code></pre>
+
+<h2>创建网络</h2>
+
+<pre><code>[root@kube-worker141 ~]# docker network create \
+-d macvlan \
+--subnet=192.168.191.0/24 \
+--gateway=192.168.191.2 \
+-o parent=ens33 pub_net
+4370998ed03024bc0057a894f1280d5b0fcdba526fd9e8da612a3abb0dbc884b
+
+[root@kube-worker141 ~]# docker network list 
+NETWORK ID          NAME                DRIVER              SCOPE
+eee9236a36ba        bridge              bridge              local               
+ddc7f59215c1        host                host                local               
+d8dc7fbc40a6        none                null                local               
+4370998ed030        pub_net             macvlan             local               
+
+[root@kube-worker141 ~]# docker network inspect pub_net
+...
+</code></pre>
+
+<h2>使用</h2>
+
+<pre><code>docker rm -f $( docker ps -a | grep -v IMAGE | awk '{print $1}' ) 
+
+[root@kube-worker141 ~]# docker run --net=pub_net --ip=192.168.191.200 --name c200 -tid busybox /bin/sh
+2e0a2ede40e80a2f1739330bb3a6c45b91ea08d78d26d165ad13945bedbea40f
+
+[root@kube-worker141 ~]# docker ps 
+CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
+2e0a2ede40e8        busybox             "/bin/sh"           13 seconds ago      Up 11 seconds                           c200
+[root@kube-worker141 ~]# docker exec c200 ifconfig 
+eth0      Link encap:Ethernet  HWaddr 02:42:C0:A8:BF:C8  
+          inet addr:192.168.191.200  Bcast:0.0.0.0  Mask:255.255.255.0
+          inet6 addr: fe80::42:c0ff:fea8:bfc8/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:8 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:648 (648.0 B)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+
+[root@kube-worker141 ~]# docker exec c200 route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         192.168.191.2   0.0.0.0         UG    0      0        0 eth0
+192.168.191.0   0.0.0.0         255.255.255.0   U     0      0        0 eth0
+[root@kube-worker141 ~]# docker exec c200 ping baidu.com 
+PING baidu.com (111.13.101.208): 56 data bytes
+64 bytes from 111.13.101.208: seq=0 ttl=128 time=45.029 ms
+64 bytes from 111.13.101.208: seq=1 ttl=128 time=44.616 ms
+
+#201
+[root@kube-worker141 ~]# docker run --net=pub_net --ip=192.168.191.201 -tid busybox /bin/sh 
+c8cfd3443f2b7b3973a06470cb95442eadface8d89c8cb1749ad73ebbd7e9e39
+
+##本地容器互通: 
+#: HOST141-200 ping HOST141-201
+[root@kube-worker141 ~]# docker exec c200 ping -W 10 192.168.191.201
+PING 192.168.191.201 (192.168.191.201): 56 data bytes
+64 bytes from 192.168.191.201: seq=0 ttl=64 time=0.523 ms
+
+#210 
+[root@kube-master ~]# docker run --net=pub_net --ip=192.168.191.210 -tid busybox /bin/sh 
+7929c136c3dbc646b68b3b7302e8525a25fe2f583db2246fea0da85a448b7b78
+
+##B访问A主机的容器: 
+#: HOST140 ping HOST141-201 
+[root@kube-master140 ~]# ping 192.168.191.201 
+PING 192.168.191.201 (192.168.191.201) 56(84) bytes of data.
+64 bytes from 192.168.191.201: icmp_seq=1 ttl=64 time=1.44 ms
+
+##A主机容器访问B主机容器: 
+#: HOST141-200 ping HOST140-210
+[root@kube-worker141 ~]# docker exec c200 ping -W 10 192.168.191.210
+PING 192.168.191.210 (192.168.191.210): 56 data bytes
+64 bytes from 192.168.191.210: seq=0 ttl=64 time=2.049 ms
+64 bytes from 192.168.191.210: seq=1 ttl=64 time=0.993 ms
+
+#主机与所在容器互相不能访问 (--!): 
+#: HOST141 ping HOST141-200
+[root@kube-worker141 ~]# ping 192.168.191.200
+PING 192.168.191.200 (192.168.191.200) 56(84) bytes of data.
+From 192.168.191.141 icmp_seq=1 Destination Host Unreachable
+From 192.168.191.141 icmp_seq=2 Destination Host Unreachable
+#: HOST141-200 ping HOST141
+[root@kube-worker1 ~]# docker exec c200 ping 192.168.191.141
+</code></pre>
+
+<p>针对主机与本机容器不能互通的问题，可以增加一张默认的网卡：<a href="https://success.docker.com/KBase/Multiple_Docker_Networks">Multiple Docker Networks</a></p>
+
+<pre><code>#先通过默认网络创建
+[root@kube-worker1 ~]# docker run --name c200 -tid busybox /bin/sh                                   
+47b7c1813b95cbec471b1a6de6a870e5537cfa70d54120873a5edb4e444b373b
+#然后连接pub_net！
+[root@kube-worker1 ~]# docker network connect --ip=192.168.191.200 pub_net c200        
+[root@kube-worker1 ~]# docker exec c200 ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue qlen 1
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+14: eth0@if15: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+    link/ether 02:42:ac:12:00:02 brd ff:ff:ff:ff:ff:ff
+    inet 172.18.0.2/16 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:acff:fe12:2/64 scope link 
+       valid_lft forever preferred_lft forever
+16: eth1@if2: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+    link/ether 02:42:c0:a8:bf:c8 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.200/24 scope global eth1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:c0ff:fea8:bfc8/64 scope link 
+       valid_lft forever preferred_lft forever
+</code></pre>
+
+<p>方式1：</p>
+
+<p>与主机的通信，通过 172.18.0.0/24 的网络。其他的通过 192.168.191.0/24 。还是感觉有点鸡肋！！</p>
+
+<p>方式2：</p>
+
+<p>增加route：</p>
+
+<pre><code>#route add -host $container_ip gw $lan_router_ip $if_device_nic2
+
+[root@kube-worker1 ~]# route add -net 192.168.191.200 gw 172.18.0.1 netmask 255.255.255.255 dev docker0
+[root@kube-worker1 ~]# route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         192.168.191.2   0.0.0.0         UG    100    0        0 ens33
+172.17.3.0      192.168.191.140 255.255.255.0   UG    100    0        0 ens33
+172.17.4.0      0.0.0.0         255.255.255.0   U     425    0        0 kbr0
+172.18.0.0      0.0.0.0         255.255.0.0     U     0      0        0 docker0
+192.168.191.0   0.0.0.0         255.255.255.0   U     100    0        0 ens33
+192.168.191.200 172.18.0.1      255.255.255.255 UGH   0      0        0 docker0
+[root@kube-worker1 ~]# ping 192.168.191.200
+PING 192.168.191.200 (192.168.191.200) 56(84) bytes of data.
+64 bytes from 192.168.191.200: icmp_seq=1 ttl=64 time=0.239 ms
+64 bytes from 192.168.191.200: icmp_seq=2 ttl=64 time=0.106 ms
+^C
+--- 192.168.191.200 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1000ms
+rtt min/avg/max/mdev = 0.106/0.172/0.239/0.067 ms
+</code></pre>
+
+<p>通过操作与pipework比较，互有优劣：</p>
+
+<ul>
+<li>pipework会创建网卡，然后所有的ip都是互通的，但是绑定、还得把主机的ip配置到br0上。</li>
+<li>而docker-network的方式与主机互通需要做额外的配置。</li>
+</ul>
+
+
+<p></p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Docker多主机网络配置 - Pipework]]></title>
+    <link href="http://winse.github.io/blog/2017/10/07/docker-network-via-pipework/"/>
+    <updated>2017-10-07T23:24:23+08:00</updated>
+    <id>http://winse.github.io/blog/2017/10/07/docker-network-via-pipework</id>
+    <content type="html"><![CDATA[<p>前面使用nat+route的方式手动连通两台机器上的docker容器。pipework是通过脚本的方式（手动）设置网络以及修改路由来进行配置的。</p>
+
+<p>参考：</p>
+
+<ul>
+<li><a href="http://www.infoq.com/cn/articles/docker-network-and-pipework-open-source-explanation-practice">Docker网络详解及pipework源码解读与实践</a></li>
+<li><a href="http://hongge.blog.51cto.com/2083180/1843169">docker技术剖析&ndash;docker网络（二）docker宿主机之间容器互通 for centos7.2</a> 步骤更详细一点</li>
+<li><a href="http://tonybai.com/2016/02/15/understanding-docker-multi-host-networking/">理解Docker跨多主机容器网络</a></li>
+</ul>
+
+
+<blockquote><p>2、将物理网卡桥接到虚拟网桥，使得容器与宿主机配置在同一网段下</p>
+
+<p>在各个宿主机上都建立一个新虚拟网桥设备br0，将各自物理网卡eth0桥接br0上，eth0的IP地址赋给br0；同时修改Docker daemon的DOCKER_OPTS，设置-b=br0（替代docker0），并限制Container IP地址的分配范围为同物理段地址（–fixed-cidr）。重启各个主机的Docker Daemon后，处于与宿主机在同一网段的Docker容器就可以实现跨主机访问了。这个方案同样存在局限和扩展性差的问题：比如需将物理网段的地址划分 成小块，分布到各个主机上，防止IP冲突；子网划分依赖物理交换机设置；Docker容器的主机地址空间大小依赖物理网络划分等。</p></blockquote>
+
+<p>原理就是建立一条连接link，一端 <strong> 在主机 </strong> 一端 <strong> 在容器 </strong> ；然后手动配置容器ip和路由；最后把主机Ethernet和新建的Bridge桥接连接到物理网络。</p>
+
+<p>容器的ip地址和主机的ip地址在一个网段内，所以在同一交换机下的所有主机、里面的容器都互通。</p>
+
+<h2>查看原网络的信息：</h2>
+
+<pre><code>[root@kube-worker1 ~]# nmcli d show ens33 
+GENERAL.DEVICE:                         ens33
+GENERAL.TYPE:                           ethernet
+GENERAL.HWADDR:                         00:0C:29:2E:67:4D
+GENERAL.MTU:                            1500
+GENERAL.STATE:                          100 (connected)
+GENERAL.CONNECTION:                     ens33
+GENERAL.CON-PATH:                       /org/freedesktop/NetworkManager/ActiveConnection/0
+WIRED-PROPERTIES.CARRIER:               on
+IP4.ADDRESS[1]:                         192.168.191.141/24
+IP4.GATEWAY:                            192.168.191.2
+IP4.ROUTE[1]:                           dst = 172.17.3.0/24, nh = 192.168.191.140, mt = 100
+IP4.DNS[1]:                             192.168.191.2
+IP4.DOMAIN[1]:                          localdomain
+IP6.ADDRESS[1]:                         fe80::3995:4490:e2e7:1d0f/64
+IP6.GATEWAY:                            
+</code></pre>
+
+<h2>安装pipework</h2>
+
+<pre><code>git clone https://github.com/jpetazzo/pipework
+cp ~/pipework/pipework /usr/local/bin/
+</code></pre>
+
+<h2>运行docker</h2>
+
+<pre><code>#设置ip转发
+echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+
+vi /etc/sysctl.conf
+net.ipv4.ip_forward = 1  
+
+NAME=test1
+
+#如不需要安装软件，可以加 --net none
+docker run -itd --name $NAME centos /bin/bash
+
+#docker ps -a -f name=$NAME | grep $NAME &amp;&amp; docker start $NAME 
+#docker exec test1 yum install -y iproute net-tools 
+</code></pre>
+
+<p></p>
+
+<h2>配置网络</h2>
+
+<pre><code>function docker_container_ip () {
+  local name=$1
+  local ip=$2
+  local gateway=${3:-$GATEWAY}
+
+  pipework br0 $name $ip@$gateway
+  #docker exec $name ifconfig 
+  #docker exec $name route -n 
+}
+
+function docker_hosted_bridge_network_reset () {
+  local ip=$1
+  local gateway=$2
+  local iface=$3
+
+  if nmcli d show $iface | grep -i ethernet ; then
+    #把地址给网桥，然后把ethernet和bridge连起来：(SSH连接操作的话，需要一条命令搞定！修改br0地址后route会变)
+    ip addr add $ip dev br0 ; \
+    ip addr del $ip dev $iface ; \
+    brctl addif br0 $iface ; \
+    #ip route del default ; \
+    ip route add default via $gateway 
+  fi 
+
+  brctl show br0
+}
+
+GATEWAY=$( route -n | grep '^0.0.0.0' | awk '{print $2}' )
+IFACE=$( route -n | grep '^0.0.0.0' | awk '{print $8}' )
+HOSTED_IPADDR=$( ip addr show $IFACE | grep "inet " | awk '{print $2}' )
+</code></pre>
+
+<p>设置容器的IP：</p>
+
+<pre><code>NAME=test1
+IP=192.168.191.210/24
+
+docker_container_ip $NAME $IP $GATEWAY
+docker_hosted_bridge_network_reset $HOSTED_IPADDR $GATEWAY $IFACE
+</code></pre>
+
+<p>上面的方式配置方式<strong>重启就失效</strong>的，可以通过写配置文件的方式来永久生效。如下：</p>
+
+<pre><code>[root@kube-worker1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-ens33 
+TYPE=Ethernet
+DEVICE=ens33
+BRIDGE=br0
+[root@kube-worker1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-br0 
+DEVICE=br0
+TYPE=Bridge
+ONBOOT=yes
+BOOTPROTO=static
+IPADDR=192.168.191.141
+NETMASK=255.255.255.0
+GATEWAY=192.168.191.2
+DNS1=192.168.191.2
+
+USERCTL=no
+</code></pre>
+
+<h2>测试</h2>
+
+<pre><code>[root@kube-worker1 ~]# screen
+
+  GATEWAY=$( route -n | grep '^0.0.0.0' | awk '{print $2}' )
+  IFACE=$( route -n | grep '^0.0.0.0' | awk '{print $8}' )
+  HOSTED_IPADDR=$( ip addr show $IFACE | grep "inet " | awk '{print $2}' )
+
+  docker run -itd --name test21 centos /bin/bash
+  docker run -itd --name test22 centos /bin/bash
+
+  docker_container_ip test21 192.168.191.231/24 $GATEWAY
+  docker_container_ip test22 192.168.191.232/24 $GATEWAY
+
+  docker exec test21 ping  192.168.191.140
+  docker exec test21 ping  192.168.191.141
+
+[root@kube-master ~]# screen #会话"不断"
+
+  docker_container_ip test11 192.168.191.221/24 $GATEWAY 
+  docker_container_ip test12 192.168.191.222/24 $GATEWAY
+
+  docker_hosted_bridge_network_reset $HOSTED_IPADDR $GATEWAY $IFACE
+
+  docker exec test11 ping 192.168.191.233
+</code></pre>
+
+<p>注意：容器重启后，这些配置的网卡/路由都没有了，要重新配置：</p>
+
+<pre><code>[root@kube-worker1 ~]# docker stop test21
+test21
+[root@kube-worker1 ~]# docker start test21
+test21
+[root@kube-worker1 ~]# pipework route test21 show 
+default via 172.18.0.1 dev eth0 
+172.18.0.0/16 dev eth0  proto kernel  scope link  src 172.18.0.2 
+
+[root@kube-worker1 ~]# docker_container_ip test21 192.168.191.231/24 $GATEWAY
+[root@kube-worker1 ~]# pipework route test21 show                            
+default via 192.168.191.2 dev eth1 
+172.18.0.0/16 dev eth0  proto kernel  scope link  src 172.18.0.2 
+192.168.191.0/24 dev eth1  proto kernel  scope link  src 192.168.191.231 
+
+[root@kube-worker1 ~]# docker exec test21 ping 192.168.191.140
+</code></pre>
+
+<p>了解原理后，操作起来还是比较容易的。就是每次重启都要重新配置比较烦。可以写成脚本，启动docker容器的时刻就执行下网络配置。</p>
+
+<p>pipework还可以用来配置vlan，暂时没这个需求，并且基本的操作都类似就没有实际操作了。</p>
+
+<p>话说，<strong> pipework还可以用来创建多网卡的容器。用docker network connect其实更简单。 </strong></p>
+
+<p></p>
+
+<h2>后记</h2>
+
+<p>除了通过pipework来实现共享物理网络外，docker network也可以实现这个功能：</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/35742807/docker-1-10-containers-ip-in-lan/35799206#35799206">Docker 1.10 container&rsquo;s IP in LAN</a></li>
+<li><a href="https://gist.github.com/dreamcat4/bc202ae175b367bcbe693da7a52851af">using bridge driver and brctrl.md</a> 感觉原理也类似pipework，就是那一堆的netns让 docker network + docker run &ndash;net 实现了而已。</li>
+</ul>
+
+
+<p></p>
+
+<ul>
+<li>建立并配置Bridge：</li>
+</ul>
+
+
+<pre><code>#中间会导致网络断掉，一条命令搞定才行
+docker network create --gateway=192.168.191.141 --subnet 192.168.191.0/24 --aux-address "DefaultGatewayIPv4=192.168.191.2" -o com.docker.network.bridge.name=br-home-net homenet ; \
+ip addr del 192.168.191.141/24 dev ens33 ; \
+brctl addif br-home-net ens33 
+
+#主机不上外网可以不加
+ip route add default via 192.168.191.2 ; 
+echo "nameserver 114.114.114.114" &gt;&gt;/etc/resolv.conf ; 
+</code></pre>
+
+<ul>
+<li>测试 docker-net + bridge：</li>
+</ul>
+
+
+<pre><code>[root@kube-worker1 ~]# ip a
+...
+2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast master br-home-net state UP qlen 1000
+    link/ether 00:0c:29:2e:67:4d brd ff:ff:ff:ff:ff:ff
+4: docker0: &lt;NO-CARRIER,BROADCAST,MULTICAST,UP&gt; mtu 1500 qdisc noqueue state DOWN 
+    link/ether 02:42:44:ef:32:28 brd ff:ff:ff:ff:ff:ff
+    inet 172.18.0.1/16 scope global docker0
+       valid_lft forever preferred_lft forever
+11: br-home-net: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP 
+    link/ether 02:42:84:97:c2:25 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.141/24 scope global br-home-net
+       valid_lft forever preferred_lft forever
+    inet6 fe80::42:84ff:fe97:c225/64 scope link 
+       valid_lft forever preferred_lft forever
+
+[root@kube-worker1 ~]# docker run -tid --name c200 --net homenet --ip 192.168.191.200 busybox /bin/sh 
+2579c2ddd18d23322eb1e145ad630205933dbc527b8981169ec6b125da8d8f1e
+
+[root@kube-worker1 ~]# docker exec -ti c200 sh 
+/ # ip a
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue qlen 1
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+12: eth0@if13: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+    link/ether 02:42:c0:a8:bf:c8 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.191.200/24 scope global eth0
+       valid_lft forever preferred_lft forever
+/ # route -n
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         192.168.191.2   0.0.0.0         UG    0      0        0 eth0
+192.168.191.0   0.0.0.0         255.255.255.0   U     0      0        0 eth0
+/ # ping baidu.com 
+PING baidu.com (111.13.101.208): 56 data bytes
+64 bytes from 111.13.101.208: seq=0 ttl=128 time=48.225 ms
+^C
+--- baidu.com ping statistics ---
+1 packets transmitted, 1 packets received, 0% packet loss
+round-trip min/avg/max = 48.225/48.225/48.225 ms
+/ # ping 192.169.191.140
+PING 192.169.191.140 (192.169.191.140): 56 data bytes
+^C
+--- 192.169.191.140 ping statistics ---
+4 packets transmitted, 0 packets received, 100% packet loss
+/ # ping 192.168.191.140
+PING 192.168.191.140 (192.168.191.140): 56 data bytes
+64 bytes from 192.168.191.140: seq=0 ttl=64 time=2.572 ms
+64 bytes from 192.168.191.140: seq=1 ttl=64 time=1.076 ms
+^C
+--- 192.168.191.140 ping statistics ---
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 1.076/1.824/2.572 ms
+/ # ping 192.168.191.141
+PING 192.168.191.141 (192.168.191.141): 56 data bytes
+64 bytes from 192.168.191.141: seq=0 ttl=64 time=0.474 ms
+64 bytes from 192.168.191.141: seq=1 ttl=64 time=0.138 ms
+^C
+--- 192.168.191.141 ping statistics ---
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 0.138/0.306/0.474 ms
+/ # ping 192.168.191.1
+PING 192.168.191.1 (192.168.191.1): 56 data bytes
+64 bytes from 192.168.191.1: seq=0 ttl=128 time=1.068 ms
+64 bytes from 192.168.191.1: seq=1 ttl=128 time=0.603 ms
+^C
+--- 192.168.191.1 ping statistics ---
+2 packets transmitted, 2 packets received, 0% packet loss
+round-trip min/avg/max = 0.603/0.835/1.068 ms
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[两台主机的docker通过route互联互通]]></title>
+    <link href="http://winse.github.io/blog/2017/09/20/docker-manual-make-connect-each-other/"/>
+    <updated>2017-09-20T18:34:52+08:00</updated>
+    <id>http://winse.github.io/blog/2017/09/20/docker-manual-make-connect-each-other</id>
+    <content type="html"><![CDATA[<p>前面一直用k8s的flannel来建立主机间docker容器的互联，但是当仅有两台机器用来做测试的时刻，安装一个flannel也是挺纠结的：麻烦、还有未知的问题，起一个服务在那里总会有那么些担忧。</p>
+
+<p>其实可以直接通过建立路由来实现两台机器间容器的互联互通：<a href="http://www.pangxie.space/docker/139">Docker多台宿主机间的容器互联-centos7（直接路由）</a></p>
+
+<p>两台主机（centos7/docker-1.12.6）：</p>
+
+<ul>
+<li>192.168.191.140 kube-master</li>
+<li>192.168.191.141 kube-worker1</li>
+</ul>
+
+
+<h2>安装/配置docker</h2>
+
+<p>这里不多讲了，参考 <a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a> 进行docker的安装。</p>
+
+<h2>建立新网卡，修改docker配置使用新网卡</h2>
+
+<ul>
+<li>安装/更新依赖</li>
+</ul>
+
+
+<pre><code>yum install net-tools bridge-utils -y
+</code></pre>
+
+<ul>
+<li>关防火墙、关selinux</li>
+</ul>
+
+
+<pre><code>setenforce 0
+
+vi /etc/selinux/config
+SELINUX=disabled
+
+systemctl stop firewalld
+systemctl disable firewalld
+</code></pre>
+
+<ul>
+<li>设置ip转发</li>
+</ul>
+
+
+<pre><code>echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+
+vi /etc/sysctl.conf
+net.ipv4.ip_forward = 1  
+</code></pre>
+
+<ul>
+<li>删docker0，建kbr0</li>
+</ul>
+
+
+<p>先停docker！先停docker！先停docker！（好像docker会缓冲bridge的ip）</p>
+
+<pre><code>service docker stop
+brctl addbr kbr0
+ip link set dev docker0 down
+ip link del dev docker0
+</code></pre>
+
+<p>下面的配置，两台机不同，如下：</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align:left;"> 192.168.191.140 kube-master                   </th>
+<th style="text-align:left;"> 192.168.191.141 kube-worker1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;"> vi /etc/sysconfig/network-scripts/ifcfg-kbr0</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> DEVICE=kbr0                                   </td>
+<td style="text-align:left;"> DEVICE=kbr0</td>
+</tr>
+<tr>
+<td style="text-align:left;"> ONBOOT=yes                                    </td>
+<td style="text-align:left;"> ONBOOT=yes</td>
+</tr>
+<tr>
+<td style="text-align:left;"> BOOTPROTO=static                              </td>
+<td style="text-align:left;"> BOOTPROTO=static</td>
+</tr>
+<tr>
+<td style="text-align:left;"> IPADDR=172.17.3.1                             </td>
+<td style="text-align:left;"> IPADDR=172.17.4.1</td>
+</tr>
+<tr>
+<td style="text-align:left;"> NETMASK=255.255.255.0                         </td>
+<td style="text-align:left;"> NETMASK=255.255.255.0</td>
+</tr>
+<tr>
+<td style="text-align:left;"> GATEWAY=172.17.3.0                            </td>
+<td style="text-align:left;"> GATEWAY=172.17.4.0</td>
+</tr>
+<tr>
+<td style="text-align:left;"> USERCTL=no                                    </td>
+<td style="text-align:left;"> USERCTL=no</td>
+</tr>
+<tr>
+<td style="text-align:left;"> TYPE=Bridge                                   </td>
+<td style="text-align:left;"> TYPE=Bridge</td>
+</tr>
+<tr>
+<td style="text-align:left;"> IPV6INIT=no                                   </td>
+<td style="text-align:left;"> IPV6INIT=no</td>
+</tr>
+<tr>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+</tr>
+<tr>
+<td style="text-align:left;"> vi /etc/sysconfig/network-scripts/route-ens33 （ip对应的网卡名称）</td>
+<td></td>
+</tr>
+<tr>
+<td style="text-align:left;"> 172.17.4.0/24 via 192.168.191.141 dev ens33   </td>
+<td style="text-align:left;"> 172.17.3.0/24 via 192.168.191.140 dev ens33</td>
+</tr>
+<tr>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+<td style="text-align:left;">&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&ndash;</td>
+</tr>
+</tbody>
+</table>
+
+
+<p>参考： <a href="https://www.centos.org/docs/5/html/5.2/Deployment_Guide/s1-networkscripts-static-routes.html">Configuring Static Routes</a></p>
+
+<ul>
+<li>修改docker配置</li>
+</ul>
+
+
+<pre><code>vi /usr/lib/systemd/system/docker.service     
+ExecStart=/usr/bin/dockerd --bridge=kbr0 
+
+systemctl daemon-reload 
+</code></pre>
+
+<ul>
+<li>重新启动</li>
+</ul>
+
+
+<p>先起网卡！先起网卡！先起网卡！</p>
+
+<pre><code>service network restart
+
+systemctl start docker
+</code></pre>
+
+<p></p>
+
+<h2>最终效果</h2>
+
+<pre><code>| 192.168.191.140 kube-master                                                   | 192.168.191.141 kube-worker1                            
+|:------------------------------------------------------------------------------|:-------------------------------------------------------
+| [root@kube-master ~]# ifconfig                                                | [root@kube-worker1 ~]# ifconfig
+| ens33: flags=4163&lt;UP,BROADCAST,RUNNING,MULTICAST&gt;  mtu 1500                   | ens33: flags=4163&lt;UP,BROADCAST,RUNNING,MULTICAST&gt;  mtu 1500
+|         inet 192.168.191.140  netmask 255.255.255.0  broadcast 192.168.191.255|         inet 192.168.191.141  netmask 255.255.255.0  broadcast 192.168.191.255
+|         inet6 fe80::1186:2fe5:9ee5:8790  prefixlen 64  scopeid 0x20&lt;link&gt;     |         inet6 fe80::3995:4490:e2e7:1d0f  prefixlen 64  scopeid 0x20&lt;link&gt;
+|         ether 00:0c:29:40:2d:15  txqueuelen 1000  (Ethernet)                  |         ether 00:0c:29:2e:67:4d  txqueuelen 1000  (Ethernet)
+|         RX packets 18010  bytes 10754845 (10.2 MiB)                           |         RX packets 19871  bytes 12247126 (11.6 MiB)
+|         RX errors 0  dropped 0  overruns 0  frame 0                           |         RX errors 0  dropped 0  overruns 0  frame 0
+|         TX packets 4797  bytes 475332 (464.1 KiB)                             |         TX packets 5647  bytes 561624 (548.4 KiB)
+|         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0            |         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+|                                                                               | 
+| kbr1: flags=4099&lt;UP,BROADCAST,MULTICAST&gt;  mtu 1500                            | kbr0: flags=4099&lt;UP,BROADCAST,MULTICAST&gt;  mtu 1500
+|         inet 172.17.3.1  netmask 255.255.255.0  broadcast 172.17.3.255        |         inet 172.17.4.1  netmask 255.255.255.0  broadcast 172.17.4.255
+|         ether 00:00:00:00:00:00  txqueuelen 1000  (Ethernet)                  |         ether 00:00:00:00:00:00  txqueuelen 1000  (Ethernet)
+|         RX packets 179  bytes 13932 (13.6 KiB)                                |         RX packets 139  bytes 10492 (10.2 KiB)
+|         RX errors 0  dropped 0  overruns 0  frame 0                           |         RX errors 0  dropped 0  overruns 0  frame 0
+|         TX packets 43  bytes 3894 (3.8 KiB)                                   |         TX packets 36  bytes 3004 (2.9 KiB)
+|         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0            |         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+|                                                                               | 
+| lo: flags=73&lt;UP,LOOPBACK,RUNNING&gt;  mtu 65536                                  | lo: flags=73&lt;UP,LOOPBACK,RUNNING&gt;  mtu 65536
+|         inet 127.0.0.1  netmask 255.0.0.0                                     |         inet 127.0.0.1  netmask 255.0.0.0
+|         inet6 ::1  prefixlen 128  scopeid 0x10&lt;host&gt;                          |         inet6 ::1  prefixlen 128  scopeid 0x10&lt;host&gt;
+|         loop  txqueuelen 1  (Local Loopback)                                  |         loop  txqueuelen 1  (Local Loopback)
+|         RX packets 140  bytes 11644 (11.3 KiB)                                |         RX packets 215  bytes 18260 (17.8 KiB)
+|         RX errors 0  dropped 0  overruns 0  frame 0                           |         RX errors 0  dropped 0  overruns 0  frame 0
+|         TX packets 140  bytes 11644 (11.3 KiB)                                |         TX packets 215  bytes 18260 (17.8 KiB)
+|         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0            |         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+|                                                                               | 
+| [root@kube-master ~]# route -n                                                | [root@kube-worker1 ~]# route -n 
+| Kernel IP routing table                                                       | Kernel IP routing table
+| Destination     Gateway         Genmask         Flags Metric Ref    Use Iface | Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+| 0.0.0.0         192.168.191.2   0.0.0.0         UG    100    0        0 ens33 | 0.0.0.0         192.168.191.2   0.0.0.0         UG    100    0        0 ens33
+| 172.17.3.0      0.0.0.0         255.255.255.0   U     427    0        0 kbr1  | 172.17.3.0      192.168.191.140 255.255.255.0   UG    100    0        0 ens33
+| 172.17.4.0      192.168.191.141 255.255.255.0   UG    100    0        0 ens33 | 172.17.4.0      0.0.0.0         255.255.255.0   U     425    0        0 kbr0
+| 192.168.191.0   0.0.0.0         255.255.255.0   U     100    0        0 ens33 | 192.168.191.0   0.0.0.0         255.255.255.0   U     100    0        0 ens33
+| [root@kube-master ~]#                                                         | [root@kube-worker1 ~]# 
+| [root@kube-master ~]# docker run -ti --rm busybox sh                          | [root@kube-worker1 ~]# docker run -ti --rm busybox sh                  
+| / # ifconfig                                                                  | / # ifconfig
+| eth0      Link encap:Ethernet  HWaddr 02:42:AC:11:03:02                       | eth0      Link encap:Ethernet  HWaddr 02:42:AC:11:04:02  
+|           inet addr:172.17.3.2  Bcast:0.0.0.0  Mask:255.255.255.0             |           inet addr:172.17.4.2  Bcast:0.0.0.0  Mask:255.255.255.0
+|           inet6 addr: fe80::42:acff:fe11:302/64 Scope:Link                    |           inet6 addr: fe80::42:acff:fe11:402/64 Scope:Link
+|           UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1                  |           UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+|           RX packets:23 errors:0 dropped:0 overruns:0 frame:0                 |           RX packets:16 errors:0 dropped:0 overruns:0 frame:0
+|           TX packets:15 errors:0 dropped:0 overruns:0 carrier:0               |           TX packets:8 errors:0 dropped:0 overruns:0 carrier:0
+|           collisions:0 txqueuelen:0                                           |           collisions:0 txqueuelen:0 
+|           RX bytes:1870 (1.8 KiB)  TX bytes:1222 (1.1 KiB)                    |           RX bytes:1296 (1.2 KiB)  TX bytes:648 (648.0 B)
+|                                                                               | 
+| lo        Link encap:Local Loopback                                           | lo        Link encap:Local Loopback  
+|           inet addr:127.0.0.1  Mask:255.0.0.0                                 |           inet addr:127.0.0.1  Mask:255.0.0.0
+|           inet6 addr: ::1/128 Scope:Host                                      |           inet6 addr: ::1/128 Scope:Host
+|           UP LOOPBACK RUNNING  MTU:65536  Metric:1                            |           UP LOOPBACK RUNNING  MTU:65536  Metric:1
+|           RX packets:0 errors:0 dropped:0 overruns:0 frame:0                  |           RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+|           TX packets:0 errors:0 dropped:0 overruns:0 carrier:0                |           TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+|           collisions:0 txqueuelen:1                                           |           collisions:0 txqueuelen:1 
+|           RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)                              |           RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+| / # ping 172.17.4.2                                                           | 
+| PING 172.17.4.2 (172.17.4.2): 56 data bytes                                   | / # ping 172.17.3.2
+| 64 bytes from 172.17.4.2: seq=0 ttl=62 time=2.598 ms                          | PING 172.17.3.2 (172.17.3.2): 56 data bytes
+| 64 bytes from 172.17.4.2: seq=1 ttl=62 time=1.569 ms                          | 64 bytes from 172.17.3.2: seq=0 ttl=62 time=1.421 ms
+| 64 bytes from 172.17.4.2: seq=2 ttl=62 time=1.194 ms                          | 64 bytes from 172.17.3.2: seq=1 ttl=62 time=1.446 ms
+| ^C                                                                            | ^C
+| --- 172.17.4.2 ping statistics ---                                            | --- 172.17.3.2 ping statistics ---
+| 3 packets transmitted, 3 packets received, 0% packet loss                     | 2 packets transmitted, 2 packets received, 0% packet loss
+| round-trip min/avg/max = 1.194/1.787/2.598 ms                                 | round-trip min/avg/max = 1.421/1.433/1.446 ms
+| 
+|-------------------------------------------------------------------------------|--------------------------------------------------------
+</code></pre>
+
+<p>效果还不错，什么都没有安装route两台机器的docker就互联互通了。二三台机器使用这种方式最省事的，并且理论上效率也是最高的。</p>
+
+<h2>其他参考</h2>
+
+<ul>
+<li><a href="http://www.infoq.com/cn/articles/docker-network-and-pipework-open-source-explanation-practice">Docker网络详解及pipework源码解读与实践</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Redmine部署以及插件安装]]></title>
+    <link href="http://winse.github.io/blog/2017/09/18/redmine-deploy-and-install-plugins/"/>
+    <updated>2017-09-18T23:46:24+08:00</updated>
+    <id>http://winse.github.io/blog/2017/09/18/redmine-deploy-and-install-plugins</id>
+    <content type="html"><![CDATA[<p>Redmine是类似JIRA的一个项目/BUG管理工具，使用ruby语言编写的。安装相对就麻烦一点，不熟嘛，一堆的东西要安装。有两种简单/傻瓜式的安装方式：</p>
+
+<ul>
+<li>bitnami-redmine，相当于一键安装；</li>
+<li>docker + redmine，使用docker把所有的依赖都安装好，只需要配置remine即可。</li>
+</ul>
+
+
+<p>这里选择使用docker-compose来安装 <a href="https://github.com/sameersbn/docker-redmine">sameersbn/redmine:3.4.2</a></p>
+
+<h2>部署</h2>
+
+<p>先跑起来，然后再根据需求修改配置。搞得不好的话，重新安装也超级简单，是吧！</p>
+
+<ul>
+<li><a href="https://github.com/sameersbn/docker-redmine#quick-start">https://github.com/sameersbn/docker-redmine#quick-start</a></li>
+</ul>
+
+
+<pre><code>mkdir -p /srv/docker/redmine/{redmine,postgresql}
+
+wget https://raw.githubusercontent.com/sameersbn/docker-redmine/master/docker-compose.yml
+docker-compose up
+</code></pre>
+
+<p>启动后，浏览器访问 <a href="http://HOSTED_IP:10083">http://HOSTED_IP:10083</a> ，使用 admin/admin 登录。</p>
+
+<ul>
+<li>重新弄，初始化：</li>
+</ul>
+
+
+<pre><code>docker-compose rm -f 或者 docker-compose down
+
+rm -rf /srv/docker/redmine/redmine/tmp/*
+rm -rf /srv/docker/redmine/postgresql/* 
+
+docker-compose up --build
+
+#docker-compose up -d
+#docker-compose start
+</code></pre>
+
+<p></p>
+
+<h2>Theme主题</h2>
+
+<ul>
+<li><a href="https://github.com/sameersbn/docker-redmine#themes">https://github.com/sameersbn/docker-redmine#themes</a></li>
+<li><a href="http://www.redmine.org/projects/redmine/wiki/Themes">http://www.redmine.org/projects/redmine/wiki/Themes</a></li>
+<li><a href="https://www.redmineup.com/pages/themes/a1">https://www.redmineup.com/pages/themes/a1</a></li>
+</ul>
+
+
+<p>改头换面，下载主题后放到 /srv/docker/redmine/redmine/themes/ 目录下。然后 <strong> 重启容器 </strong>，再重新登录，修改 <strong> 管理 - 配置 - 显示 - 主题 - A1 </strong></p>
+
+<pre><code>[root@k8s redmine]# ll /srv/docker/redmine/redmine/themes/
+total 0
+drwxr-xr-x. 6 es es 69 Sep 18 23:38 a1
+</code></pre>
+
+<h2>Plugins</h2>
+
+<p>有些插件不兼容3.4，注意版本的选择！以下是在3.4下面安装使用的插件：</p>
+
+<ul>
+<li><a href="http://www.redmine.org/projects/redmine/wiki/Plugins">http://www.redmine.org/projects/redmine/wiki/Plugins</a></li>
+<li><a href="http://www.redmine.org/plugins/clipboard_image_paste">http://www.redmine.org/plugins/clipboard_image_paste</a></li>
+<li><a href="https://github.com/peclik/clipboard_image_paste">https://github.com/peclik/clipboard_image_paste</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_checklists">http://www.redmine.org/plugins/redmine_checklists</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_agile">http://www.redmine.org/plugins/redmine_agile</a></li>
+<li><a href="https://github.com/paginagmbh/redmine_lightbox2.git">https://github.com/paginagmbh/redmine_lightbox2.git</a></li>
+<li><a href="https://github.com/paginagmbh/redmine_lightbox2">https://github.com/paginagmbh/redmine_lightbox2</a></li>
+<li><a href="http://www.redmine.org/plugins/mega_calendar">http://www.redmine.org/plugins/mega_calendar</a></li>
+<li><a href="https://github.com/berti92/mega_calendar/wiki/Installation">https://github.com/berti92/mega_calendar/wiki/Installation</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_work_time">http://www.redmine.org/plugins/redmine_work_time</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_issue_templates">http://www.redmine.org/plugins/redmine_issue_templates</a></li>
+<li>Kanban</li>
+<li><a href="http://www.redmine.org/plugins/redhopper">http://www.redmine.org/plugins/redhopper</a></li>
+<li><a href="http://www.redmine.org/plugins/redhopper">http://www.redmine.org/plugins/redhopper</a></li>
+<li><a href="http://www.redmine.org/plugins/deployer">http://www.redmine.org/plugins/deployer</a></li>
+<li><a href="https://github.com/zapic0/deployer">https://github.com/zapic0/deployer</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine-ckeditor">http://www.redmine.org/plugins/redmine-ckeditor</a></li>
+<li><a href="https://github.com/a-ono/redmine_ckeditor">https://github.com/a-ono/redmine_ckeditor</a></li>
+<li><a href="http://www.redmine.org/plugins/apijs">http://www.redmine.org/plugins/apijs</a> 有一些依赖要安装，没用到的可以不安装apijs这个插件。</li>
+<li><a href="https://www.luigifab.info/redmine/en/apijs.php">https://www.luigifab.info/redmine/en/apijs.php</a></li>
+</ul>
+
+
+<pre><code>[root@k8s plugins]# sed -i '/haml/s/^/#/' redhopper/Gemfile           
+[root@k8s plugins]# mv apijs redmine_apijs
+
+[root@k8s redmine]# ll /srv/docker/redmine/redmine/plugins/
+total 0
+drwxr-xr-x.  8 es es 118 Sep 18 14:05 clipboard_image_paste
+drwxr-xr-x. 10 es es 212 Sep 18 19:18 deployer
+drwxr-xr-x.  7 es es 160 Sep 18 12:00 issuefy
+drwxr-xr-x.  4 es es  60 Sep 18 11:59 line_numbers
+drwxr-xr-x.  8 es es 182 Sep 17 18:05 mega_calendar
+drwxr-xr-x.  6 es es 158 Sep 18 12:00 open_flash_chart
+drwxrwxr-x.  8 es es 225 Sep 18 22:15 redhopper
+drwxr-xr-x.  9 es es 156 Sep  6 19:02 redmine_agile
+drwxr-xr-x.  7 es es 133 Sep 18 22:00 redmine_apijs
+drwxr-xr-x. 10 es es 119 Aug 30 21:46 redmine_checklists
+drwxr-xr-x.  9 es es 158 Sep 18 19:19 redmine_ckeditor
+drwxr-xr-x.  8 es es 221 Sep 18 12:01 redmine_code_review
+drwxr-xr-x.  8 es es 252 Sep 18 12:01 redmine_dashboard
+drwxr-xr-x.  3 es es  70 Sep 18 12:00 redmine_embedded_video
+drwxr-xr-x.  2 es es  78 Sep 18 12:00 redmine_gist
+drwxrwxr-x.  8 es es 129 Aug  5 10:52 redmine_issue_templates
+drwxr-xr-x.  8 es es 170 Sep 18 17:46 redmine_lightbox2
+drwxr-xr-x.  8 es es 160 Mar  5  2017 redmine_work_time
+</code></pre>
+
+<p>不重启容器的话，可以登录到容器把 ~/data/plugins 拷贝到 ~/redmine/plugins 下面，然后执行下面的命令进行更新：</p>
+
+<pre><code>root@f0481f5f8cda:/home/redmine/redmine# 
+bundle install --without development test
+bundle exec rake redmine:plugins:migrate RAILS_ENV=production
+
+supervisorctl restart unicorn
+</code></pre>
+
+<h2>其他的一些插件</h2>
+
+<ul>
+<li><a href="http://www.redmine.org/plugins/dmsf">http://www.redmine.org/plugins/dmsf</a></li>
+<li><a href="https://github.com/danmunn/redmine_dmsf">https://github.com/danmunn/redmine_dmsf</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_git_hosting">http://www.redmine.org/plugins/redmine_git_hosting</a> X</li>
+<li><a href="http://www.redmine.org/plugins/redmine_upwork_plugin">http://www.redmine.org/plugins/redmine_upwork_plugin</a></li>
+<li><a href="https://github.com/alexbevi/redmine_knowledgebase">https://github.com/alexbevi/redmine_knowledgebase</a></li>
+<li><a href="https://github.com/danmunn/redmine_dmsf">https://github.com/danmunn/redmine_dmsf</a></li>
+<li><a href="https://github.com/jbox-web/redmine_jenkins">https://github.com/jbox-web/redmine_jenkins</a></li>
+<li><a href="https://github.com/masweetman/issue_charts">https://github.com/masweetman/issue_charts</a></li>
+<li>3.3.x</li>
+<li><a href="http://www.redmine.org/plugins/redmine_pivot_table">http://www.redmine.org/plugins/redmine_pivot_table</a></li>
+<li><a href="https://www.redmine.org/plugins/advanced_roadmap_v2">https://www.redmine.org/plugins/advanced_roadmap_v2</a></li>
+<li><a href="https://github.com/Coren/redmine_advanced_roadmap_v2">https://github.com/Coren/redmine_advanced_roadmap_v2</a></li>
+<li><a href="https://github.com/Loriowar/redmine_issues_tree">https://github.com/Loriowar/redmine_issues_tree</a></li>
+<li><a href="https://github.com/speedy32129/projects_show">https://github.com/speedy32129/projects_show</a></li>
+</ul>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://github.com/bitnami/bitnami-docker-redmine">https://github.com/bitnami/bitnami-docker-redmine</a></li>
+<li><a href="http://11398377.blog.51cto.com/11388377/1875686">http://11398377.blog.51cto.com/11388377/1875686</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Docker Compose入门]]></title>
+    <link href="http://winse.github.io/blog/2017/09/17/docker-compose-hello/"/>
+    <updated>2017-09-17T08:48:25+08:00</updated>
+    <id>http://winse.github.io/blog/2017/09/17/docker-compose-hello</id>
+    <content type="html"><![CDATA[<p>使用Docker也一段时间了，一开始直接使用命令行 docker run 来启动的，后面使用 k8s 来管理，对于多机环境来说还是挺方便的。但是如果仅仅是单机上面跑docker容器，安装一套 k8s 的话也挺尴尬的。</p>
+
+<p>docker提供了compose编排的功能，通过配置文件的方式来启动、管理（多）容器的运行。有点启动脚本的意思，当然也包含一些管理的元素，对容器LifeCycle的管理。</p>
+
+<pre><code>[root@k8s composetest]# docker version
+Client:
+ Version:      1.12.6
+ API version:  1.24
+ Go version:   go1.6.4
+ Git commit:   78d1802
+ Built:        Tue Jan 10 20:20:01 2017
+ OS/Arch:      linux/amd64
+
+Server:
+ Version:      1.12.6
+ API version:  1.24
+ Go version:   go1.6.4
+ Git commit:   78d1802
+ Built:        Tue Jan 10 20:20:01 2017
+ OS/Arch:      linux/amd64
+
+[root@k8s composetest]# docker-compose version
+docker-compose version 1.16.1, build 6d1ac21
+docker-py version: 2.5.1
+CPython version: 2.7.13
+OpenSSL version: OpenSSL 1.0.1t  3 May 2016
+</code></pre>
+
+<p>docker的版本需要和compose配置的版本适配： <a href="https://github.com/docker/compose/releases">https://github.com/docker/compose/releases</a> ，docker-1.12的话，compose version不能高于 2.1。<a href="https://docs.docker.com/compose/compose-file/compose-file-v2/#build">Compose file version 2</a> 。</p>
+
+<p>先安装官网的helloworld来运行一个例子：</p>
+
+<ul>
+<li><a href="https://docs.docker.com/compose/install/">https://docs.docker.com/compose/install/</a></li>
+<li><a href="https://docs.docker.com/compose/gettingstarted/#prerequisites">https://docs.docker.com/compose/gettingstarted/#prerequisites</a></li>
+</ul>
+
+
+<h2>安装：</h2>
+
+<pre><code># 浏览器下载docker-compose
+https://github.com/docker/compose/releases/download/1.16.1/docker-compose-Linux-x86_64
+
+[root@k8s opt]# cd /usr/local/bin/
+[root@k8s bin]# rz
+rz waiting to receive.
+Starting zmodem transfer.  Press Ctrl+C to cancel.
+Transferring docker-compose-Linux-x86_64 (1)...
+  100%    8648 KB    4324 KB/sec    00:00:02       0 Errors  
+
+[root@k8s bin]# mv docker-compose-Linux-x86_64 docker-compose
+[root@k8s bin]# chmod +x docker-compose 
+</code></pre>
+
+<h2>Hello World:</h2>
+
+<p>官网是一个访问量统计的例子，通过python网站结合redis来实现。</p>
+
+<pre><code>[root@k8s composetest]# ll
+total 16
+-rw-r--r--. 1 root root 303 Sep 17 08:09 app.py
+-rw-r--r--. 1 root root 112 Sep 17 08:39 docker-compose.yml
+-rw-r--r--. 1 root root 114 Sep 17 08:42 Dockerfile
+-rw-r--r--. 1 root root  13 Sep 17 08:09 requirements.txt
+
+[root@k8s composetest]# cat app.py 
+from flask import Flask
+from redis import Redis
+
+app = Flask(__name__)
+redis = Redis(host='redis', port=6379)
+
+@app.route('/')
+def hello():
+  count = redis.incr('hits')
+  return 'Hello World! I have been seen {} times.\n'.format(count)
+
+if __name__ == "__main__":
+  app.run(host="0.0.0.0", debug=True)
+
+[root@k8s composetest]# cat requirements.txt 
+flask
+redis
+
+[root@k8s composetest]# cat Dockerfile 
+FROM python:3.4-alpine
+
+ADD . /code
+WORKDIR /code
+
+RUN pip install -r requirements.txt
+
+CMD ["python", "app.py"]
+
+[root@k8s composetest]# cat docker-compose.yml 
+version: '2.1'
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+  redis:
+    image: "redis:alpine"
+</code></pre>
+
+<p>依赖的镜像可以提前下载好，可以不修改docker配置的情况下来下载，参考<a href="https://raw.githubusercontent.com/winse/shell-not-just-on-work/master/docker-download-mirror.sh">docker-download-mirror.sh</a></p>
+
+<p>写好配置后，运行：</p>
+
+<pre><code>[root@k8s composetest]# docker-compose up --build
+Building web
+Step 1 : FROM python:3.4-alpine
+ ---&gt; 27a0e572c13a
+Step 2 : ADD . /code
+ ---&gt; 84082044fb5e
+Removing intermediate container 7c4675b618da
+Step 3 : WORKDIR /code
+ ---&gt; Running in a014af85b748
+ ---&gt; 2ada42bd756c
+Removing intermediate container a014af85b748
+Step 4 : RUN pip install -r requirements.txt
+ ---&gt; Running in 4be6f8f5c8b8
+Collecting flask (from -r requirements.txt (line 1))
+  Downloading Flask-0.12.2-py2.py3-none-any.whl (83kB)
+Collecting redis (from -r requirements.txt (line 2))
+  Downloading redis-2.10.6-py2.py3-none-any.whl (64kB)
+Collecting Jinja2&gt;=2.4 (from flask-&gt;-r requirements.txt (line 1))
+  Downloading Jinja2-2.9.6-py2.py3-none-any.whl (340kB)
+Collecting click&gt;=2.0 (from flask-&gt;-r requirements.txt (line 1))
+  Downloading click-6.7-py2.py3-none-any.whl (71kB)
+Collecting itsdangerous&gt;=0.21 (from flask-&gt;-r requirements.txt (line 1))
+  Downloading itsdangerous-0.24.tar.gz (46kB)
+Collecting Werkzeug&gt;=0.7 (from flask-&gt;-r requirements.txt (line 1))
+  Downloading Werkzeug-0.12.2-py2.py3-none-any.whl (312kB)
+Collecting MarkupSafe&gt;=0.23 (from Jinja2&gt;=2.4-&gt;flask-&gt;-r requirements.txt (line 1))
+  Downloading MarkupSafe-1.0.tar.gz
+Building wheels for collected packages: itsdangerous, MarkupSafe
+  Running setup.py bdist_wheel for itsdangerous: started
+  Running setup.py bdist_wheel for itsdangerous: finished with status 'done'
+  Stored in directory: /root/.cache/pip/wheels/fc/a8/66/24d655233c757e178d45dea2de22a04c6d92766abfb741129a
+  Running setup.py bdist_wheel for MarkupSafe: started
+  Running setup.py bdist_wheel for MarkupSafe: finished with status 'done'
+  Stored in directory: /root/.cache/pip/wheels/88/a7/30/e39a54a87bcbe25308fa3ca64e8ddc75d9b3e5afa21ee32d57
+Successfully built itsdangerous MarkupSafe
+Installing collected packages: MarkupSafe, Jinja2, click, itsdangerous, Werkzeug, flask, redis
+Successfully installed Jinja2-2.9.6 MarkupSafe-1.0 Werkzeug-0.12.2 click-6.7 flask-0.12.2 itsdangerous-0.24 redis-2.10.6
+ ---&gt; ee3e476d4fad
+Removing intermediate container 4be6f8f5c8b8
+Step 5 : CMD python app.py
+ ---&gt; Running in f2f9eefe782e
+ ---&gt; 08e3065107b2
+Removing intermediate container f2f9eefe782e
+Successfully built 08e3065107b2
+Recreating composetest_web_1 ... 
+Recreating composetest_web_1
+Starting composetest_redis_1 ... 
+Recreating composetest_web_1 ... done
+Attaching to composetest_redis_1, composetest_web_1
+redis_1  | 1:C 17 Sep 00:43:45.012 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+redis_1  | 1:C 17 Sep 00:43:45.013 # Redis version=4.0.1, bits=64, commit=00000000, modified=0, pid=1, just started
+redis_1  | 1:C 17 Sep 00:43:45.013 # Warning: no config file specified, using the default config. In order to specify a config file use redis-server /path/to/redis.conf
+redis_1  | 1:M 17 Sep 00:43:45.020 * Running mode=standalone, port=6379.
+redis_1  | 1:M 17 Sep 00:43:45.020 # WARNING: The TCP backlog setting of 511 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 128.
+redis_1  | 1:M 17 Sep 00:43:45.020 # Server initialized
+redis_1  | 1:M 17 Sep 00:43:45.020 # WARNING overcommit_memory is set to 0! Background save may fail under low memory condition. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.
+redis_1  | 1:M 17 Sep 00:43:45.020 # WARNING you have Transparent Huge Pages (THP) support enabled in your kernel. This will create latency and memory usage issues with Redis. To fix this issue run the command 'echo never &gt; /sys/kernel/mm/transparent_hugepage/enabled' as root, and add it to your /etc/rc.local in order to retain the setting after a reboot. Redis must be restarted after THP is disabled.
+redis_1  | 1:M 17 Sep 00:43:45.020 * DB loaded from disk: 0.000 seconds
+redis_1  | 1:M 17 Sep 00:43:45.020 * Ready to accept connections
+web_1    |  * Running on http://0.0.0.0:5000/ (Press CTRL+C to quit)
+web_1    |  * Restarting with stat
+web_1    |  * Debugger is active!
+web_1    |  * Debugger PIN: 175-303-648
+</code></pre>
+
+<p>查看容器状态：</p>
+
+<pre><code>[root@k8s opt]# curl http://0.0.0.0:5000/
+Hello World! I have been seen 1 times.
+[root@k8s opt]# curl http://0.0.0.0:5000/
+Hello World! I have been seen 2 times.
+
+[root@k8s composetest]# docker-compose ps 
+       Name                      Command               State           Ports         
+-------------------------------------------------------------------------------------
+composetest_redis_1   docker-entrypoint.sh redis ...   Up      6379/tcp              
+composetest_web_1     python app.py                    Up      0.0.0.0:5000-&gt;5000/tcp
+
+##
+docker-compose rm -f # Remove stopped containers
+docker-compose down  # Stop and remove containers, networks, images, and volumes
+</code></pre>
+
+<h2>其他</h2>
+
+<p>后台运行：</p>
+
+<pre><code>$ docker-compose up -d
+$ docker-compose ps
+</code></pre>
+
+<p>在指定容器内执行命令：有点类似 docker exec/kubectl exec</p>
+
+<pre><code>$ docker-compose run web env
+</code></pre>
+
+<p><a href="https://docs.docker.com/compose/production/#deploying-changes">单独编译运行</a> 仅更改过内容的容器：</p>
+
+<pre><code>$ docker-compose build web
+$ docker-compose up --no-deps -d web
+</code></pre>
+
+<p>配置<a href="https://docs.docker.com/compose/extends/#extending-services">复用/覆写</a>：</p>
+
+<pre><code>docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+# A
+webapp:
+  build: .
+  ports:
+    - "8000:8000"
+  volumes:
+    - "/data"
+
+# EA   
+web:
+  extends:
+    file: common-services.yml
+    service: webapp
+</code></pre>
+
+<h2>学习</h2>
+
+<ul>
+<li><a href="https://yeasy.gitbooks.io/docker_practice/content/compose/commands.html">Compose 命令</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+</feed>
