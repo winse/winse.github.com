@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="总有单机搞不定的时刻，并且手动切分很麻烦的时刻。不得不开始redis集群，官网的redis3不支持pipeline首先就排除了。 安装codis，需要先安装go。(官网入门文档](https://github.com/CodisLabs/codis/blob/master/doc/ &hellip;">
+  <meta name="description" content="最近对生产的Redis做了两个优化：Redis扩展、以及对简单键值对的存储优化（string改成hash形式） Redis扩展 上一篇介绍的Codis安装。但是使用Pipeline操作时间比较长、连接数比较多的情况下，经常出现连接重置的情况。感觉不踏实，go也不懂感觉短时间处理不了这种问题。 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +85,807 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/07/28/redis-optimise/">Redis使用优化</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-07-28T08:22:26+08:00" pubdate data-updated="true">Thu 2016-07-28 08:22</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>最近对生产的Redis做了两个优化：Redis扩展、以及对简单键值对的存储优化（string改成hash形式）</p>
+
+<h2>Redis扩展</h2>
+
+<p>上一篇介绍的Codis安装。但是使用Pipeline操作时间比较长、连接数比较多的情况下，经常出现连接重置的情况。感觉不踏实，go也不懂感觉短时间处理不了这种问题。</p>
+
+<p>寻求它法。前期是把不同业务数据写入不同的redis实例，根据业务来分。对于同一个业务来说，得根据key的hash来写入不同的实例，但是自己写的话得包装一堆东西。</p>
+
+<p>jedis工具包括Shared的功能，根据写入key的hash映射到不同的redis实例。截取了部分Shared的主要代码:</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>public class Sharded&lt;R, S extends ShardInfo&lt;R&gt;&gt; {
+</span><span class='line'>...
+</span><span class='line'>    private void initialize(List&lt;S&gt; shards) {
+</span><span class='line'>  nodes = new TreeMap&lt;Long, S&gt;();
+</span><span class='line'>
+</span><span class='line'>  for (int i = 0; i != shards.size(); ++i) {
+</span><span class='line'>      final S shardInfo = shards.get(i);
+</span><span class='line'>      if (shardInfo.getName() == null)
+</span><span class='line'>      for (int n = 0; n &lt; 160 * shardInfo.getWeight(); n++) {
+</span><span class='line'>          nodes.put(this.algo.hash("SHARD-" + i + "-NODE-" + n),
+</span><span class='line'>              shardInfo);
+</span><span class='line'>      }
+</span><span class='line'>      else
+</span><span class='line'>      for (int n = 0; n &lt; 160 * shardInfo.getWeight(); n++) {
+</span><span class='line'>          nodes.put(
+</span><span class='line'>              this.algo.hash(shardInfo.getName() + "*"
+</span><span class='line'>                  + shardInfo.getWeight() + n), shardInfo);
+</span><span class='line'>      }
+</span><span class='line'>      resources.put(shardInfo, shardInfo.createResource());
+</span><span class='line'>  }
+</span><span class='line'>    }
+</span><span class='line'>...   
+</span><span class='line'>    public S getShardInfo(byte[] key) {
+</span><span class='line'>  SortedMap&lt;Long, S&gt; tail = nodes.tailMap(algo.hash(key));
+</span><span class='line'>  if (tail.isEmpty()) {
+</span><span class='line'>      return nodes.get(nodes.firstKey());
+</span><span class='line'>  }
+</span><span class='line'>  return tail.get(tail.firstKey());
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    public S getShardInfo(String key) {
+</span><span class='line'>  return getShardInfo(SafeEncoder.encode(getKeyTag(key)));
+</span><span class='line'>    }
+</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
+
+
+<p>使用的时刻很简单，通过ShardedJedis来进读写，大部分的操作与Jedis类似。只是有部分整个集群的操作不能用：keys/scan等。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public List&lt;JedisShardInfo&gt; getShards(String sValue) {
+</span><span class='line'>    String[] servers = sValue.split(",");
+</span><span class='line'>
+</span><span class='line'>    List&lt;JedisShardInfo&gt; shards = new ArrayList&lt;&gt;();
+</span><span class='line'>    for (String server : servers) {
+</span><span class='line'>      Pair&lt;String, Integer&gt; hp = parseServer(server);
+</span><span class='line'>      shards.add(new JedisShardInfo(hp.getLeft(), hp.getRight(), Integer.MAX_VALUE));
+</span><span class='line'>    }
+</span><span class='line'>    return shards;
+</span><span class='line'>  }
+</span><span class='line'>  private ShardedJedisPool createRedisPool(String server) {
+</span><span class='line'>    return new ShardedJedisPool(new GenericObjectPoolConfig(), getShards(server));
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果使用过程中要使用keys，可以通过getAllShards得到所有Jedis实例的键再进行处理：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  public Double zscore(String key, String member) {
+</span><span class='line'>    try (ShardedJedis redis = getRedis()) {
+</span><span class='line'>      return redis.zscore(key, member);
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  public void expires(List&lt;String&gt; patterns, int seconds) {
+</span><span class='line'>    try (ShardedJedis shardedJedis = getRedis()) {
+</span><span class='line'>      Set&lt;String&gt; keys = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>      for (Jedis redis : shardedJedis.getAllShards()) {
+</span><span class='line'>        for (String p : patterns) {
+</span><span class='line'>          keys.addAll(redis.keys(p)); // 调用单独实例的keys命令获取匹配的键
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>
+</span><span class='line'>      ShardedJedisPipeline pipeline = shardedJedis.pipelined();
+</span><span class='line'>      for (String key : keys) {
+</span><span class='line'>        pipeline.expire(key, seconds);
+</span><span class='line'>      }
+</span><span class='line'>      pipeline.sync();
+</span><span class='line'>    }
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p>进行多实例(集群)切分后，效果还是挺明显的。写入高峰期分流效果显著，负载均摊，可使用的内存也翻翻，键也基本平均分布（ <code>--maxmemory-policy volatile-lru</code> ）。生产实际效果：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 redis]$ sh stat_cluster.sh 
+</span><span class='line'>
+</span><span class='line'> * [ ============================================================&gt; ] 4 / 4
+</span><span class='line'>
+</span><span class='line'>hadoop-master1:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:44287785776
+</span><span class='line'>used_memory_human:41.25G
+</span><span class='line'>used_memory_rss:67458658304
+</span><span class='line'>used_memory_peak:67981990576
+</span><span class='line'>used_memory_peak_human:63.31G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.52
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=72729777,expires=11967,avg_ttl=63510023
+</span><span class='line'>
+</span><span class='line'>hadoop-master2:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:50667945344
+</span><span class='line'>used_memory_human:47.19G
+</span><span class='line'>used_memory_rss:66036752384
+</span><span class='line'>used_memory_peak:64424543672
+</span><span class='line'>used_memory_peak_human:60.00G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.30
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=100697581,expires=13426,avg_ttl=63509903
+</span><span class='line'>
+</span><span class='line'>hadoop-master3:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:56763389184
+</span><span class='line'>used_memory_human:52.87G
+</span><span class='line'>used_memory_rss:66324045824
+</span><span class='line'>used_memory_peak:64424546136
+</span><span class='line'>used_memory_peak_human:60.00G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.17
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=94363547,expires=13544,avg_ttl=63505693
+</span><span class='line'>
+</span><span class='line'>hadoop-master4:
+</span><span class='line'># Memory
+</span><span class='line'>used_memory:54513952832
+</span><span class='line'>used_memory_human:50.77G
+</span><span class='line'>used_memory_rss:67257393152
+</span><span class='line'>used_memory_peak:64820124928
+</span><span class='line'>used_memory_peak_human:60.37G
+</span><span class='line'>used_memory_lua:33792
+</span><span class='line'>mem_fragmentation_ratio:1.23
+</span><span class='line'>mem_allocator:jemalloc-3.6.0
+</span><span class='line'># Keyspace
+</span><span class='line'>db0:keys=83297543,expires=12418,avg_ttl=63507046
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>Finished processing 4 / 4 hosts in 298.89 ms</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>存储优化</h2>
+
+<p>实际环境中存在会大量的用到简单string键值对，挺耗内存的。其实使用hash（内部存储ziplist）能更有效的利用内存。</p>
+
+<p>注意是ziplist形式的hash才能省内存！！如果是skiplist的hash会浪费内存。</p>
+
+<ul>
+<li><a href="http://webcache.googleusercontent.com/search?q=cache:yr96Qf3F0e4J:heylinux.com/archives/1920.html+&amp;cd=1&amp;hl=zh-CN&amp;ct=clnk&amp;gl=jp">内存优化之Redis数据结构的设计优化实践</a> heylinux.com/archives/1920.html 这篇文章可能访问不了，可以通过google/baidu的快照来查看</li>
+<li><a href="http://redis4you.com/articles.php?id=008&amp;name=Understanding+hash-max-zipmap-entries+and+">Understanding hash-max-zipmap-entries and &ldquo;hash of hashes&rdquo; optimization</a></li>
+<li><a href="http://redis.io/topics/memory-optimization">http://redis.io/topics/memory-optimization</a></li>
+<li><a href="http://redis.io/topics/lru-cache">http://redis.io/topics/lru-cache</a></li>
+<li><a href="https://segmentfault.com/a/1190000004708270">Redis内存优化</a></li>
+</ul>
+
+
+<p>下面引用官网对简单键值对和Hash的一个比较（Redis中key的相关特性不关注）: 对于小数据量的hash进行了优化</p>
+
+<blockquote><p> a few keys use a lot more memory than a single key containing a hash with a few fields.</p>
+
+<p> We use a trick.</p>
+
+<p> But many times hashes contain just a few fields. When hashes are small we can instead just encode them in an O(N) data structure, like a linear array with length-prefixed key value pairs. Since we do this only when N is small</p>
+
+<p> This does not work well just from the point of view of time complexity, but also from the point of view of constant times, since a linear array of key value pairs happens to play very well with the CPU cache (it has a better cache locality than a hash table).</p></blockquote>
+
+<p>优化主要涉及到ziplist的两个参数，是一个cpu/memory之间的均衡关系。entries直接用默认的就好了，value最好不要大于254（ziplist节点entry大于254需要增加4个到5字节，来存储前一个entry的长度）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>hash-max-zipmap-entries 512 (hash-max-ziplist-entries for Redis &gt;= 2.6)
+</span><span class='line'>hash-max-zipmap-value 64  (hash-max-ziplist-value for Redis &gt;= 2.6)</span></code></pre></td></tr></table></div></figure>
+
+
+<p>简单列几条数据：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com  -&gt;  1469584847
+</span><span class='line'>3:co4hk52ia0b1.5buzd.com                                          -&gt;  1468859527
+</span><span class='line'>1:119.84.110.82_39502                                             -&gt;  1469666877</span></code></pre></td></tr></table></div></figure>
+
+
+<p>原始key内容可以不需要，鉴于包括域名的key太长，直接对数据key取md5。以1亿键值对来进行估算，取md5的前五位作为key，后27位作为hash键值对的key。</p>
+
+<p>扫描原始redis实例，然后把键值对转换后存储到新的实例。转换Scala代码如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>import java.util.{List =&gt; JList}
+</span><span class='line'>import org.apache.commons.codec.digest.DigestUtils
+</span><span class='line'>import redis.clients.jedis._
+</span><span class='line'>import scala.collection.JavaConversions._
+</span><span class='line'>
+</span><span class='line'>trait RedisUtils {
+</span><span class='line'>
+</span><span class='line'>  def md5(data: String): String = {
+</span><span class='line'>    DigestUtils.md5Hex(data)
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  def Type(redis: Jedis, key: String) = redis.`type`(key)
+</span><span class='line'>
+</span><span class='line'>  def scan(redis: Jedis)(action: JList[String] =&gt; Unit): Unit = {
+</span><span class='line'>    import scala.util.control.Breaks._
+</span><span class='line'>
+</span><span class='line'>    var cursor = "0"
+</span><span class='line'>    breakable {
+</span><span class='line'>      while (true) {
+</span><span class='line'>        val res = redis.scan(cursor)
+</span><span class='line'>
+</span><span class='line'>        action(res.getResult())
+</span><span class='line'>
+</span><span class='line'>        cursor = res.getStringCursor
+</span><span class='line'>        if (cursor.equals("0")) {
+</span><span class='line'>          break
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>  
+</span><span class='line'>  def printInfo(redis: Jedis): Unit = {
+</span><span class='line'>    println(redis.info())
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  // 验证：
+</span><span class='line'>  //  打印 **总共** 的键值对数量
+</span><span class='line'>  //  eval "local aks=redis.call('keys', '*'); local res=0; for i,r in ipairs(aks) do res=res+redis.call('hlen', r) end; return res" 0
+</span><span class='line'>  //  打印 **每个** hash包括的键值对个数
+</span><span class='line'>  //  eval "local aks=redis.call('keys', '*'); local res={}; for i,r in ipairs(aks) do res[i]=redis.call('hlen', r) end; return res" 0
+</span><span class='line'>  //
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>Object RedisTransfer extends RedisUtils {
+</span><span class='line'>
+</span><span class='line'>  def handle(key: String, value: String, tp: Pipeline): Unit = {
+</span><span class='line'>    val m5 = md5(key)
+</span><span class='line'>    tp.hset(m5.substring(0, 5), m5.substring(5), value)
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  def main(args: Array[String]) {
+</span><span class='line'>    val Array(sHost, sPort, tHost, tPort) = args
+</span><span class='line'>
+</span><span class='line'>    val timeout = 60 * 1000
+</span><span class='line'>    val source = new Jedis(sHost, sPort.toInt, timeout)
+</span><span class='line'>    val sp = source.pipelined()
+</span><span class='line'>    val target = new Jedis(tHost, tPort.toInt, timeout)
+</span><span class='line'>    val tp = target.pipelined()
+</span><span class='line'>
+</span><span class='line'>    scan(source) { keys =&gt;
+</span><span class='line'>      // 仅处理 string类型 的记录
+</span><span class='line'>      val requests = for (key &lt;- keys) yield Some((key, sp.get(key)))
+</span><span class='line'>      sp.sync()
+</span><span class='line'>
+</span><span class='line'>      for (
+</span><span class='line'>        request &lt;- requests;
+</span><span class='line'>        (key, resp) &lt;- request
+</span><span class='line'>      ) {
+</span><span class='line'>        try {
+</span><span class='line'>          handle(key, resp.get(), tp)
+</span><span class='line'>        } catch {
+</span><span class='line'>          case e: Exception =&gt; println(s"fetch $key with exception, ${e.getMessage}")
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    tp.sync()
+</span><span class='line'>
+</span><span class='line'>    printInfo(target)
+</span><span class='line'>
+</span><span class='line'>    target.close()
+</span><span class='line'>    source.close()
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p>由于对数据进行了处理，对比不是很清晰，不能直接说省了多少空间。但是添加上面的处理后，原来30G（大概3亿多）的实例变成了15G。</p>
+
+<h2>另一个案例</h2>
+
+<p>另外对域名的实例做了下测试，6.4百万的键值对：707.29M内存：</p>
+
+<p>md5前4个字符作为key，总共产生65536个键值对。每个hash大概包括100个kv。</p>
+
+<ul>
+<li>hash的key使用原来的键
+
+<ul>
+<li>不调ziplist_value的值，实际的转换成hash(skiplist)：939.6M，</li>
+<li>ziplist_value修改成1024，转换成hash(ziplist)：513.78M</li>
+</ul>
+</li>
+<li>md5的作为hash的新key：344.7M</li>
+<li>md5的后28位作为hash的新key： 259.09M</li>
+</ul>
+
+
+<p>如：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>MD5:
+</span><span class='line'>  3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com
+</span><span class='line'>  1356de078028ddf266c962533760b27c
+</span><span class='line'>
+</span><span class='line'>1356 -&gt; hash( 3:0dc46077dfaa4970a1ec9f38cfc29277fa9e1012.ime.galileo.baidu.com -&gt; 1469584847 )
+</span><span class='line'>1356 -&gt; hash( 1356de078028ddf266c962533760b27c -&gt; 1469584847 )
+</span><span class='line'>1356 -&gt; hash( de078028ddf266c962533760b27c -&gt; 1469584847 )</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2016/07/19/xss-blocked-by-naxsi/">使用 Naxsi 处理 XSS</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2016-07-19T19:43:13+08:00" pubdate data-updated="true">Tue 2016-07-19 19:43</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>前台安全检查时出现了【检测到目标URL存在跨站漏洞】，就是可以通过url带js来截取用户的信息。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>js/jquery/jquery-1.8.2.min.js/&lt;ScRipt&gt;jovoys(6258);&lt;/ScRipt&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>XSS的一些简单介绍：</p>
+
+<ul>
+<li><a href="http://anti-hacker.blogspot.com/2008/01/xsscross-site-script.html">淺析XSS(Cross Site Script)漏洞原理</a></li>
+<li><a href="http://www.freebuf.com/articles/web/42727.html">XSS的原理分析与解剖（第二篇）</a></li>
+</ul>
+
+
+<p>搜索到使用 <strong>naxsi</strong> 配合 <strong>nginx</strong> 有现成的解决方案，网上的资料很乱，直接看 <a href="https://github.com/nbs-system/naxsi/wiki">官方文档</a> 清晰一些。</p>
+
+<ol>
+<li>编译</li>
+</ol>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 sources]$ ll
+</span><span class='line'>drwxrwxr-x  6 hadoop hadoop      4096 Sep 10  2015 naxsi-0.54
+</span><span class='line'>-rw-r--r--  1 hadoop hadoop    192843 Jul 19 18:42 naxsi-0.54.zip
+</span><span class='line'>drwxr-xr-x  9 hadoop hadoop      4096 Nov 11  2015 nginx-1.7.10
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 sources]$ ll nginx-1.7.10/
+</span><span class='line'>total 3180
+</span><span class='line'>drwxr-xr-x  6 hadoop hadoop    4096 Nov 11  2015 auto
+</span><span class='line'>-rw-r--r--  1 hadoop hadoop  246649 Feb 10  2015 CHANGES
+</span><span class='line'>-rw-r--r--  1 hadoop hadoop  375103 Feb 10  2015 CHANGES.ru
+</span><span class='line'>drwxr-xr-x  2 hadoop hadoop    4096 Nov 11  2015 conf
+</span><span class='line'>-rwxr-xr-x  1 hadoop hadoop    2463 Feb 10  2015 configure
+</span><span class='line'>drwxr-xr-x  4 hadoop hadoop    4096 Nov 11  2015 contrib
+</span><span class='line'>drwxr-xr-x  2 hadoop hadoop    4096 Nov 11  2015 html
+</span><span class='line'>-rw-r--r--  1 hadoop hadoop    1397 Feb 10  2015 LICENSE
+</span><span class='line'>-rw-rw-r--  1 hadoop hadoop     342 Jul 19 18:44 Makefile
+</span><span class='line'>drwxr-xr-x  2 hadoop hadoop    4096 Nov 11  2015 man
+</span><span class='line'>drwxrwxr-x  4 hadoop hadoop    4096 Jul 19 18:45 objs
+</span><span class='line'>-rw-r--r--  1 hadoop hadoop 2009464 Nov 11  2015 pcre-8.36.tar.gz
+</span><span class='line'>-rw-r--r--  1 hadoop hadoop      49 Feb 10  2015 README
+</span><span class='line'>drwxr-xr-x 10 hadoop hadoop    4096 Nov 11  2015 src
+</span><span class='line'>-rw-r--r--  1 hadoop hadoop  571091 Nov 11  2015 zlib-1.2.8.tar.gz
+</span><span class='line'>
+</span><span class='line'>[hadoop@cu2 nginx-1.7.10]$ ./configure --add-module=../naxsi-x.xx/naxsi_src/ --prefix=/opt/nginx
+</span><span class='line'>[hadoop@cu2 nginx-1.7.10]$ make && make install
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ol>
+<li>配置</li>
+</ol>
+
+
+<p>需要在 nginx.conf 的http中引入 <strong>naxsi_core.rules</strong> ，在location中加入规则。</p>
+
+<p>先把 naxsi_core.rules 拷贝到 nginx/conf 目录下。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>http {
+</span><span class='line'>    include       mime.types;
+</span><span class='line'>    include       naxsi_core.rules;
+</span><span class='line'>  ...
+</span><span class='line'>    server {
+</span><span class='line'>  ...
+</span><span class='line'>        location /omc {
+</span><span class='line'>
+</span><span class='line'>#Enable naxsi
+</span><span class='line'>SecRulesEnabled;
+</span><span class='line'>
+</span><span class='line'>#Enable learning mide
+</span><span class='line'>#LearningMode;
+</span><span class='line'>
+</span><span class='line'>#Define where blocked requests go
+</span><span class='line'>DeniedUrl "/omc/error.jsp";
+</span><span class='line'>
+</span><span class='line'>#CheckRules, determining when naxsi needs to take action
+</span><span class='line'>CheckRule "$SQL &gt;= 8" BLOCK;
+</span><span class='line'>CheckRule "$RFI &gt;= 8" BLOCK;
+</span><span class='line'>CheckRule "$TRAVERSAL &gt;= 4" BLOCK;
+</span><span class='line'>CheckRule "$EVADE &gt;= 4" BLOCK;
+</span><span class='line'>CheckRule "$XSS &gt;= 8" BLOCK;
+</span><span class='line'>
+</span><span class='line'>#naxsi logs goes there
+</span><span class='line'>error_log logs/foo.log;
+</span><span class='line'>
+</span><span class='line'>                proxy_set_header        X-Real-IP $remote_addr;
+</span><span class='line'>                proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+</span><span class='line'>                proxy_set_header        Host $http_host;
+</span><span class='line'>
+</span><span class='line'>                proxy_pass http://localhost:8888/omc;
+</span><span class='line'>        }
+</span><span class='line'>      ...
+</span><span class='line'>      </span></code></pre></td></tr></table></div></figure>
+
+
+<ol>
+<li>启动生效</li>
+</ol>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>sbin/nginx -p $PWD</span></code></pre></td></tr></table></div></figure>
+
+
+<p><a href="https://github.com/nbs-system/naxsi/wiki/naxsi-setup">https://github.com/nbs-system/naxsi/wiki/naxsi-setup</a>
+<a href="https://github.com/nbs-system/naxsi/wiki/checkrules-bnf">https://github.com/nbs-system/naxsi/wiki/checkrules-bnf</a></p>
+
+<p>检查会比较严格，添加后应用可能会报错，需要对 foo.log 中的情况进行确认，对规则进行一些修改。如不需要监控 cookie 里面的内容：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[omc@cu-omc1 nginx]$ vi conf/naxsi_core.rules 
+</span><span class='line'>:%s/|$HEADERS_VAR:Cookie//</span></code></pre></td></tr></table></div></figure>
+
+
+<p>还有一些 <code>%[2|3]</code> 的可能也需要改改。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>uri=/omc/Frame/Time.do&learning=0&vers=0.54&total_processed=404&total_blocked=10&block=1&zone0=BODY&id0=16&var_name0=</span></code></pre></td></tr></table></div></figure>
+
+
+<p>根据请求的 id 去规则配置里面找具体的描述，然后 uri 和 var_name 查看具体的请求对症下药：去掉规则或者改请求。</p>
+
+<p>如上面请求的 <strong>id0=16</strong> 对应 <strong>#@MainRule &ldquo;msg:empty POST&rdquo; id:16;</strong> 把请求修改成get即可。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2007,724 +2808,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/06/15/elasticsearch-startguide/">Elasticsearch Startguide</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2016-06-15T08:40:28+08:00" pubdate data-updated="true">Wed 2016-06-15 08:40</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>如果有Lucene的使用经历，elasticsearch的入门还是比较简单的。直接解压启动命令就安装好了，然后就是添加一些plugins就OK了。</p>
-
-<h2>安装</h2>
-
-<p>从官网下载 <a href="https://www.elastic.co/downloads/elasticsearch">TAR包</a> ，解压后，运行 elasticsearch 脚本启动服务。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># -d 表示 daemonize 后台运行
-</span><span class='line'>[hadoop@cu2 elasticsearch-2.2.0]$ bin/elasticsearch -d</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>插件</h2>
-
-<p>大部分插件都是ajax方式的静态页面，可以通过plugin脚本安装，或者直接解压文件到plugins目录下面。</p>
-
-<p>安装已经下载到本地的插件需要加file协议，不然程序会从官网下载。或者直接解压到plugins目录下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 elasticsearch-2.2.0]$ bin/plugin install file:///home/hadoop/elasticsearch-head-master.zip 
-</span><span class='line'>-&gt; Installing from file:/home/hadoop/elasticsearch-head-master.zip...
-</span><span class='line'>Trying file:/home/hadoop/elasticsearch-head-master.zip ...
-</span><span class='line'>Downloading .........DONE
-</span><span class='line'>Verifying file:/home/hadoop/elasticsearch-head-master.zip checksums if available ...
-</span><span class='line'>NOTE: Unable to verify checksum for downloaded plugin (unable to find .sha1 or .md5 file to verify)
-</span><span class='line'>Installed head into /home/hadoop/elasticsearch-2.2.0/plugins/head
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>windows</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\usr\share\elasticsearch-2.3.3\bin&gt;plugin.bat install file:///D:/SOFTWARE/elasticsearch/elasticsearch-plugin/elasticsearch-head-master.zip</span></code></pre></td></tr></table></div></figure>
-
-
-<p>安装好plugin后，打开浏览器查看索引情况： <a href="http://localhost:9200/_plugin/head/">http://localhost:9200/_plugin/head/</a></p>
-
-<h2>插件高阶</h2>
-
-<p>有些插件版本比较旧需要改一改，需要了解新版本的 elasticsearch-plugin 的规范：</p>
-
-<p><a href="https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/installation.html">https://www.elastic.co/guide/en/elasticsearch/plugins/2.3/installation.html</a></p>
-
-<p>新版本插件主要是需要增加一个描述文件：</p>
-
-<p><a href="https://www.elastic.co/guide/en/elasticsearch/reference/2.3/breaking_20_plugin_and_packaging_changes.html#_plugins_require_descriptor_file">Plugins require descriptor file</a></p>
-
-<p>遇到想安装的旧版本的plugin，描述文件写法可以参考 <a href="https://github.com/mobz/elasticsearch-head">elasticsearch-head</a> 。</p>
-
-<p>可选插件：</p>
-
-<ul>
-<li>paramedic <a href="https://github.com/karmi/elasticsearch-paramedic">https://github.com/karmi/elasticsearch-paramedic</a></li>
-<li>head <a href="https://github.com/mobz/elasticsearch-head">https://github.com/mobz/elasticsearch-head</a></li>
-<li>kopf <a href="https://github.com/lmenezes/elasticsearch-kopf">https://github.com/lmenezes/elasticsearch-kopf</a></li>
-</ul>
-
-
-<h2>常用URL请求</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-create-index.html
-</span><span class='line'># 创建
-</span><span class='line'>$ curl -XPUT 'http://localhost:9200/t_ods_idc_isp_log2/' -d '{
-</span><span class='line'>    "settings" : {
-</span><span class='line'>        "index" : {
-</span><span class='line'>            "number_of_shards" : 3,
-</span><span class='line'>            "number_of_replicas" : 0
-</span><span class='line'>        }
-</span><span class='line'>    }
-</span><span class='line'>}'
-</span><span class='line'>{"acknowledged":true}
-</span><span class='line'>
-</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-put-mapping.html
-</span><span class='line'># 更新
-</span><span class='line'># mapping.json
-</span><span class='line'>{
-</span><span class='line'>  "properties": {
-</span><span class='line'>      "author": {
-</span><span class='line'>          "type": "string"
-</span><span class='line'>      },
-</span><span class='line'>...
-</span><span class='line'>      "year": {
-</span><span class='line'>          "type": "long",
-</span><span class='line'>          "ignore_malformed": false,
-</span><span class='line'>          "index": "analyzed"
-</span><span class='line'>      },
-</span><span class='line'>      "avaiable": {
-</span><span class='line'>          "type": "boolean"
-</span><span class='line'>      }
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>$ curl -XPUT 'localhost:9200/t_ods_idc_isp_log2/_mapping/default' -d @mapping.json
-</span><span class='line'>
-</span><span class='line'>$ curl -XPUT 'localhost:9200/t_ods_idc_isp_log2/_mapping/default' -d '
-</span><span class='line'>{
-</span><span class='line'>  "properties": {
-</span><span class='line'>    "fDIID": {
-</span><span class='line'>      "type": "string"
-</span><span class='line'>    },
-</span><span class='line'>...
-</span><span class='line'>    "gatherTime": {
-</span><span class='line'>      "type": "long"
-</span><span class='line'>    }
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>'
-</span><span class='line'>
-</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-templates.html
-</span><span class='line'># 索引
-</span><span class='line'># documents.json
-</span><span class='line'>{ "index": {      "_index": "library",        "_type": "book",        "_id": "1"  } }
-</span><span class='line'>{     "title": "All Quiet on the Western Front",  "otitle": "Im Westen nichts Neues",     "author": "Erich Maria Remarque",   "year": 1929,   "characters": ["Paul Baumer",   "Albert Kropp",     "Haie Westhus",     "Fredrich Muller",  "Stanislaus Katczinsky",    "Tjaden"],  "tags": ["novel"],  "copies": 1,    "available": true,  "section": 3 }
-</span><span class='line'>{     "index": {      "_index": "library",        "_type": "book",        "_id": "2"  } }
-</span><span class='line'>{     "title": "Catch-22",    "author": "Joseph Heller",  "year": 1961,   "characters": ["John Yossarian",    "Captain Aardvark",     "Chaplain Tappman",     "Colonel Cathcart",     "Doctor Daneeka"],  "tags": ["novel"],  "copies": 6,    "available": false,     "section": 1 }
-</span><span class='line'>
-</span><span class='line'>$ curl -s -XPOST localhost:9200/_bulk --data-binary @documents.json
-</span><span class='line'>
-</span><span class='line'># 删除
-</span><span class='line'>$ curl -XDELETE 'http://localhost:9200/t_ods_idc_isp_log2/'
-</span><span class='line'>{"acknowledged":true}
-</span><span class='line'>
-</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-get-mapping.html
-</span><span class='line'># https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-get-field-mapping.html
-</span><span class='line'># 状态查看
-</span><span class='line'>http://localhost:9200/_cat/health?v
-</span><span class='line'>http://localhost:9200/_cat/nodes?v
-</span><span class='line'>http://localhost:9200/_cat/indices?v
-</span><span class='line'>
-</span><span class='line'>curl -XGET 'http://localhost:9200/_all/_mapping/book/field/author'
-</span><span class='line'>curl -XHEAD -i 'http://localhost:9200/twitter/tweet'
-</span><span class='line'>curl localhost:9200/_stats
-</span><span class='line'>curl -XGET 'http://localhost:9200/_all/_mapping/[type]'
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2016/05/08/rrc-apache-spark-source-inside-shell/">[读读书]Apache Spark源码剖析-Shell</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2016-05-08T21:41:01+08:00" pubdate data-updated="true">Sun 2016-05-08 21:41</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>本来第二篇应该是与 [第1章 初识Spark] 有关，但我们运行helloworld、以及提交任务都是通过脚本 <code>bin/spark-shell</code> ，完全不知道那些脚本是干啥的？而且，在开发环境运行shell来启动应用总觉得怪怪的，这篇先来简单了解脚本的功能、以及Launcher模块。</p>
-
-<p><strong> 其实每个大数据的框架，shell脚本都是通用入口，也是研读源码的第一个突破口 </strong>。掌握脚本功能相当于熟悉了基本的API功能，把 spark/bin 目录下面的脚本理清楚，然后再去写搭建开发环境、编写调试helloworld就事半功倍了。</p>
-
-<p>官网 <strong> Quick Start </strong> 提供的简短例子都是通过 bin/spark-shell 来运行的。Submit页面提供了 bin/spark-submit 提交jar发布任务的方式。 spark-shell，spark-submit 就是两个非常重要的脚本，这里就来看下这两个脚本。</p>
-
-<h2>spark-shell - 对应[3.1 spark-shell]章节</h2>
-
-<p>spark-shell 脚本的内容相对多一些，主要代码如下（其他代码都是为了兼容cygwin弄的，我们这里不关注）：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>SPARK_SUBMIT_OPTS="$SPARK_SUBMIT_OPTS -Dscala.usejavacp=true"
-</span><span class='line'>trap onExit INT     # 程序终止(interrupt)信号, 在用户键入INTR字符(通常是Ctrl + C)时触发
-</span><span class='line'>
-</span><span class='line'>export SPARK_SUBMIT_OPTS
-</span><span class='line'>"${SPARK_HOME}"/bin/spark-submit --class org.apache.spark.repl.Main --name "Spark shell" "$@"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>最终调用 bin/spark-submit 脚本。其实和我们自己提交 helloworld.jar 命令一样：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$ bin/spark-submit \
-</span><span class='line'>  --class "HelloWorld" \
-</span><span class='line'>  --master local[2] \
-</span><span class='line'>  target/scala-2.10/helloworld_2.10-1.0.jar</span></code></pre></td></tr></table></div></figure>
-
-
-<p>不过通过 bin/spark-shell 提交运行的类是spark自带，没有附加（不需要）额外的jar。这个后面再讲，我们也可以通过这种方式类运行公共位置的jar，可以减少一些不必要的网络带宽。</p>
-
-<h2>spark-submit</h2>
-
-<p>submit脚本更简单。就是把 <strong>org.apache.spark.deploy.SparkSubmit</strong> 和 <strong>输入参数</strong> 全部传递给脚本 bin/spark-class 。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>exec "${SPARK_HOME}"/bin/spark-class org.apache.spark.deploy.SparkSubmit "$@"</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>spark-class</h2>
-
-<p>主要的功能都集中在 bin/spark-class。bin/spark-class脚本最终启动java、调用 <strong>Launcher模块</strong> 。而 <strong>Launcher模块</strong> 解析输入参数并输出 <strong>最终输出Driver启动的命令</strong>，然后shell再通过 <strong>exec</strong> 来运行Driver程序。</p>
-
-<p>要讲清楚 bin/spark-class 相对复杂点：通过脚本传递参数，调用java处理参数，又输出脚本，最后运行脚本才真正运行了Driver。所以这里通过 <strong>脚本</strong> 和 <strong>程序</strong> 来进行说明。</p>
-
-<h4>脚本</h4>
-
-<ul>
-<li>先加载环境变量配置文件</li>
-<li>再获取 assembly.jar 位置</li>
-<li>然后调用 <code>org.apache.spark.launcher.Main</code> ， Main类根据环境变量和传入参数算出真正执行的命令(具体在【程序】部分讲)。</li>
-</ul>
-
-
-<p>下面是核心脚本的内容：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>. "${SPARK_HOME}"/bin/load-spark-env.sh 
-</span><span class='line'>  # 把load-spark-env.sh展开
-</span><span class='line'>  . "${user_conf_dir}/spark-env.sh"
-</span><span class='line'>  
-</span><span class='line'>  ASSEMBLY_DIR1="${SPARK_HOME}/assembly/target/scala-2.10"  # 通过ASSEMBLY路径来判断SPARK_SCALA_VERSION，编译打包成tar的不需要这个变量
-</span><span class='line'>  export SPARK_SCALA_VERSION="2.10"
-</span><span class='line'>
-</span><span class='line'>RUNNER="${JAVA_HOME}/bin/java"
-</span><span class='line'>
-</span><span class='line'>SPARK_ASSEMBLY_JAR=
-</span><span class='line'>if [ -f "${SPARK_HOME}/RELEASE" ]; then
-</span><span class='line'>  ASSEMBLY_DIR="${SPARK_HOME}/lib"
-</span><span class='line'>else
-</span><span class='line'>  ASSEMBLY_DIR="${SPARK_HOME}/assembly/target/scala-$SPARK_SCALA_VERSION"
-</span><span class='line'>fi
-</span><span class='line'>ASSEMBLY_JARS="$(ls -1 "$ASSEMBLY_DIR" | grep "^spark-assembly.*hadoop.*\.jar$" || true)"
-</span><span class='line'>SPARK_ASSEMBLY_JAR="${ASSEMBLY_DIR}/${ASSEMBLY_JARS}"
-</span><span class='line'>LAUNCH_CLASSPATH="$SPARK_ASSEMBLY_JAR"
-</span><span class='line'>
-</span><span class='line'>export _SPARK_ASSEMBLY="$SPARK_ASSEMBLY_JAR"
-</span><span class='line'>
-</span><span class='line'>CMD=()
-</span><span class='line'>while IFS= read -d '' -r ARG; do
-</span><span class='line'>  CMD+=("$ARG")
-</span><span class='line'>done &lt; &lt;("$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@")
-</span><span class='line'>exec "${CMD[@]}"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>大部分内容都是准备环境变量，就最后几行代码比较复杂。这里设置DEBUG在脚本 <code>while</code> 循环打印每个输出的值看下输出的是什么。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 修改后的效果
-</span><span class='line'>CMD=()
-</span><span class='line'>while IFS= read -d '' -r ARG; do
-</span><span class='line'>  echo "[DEBUG] $ARG"
-</span><span class='line'>  CMD+=("$ARG")
-</span><span class='line'>done &lt; &lt;(set -x; "$RUNNER" -cp "$LAUNCH_CLASSPATH" org.apache.spark.launcher.Main "$@")
-</span><span class='line'>echo "${CMD[@]}"
-</span><span class='line'>exec "${CMD[@]}"</span></code></pre></td></tr></table></div></figure>
-
-
-<p>启动 bin/spark-shell（最终会调用 bin/spark-class，上面已经讲过脚本之间的关系），查看输出的调试信息：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@cu2 spark-1.6.0-bin-2.6.3]$ bin/spark-shell 
-</span><span class='line'>++ /opt/jdk1.8.0/bin/java -cp /home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar org.apache.spark.launcher.Main org.apache.spark.deploy.SparkSubmit --class org.apache.spark.repl.Main --name 'Spark shell'
-</span><span class='line'>[DEBUG] /opt/jdk1.8.0/bin/java
-</span><span class='line'>[DEBUG] -cp
-</span><span class='line'>[DEBUG] /home/hadoop/spark/lib/mysql-connector-java-5.1.34.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/conf/:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-rdbms-3.2.9.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-core-3.2.10.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-api-jdo-3.2.6.jar:/home/hadoop/hadoop/etc/hadoop/
-</span><span class='line'>[DEBUG] -Dscala.usejavacp=true
-</span><span class='line'>[DEBUG] -Xms512m
-</span><span class='line'>[DEBUG] -Xmx512m
-</span><span class='line'>[DEBUG] org.apache.spark.deploy.SparkSubmit
-</span><span class='line'>[DEBUG] --class
-</span><span class='line'>[DEBUG] org.apache.spark.repl.Main
-</span><span class='line'>[DEBUG] --name
-</span><span class='line'>[DEBUG] Spark shell
-</span><span class='line'>[DEBUG] spark-shell
-</span><span class='line'>/opt/jdk1.8.0/bin/java -cp /home/hadoop/spark/lib/mysql-connector-java-5.1.34.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/conf/:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/spark-assembly-1.6.0-hadoop2.6.3-ext-2.1.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-rdbms-3.2.9.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-core-3.2.10.jar:/home/hadoop/spark-1.6.0-bin-2.6.3/lib/datanucleus-api-jdo-3.2.6.jar:/home/hadoop/hadoop/etc/hadoop/ -Dscala.usejavacp=true -Xms512m -Xmx512m org.apache.spark.deploy.SparkSubmit --class org.apache.spark.repl.Main --name 'Spark shell' spark-shell
-</span><span class='line'>...
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>从上面的调试信息可以看出：</p>
-
-<ul>
-<li><code>org.apache.spark.launcher.Main</code> 把传入参数整理后重新输出</li>
-<li>脚本把java输出内容保存到 <code>CMD[@]</code> 数组中</li>
-<li>最后使用exec来执行。</li>
-</ul>
-
-
-<p>根据上面 bin/spark-class 产生的启动命令可以直接在idea里面运行，效果与直接运行 bin/spark-shell 一样：</p>
-
-<p><img src="/images/blogs/rrc-spark/idea-spark-shell.png" alt="" /></p>
-
-<p><strong>注意：</strong> 这里的 spark-shell 是一个特殊的字符串，代码中会对其进行特殊处理不额外加载jar。类似的字符串还有： pyspark-shell, sparkr-shell, spark-internal（参看SparkSubmit），如果调用类就在SPARK_CLASSPATH可以使用它们减少不必要的网络传输。</p>
-
-<h4>Launcher模块</h4>
-
-<p>发现 shell 和 launcher的java代码 功能逻辑非常类似。比如说获取java程序路径的代码：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>List&lt;String&gt; buildJavaCommand(String extraClassPath) throws IOException {
-</span><span class='line'>  ...
-</span><span class='line'>  if (javaHome != null) {
-</span><span class='line'>      cmd.add(join(File.separator, javaHome, "bin", "java"));
-</span><span class='line'>  } else if ((envJavaHome = System.getenv("JAVA_HOME")) != null) {
-</span><span class='line'>      cmd.add(join(File.separator, envJavaHome, "bin", "java"));
-</span><span class='line'>  } else {
-</span><span class='line'>      cmd.add(join(File.separator, System.getProperty("java.home"), "bin", "java"));
-</span><span class='line'>  }
-</span><span class='line'>  ...
-</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
-
-
-<p>在shell脚本里面的处理是：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># Find the java binary
-</span><span class='line'>if [ -n "${JAVA_HOME}" ]; then
-</span><span class='line'>  RUNNER="${JAVA_HOME}/bin/java"
-</span><span class='line'>else
-</span><span class='line'>  if [ `command -v java` ]; then
-</span><span class='line'>  RUNNER="java"
-</span><span class='line'>  else
-</span><span class='line'>  echo "JAVA_HOME is not set" &gt;&2
-</span><span class='line'>  exit 1
-</span><span class='line'>  fi
-</span><span class='line'>fi</span></code></pre></td></tr></table></div></figure>
-
-
-<p>对比两者，其实是用脚本更加直观。但是使用java编写一个模块更便于管理和扩展，稍微调整下就能复用代码。比如说要添加windows的cmd脚本、又或者为了兼容多个操作系统/多语言(python，r 等)。所以提取一个公共的 <strong>Launcher模块</strong> 出来其实是个挺不错的选择。同时对于不是很熟悉shell的程序员来说也更方便了解系统运作。</p>
-
-<p><strong>Launcher模块</strong> 按功能可以分为 CommandBuilder 和 SparkLauncher 两个部分。</p>
-
-<ol>
-<li><p>CommandBuilder</p></li>
-<li><p>SparkSubmitCommandBuilder: 解析用户输入的参数并输出命令给脚本使用</p></li>
-<li>SparkClassCommandBuilder: 主要为后台进程产生启动命令（sbin目录下面的脚本）。</li>
-</ol>
-
-
-<p>1.1 公共类</p>
-
-<ul>
-<li>Main ： 统一入口</li>
-<li>AbstractCommandBuilder : 提供构造命令的公共基类
-
-<ul>
-<li>buildJavaCommand
-
-<ul>
-<li>buildClassPath
-
-<ul>
-<li>SPARK_CLASSPATH</li>
-<li>extraClassPath</li>
-<li>getConfDir : 等于环境变量 $SPARK_CONF_DIR 或者 $SPARK_HOME/conf 的值</li>
-<li>classes
-
-<ul>
-<li>SPARK_PREPEND_CLASSES</li>
-<li>SPARK_TESTING</li>
-</ul>
-</li>
-<li>findAssembly : 获取 spark-assembly-1.6.0-hadoop2.6.3.jar 的路径，lib 或者 assembly/target/scala-$SPARK_SCALA_VERSION 路径下
-
-<ul>
-<li>_SPARK_ASSEMBLY</li>
-</ul>
-</li>
-<li>datanucleus-* : 从 lib / lib_managed/jars 目录下获取</li>
-<li>HADOOP_CONF_DIR</li>
-<li>YARN_CONF_DIR</li>
-<li>SPARK_DIST_CLASSPATH</li>
-</ul>
-</li>
-</ul>
-</li>
-<li>getEffectiveConfig : 获取 spark-defaults.conf 的内容</li>
-</ul>
-</li>
-</ul>
-
-
-<p>1.2 SparkSubmitCommandBuilder</p>
-
-<p>主要的类以及参数：</p>
-
-<ul>
-<li>SparkSubmitCommandBuilder
-
-<ul>
-<li>构造函数调用OptionParser解析参数，解析handle有处理specialClasses！</li>
-<li>buildSparkSubmitCommand
-
-<ul>
-<li>getEffectiveConfig</li>
-<li>extraClassPath : spark.driver.extraClassPath</li>
-<li>SPARK_SUBMIT_OPTS</li>
-<li>SPARK_JAVA_OPTS</li>
-<li>client模式下加载配置
-
-<ul>
-<li>spark.driver.memory / SPARK_DRIVER_MEMORY / SPARK_MEM / DEFAULT_MEM(1g)</li>
-<li>DRIVER_EXTRA_JAVA_OPTIONS</li>
-<li>DRIVER_EXTRA_LIBRARY_PATH</li>
-</ul>
-</li>
-<li>buildSparkSubmitArgs</li>
-</ul>
-</li>
-</ul>
-</li>
-<li>SparkSubmitOptionParser(子类需要实现handle方法)</li>
-<li>SparkSubmitCommandBuilder$OptionParser 命令参数
-
-<ul>
-<li><code>bin/spark-submit -h</code> 查看可以<strong>设置的参数</strong></li>
-<li>直接查看<a href="http://spark.apache.org/docs/latest/submitting-applications.html">官网文档</a></li>
-</ul>
-</li>
-</ul>
-
-
-<p>1.3 SparkClassCommandBuilder</p>
-
-<p>主要CommandBuilder的功能上面已经都覆盖了，SparkClassCommandBuilder主要关注命令行可以设置哪些环境变量：</p>
-
-<ul>
-<li>org.apache.spark.deploy.master.Master
-
-<ul>
-<li>SPARK_DAEMON_JAVA_OPTS</li>
-<li>SPARK_MASTER_OPTS</li>
-<li>SPARK_DAEMON_MEMORY</li>
-</ul>
-</li>
-<li>org.apache.spark.deploy.worker.Worker
-
-<ul>
-<li>SPARK_DAEMON_JAVA_OPTS</li>
-<li>SPARK_WORKER_OPTS</li>
-<li>SPARK_DAEMON_MEMORY</li>
-</ul>
-</li>
-<li>org.apache.spark.deploy.history.HistoryServer
-
-<ul>
-<li>SPARK_DAEMON_JAVA_OPTS</li>
-<li>SPARK_HISTORY_OPTS</li>
-<li>SPARK_DAEMON_MEMORY</li>
-</ul>
-</li>
-<li>org.apache.spark.executor.CoarseGrainedExecutorBackend
-
-<ul>
-<li>SPARK_JAVA_OPTS</li>
-<li>SPARK_EXECUTOR_OPTS</li>
-<li>SPARK_EXECUTOR_MEMORY</li>
-</ul>
-</li>
-<li>org.apache.spark.executor.MesosExecutorBackend
-
-<ul>
-<li>SPARK_EXECUTOR_OPTS</li>
-<li>SPARK_EXECUTOR_MEMORY</li>
-</ul>
-</li>
-<li>org.apache.spark.deploy.ExternalShuffleService / org.apache.spark.deploy.mesos.MesosExternalShuffleService
-
-<ul>
-<li>SPARK_DAEMON_JAVA_OPTS</li>
-<li>SPARK_SHUFFLE_OPTS</li>
-<li>SPARK_DAEMON_MEMORY</li>
-</ul>
-</li>
-<li>org.apache.spark.tools.
-
-<ul>
-<li>extraClassPath : spark-tools_.*.jar</li>
-<li>SPARK_JAVA_OPTS</li>
-<li>DEFAULT_MEM(1g)</li>
-</ul>
-</li>
-<li>other
-
-<ul>
-<li>SPARK_JAVA_OPTS</li>
-<li>SPARK_DRIVER_MEMORY</li>
-</ul>
-</li>
-</ul>
-
-
-<h4>SparkLauncher</h4>
-
-<p>SparkLauncher提供了在程序中提交任务的方式。通过Driver端的支持获取程序执行动态（通过socket与Driver交互），为实现后端管理应用提供一种可行的方式。</p>
-
-<p>SparkLauncher提交任务其中一部分还是使用spark-submit脚本，绕一圈又回到上面的参数解析生成命令然后exec执行。另外SparkLauncher通过启动 SocketServer(LauncherServer)接收来自Driver(LauncherBackend)任务执行情况的最新状态。</p>
-
-<p><img src="/images/blogs/rrc-spark/spark-launcher.jpg" alt="" /></p>
-
-<p>代码包括：</p>
-
-<ul>
-<li>SparkLauncher 主要是startApplication。其他都是解析设置参数，相当于把shell的工作用java重写了一遍</li>
-<li>LauncherServer 服务SocketServer类</li>
-<li>LauncherServer$ServerConnection 状态处理类</li>
-<li>LauncherConnection 通信基类：接收、发送消息</li>
-<li>LauncherProtocol 通信协议</li>
-<li>ChildProcAppHandle : SparkAppHandle 接收到Driver的状态后，请求分发类</li>
-</ul>
-
-
-<p>具体功能的流转请下载代码 <a href="https://github.com/winse/spark-examples/blob/master/src/main/scala/com/github/winse/spark/HelloWorldLauncher.scala">HelloWorldLauncher.scala</a> ，然后本地调试一步步的追踪学习。</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/18">&larr; Older</a>
@@ -2861,6 +2944,14 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2022/03/18/k8s-guide-use-kubeadm/">K8s安装指南 - 使用kubeadm</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2022/03/18/k8s-deps-download/">K8s依赖下载</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2022/01/13/openeuler20-dot-03lts-sp3-install-docker/">欧拉20.03LTS_SP3安装docker</a>
       </li>
     
@@ -2882,14 +2973,6 @@
     
       <li class="post">
         <a href="/blog/2020/04/12/appium-android-auto-test/">appium-Android自动化测试</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2019/07/26/android-linux-via-termux/">Android Linux via Termux</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2019/04/10/try-bk-dot-tencent-dot-com/">Try bk.tencent.com</a>
       </li>
     
   </ul>
@@ -2998,7 +3081,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (9) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (11) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3079,7 +3162,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (220)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (222)</li>
 	</ul>
 	
 </section>
