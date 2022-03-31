@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="本文是在 Amazon Linux 2 系统上安装部署的，和centos7.3基本相似。 和k8s软件依赖需要访问google的，已经在前面一篇文章中下载好，本文中会直接使用。依赖的软件可以在百度网盘下载： 链接：https://pan.baidu.com/s/1P3ABqKGt1JhNkg- &hellip;">
+  <meta name="description" content="Ingress是一个集中的集群应用网关，自动化的k8s反向代理组件（功能类比nginx）。 Ingress涉及到LoadBalancer，Ingress Controller, Ingress config等相关概念。controller从LoadBalancer/ &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -91,7 +91,895 @@
       
   <header>
     
-      <h1 class="entry-title"><a href="/blog/2022/03/18/k8s-guide-use-kubeadm/">K8s安装指南 - 使用kubeadm</a></h1>
+      <h1 class="entry-title"><a href="/blog/2022/03/26/k8s-ingress/">K8s Ingress</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2022-03-26T13:59:16+08:00" pubdate data-updated="true">Sat 2022-03-26 13:59</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>Ingress是一个集中的集群应用网关，自动化的k8s反向代理组件（功能类比nginx）。</p>
+
+<p>Ingress涉及到LoadBalancer，Ingress Controller, Ingress config等相关概念。controller从LoadBalancer/NodePort把当前的服务发布出去，同时监听Ingress config实时的修改当前Ingress配置(实时更新nginx.conf配置文件，并重载)</p>
+
+<p>这里仅从helloworld入门实践操作进行。</p>
+
+<h2>入门指南</h2>
+
+<h3>参考</h3>
+
+<ul>
+<li><a href="https://kubernetes.github.io/ingress-nginx/deploy/#quick-start">https://kubernetes.github.io/ingress-nginx/deploy/#quick-start</a></li>
+<li><p><a href="https://kubernetes.io/zh/docs/concepts/services-networking/ingress/">https://kubernetes.io/zh/docs/concepts/services-networking/ingress/</a></p></li>
+<li><p><a href="https://docs.jdcloud.com/cn/jcs-for-kubernetes/deploy-k8s-ingress-nginx">https://docs.jdcloud.com/cn/jcs-for-kubernetes/deploy-k8s-ingress-nginx</a></p></li>
+<li><a href="https://jimmysong.io/kubernetes-handbook/concepts/ingress.html">https://jimmysong.io/kubernetes-handbook/concepts/ingress.html</a></li>
+</ul>
+
+
+<p>版本兼容性：
+* <a href="https://github.com/kubernetes/ingress-nginx/#support-versions-table">https://github.com/kubernetes/ingress-nginx/#support-versions-table</a></p>
+
+<h3>下载镜像</h3>
+
+<p>镜像在gcr上面，先远程下载回来：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.1.2/deploy/static/provider/cloud/deploy.yaml 
+</span><span class='line'>[ec2-user@k8s ~]$ vi ingress-nginx-controller-v1.1.2.yaml
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ grep image: ingress-nginx-controller-v1.1.2.yaml | sed 's/image: //' | sort -u | xargs echo 
+</span><span class='line'>k8s.gcr.io/ingress-nginx/controller:v1.1.2@sha256:28b11ce69e57843de44e3db6413e98d09de0f6688e33d4bd384002a44f78405c k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1@sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660
+</span><span class='line'>
+</span><span class='line'>[root@izt4nhcmmx33bjwcsdmf8oz ~]# docker pull k8s.gcr.io/ingress-nginx/controller:v1.1.2@sha256:28b11ce69e57843de44e3db6413e98d09de0f6688e33d4bd384002a44f78405c 
+</span><span class='line'>k8s.gcr.io/ingress-nginx/controller@sha256:28b11ce69e57843de44e3db6413e98d09de0f6688e33d4bd384002a44f78405c: Pulling from ingress-nginx/controller
+</span><span class='line'>a0d0a0d46f8b: Pull complete 
+</span><span class='line'>3aae86482564: Pull complete 
+</span><span class='line'>c0d03781abb3: Pull complete 
+</span><span class='line'>0297e2ef8f7f: Pull complete 
+</span><span class='line'>866a68ce3c13: Pull complete 
+</span><span class='line'>1c2a7ca65b54: Pull complete 
+</span><span class='line'>41fd2de30e46: Pull complete 
+</span><span class='line'>637f10464e4d: Pull complete 
+</span><span class='line'>998064a16da4: Pull complete 
+</span><span class='line'>e63d23220e8c: Pull complete 
+</span><span class='line'>8128610547fb: Pull complete 
+</span><span class='line'>ae07a1a7f038: Pull complete 
+</span><span class='line'>ceb23c4cb607: Pull complete 
+</span><span class='line'>Digest: sha256:28b11ce69e57843de44e3db6413e98d09de0f6688e33d4bd384002a44f78405c
+</span><span class='line'>Status: Downloaded newer image for k8s.gcr.io/ingress-nginx/controller@sha256:28b11ce69e57843de44e3db6413e98d09de0f6688e33d4bd384002a44f78405c
+</span><span class='line'>k8s.gcr.io/ingress-nginx/controller:v1.1.2@sha256:28b11ce69e57843de44e3db6413e98d09de0f6688e33d4bd384002a44f78405c
+</span><span class='line'>
+</span><span class='line'>[root@izt4nhcmmx33bjwcsdmf8oz ~]# docker pull k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1@sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660 
+</span><span class='line'>k8s.gcr.io/ingress-nginx/kube-webhook-certgen@sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660: Pulling from ingress-nginx/kube-webhook-certgen
+</span><span class='line'>ec52731e9273: Pull complete 
+</span><span class='line'>b90aa28117d4: Pull complete 
+</span><span class='line'>Digest: sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660
+</span><span class='line'>Status: Downloaded newer image for k8s.gcr.io/ingress-nginx/kube-webhook-certgen@sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660
+</span><span class='line'>k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1@sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660
+</span><span class='line'>
+</span><span class='line'>[root@izt4nhcmmx33bjwcsdmf8oz ~]# docker save k8s.gcr.io/ingress-nginx/controller:v1.1.2@sha256:28b11ce69e57843de44e3db6413e98d09de0f6688e33d4bd384002a44f78405c k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1@sha256:64d8c73dca984af206adf9d6d7e46aa550362b1d7a01f3a0a91b20cc67868660 -o ingress-nginx-v1.1.2.tar
+</span><span class='line'>[root@izt4nhcmmx33bjwcsdmf8oz ~]# gzip ingress-nginx-v1.1.2.tar 
+</span><span class='line'>
+</span><span class='line'>[root@izt4nhcmmx33bjwcsdmf8oz ~]# ll -h ingress-nginx-v1.1.2.tar.gz 
+</span><span class='line'>-rw------- 1 root root 116M Mar 24 23:49 ingress-nginx-v1.1.2.tar.gz
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>本地Linux服务器加载镜像</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ docker load -i k8s.gcr.io-ingress-nginx-v1.1.2.tar.gz 
+</span><span class='line'>c0d270ab7e0d: Loading layer [==================================================&gt;]  3.697MB/3.697MB
+</span><span class='line'>ce7a3c1169b6: Loading layer [==================================================&gt;]  45.38MB/45.38MB
+</span><span class='line'>e2eb06d8af82: Loading layer [==================================================&gt;]  5.865MB/5.865MB
+</span><span class='line'>ab1476f3fdd9: Loading layer [==================================================&gt;]  120.9MB/120.9MB
+</span><span class='line'>ad20729656ef: Loading layer [==================================================&gt;]  4.096kB/4.096kB
+</span><span class='line'>0d5022138006: Loading layer [==================================================&gt;]  38.09MB/38.09MB
+</span><span class='line'>8f757e3fe5e4: Loading layer [==================================================&gt;]  21.42MB/21.42MB
+</span><span class='line'>d2bc6b915bc9: Loading layer [==================================================&gt;]  4.019MB/4.019MB
+</span><span class='line'>bbeb6784ed45: Loading layer [==================================================&gt;]  313.9kB/313.9kB
+</span><span class='line'>0c411e83ee78: Loading layer [==================================================&gt;]  6.141MB/6.141MB
+</span><span class='line'>9c2d86dc137f: Loading layer [==================================================&gt;]  38.45MB/38.45MB
+</span><span class='line'>7797e5b3a760: Loading layer [==================================================&gt;]  2.754MB/2.754MB
+</span><span class='line'>98ef19df5514: Loading layer [==================================================&gt;]  4.096kB/4.096kB
+</span><span class='line'>4cde87c7ecaf: Loading layer [==================================================&gt;]  51.75MB/51.75MB
+</span><span class='line'>11536690d74a: Loading layer [==================================================&gt;]  3.584kB/3.584kB
+</span><span class='line'>Loaded image ID: sha256:c41e9fcadf5a291120de706b7dfa1af598b9f2ed5138b6dcb9f79a68aad0ef4c
+</span><span class='line'>Loaded image ID: sha256:7e5c1cecb086f36c6ef4b319a60853020820997f3600c3687e8ba6139e83674d
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ cat k8s.gcr.io-ingress-nginx-v1.1.2.tar.gz | ssh worker1 docker load 
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span><span class='line'>docker tag 7e5c1cecb086 k8s.gcr.io/ingress-nginx/controller:v1.1.2
+</span><span class='line'>docker tag c41e9fcadf5a k8s.gcr.io/ingress-nginx/kube-webhook-certgen:v1.1.1
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>注：由于配置中用了sha码，下载后tag不同，把image最后的 @sha256:xxx 删掉
+</span><span class='line'>vi ingress-nginx-controller-v1.1.2.yaml
+</span><span class='line'>
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>创建服务</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f ingress-nginx-controller-v1.1.2.yaml
+</span><span class='line'>namespace/ingress-nginx created
+</span><span class='line'>serviceaccount/ingress-nginx created
+</span><span class='line'>serviceaccount/ingress-nginx-admission created
+</span><span class='line'>role.rbac.authorization.k8s.io/ingress-nginx created
+</span><span class='line'>role.rbac.authorization.k8s.io/ingress-nginx-admission created
+</span><span class='line'>clusterrole.rbac.authorization.k8s.io/ingress-nginx created
+</span><span class='line'>clusterrole.rbac.authorization.k8s.io/ingress-nginx-admission created
+</span><span class='line'>rolebinding.rbac.authorization.k8s.io/ingress-nginx created
+</span><span class='line'>rolebinding.rbac.authorization.k8s.io/ingress-nginx-admission created
+</span><span class='line'>clusterrolebinding.rbac.authorization.k8s.io/ingress-nginx created
+</span><span class='line'>clusterrolebinding.rbac.authorization.k8s.io/ingress-nginx-admission created
+</span><span class='line'>configmap/ingress-nginx-controller created
+</span><span class='line'>service/ingress-nginx-controller created
+</span><span class='line'>service/ingress-nginx-controller-admission created
+</span><span class='line'>deployment.apps/ingress-nginx-controller created
+</span><span class='line'>job.batch/ingress-nginx-admission-create created
+</span><span class='line'>job.batch/ingress-nginx-admission-patch created
+</span><span class='line'>ingressclass.networking.k8s.io/nginx created
+</span><span class='line'>validatingwebhookconfiguration.admissionregistration.k8s.io/ingress-nginx-admission created
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl wait --namespace ingress-nginx \
+</span><span class='line'>   --for=condition=ready pod \
+</span><span class='line'>   --selector=app.kubernetes.io/component=controller \
+</span><span class='line'>   --timeout=120s
+</span><span class='line'>pod/ingress-nginx-controller-755447bb4d-rnxvl condition met
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 状态参考：
+</span><span class='line'># https://kubernetes.io/zh/docs/tasks/access-application-cluster/ingress-minikube/
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pods --namespace=ingress-nginx
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get all -n ingress-nginx
+</span><span class='line'>NAME                                            READY   STATUS      RESTARTS   AGE
+</span><span class='line'>pod/ingress-nginx-admission-create-hbt9d        0/1     Completed   0          2m51s
+</span><span class='line'>pod/ingress-nginx-admission-patch-j8qfh         0/1     Completed   1          2m51s
+</span><span class='line'>pod/ingress-nginx-controller-755447bb4d-rnxvl   1/1     Running     0          2m51s
+</span><span class='line'>
+</span><span class='line'>NAME                                         TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)                      AGE
+</span><span class='line'>service/ingress-nginx-controller             LoadBalancer   10.104.8.155    &lt;pending&gt;     80:31031/TCP,443:31845/TCP   2m51s
+</span><span class='line'>service/ingress-nginx-controller-admission   ClusterIP      10.108.67.255   &lt;none&gt;        443/TCP                      2m51s
+</span><span class='line'>
+</span><span class='line'>NAME                                       READY   UP-TO-DATE   AVAILABLE   AGE
+</span><span class='line'>deployment.apps/ingress-nginx-controller   1/1     1            1           2m51s
+</span><span class='line'>
+</span><span class='line'>NAME                                                  DESIRED   CURRENT   READY   AGE
+</span><span class='line'>replicaset.apps/ingress-nginx-controller-755447bb4d   1         1         1       2m51s
+</span><span class='line'>
+</span><span class='line'>NAME                                       COMPLETIONS   DURATION   AGE
+</span><span class='line'>job.batch/ingress-nginx-admission-create   1/1           3s         2m51s
+</span><span class='line'>job.batch/ingress-nginx-admission-patch    1/1           3s         2m51s
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>看到 ingress-nginx-controller 服务的 <code>EXTERNAL-IP</code> 为 <code>&lt;pending&gt;</code> ，由于本地搭建并没有配备负载均衡器，所以没有手段，获取不到对外的IP。</p>
+
+<h3>本地测试</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl create deployment demo --image=httpd --port=80
+</span><span class='line'>deployment.apps/demo created
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl expose deployment demo
+</span><span class='line'>service/demo exposed
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl create ingress demo-localhost --class=nginx \
+</span><span class='line'>   --rule=demo.localdev.me/*=demo:80
+</span><span class='line'>ingress.networking.k8s.io/demo-localhost created
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl port-forward --namespace=ingress-nginx service/ingress-nginx-controller 8080:80
+</span><span class='line'>Forwarding from 127.0.0.1:8080 -&gt; 80
+</span><span class='line'>Forwarding from [::1]:8080 -&gt; 80
+</span><span class='line'>Handling connection for 8080
+</span><span class='line'>Handling connection for 8080
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ curl http://demo.localdev.me:8080/
+</span><span class='line'>&lt;html&gt;&lt;body&gt;&lt;h1&gt;It works!&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>集成（发布）</h2>
+
+<h3>cloud</h3>
+
+<ul>
+<li><a href="https://kubernetes.github.io/ingress-nginx/deploy/#aws">https://kubernetes.github.io/ingress-nginx/deploy/#aws</a></li>
+</ul>
+
+
+<p>配置云厂商的负载均衡器。</p>
+
+<h3>baremetal: nodeport</h3>
+
+<p>适用于部署在裸机服务器上的 Kubernetes 集群，以及使用通用 Linux 发行版手动安装 Kubernetes 的 [原始] 虚拟机</p>
+
+<p>为了快速测试，您可以使用 NodePort。这应该适用于几乎每个集群，但它通常会使用 30000-32767 范围内的端口。</p>
+
+<ul>
+<li><a href="https://kubernetes.github.io/ingress-nginx/deploy/#bare-metal-clusters">https://kubernetes.github.io/ingress-nginx/deploy/#bare-metal-clusters</a></li>
+<li><a href="https://kubernetes.github.io/ingress-nginx/deploy/baremetal/#over-a-nodeport-service">https://kubernetes.github.io/ingress-nginx/deploy/baremetal/#over-a-nodeport-service</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.1.2/deploy/static/provider/baremetal/deploy.yaml
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注：也可以通过修改配置使用80，443等端口，但不推荐。</p>
+
+<h3>baremetal: hostNetwork</h3>
+
+<p>ingress nginx controller的pod网络直接使用主机网络，这个比Service Nodeport稍微灵活一点，可以自己选择/管理端口。</p>
+
+<h3>A pure software solution: MetalLB</h3>
+
+<ul>
+<li><a href="https://kubernetes.github.io/ingress-nginx/deploy/baremetal/#a-pure-software-solution-metallb">https://kubernetes.github.io/ingress-nginx/deploy/baremetal/#a-pure-software-solution-metallb</a></li>
+<li><a href="https://metallb.universe.tf/concepts/">https://metallb.universe.tf/concepts/</a></li>
+</ul>
+
+
+<p>It has two features that work together to provide this service: address allocation, and external announcement.</p>
+
+<p>After MetalLB has assigned an external IP address to a service, it needs to make the network beyond the cluster aware that the IP “lives” in the cluster. MetalLB uses standard routing protocols to achieve this: ARP, NDP, or BGP.</p>
+
+<h4>安装</h4>
+
+<ul>
+<li><a href="https://metallb.universe.tf/installation/">https://metallb.universe.tf/installation/</a></li>
+</ul>
+
+
+<p>需要kube-proxy配置arp为true。得与局域网进行广播通信，所以需要开启arp功能（标准路由协议）。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>kubectl edit configmap -n kube-system kube-proxy
+</span><span class='line'>
+</span><span class='line'>apiVersion: kubeproxy.config.k8s.io/v1alpha1
+</span><span class='line'>kind: KubeProxyConfiguration
+</span><span class='line'>mode: "ipvs"
+</span><span class='line'>ipvs:
+</span><span class='line'>  strictARP: true</span></code></pre></td></tr></table></div></figure>
+
+
+<p>或者批处理一步到位</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># see what changes would be made, returns nonzero returncode if different
+</span><span class='line'>kubectl get configmap kube-proxy -n kube-system -o yaml | \
+</span><span class='line'>sed -e "s/strictARP: false/strictARP: true/" | \
+</span><span class='line'>kubectl diff -f - -n kube-system
+</span><span class='line'>
+</span><span class='line'># actually apply the changes, returns nonzero returncode on errors only
+</span><span class='line'>kubectl get configmap kube-proxy -n kube-system -o yaml | \
+</span><span class='line'>sed -e "s/strictARP: false/strictARP: true/" | \
+</span><span class='line'>kubectl apply -f - -n kube-system
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>安装</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/namespace.yaml
+</span><span class='line'>kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.12.1/manifests/metallb.yaml
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>下载镜像慢一点，需要稍微多等等。再查看状态：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl get all -n metallb-system
+</span><span class='line'>NAME                             READY   STATUS    RESTARTS   AGE
+</span><span class='line'>pod/controller-57fd9c5bb-kc5zt   1/1     Running   0          5m55s
+</span><span class='line'>pod/speaker-8pg4v                1/1     Running   0          5m55s
+</span><span class='line'>pod/speaker-95bs8                1/1     Running   0          5m55s
+</span><span class='line'>
+</span><span class='line'>NAME                     DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR            AGE
+</span><span class='line'>daemonset.apps/speaker   2         2         2       2            2           kubernetes.io/os=linux   5m55s
+</span><span class='line'>
+</span><span class='line'>NAME                         READY   UP-TO-DATE   AVAILABLE   AGE
+</span><span class='line'>deployment.apps/controller   1/1     1            1           5m55s
+</span><span class='line'>
+</span><span class='line'>NAME                                   DESIRED   CURRENT   READY   AGE
+</span><span class='line'>replicaset.apps/controller-57fd9c5bb   1         1         1       5m55s
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h4>配置地址</h4>
+
+<ul>
+<li><p><a href="https://metallb.universe.tf/configuration/#layer-2-configuration">https://metallb.universe.tf/configuration/#layer-2-configuration</a></p></li>
+<li><p><a href="https://kubernetes.github.io/ingress-nginx/deploy/baremetal/#a-pure-software-solution-metallb">https://kubernetes.github.io/ingress-nginx/deploy/baremetal/#a-pure-software-solution-metallb</a></p></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 查看主机ip，避开这些节点IP的区间
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get node -o wide
+</span><span class='line'>NAME      STATUS   ROLES                  AGE   VERSION   INTERNAL-IP       EXTERNAL-IP   OS-IMAGE         KERNEL-VERSION                  CONTAINER-RUNTIME
+</span><span class='line'>k8s       Ready    control-plane,master   10d   v1.23.5   192.168.191.131   &lt;none&gt;        Amazon Linux 2   4.14.268-205.500.amzn2.x86_64   docker://20.10.7
+</span><span class='line'>worker1   Ready    &lt;none&gt;                 10d   v1.23.5   192.168.191.132   &lt;none&gt;        Amazon Linux 2   4.14.268-205.500.amzn2.x86_64   docker://20.10.7
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ cat metallb-config.yml
+</span><span class='line'>apiVersion: v1
+</span><span class='line'>kind: ConfigMap
+</span><span class='line'>metadata:
+</span><span class='line'>  namespace: metallb-system
+</span><span class='line'>  name: config
+</span><span class='line'>data:
+</span><span class='line'>  config: |
+</span><span class='line'>    address-pools:
+</span><span class='line'>    - name: default
+</span><span class='line'>      protocol: layer2
+</span><span class='line'>      addresses:
+</span><span class='line'>      - 192.168.191.200-192.168.191.220
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f metallb-config.yml 
+</span><span class='line'>configmap/config created
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后，再回过头重新安装一遍nginx-ingress：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl get pods --namespace=ingress-nginx
+</span><span class='line'>NAME                                        READY   STATUS      RESTARTS   AGE
+</span><span class='line'>ingress-nginx-admission-create-b9hkn        0/1     Completed   0          17s
+</span><span class='line'>ingress-nginx-admission-patch-xmnbr         0/1     Completed   1          17s
+</span><span class='line'>ingress-nginx-controller-755447bb4d-lfrwk   0/1     Running     0          17s
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pods --namespace=ingress-nginx
+</span><span class='line'>NAME                                        READY   STATUS      RESTARTS   AGE
+</span><span class='line'>ingress-nginx-admission-create-b9hkn        0/1     Completed   0          25s
+</span><span class='line'>ingress-nginx-admission-patch-xmnbr         0/1     Completed   1          25s
+</span><span class='line'>ingress-nginx-controller-755447bb4d-lfrwk   1/1     Running     0          25s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl -n ingress-nginx get svc
+</span><span class='line'>NAME                                 TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                      AGE
+</span><span class='line'>ingress-nginx-controller             LoadBalancer   10.107.221.243   192.168.191.200   80:31443/TCP,443:30099/TCP   57s
+</span><span class='line'>ingress-nginx-controller-admission   ClusterIP      10.105.12.185    &lt;none&gt;            443/TCP                      57s
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>这次 EXTERNAL-IP 的ip就有值了，上面配置的ip段里面一个ip。</p>
+
+<h3>在线/集成测试</h3>
+
+<ul>
+<li><a href="https://kubernetes.github.io/ingress-nginx/deploy/#online-testing">https://kubernetes.github.io/ingress-nginx/deploy/#online-testing</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl get service ingress-nginx-controller --namespace=ingress-nginx
+</span><span class='line'>NAME                       TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                      AGE
+</span><span class='line'>ingress-nginx-controller   LoadBalancer   10.107.221.243   192.168.191.200   80:31443/TCP,443:30099/TCP   4m
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl create deployment demo --image=httpd --port=80
+</span><span class='line'>deployment.apps/demo created
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl expose deployment demo
+</span><span class='line'>service/demo exposed
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl create ingress demo --class=nginx \
+</span><span class='line'>   --rule="www.demo.io/*=demo:80"
+</span><span class='line'>ingress.networking.k8s.io/demo created
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get ingress 
+</span><span class='line'>NAME   CLASS   HOSTS         ADDRESS   PORTS   AGE
+</span><span class='line'>demo   nginx   www.demo.io             80      42s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get ingress 
+</span><span class='line'>NAME   CLASS   HOSTS         ADDRESS           PORTS   AGE
+</span><span class='line'>demo   nginx   www.demo.io   192.168.191.200   80      27m
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在本地windows机器的 <code>C:/Windows/System32/drivers/etc/hosts</code> 增加 <code>192.168.191.200 www.demo.io</code> ，然后浏览器访问 <code>http://www.demo.io/</code> ，顺利的话就能在浏览器看到：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>It works!</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>后记</h3>
+
+<h4>理一下网络调用，其实就是nginx的方式：</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl logs --tail=2 pod/demo-764c97f6fd-q5xts
+</span><span class='line'>10.244.2.79 - - [28/Mar/2022:09:52:36 +0000] "GET / HTTP/1.1" 200 45
+</span><span class='line'>10.244.2.79 - - [28/Mar/2022:09:52:36 +0000] "GET /favicon.ico HTTP/1.1" 404 196
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pods -n ingress-nginx -o wide 
+</span><span class='line'>NAME                                        READY   STATUS      RESTARTS   AGE    IP            NODE      NOMINATED NODE   READINESS GATES
+</span><span class='line'>ingress-nginx-admission-create-b9hkn        0/1     Completed   0          157m   10.244.2.78   worker1   &lt;none&gt;           &lt;none&gt;
+</span><span class='line'>ingress-nginx-admission-patch-xmnbr         0/1     Completed   1          157m   10.244.2.77   worker1   &lt;none&gt;           &lt;none&gt;
+</span><span class='line'>ingress-nginx-controller-755447bb4d-lfrwk   1/1     Running     0          157m   10.244.2.79   worker1   &lt;none&gt;           &lt;none&gt;
+</span><span class='line'>
+</span><span class='line'># 192.168.191.1是vmware虚拟网卡的地址
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl logs --tail=2 pod/ingress-nginx-controller-755447bb4d-lfrwk -n ingress-nginx 
+</span><span class='line'>192.168.191.1 - - [28/Mar/2022:09:52:36 +0000] "GET / HTTP/1.1" 200 45 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.82 Safari/537.36" 566 0.000 [default-demo-80] [] 10.244.2.80:80 45 0.000 200 6d52ef8349eb3101c31c3cc6377b982b
+</span><span class='line'>192.168.191.1 - - [28/Mar/2022:09:52:36 +0000] "GET /favicon.ico HTTP/1.1" 404 196 "http://www.demo.io/" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.4844.82 Safari/537.36" 506 0.001 [default-demo-80] [] 10.244.2.80:80 196 0.000 404 fefe172a57273977cdcd1455bcf322ac
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>## web
+</span><span class='line'>Request URL: http://www.demo.io/
+</span><span class='line'>Request Method: GET
+</span><span class='line'>Status Code: 200 OK
+</span><span class='line'>Remote Address: 192.168.191.200:80
+</span><span class='line'>Referrer Policy: strict-origin-when-cross-origin
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h4>看看metallb的日志，ip是怎么分配的</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># https://metallb.universe.tf/concepts/layer2/
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pods -n metallb-system -o wide
+</span><span class='line'>NAME                         READY   STATUS    RESTARTS   AGE     IP                NODE      NOMINATED NODE   READINESS GATES
+</span><span class='line'>controller-57fd9c5bb-kc5zt   1/1     Running   0          3h34m   10.244.2.76       worker1   &lt;none&gt;           &lt;none&gt;
+</span><span class='line'>speaker-8pg4v                1/1     Running   0          3h34m   192.168.191.132   worker1   &lt;none&gt;           &lt;none&gt;
+</span><span class='line'>speaker-95bs8                1/1     Running   0          3h34m   192.168.191.131   k8s       &lt;none&gt;           &lt;none&gt;
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl logs pod/controller-57fd9c5bb-kc5zt -n metallb-system
+</span><span class='line'>{"caller":"level.go:63","event":"ipAllocated","ip":["192.168.191.200"],"level":"info","msg":"IP address assigned by controller","service":"ingress-nginx/ingress-nginx-controller","ts":"2022-03-28T07:16:22.675599527Z"}
+</span><span class='line'>{"caller":"level.go:63","event":"serviceUpdated","level":"info","msg":"updated service object","service":"ingress-nginx/ingress-nginx-controller","ts":"2022-03-28T07:1
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl logs speaker-8pg4v -n metallb-system 
+</span><span class='line'>{"caller":"level.go:63","event":"serviceAnnounced","ips":["192.168.191.200"],"level":"info","msg":"service has IP, announcing","pool":"default","protocol":"layer2","service":"ingress-nginx/ingress-nginx-controller","ts":"2022-03-28T07:16:42.775467559Z"}
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ ping 192.168.191.200
+</span><span class='line'>PING 192.168.191.200 (192.168.191.200) 56(84) bytes of data.
+</span><span class='line'>^C
+</span><span class='line'>--- 192.168.191.200 ping statistics ---
+</span><span class='line'>3 packets transmitted, 0 received, 100% packet loss, time 2055ms
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ arp 
+</span><span class='line'>Address                  HWtype  HWaddress           Flags Mask            Iface
+</span><span class='line'>192.168.191.200          ether   00:0c:29:d5:4f:0f   C                     eth0
+</span><span class='line'>
+</span><span class='line'># worker1节点的MAC
+</span><span class='line'>[ec2-user@worker1 ~]$ ip a | grep -i -C 10 '00:0c:29:d5:4f:0f' 
+</span><span class='line'>2: eth0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc mq state UP group default qlen 1000
+</span><span class='line'>    link/ether 00:0c:29:d5:4f:0f brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 192.168.191.132/24 brd 192.168.191.255 scope global dynamic eth0
+</span><span class='line'>       valid_lft 1714sec preferred_lft 1714sec
+</span><span class='line'>
+</span><span class='line'># In layer 2 mode, all traffic for a service IP goes to one node. From there, kube-proxy spreads the traffic to all the service’s pods.
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pods -A -o wide | grep 192.168.191.132
+</span><span class='line'>kube-system            kube-flannel-ds-q4qkt                        1/1     Running     8 (2d10h ago)   11d     192.168.191.132   worker1   &lt;none&gt;           &lt;none&gt;
+</span><span class='line'>kube-system            kube-proxy-pd77m                             1/1     Running     6 (3d2h ago)    11d     192.168.191.132   worker1   &lt;none&gt;           &lt;none&gt;
+</span><span class='line'>metallb-system         speaker-8pg4v                                1/1     Running     0               5h31m   192.168.191.132   worker1   &lt;none&gt;           &lt;none&gt;
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>例子：</h2>
+
+<ul>
+<li><a href="https://kubernetes.github.io/ingress-nginx/deploy/#local-testing">https://kubernetes.github.io/ingress-nginx/deploy/#local-testing</a></li>
+<li><a href="https://kubernetes.io/zh/docs/tasks/access-application-cluster/ingress-minikube/">https://kubernetes.io/zh/docs/tasks/access-application-cluster/ingress-minikube/</a></li>
+</ul>
+
+
+<h2>验证</h2>
+
+<ul>
+<li><a href="https://www.qikqiak.com/post/visually-explained-k8s-service/">图解 Kubernetes Service</a></li>
+<li><a href="https://www.qikqiak.com/post/visually-explained-k8s-ingress/">图解 Kubernetes Ingress</a></li>
+</ul>
+
+
+<p>文中说loadbalancer是通过了nodeport（会创建nodeport），还是有点诧异的。验证一番，果真如此！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl get service ingress-nginx-controller --namespace=ingress-nginx
+</span><span class='line'>NAME                       TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                      AGE
+</span><span class='line'>ingress-nginx-controller   LoadBalancer   10.107.221.243   192.168.191.200   80:31443/TCP,443:30099/TCP   34m
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl describe service ingress-nginx-controller --namespace=ingress-nginx
+</span><span class='line'>Name:                     ingress-nginx-controller
+</span><span class='line'>Namespace:                ingress-nginx
+</span><span class='line'>Labels:                   app.kubernetes.io/component=controller
+</span><span class='line'>                          app.kubernetes.io/instance=ingress-nginx
+</span><span class='line'>                          app.kubernetes.io/managed-by=Helm
+</span><span class='line'>                          app.kubernetes.io/name=ingress-nginx
+</span><span class='line'>                          app.kubernetes.io/part-of=ingress-nginx
+</span><span class='line'>                          app.kubernetes.io/version=1.1.2
+</span><span class='line'>                          helm.sh/chart=ingress-nginx-4.0.18
+</span><span class='line'>Annotations:              &lt;none&gt;
+</span><span class='line'>Selector:                 app.kubernetes.io/component=controller,app.kubernetes.io/instance=ingress-nginx,app.kubernetes.io/name=ingress-nginx
+</span><span class='line'>Type:                     LoadBalancer
+</span><span class='line'>IP Family Policy:         SingleStack
+</span><span class='line'>IP Families:              IPv4
+</span><span class='line'>IP:                       10.107.221.243
+</span><span class='line'>IPs:                      10.107.221.243
+</span><span class='line'>LoadBalancer Ingress:     192.168.191.200
+</span><span class='line'>Port:                     http  80/TCP
+</span><span class='line'>TargetPort:               http/TCP
+</span><span class='line'>NodePort:                 http  31443/TCP
+</span><span class='line'>Endpoints:                10.244.2.79:80
+</span><span class='line'>Port:                     https  443/TCP
+</span><span class='line'>TargetPort:               https/TCP
+</span><span class='line'>NodePort:                 https  30099/TCP
+</span><span class='line'>Endpoints:                10.244.2.79:443
+</span><span class='line'>Session Affinity:         None
+</span><span class='line'>External Traffic Policy:  Local
+</span><span class='line'>HealthCheck NodePort:     31942
+</span><span class='line'>Events:
+</span><span class='line'>  Type    Reason        Age   From                Message
+</span><span class='line'>  ----    ------        ----  ----                -------
+</span><span class='line'>  Normal  IPAllocated   38m   metallb-controller  Assigned IP ["192.168.191.200"]
+</span><span class='line'>  Normal  nodeAssigned  38m   metallb-speaker     announcing from node "worker1"
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ netstat -anp | grep 31443 
+</span><span class='line'>(No info could be read for "-p": geteuid()=1002 but you should be root.)
+</span><span class='line'>tcp        0      0 0.0.0.0:31443           0.0.0.0:*               LISTEN      -       
+</span><span class='line'>
+</span><span class='line'>[ec2-user@worker1 ~]$ netstat -anp | grep 31443
+</span><span class='line'>(No info could be read for "-p": geteuid()=1002 but you should be root.)
+</span><span class='line'>tcp        0      0 0.0.0.0:31443           0.0.0.0:*               LISTEN      -                   
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2022/03/18/k8s-guide-use-kubeadm/">k8s-v1.23.5安装指南 - 使用kubeadm</a></h1>
     
     
       <p class="meta">
@@ -116,7 +1004,9 @@
   </header>
 
 
-  <div class="entry-content"><p>本文是在 Amazon Linux 2 系统上安装部署的，和centos7.3基本相似。</p>
+  <div class="entry-content"><p>注[2022-03-25]：如果后面需要用AWS，用Amazon的操作系统会便利一点。aws的命令这些都自带了。</p>
+
+<p>本文是在 Amazon Linux 2 系统上安装部署的，和centos7.3基本相似。</p>
 
 <p>和k8s软件依赖需要访问google的，已经在前面一篇文章中下载好，本文中会直接使用。依赖的软件可以在百度网盘下载：</p>
 
@@ -660,6 +1550,9 @@
 
 
 <h2>准备工作</h2>
+
+<p>可以先了解一些基本概念
+* <a href="https://www.jianshu.com/p/7bc34ff88d9d">Kubernetes in Action 笔记 —— 部署第一个应用</a></p>
 
 <ul>
 <li><a href="https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#%E5%87%86%E5%A4%87%E5%BC%80%E5%A7%8B">准备开始</a></li>
@@ -1896,7 +2789,7 @@
 <span class='line-number'>90</span>
 <span class='line-number'>91</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>## 加入节点
-</span><span class='line'>[ec2-user@worker1 ~]$ sudo su -
+</span><span class='line'>[ec2-user@amazonlinux ~]$ sudo su -
 </span><span class='line'>[root@amazonlinux ~]# kubeadm join 192.168.191.131:6443 --token sj6fff.bpak7gkd3hnyzcm5 \
 </span><span class='line'>         --discovery-token-ca-cert-hash sha256:8e15649afc0771e80cce7f1dfdbb0933f4fdbd45ea1f9e03be1f3b78449a6d3c 
 </span><span class='line'>[preflight] Running pre-flight checks
@@ -2202,7 +3095,22 @@
 </span></code></pre></td></tr></table></div></figure>
 
 
-<p>访问dashboard方法一：后面直接通过查看dashboard服务的ip，通过 ssh的socks5代理 来访问 使用内部地址的dashboard。</p>
+<p>访问dashboard方法一：kubectl proxy 加上 ssh的locally port forward，把本地的8001的请求转发到 远程服务器的localhost:8001。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## https://github.com/kubernetes/dashboard#access
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl proxy 
+</span><span class='line'>Starting to serve on 127.0.0.1:8001
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在SecureCRT的ssh会话的配置 Session Options 的 Connection - Port Forwarding 增加 Local Port Forwarding 的端口转发。在Local和Remote的Port输入框中都填入8001即可。</p>
+
+<p>重新连接，这样我们访问 <code>http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/#/login</code> 就能访问到dashboard页面了。</p>
+
+<p>方法二：后面直接通过查看dashboard服务的ip，通过 ssh的socks5代理 来访问 使用内部地址的dashboard。</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -2221,7 +3129,7 @@
 </span></code></pre></td></tr></table></div></figure>
 
 
-<p>方法二：或者网上说的使用端口转发：</p>
+<p>方法三：或者网上说的使用端口转发：</p>
 
 <figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
 <span class='line-number'>2</span>
@@ -2408,11 +3316,17 @@
 <span class='line-number'>16</span>
 <span class='line-number'>17</span>
 <span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
 </pre></td><td class='code'><pre><code class=''><span class='line'>## [k8s metrics-server 轻量化监控](https://www.jianshu.com/p/5fe108d70310)
 </span><span class='line'>## https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/#cannot-use-the-metrics-server-securely-in-a-kubeadm-cluster
+</span><span class='line'>
 </span><span class='line'>## 证书 https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/#kubelet-serving-certs
+</span><span class='line'>
 </span><span class='line'>## https://github.com/kubernetes-sigs/metrics-server/blob/master/FAQ.md#how-to-run-metrics-server-securely
 </span><span class='line'>## https://github.com/kubernetes-sigs/metrics-server/issues/196
+</span><span class='line'>## https://cloud.tencent.com/developer/article/1819955
 </span><span class='line'>    spec:
 </span><span class='line'>      containers:
 </span><span class='line'>      - args:
@@ -2603,6 +3517,110 @@
 </span></code></pre></td></tr></table></div></figure>
 
 
+<h2>Service domain</h2>
+
+<p>配置启动容器和服务：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ cat pg-db.yml 
+</span><span class='line'>---
+</span><span class='line'>apiVersion: v1
+</span><span class='line'>kind: Pod
+</span><span class='line'>metadata:
+</span><span class='line'>  name: db-op-1 
+</span><span class='line'>  labels:
+</span><span class='line'>    name: postgres
+</span><span class='line'>spec:
+</span><span class='line'>  hostname: db-op-1
+</span><span class='line'>  containers:
+</span><span class='line'>  - name: postgres
+</span><span class='line'>    image: postgis/postgis:9.6-2.5
+</span><span class='line'>    imagePullPolicy: IfNotPresent
+</span><span class='line'>---
+</span><span class='line'>apiVersion: v1
+</span><span class='line'>kind: Service
+</span><span class='line'>metadata:
+</span><span class='line'>  name: db-op-1
+</span><span class='line'>spec:
+</span><span class='line'>  ports:
+</span><span class='line'>  - protocol: TCP
+</span><span class='line'>    port: 5432
+</span><span class='line'>  selector:
+</span><span class='line'>    name: postgres
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f pg-db.yml 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>在默认的namespace中再启动一个postgis的容器，用来测试访问域名：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl run busybox --image=postgis/postgis:9.6-2.5 -ti --restart=Never --rm  --command -- sh                
+</span><span class='line'>If you don't see a command prompt, try pressing enter.
+</span><span class='line'>
+</span><span class='line'># apt update ; apt-get install net-tools iproute2 iputils-ping -y
+</span><span class='line'>
+</span><span class='line'># cat /etc/resolv.conf
+</span><span class='line'>nameserver 10.96.0.10
+</span><span class='line'>search default.svc.cluster.local svc.cluster.local cluster.local localdomain
+</span><span class='line'>options ndots:5
+</span><span class='line'>
+</span><span class='line'># ping db-op-1
+</span><span class='line'>PING db-op-1.default.svc.cluster.local (10.107.190.149) 56(84) bytes of data.
+</span><span class='line'>
+</span><span class='line'># psql -h db-op-1 -U postgres
+</span><span class='line'>Password for user postgres: 
+</span><span class='line'>psql (9.6.24)
+</span><span class='line'>Type "help" for help.
+</span><span class='line'>
+</span><span class='line'>postgres=# \q
+</span></code></pre></td></tr></table></div></figure>
+
+
 <p>&ndash;END</p>
 </div>
   
@@ -2616,7 +3634,7 @@
       
   <header>
     
-      <h1 class="entry-title"><a href="/blog/2022/03/18/k8s-deps-download/">K8s依赖下载</a></h1>
+      <h1 class="entry-title"><a href="/blog/2022/03/18/k8s-deps-download/">k8s-v1.23.5依赖下载</a></h1>
     
     
       <p class="meta">
@@ -3783,85 +4801,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2021/12/08/recommand-blogs/">认真的博客</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2021-12-08T14:37:36+08:00" pubdate data-updated="true">Wed 2021-12-08 14:37</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>平时查阅一些资料，对一个问题描述明确、解决问题方法清晰的，常常会翻一翻这个博客所有文章。</p>
-
-<p>看到认真写文章，认真学习，认真工作，认真生活，并且把这些能记录下来的充满敬意。从今天开始除了把它们加入收藏夹，也把它们归集到一起，以后时常的去翻一翻浏览，从这些认真的人身上吸取知识和力量。</p>
-
-<h2>咖啡机(K.F.J)</h2>
-
-<ul>
-<li><a href="https://www.cnblogs.com/strick/">https://www.cnblogs.com/strick/</a></li>
-</ul>
-
-
-<h2>荣明同学</h2>
-
-<ul>
-<li><a href="https://www.rmliu.com/">https://www.rmliu.com/</a></li>
-<li><a href="https://github.com/Kate-liu">https://github.com/Kate-liu</a></li>
-</ul>
-
-
-<h2>fishedee个人感悟</h2>
-
-<p><img src="https://image.fishedee.com/FulTCoakq411USQX_3HiZ79_fH0i" alt="" /></p>
-
-<ul>
-<li><a href="https://blog.fishedee.com/2021/07/06/%E3%80%8ATypeScript%E7%BC%96%E7%A8%8B%E3%80%8B%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0">《TypeScript编程》读书笔记</a></li>
-<li><a href="https://blog.fishedee.com/2021/02/11/2020%E5%B9%B4%E5%B9%B4%E6%9C%AB%E6%80%BB%E7%BB%93">2020年年末总结</a></li>
-<li><a href="https://blog.fishedee.com/2017/12/23/%E7%A8%8B%E5%BA%8F%E5%91%98%E7%9A%84%E4%B8%AD%E5%B9%B4%E5%8D%B1%E6%9C%BA">程序员的中年危机</a></li>
-</ul>
-
-
-<p>提到两本书：《领域驱动设计模式、原理与实践》和《数据密集型应用系统设计》</p>
-
-<h2>cutesunshineriver</h2>
-
-<p><img src="https://www.iteye.com/upload/logo/user/1252039/ef863f68-2eab-3e79-a10f-a49b4995911f.jpg" title="周老师" alt="" /></p>
-
-<ul>
-<li><a href="https://www.iteye.com/blog/cutesunshineriver-2274933">这两年关注的技术博客</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/2">&larr; Older</a>
@@ -3996,11 +4935,15 @@
   <ul id="recent_posts">
     
       <li class="post">
-        <a href="/blog/2022/03/18/k8s-guide-use-kubeadm/">K8s安装指南 - 使用kubeadm</a>
+        <a href="/blog/2022/03/26/k8s-ingress/">K8s Ingress</a>
       </li>
     
       <li class="post">
-        <a href="/blog/2022/03/18/k8s-deps-download/">K8s依赖下载</a>
+        <a href="/blog/2022/03/18/k8s-guide-use-kubeadm/">k8s-v1.23.5安装指南 - 使用kubeadm</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2022/03/18/k8s-deps-download/">k8s-v1.23.5依赖下载</a>
       </li>
     
       <li class="post">
@@ -4021,10 +4964,6 @@
     
       <li class="post">
         <a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2020/04/12/appium-android-auto-test/">appium-Android自动化测试</a>
       </li>
     
   </ul>
@@ -4133,7 +5072,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (11) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (12) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -4214,7 +5153,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (222)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (223)</li>
 	</ul>
 	
 </section>
