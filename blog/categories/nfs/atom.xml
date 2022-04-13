@@ -1,0 +1,563 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+
+  <title><![CDATA[Category: Nfs | Winse Blog]]></title>
+  <link href="http://winse.github.io/blog/categories/nfs/atom.xml" rel="self"/>
+  <link href="http://winse.github.io/"/>
+  <updated>2022-04-14T02:59:06+08:00</updated>
+  <id>http://winse.github.io/</id>
+  <author>
+    <name><![CDATA[Winse Liu]]></name>
+    <email><![CDATA[winseliu@foxmail.com]]></email>
+  </author>
+  <generator uri="http://octopress.org/">Octopress</generator>
+
+  
+  <entry>
+    <title type="html"><![CDATA[k8s共享存储使用NFS]]></title>
+    <link href="http://winse.github.io/blog/2022/04/14/k8s-nfs/"/>
+    <updated>2022-04-14T01:23:14+08:00</updated>
+    <id>http://winse.github.io/blog/2022/04/14/k8s-nfs</id>
+    <content type="html"><![CDATA[<p>容器中的应用数据得保存下来，使用local/hostPath可以临时用用，还是得有一个共享的存储。</p>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#provisioner">https://kubernetes.io/docs/concepts/storage/storage-classes/#provisioner</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/storage/volumes/#hostpath">https://kubernetes.io/docs/concepts/storage/volumes/#hostpath</a></li>
+</ul>
+
+
+<p>先使用最简单的NFS分区/卷。</p>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv</a></li>
+</ul>
+
+
+<h2>安装NFS server on aws ec2</h2>
+
+<ul>
+<li><a href="https://segmentfault.com/a/1190000024512057">https://segmentfault.com/a/1190000024512057</a></li>
+</ul>
+
+
+<pre><code>#所有node节点安装nfs客户端
+#yum -y install nfs-utils
+#systemctl start nfs &amp;&amp; systemctl enable nfs
+
+
+[ec2-user@k8s ~]$ sudo yum install nfs-utils 
+Loaded plugins: langpacks, priorities, update-motd
+amzn2-core                                                                                                                     | 3.7 kB  00:00:00     
+Package 1:nfs-utils-1.3.0-0.54.amzn2.0.2.x86_64 already installed and latest version
+Nothing to do
+
+[ec2-user@k8s ~]$ sudo mkdir /backup
+[ec2-user@k8s ~]$ sudo chmod -R 755 /backup
+[ec2-user@k8s ~]$ sudo chown nfsnobody:nfsnobody /backup
+
+[ec2-user@k8s ~]$ sudo vi /etc/exports
+[ec2-user@k8s ~]$ cat /etc/exports    
+/backup 192.168.191.0/24(rw,sync,no_root_squash,no_all_squash)
+
+[ec2-user@k8s ~]$ sudo service nfs-server restart 
+Redirecting to /bin/systemctl restart nfs-server.service
+[ec2-user@k8s ~]$ 
+[ec2-user@k8s ~]$ sudo exportfs
+/backup         192.168.191.0/24
+[ec2-user@k8s ~]$ sudo exportfs -arv 
+exporting 192.168.191.0/24:/backup
+
+[ec2-user@k8s ~]$ rpcinfo -p localhost
+   program vers proto   port  service
+    100000    4   tcp    111  portmapper
+    100000    3   tcp    111  portmapper
+    100000    2   tcp    111  portmapper
+    100000    4   udp    111  portmapper
+    100000    3   udp    111  portmapper
+    100000    2   udp    111  portmapper
+    100024    1   udp  56847  status
+    100024    1   tcp  60971  status
+    100005    1   udp  20048  mountd
+    100005    1   tcp  20048  mountd
+    100005    2   udp  20048  mountd
+    100005    2   tcp  20048  mountd
+    100005    3   udp  20048  mountd
+    100005    3   tcp  20048  mountd
+    100003    3   tcp   2049  nfs
+    100003    4   tcp   2049  nfs
+    100227    3   tcp   2049  nfs_acl
+    100003    3   udp   2049  nfs
+    100227    3   udp   2049  nfs_acl
+    100021    1   udp  47545  nlockmgr
+    100021    3   udp  47545  nlockmgr
+    100021    4   udp  47545  nlockmgr
+    100021    1   tcp  40703  nlockmgr
+    100021    3   tcp  40703  nlockmgr
+    100021    4   tcp  40703  nlockmgr
+[ec2-user@k8s ~]$ showmount -e 192.168.191.131
+Export list for 192.168.191.131:
+/backup 192.168.191.0/24
+</code></pre>
+
+<p>client</p>
+
+<pre><code># 所有work节点安装 nfs-utils rpcbind
+[ec2-user@worker1 ~]$ sudo yum install nfs-utils 
+Loaded plugins: langpacks, priorities, update-motd
+amzn2-core                                                                                                                                        | 3.7 kB  00:00:00     
+Package 1:nfs-utils-1.3.0-0.54.amzn2.0.2.x86_64 already installed and latest version
+Nothing to do
+
+[ec2-user@worker1 ~]$ sudo systemctl status nfs
+● nfs-server.service - NFS server and services
+   Loaded: loaded (/usr/lib/systemd/system/nfs-server.service; disabled; vendor preset: disabled)
+   Active: inactive (dead)
+[ec2-user@worker1 ~]$ sudo systemctl status rpcbind
+● rpcbind.service - RPC bind service
+   Loaded: loaded (/usr/lib/systemd/system/rpcbind.service; enabled; vendor preset: enabled)
+   Active: active (running) since Wed 2022-04-13 20:44:34 CST; 1h 51min ago
+  Process: 6979 ExecStart=/sbin/rpcbind -w $RPCBIND_ARGS (code=exited, status=0/SUCCESS)
+ Main PID: 7025 (rpcbind)
+    Tasks: 1
+   Memory: 2.1M
+   CGroup: /system.slice/rpcbind.service
+           └─7025 /sbin/rpcbind -w
+
+Apr 13 20:44:34 worker1 systemd[1]: Starting RPC bind service...
+Apr 13 20:44:34 worker1 systemd[1]: Started RPC bind service.
+
+
+[ec2-user@worker1 ~]$ sudo mkdir -p /data
+[ec2-user@worker1 ~]$ sudo chmod 777 /data 
+[ec2-user@worker1 ~]$ sudo mount -t nfs 192.168.191.131:/backup /data
+[ec2-user@worker1 ~]$ df -h | grep 192.168.191.131
+192.168.191.131:/backup   25G  9.6G   16G  39% /data
+
+
+# vi /etc/fstab
+# 172.17.30.22:/backup /data nfs defaults 0 0
+</code></pre>
+
+<h2>k8s中使用NFS</h2>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/</a></li>
+</ul>
+
+
+<h3>容器直接挂载NFS</h3>
+
+<pre><code>[ec2-user@k8s ~]$ cat nginx-1.yml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: data
+        nfs:
+          path: /backup
+          server: 192.168.191.131
+
+[ec2-user@k8s ~]$ kubectl apply -f nginx-1.yml
+
+[ec2-user@k8s ~]$ kubectl get all 
+NAME                                   READY   STATUS    RESTARTS   AGE
+pod/nginx-deployment-67dcb957c-g2h8x   1/1     Running   0          2m50s
+pod/nginx-deployment-67dcb957c-gfv28   1/1     Running   0          2m50s
+pod/nginx-deployment-67dcb957c-rqwjs   1/1     Running   0          2m50s
+
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+
+NAME                               READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/nginx-deployment   3/3     3            3           2m50s
+
+NAME                                         DESIRED   CURRENT   READY   AGE
+replicaset.apps/nginx-deployment-67dcb957c   3         3         3       2m50s
+
+[ec2-user@k8s ~]$ kubectl exec -ti pod/nginx-deployment-67dcb957c-g2h8x -- bash 
+root@nginx-deployment-67dcb957c-g2h8x:/# echo $(hostname) &gt;/usr/share/nginx/html/1.txt
+
+root@nginx-deployment-67dcb957c-g2h8x:/# mount | grep 192
+192.168.191.131:/backup on /usr/share/nginx/html type nfs4 (rw,relatime,vers=4.1,rsize=524288,wsize=524288,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.191.132,local_lock=none,addr=192.168.191.131)
+root@nginx-deployment-67dcb957c-g2h8x:/# 
+
+
+# 服务端查看文件内容
+[ec2-user@k8s ~]$ cat /backup/1.txt 
+nginx-deployment-67dcb957c-g2h8x
+
+
+[ec2-user@k8s ~]$ kubectl delete -f nginx-1.yml 
+deployment.apps "nginx-deployment" deleted
+</code></pre>
+
+<h3>pvc</h3>
+
+<ul>
+<li><a href="https://segmentfault.com/a/1190000040785500">https://segmentfault.com/a/1190000040785500</a></li>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#%E5%88%9B%E5%BB%BA%E7%B1%BB%E5%9E%8B%E4%B8%BAnfs%E7%9A%84%E6%8C%81%E4%B9%85%E5%8C%96%E5%AD%98%E5%82%A8%E5%8D%B7">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#%E5%88%9B%E5%BB%BA%E7%B1%BB%E5%9E%8B%E4%B8%BAnfs%E7%9A%84%E6%8C%81%E4%B9%85%E5%8C%96%E5%AD%98%E5%82%A8%E5%8D%B7</a></li>
+</ul>
+
+
+<pre><code>[ec2-user@k8s ~]$ vi pv-nfs.yaml 
+[ec2-user@k8s ~]$ cat pv-nfs.yaml 
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-nfs
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany 
+  nfs:
+    path: /backup
+    server: 192.168.191.131
+[ec2-user@k8s ~]$ kubectl apply -f pv-nfs.yaml 
+persistentvolume/pv-nfs created
+[ec2-user@k8s ~]$ kubectl get pv 
+NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   REASON   AGE
+pv-nfs   10Gi       RWX            Retain           Available                                   5s
+
+[ec2-user@k8s ~]$ vi pvc-nfs.yaml 
+[ec2-user@k8s ~]$ cat pvc-nfs.yaml 
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: pvc-nfs
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+[ec2-user@k8s ~]$ kubectl apply -f pvc-nfs.yaml 
+persistentvolumeclaim/pvc-nfs created
+[ec2-user@k8s ~]$ kubectl get pvc
+NAME      STATUS   VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+pvc-nfs   Bound    pv-nfs   10Gi       RWX                           7s
+[ec2-user@k8s ~]$ kubectl get pv 
+NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM             STORAGECLASS   REASON   AGE
+pv-nfs   10Gi       RWX            Retain           Bound    default/pvc-nfs                           79s
+
+[ec2-user@k8s ~]$ vi dp-pvc.yaml
+[ec2-user@k8s ~]$ cat dp-pvc.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: busybox
+  labels:
+    app: busybox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: busybox
+  template:
+    metadata:
+      labels:
+        app: busybox
+    spec:
+      containers:
+      - name: busybox
+        image: busybox
+        command: ['sh', '-c', 'echo "Hello, Kubernetes!" &amp;&amp; sleep 3600']
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: pvc-nfs
+
+[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+deployment.apps/busybox created
+[ec2-user@k8s ~]$ 
+
+
+[ec2-user@k8s ~]$ kubectl get all 
+NAME                           READY   STATUS    RESTARTS   AGE
+pod/busybox-6b99c495c9-qnvlp   1/1     Running   0          47s
+
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+
+NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/busybox   1/1     1            1           47s
+
+NAME                                 DESIRED   CURRENT   READY   AGE
+replicaset.apps/busybox-6b99c495c9   1         1         1       47s
+
+# 查看NFS中原来的数据
+[ec2-user@k8s ~]$ kubectl exec -ti busybox-6b99c495c9-qnvlp -- cat /data/1.txt 
+nginx-deployment-67dcb957c-g2h8x
+</code></pre>
+
+<p>测一下subPathExpr：</p>
+
+<pre><code>[ec2-user@k8s ~]$ kubectl delete -f dp-pvc.yaml 
+deployment.apps "busybox" deleted
+[ec2-user@k8s ~]$ 
+[ec2-user@k8s ~]$ vi dp-pvc.yaml 
+[ec2-user@k8s ~]$ cat dp-pvc.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: busybox
+  labels:
+    app: busybox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: busybox
+  template:
+    metadata:
+      labels:
+        app: busybox
+    spec:
+      containers:
+      - name: busybox
+        image: busybox
+        command: ['sh', '-c', 'echo "Hello, Kubernetes!" &amp;&amp; sleep 3600']
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPathExpr: $(POD_NAME)
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: pvc-nfs
+
+[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+deployment.apps/busybox created
+
+[ec2-user@k8s ~]$ kubectl get all 
+NAME                           READY   STATUS    RESTARTS   AGE
+pod/busybox-5497486bf5-csr6q   1/1     Running   0          7s
+
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+
+NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/busybox   1/1     1            1           7s
+
+NAME                                 DESIRED   CURRENT   READY   AGE
+replicaset.apps/busybox-5497486bf5   1         1         1       7s
+
+[ec2-user@k8s ~]$ kubectl exec -ti pod/busybox-5497486bf5-csr6q -- sh 
+/ # ls /data
+/ # echo $(hostname) &gt; /data/pvc.txt
+/ # exit
+
+
+# 查看服务端目录下数据
+[ec2-user@k8s ~]$ ll /backup/
+total 4
+-rw-r--r-- 1 root root 33 Apr 14 00:37 1.txt
+drwxr-xr-x 2 root root 21 Apr 14 00:51 busybox-5497486bf5-csr6q
+[ec2-user@k8s ~]$ cat /backup/busybox-5497486bf5-csr6q/pvc.txt   
+busybox-5497486bf5-csr6q
+</code></pre>
+
+<p>把replicas改成2，再试试：</p>
+
+<pre><code>
+[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+
+[ec2-user@k8s ~]$ kubectl get pods
+NAME                       READY   STATUS    RESTARTS   AGE
+busybox-5497486bf5-fkzls   1/1     Running   0          3m8s
+busybox-5497486bf5-rv7k7   1/1     Running   0          3m8s
+
+[ec2-user@k8s ~]$ kubectl exec busybox-5497486bf5-fkzls -- sh -c 'echo $(hostname) &gt;/data/$(hostname).txt'
+[ec2-user@k8s ~]$ kubectl exec busybox-5497486bf5-rv7k7 -- sh -c 'echo $(hostname) &gt;/data/$(hostname).txt'                        
+
+
+# 查看服务端目录结构
+[ec2-user@k8s ~]$ ll -R /backup/
+/backup/:
+total 4
+-rw-r--r-- 1 root root 33 Apr 14 00:37 1.txt
+drwxr-xr-x 2 root root 21 Apr 14 00:51 busybox-5497486bf5-csr6q
+drwxr-xr-x 2 root root 42 Apr 14 01:20 busybox-5497486bf5-fkzls
+drwxr-xr-x 2 root root 42 Apr 14 01:20 busybox-5497486bf5-rv7k7
+
+/backup/busybox-5497486bf5-csr6q:
+total 4
+-rw-r--r-- 1 root root 25 Apr 14 00:51 pvc.txt
+
+/backup/busybox-5497486bf5-fkzls:
+total 4
+-rw-r--r-- 1 root root 25 Apr 14 01:20 busybox-5497486bf5-fkzls.txt
+
+/backup/busybox-5497486bf5-rv7k7:
+total 4
+-rw-r--r-- 1 root root 25 Apr 14 01:20 busybox-5497486bf5-rv7k7.txt
+[ec2-user@k8s ~]$ 
+</code></pre>
+
+<h3>NFS Subdir External Provisioner</h3>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#NFS-Subdir-External-Provisioner">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#NFS-Subdir-External-Provisioner</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#nfs">https://kubernetes.io/docs/concepts/storage/storage-classes/#nfs</a></li>
+<li><a href="https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner">https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner</a></li>
+</ul>
+
+
+<p>NFS subdir external provisioner 使用现有的的NFS 服务器来支持通过 Persistent Volume Claims 动态供应 Kubernetes Persistent Volumes。持久卷默认被配置为${namespace}-${pvcName}-${pvName}，使用这个必须已经拥有 NFS 服务器。</p>
+
+<ul>
+<li><a href="http://dockone.io/article/2598">http://dockone.io/article/2598</a> External NFS驱动的工作原理</li>
+</ul>
+
+
+<blockquote><p>K8S的外部NFS驱动，可以按照其工作方式（是作为NFS server还是NFS client）分为两类：</p>
+
+<p>1.nfs-client:</p>
+
+<p>也就是我们接下来演示的这一类，它通过K8S的内置的NFS驱动挂载远端的NFS服务器到本地目录；然后将自身作为storage provider，关联storage class。当用户创建对应的PVC来申请PV时，该provider就将PVC的要求与自身的属性比较，一旦满足就在本地挂载好的NFS目录中创建PV所属的子目录，为Pod提供动态的存储服务。</p>
+
+<p>2.nfs:
+与nfs-client不同，该驱动并不使用k8s的NFS驱动来挂载远端的NFS到本地再分配，而是直接将本地文件映射到容器内部，然后在容器内使用ganesha.nfsd来对外提供NFS服务；在每次创建PV的时候，直接在本地的NFS根目录中创建对应文件夹，并export出该子目录。</p>
+
+<p>接下来我们来操作一个nfs-client驱动的例子，先对其有个直观的认识！</p>
+
+<p>External NFS驱动的部署实例</p>
+
+<p>这里，我们将nfs-client驱动做一个deployment部署到K8S集群中，然后对外提供存储服务。</p>
+
+<p>1.部署nfs-client-provisioner</p>
+
+<p>环境变量的PROVISIONER_NAME、NFS服务器地址、NFS对外提供服务的路径信息等需要设置好；部署所使用的yaml文件关键代码如下所示：</p>
+
+<p>2.创建Storage Class</p>
+
+<p>storage class的定义，需要注意的是：provisioner属性要等于驱动所传入的环境变量PROVISIONER_NAME的值。否则，驱动不知道知道如何绑定storage class。</p>
+
+<p>3.创建PVC</p>
+
+<p>这里指定了其对应的storage-class的名字为wise2c-nfs-storage，如下：</p>
+
+<p>4.创建pod</p>
+
+<p>指定该pod使用我们刚刚创建的PVC：henry-claim：</p>
+
+<p>完成之后，如果attach到pod中执行一些文件的读写操作，就可以确定pod的/mnt已经使用了NFS的存储服务了。</p></blockquote>
+
+<ul>
+<li><a href="https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner#without-helm">https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner#without-helm</a></li>
+</ul>
+
+
+<pre><code># Set the subject of the RBAC objects to the current namespace where the provisioner is being deployed
+$ NS=$(kubectl config get-contexts|grep -e "^\*" |awk '{print $5}')
+$ NAMESPACE=${NS:-default}
+$ sed -i'' "s/namespace:.*/namespace: $NAMESPACE/g" ./deploy/rbac.yaml ./deploy/deployment.yaml
+$ kubectl create -f deploy/rbac.yaml
+</code></pre>
+
+<p>操作步骤：</p>
+
+<pre><code>[ec2-user@k8s ~]$ git clone https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/
+[ec2-user@k8s ~]$ cd nfs-subdir-external-provisioner/
+
+[ec2-user@k8s nfs-subdir-external-provisioner]$ NS=$(kubectl config get-contexts|grep -e "^\*" |awk '{print $5}')
+[ec2-user@k8s nfs-subdir-external-provisioner]$ NAMESPACE=${NS:-default}
+[ec2-user@k8s nfs-subdir-external-provisioner]$ sed -i'' "s/namespace:.*/namespace: $NAMESPACE/g" ./deploy/rbac.yaml ./deploy/deployment.yaml
+[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl create -f deploy/rbac.yaml
+serviceaccount/nfs-client-provisioner created
+clusterrole.rbac.authorization.k8s.io/nfs-client-provisioner-runner created
+clusterrolebinding.rbac.authorization.k8s.io/run-nfs-client-provisioner created
+role.rbac.authorization.k8s.io/leader-locking-nfs-client-provisioner created
+rolebinding.rbac.authorization.k8s.io/leader-locking-nfs-client-provisioner created
+
+
+$ vi deploy/deployment.yaml
+
+            - name: NFS_SERVER
+              value: 192.168.191.131
+            - name: NFS_PATH
+              value: /backup
+      volumes:
+        - name: nfs-client-root
+          nfs:
+            server: 192.168.191.131
+            path: /backup
+
+$ vi deploy/class.yaml
+
+parameters:
+  archiveOnDelete: "false"
+#  pathPattern: "${.PVC.namespace}/${.PVC.annotations.nfs.io/storage-path}" # waits for nfs.io/storage-path annotation, if not specified will accept as empty string.
+#  onDelete: delete
+
+
+# 先把镜像拉下来 k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl apply -f deploy/deployment.yaml 
+deployment.apps/nfs-client-provisioner created
+
+[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl apply -f deploy/class.yaml 
+storageclass.storage.k8s.io/nfs-client created
+[ec2-user@k8s nfs-subdir-external-provisioner]$
+</code></pre>
+
+<p>测试：</p>
+
+<pre><code>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl create -f deploy/test-claim.yaml -f deploy/test-pod.yaml
+persistentvolumeclaim/test-claim created
+pod/test-pod created
+
+# kubectl delete -f deploy/test-pod.yaml -f deploy/test-claim.yaml
+</code></pre>
+
+<p><code>test pod</code> 在共享文件系统下写了一个 <code>touch /mnt/SUCCESS</code> 文件：</p>
+
+<pre><code>[ec2-user@k8s nfs-subdir-external-provisioner]$ ll /backup/default-test-claim-pvc-9857153a-6c2b-42d7-b464-aa5fc2acbf90/
+total 0
+-rw-r--r-- 1 root root 0 Apr 14 02:14 SUCCESS
+</code></pre>
+
+<h3>NFS Ganesha server and external provisioner</h3>
+
+<ul>
+<li><a href="https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner">https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner</a></li>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#nfs-ganesha-server-and-external-provisioner">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#nfs-ganesha-server-and-external-provisioner</a></li>
+</ul>
+
+
+<p>直接在k8s装一个NFS server。感觉没有直接在系统安装NFS管理方便，先搁置了。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+</feed>

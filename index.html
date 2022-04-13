@@ -9,7 +9,8 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="Ingress是一个集中的集群应用网关，自动化的k8s反向代理组件（功能类比nginx）。 Ingress涉及到LoadBalancer，Ingress Controller, Ingress config等相关概念。controller从LoadBalancer/ &hellip;">
+  <meta name="description" content="容器中的应用数据得保存下来，使用local/hostPath可以临时用用，还是得有一个共享的存储。 https://kubernetes.io/docs/concepts/storage/storage-classes/#provisioner
+https://kubernetes.io/docs &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +86,1301 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2022/04/14/k8s-nfs/">k8s共享存储使用NFS</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2022-04-14T01:23:14+08:00" pubdate data-updated="true">Thu 2022-04-14 01:23</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>容器中的应用数据得保存下来，使用local/hostPath可以临时用用，还是得有一个共享的存储。</p>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#provisioner">https://kubernetes.io/docs/concepts/storage/storage-classes/#provisioner</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/storage/volumes/#hostpath">https://kubernetes.io/docs/concepts/storage/volumes/#hostpath</a></li>
+</ul>
+
+
+<p>先使用最简单的NFS分区/卷。</p>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv</a></li>
+</ul>
+
+
+<h2>安装NFS server on aws ec2</h2>
+
+<ul>
+<li><a href="https://segmentfault.com/a/1190000024512057">https://segmentfault.com/a/1190000024512057</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#所有node节点安装nfs客户端
+</span><span class='line'>#yum -y install nfs-utils
+</span><span class='line'>#systemctl start nfs && systemctl enable nfs
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo yum install nfs-utils 
+</span><span class='line'>Loaded plugins: langpacks, priorities, update-motd
+</span><span class='line'>amzn2-core                                                                                                                     | 3.7 kB  00:00:00     
+</span><span class='line'>Package 1:nfs-utils-1.3.0-0.54.amzn2.0.2.x86_64 already installed and latest version
+</span><span class='line'>Nothing to do
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo mkdir /backup
+</span><span class='line'>[ec2-user@k8s ~]$ sudo chmod -R 755 /backup
+</span><span class='line'>[ec2-user@k8s ~]$ sudo chown nfsnobody:nfsnobody /backup
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo vi /etc/exports
+</span><span class='line'>[ec2-user@k8s ~]$ cat /etc/exports    
+</span><span class='line'>/backup 192.168.191.0/24(rw,sync,no_root_squash,no_all_squash)
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo service nfs-server restart 
+</span><span class='line'>Redirecting to /bin/systemctl restart nfs-server.service
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span><span class='line'>[ec2-user@k8s ~]$ sudo exportfs
+</span><span class='line'>/backup         192.168.191.0/24
+</span><span class='line'>[ec2-user@k8s ~]$ sudo exportfs -arv 
+</span><span class='line'>exporting 192.168.191.0/24:/backup
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ rpcinfo -p localhost
+</span><span class='line'>   program vers proto   port  service
+</span><span class='line'>    100000    4   tcp    111  portmapper
+</span><span class='line'>    100000    3   tcp    111  portmapper
+</span><span class='line'>    100000    2   tcp    111  portmapper
+</span><span class='line'>    100000    4   udp    111  portmapper
+</span><span class='line'>    100000    3   udp    111  portmapper
+</span><span class='line'>    100000    2   udp    111  portmapper
+</span><span class='line'>    100024    1   udp  56847  status
+</span><span class='line'>    100024    1   tcp  60971  status
+</span><span class='line'>    100005    1   udp  20048  mountd
+</span><span class='line'>    100005    1   tcp  20048  mountd
+</span><span class='line'>    100005    2   udp  20048  mountd
+</span><span class='line'>    100005    2   tcp  20048  mountd
+</span><span class='line'>    100005    3   udp  20048  mountd
+</span><span class='line'>    100005    3   tcp  20048  mountd
+</span><span class='line'>    100003    3   tcp   2049  nfs
+</span><span class='line'>    100003    4   tcp   2049  nfs
+</span><span class='line'>    100227    3   tcp   2049  nfs_acl
+</span><span class='line'>    100003    3   udp   2049  nfs
+</span><span class='line'>    100227    3   udp   2049  nfs_acl
+</span><span class='line'>    100021    1   udp  47545  nlockmgr
+</span><span class='line'>    100021    3   udp  47545  nlockmgr
+</span><span class='line'>    100021    4   udp  47545  nlockmgr
+</span><span class='line'>    100021    1   tcp  40703  nlockmgr
+</span><span class='line'>    100021    3   tcp  40703  nlockmgr
+</span><span class='line'>    100021    4   tcp  40703  nlockmgr
+</span><span class='line'>[ec2-user@k8s ~]$ showmount -e 192.168.191.131
+</span><span class='line'>Export list for 192.168.191.131:
+</span><span class='line'>/backup 192.168.191.0/24
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>client</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 所有work节点安装 nfs-utils rpcbind
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo yum install nfs-utils 
+</span><span class='line'>Loaded plugins: langpacks, priorities, update-motd
+</span><span class='line'>amzn2-core                                                                                                                                        | 3.7 kB  00:00:00     
+</span><span class='line'>Package 1:nfs-utils-1.3.0-0.54.amzn2.0.2.x86_64 already installed and latest version
+</span><span class='line'>Nothing to do
+</span><span class='line'>
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo systemctl status nfs
+</span><span class='line'>● nfs-server.service - NFS server and services
+</span><span class='line'>   Loaded: loaded (/usr/lib/systemd/system/nfs-server.service; disabled; vendor preset: disabled)
+</span><span class='line'>   Active: inactive (dead)
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo systemctl status rpcbind
+</span><span class='line'>● rpcbind.service - RPC bind service
+</span><span class='line'>   Loaded: loaded (/usr/lib/systemd/system/rpcbind.service; enabled; vendor preset: enabled)
+</span><span class='line'>   Active: active (running) since Wed 2022-04-13 20:44:34 CST; 1h 51min ago
+</span><span class='line'>  Process: 6979 ExecStart=/sbin/rpcbind -w $RPCBIND_ARGS (code=exited, status=0/SUCCESS)
+</span><span class='line'> Main PID: 7025 (rpcbind)
+</span><span class='line'>    Tasks: 1
+</span><span class='line'>   Memory: 2.1M
+</span><span class='line'>   CGroup: /system.slice/rpcbind.service
+</span><span class='line'>           └─7025 /sbin/rpcbind -w
+</span><span class='line'>
+</span><span class='line'>Apr 13 20:44:34 worker1 systemd[1]: Starting RPC bind service...
+</span><span class='line'>Apr 13 20:44:34 worker1 systemd[1]: Started RPC bind service.
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo mkdir -p /data
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo chmod 777 /data 
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo mount -t nfs 192.168.191.131:/backup /data
+</span><span class='line'>[ec2-user@worker1 ~]$ df -h | grep 192.168.191.131
+</span><span class='line'>192.168.191.131:/backup   25G  9.6G   16G  39% /data
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># vi /etc/fstab
+</span><span class='line'># 172.17.30.22:/backup /data nfs defaults 0 0
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>k8s中使用NFS</h2>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/</a></li>
+</ul>
+
+
+<h3>容器直接挂载NFS</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ cat nginx-1.yml 
+</span><span class='line'>apiVersion: apps/v1
+</span><span class='line'>kind: Deployment
+</span><span class='line'>metadata:
+</span><span class='line'>  name: nginx-deployment
+</span><span class='line'>  labels:
+</span><span class='line'>    app: nginx
+</span><span class='line'>spec:
+</span><span class='line'>  replicas: 3
+</span><span class='line'>  selector:
+</span><span class='line'>    matchLabels:
+</span><span class='line'>      app: nginx
+</span><span class='line'>  template:
+</span><span class='line'>    metadata:
+</span><span class='line'>      labels:
+</span><span class='line'>        app: nginx
+</span><span class='line'>    spec:
+</span><span class='line'>      containers:
+</span><span class='line'>      - name: nginx
+</span><span class='line'>        image: nginx:1.14.2
+</span><span class='line'>        ports:
+</span><span class='line'>        - containerPort: 80
+</span><span class='line'>        volumeMounts:
+</span><span class='line'>        - name: data
+</span><span class='line'>          mountPath: /usr/share/nginx/html
+</span><span class='line'>      volumes:
+</span><span class='line'>      - name: data
+</span><span class='line'>        nfs:
+</span><span class='line'>          path: /backup
+</span><span class='line'>          server: 192.168.191.131
+</span><span class='line'>        
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f nginx-1.yml
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get all 
+</span><span class='line'>NAME                                   READY   STATUS    RESTARTS   AGE
+</span><span class='line'>pod/nginx-deployment-67dcb957c-g2h8x   1/1     Running   0          2m50s
+</span><span class='line'>pod/nginx-deployment-67dcb957c-gfv28   1/1     Running   0          2m50s
+</span><span class='line'>pod/nginx-deployment-67dcb957c-rqwjs   1/1     Running   0          2m50s
+</span><span class='line'>
+</span><span class='line'>NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+</span><span class='line'>service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+</span><span class='line'>
+</span><span class='line'>NAME                               READY   UP-TO-DATE   AVAILABLE   AGE
+</span><span class='line'>deployment.apps/nginx-deployment   3/3     3            3           2m50s
+</span><span class='line'>
+</span><span class='line'>NAME                                         DESIRED   CURRENT   READY   AGE
+</span><span class='line'>replicaset.apps/nginx-deployment-67dcb957c   3         3         3       2m50s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec -ti pod/nginx-deployment-67dcb957c-g2h8x -- bash 
+</span><span class='line'>root@nginx-deployment-67dcb957c-g2h8x:/# echo $(hostname) &gt;/usr/share/nginx/html/1.txt
+</span><span class='line'>
+</span><span class='line'>root@nginx-deployment-67dcb957c-g2h8x:/# mount | grep 192
+</span><span class='line'>192.168.191.131:/backup on /usr/share/nginx/html type nfs4 (rw,relatime,vers=4.1,rsize=524288,wsize=524288,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.191.132,local_lock=none,addr=192.168.191.131)
+</span><span class='line'>root@nginx-deployment-67dcb957c-g2h8x:/# 
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 服务端查看文件内容
+</span><span class='line'>[ec2-user@k8s ~]$ cat /backup/1.txt 
+</span><span class='line'>nginx-deployment-67dcb957c-g2h8x
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl delete -f nginx-1.yml 
+</span><span class='line'>deployment.apps "nginx-deployment" deleted
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>pvc</h3>
+
+<ul>
+<li><a href="https://segmentfault.com/a/1190000040785500">https://segmentfault.com/a/1190000040785500</a></li>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#%E5%88%9B%E5%BB%BA%E7%B1%BB%E5%9E%8B%E4%B8%BAnfs%E7%9A%84%E6%8C%81%E4%B9%85%E5%8C%96%E5%AD%98%E5%82%A8%E5%8D%B7">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#%E5%88%9B%E5%BB%BA%E7%B1%BB%E5%9E%8B%E4%B8%BAnfs%E7%9A%84%E6%8C%81%E4%B9%85%E5%8C%96%E5%AD%98%E5%82%A8%E5%8D%B7</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ vi pv-nfs.yaml 
+</span><span class='line'>[ec2-user@k8s ~]$ cat pv-nfs.yaml 
+</span><span class='line'>apiVersion: v1
+</span><span class='line'>kind: PersistentVolume
+</span><span class='line'>metadata:
+</span><span class='line'>  name: pv-nfs
+</span><span class='line'>spec:
+</span><span class='line'>  capacity:
+</span><span class='line'>    storage: 10Gi
+</span><span class='line'>  accessModes:
+</span><span class='line'>    - ReadWriteMany 
+</span><span class='line'>  nfs:
+</span><span class='line'>    path: /backup
+</span><span class='line'>    server: 192.168.191.131
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f pv-nfs.yaml 
+</span><span class='line'>persistentvolume/pv-nfs created
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pv 
+</span><span class='line'>NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   REASON   AGE
+</span><span class='line'>pv-nfs   10Gi       RWX            Retain           Available                                   5s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ vi pvc-nfs.yaml 
+</span><span class='line'>[ec2-user@k8s ~]$ cat pvc-nfs.yaml 
+</span><span class='line'>kind: PersistentVolumeClaim
+</span><span class='line'>apiVersion: v1
+</span><span class='line'>metadata:
+</span><span class='line'>  name: pvc-nfs
+</span><span class='line'>spec:
+</span><span class='line'>  accessModes:
+</span><span class='line'>    - ReadWriteMany
+</span><span class='line'>  resources:
+</span><span class='line'>    requests:
+</span><span class='line'>      storage: 10Gi
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f pvc-nfs.yaml 
+</span><span class='line'>persistentvolumeclaim/pvc-nfs created
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pvc
+</span><span class='line'>NAME      STATUS   VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+</span><span class='line'>pvc-nfs   Bound    pv-nfs   10Gi       RWX                           7s
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pv 
+</span><span class='line'>NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM             STORAGECLASS   REASON   AGE
+</span><span class='line'>pv-nfs   10Gi       RWX            Retain           Bound    default/pvc-nfs                           79s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ vi dp-pvc.yaml
+</span><span class='line'>[ec2-user@k8s ~]$ cat dp-pvc.yaml 
+</span><span class='line'>apiVersion: apps/v1
+</span><span class='line'>kind: Deployment
+</span><span class='line'>metadata:
+</span><span class='line'>  name: busybox
+</span><span class='line'>  labels:
+</span><span class='line'>    app: busybox
+</span><span class='line'>spec:
+</span><span class='line'>  replicas: 1
+</span><span class='line'>  selector:
+</span><span class='line'>    matchLabels:
+</span><span class='line'>      app: busybox
+</span><span class='line'>  template:
+</span><span class='line'>    metadata:
+</span><span class='line'>      labels:
+</span><span class='line'>        app: busybox
+</span><span class='line'>    spec:
+</span><span class='line'>      containers:
+</span><span class='line'>      - name: busybox
+</span><span class='line'>        image: busybox
+</span><span class='line'>        command: ['sh', '-c', 'echo "Hello, Kubernetes!" && sleep 3600']
+</span><span class='line'>        volumeMounts:
+</span><span class='line'>        - name: data
+</span><span class='line'>          mountPath: /data
+</span><span class='line'>      volumes:
+</span><span class='line'>      - name: data
+</span><span class='line'>        persistentVolumeClaim:
+</span><span class='line'>          claimName: pvc-nfs
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+</span><span class='line'>deployment.apps/busybox created
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get all 
+</span><span class='line'>NAME                           READY   STATUS    RESTARTS   AGE
+</span><span class='line'>pod/busybox-6b99c495c9-qnvlp   1/1     Running   0          47s
+</span><span class='line'>
+</span><span class='line'>NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+</span><span class='line'>service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+</span><span class='line'>
+</span><span class='line'>NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+</span><span class='line'>deployment.apps/busybox   1/1     1            1           47s
+</span><span class='line'>
+</span><span class='line'>NAME                                 DESIRED   CURRENT   READY   AGE
+</span><span class='line'>replicaset.apps/busybox-6b99c495c9   1         1         1       47s
+</span><span class='line'>
+</span><span class='line'># 查看NFS中原来的数据
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec -ti busybox-6b99c495c9-qnvlp -- cat /data/1.txt 
+</span><span class='line'>nginx-deployment-67dcb957c-g2h8x
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>测一下subPathExpr：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl delete -f dp-pvc.yaml 
+</span><span class='line'>deployment.apps "busybox" deleted
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span><span class='line'>[ec2-user@k8s ~]$ vi dp-pvc.yaml 
+</span><span class='line'>[ec2-user@k8s ~]$ cat dp-pvc.yaml 
+</span><span class='line'>apiVersion: apps/v1
+</span><span class='line'>kind: Deployment
+</span><span class='line'>metadata:
+</span><span class='line'>  name: busybox
+</span><span class='line'>  labels:
+</span><span class='line'>    app: busybox
+</span><span class='line'>spec:
+</span><span class='line'>  replicas: 1
+</span><span class='line'>  selector:
+</span><span class='line'>    matchLabels:
+</span><span class='line'>      app: busybox
+</span><span class='line'>  template:
+</span><span class='line'>    metadata:
+</span><span class='line'>      labels:
+</span><span class='line'>        app: busybox
+</span><span class='line'>    spec:
+</span><span class='line'>      containers:
+</span><span class='line'>      - name: busybox
+</span><span class='line'>        image: busybox
+</span><span class='line'>        command: ['sh', '-c', 'echo "Hello, Kubernetes!" && sleep 3600']
+</span><span class='line'>        env:
+</span><span class='line'>        - name: POD_NAME
+</span><span class='line'>          valueFrom:
+</span><span class='line'>            fieldRef:
+</span><span class='line'>              apiVersion: v1
+</span><span class='line'>              fieldPath: metadata.name
+</span><span class='line'>        volumeMounts:
+</span><span class='line'>        - name: data
+</span><span class='line'>          mountPath: /data
+</span><span class='line'>          subPathExpr: $(POD_NAME)
+</span><span class='line'>      volumes:
+</span><span class='line'>      - name: data
+</span><span class='line'>        persistentVolumeClaim:
+</span><span class='line'>          claimName: pvc-nfs
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+</span><span class='line'>deployment.apps/busybox created
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get all 
+</span><span class='line'>NAME                           READY   STATUS    RESTARTS   AGE
+</span><span class='line'>pod/busybox-5497486bf5-csr6q   1/1     Running   0          7s
+</span><span class='line'>
+</span><span class='line'>NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+</span><span class='line'>service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+</span><span class='line'>
+</span><span class='line'>NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+</span><span class='line'>deployment.apps/busybox   1/1     1            1           7s
+</span><span class='line'>
+</span><span class='line'>NAME                                 DESIRED   CURRENT   READY   AGE
+</span><span class='line'>replicaset.apps/busybox-5497486bf5   1         1         1       7s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec -ti pod/busybox-5497486bf5-csr6q -- sh 
+</span><span class='line'>/ # ls /data
+</span><span class='line'>/ # echo $(hostname) &gt; /data/pvc.txt
+</span><span class='line'>/ # exit
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 查看服务端目录下数据
+</span><span class='line'>[ec2-user@k8s ~]$ ll /backup/
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 33 Apr 14 00:37 1.txt
+</span><span class='line'>drwxr-xr-x 2 root root 21 Apr 14 00:51 busybox-5497486bf5-csr6q
+</span><span class='line'>[ec2-user@k8s ~]$ cat /backup/busybox-5497486bf5-csr6q/pvc.txt   
+</span><span class='line'>busybox-5497486bf5-csr6q
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>把replicas改成2，再试试：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pods
+</span><span class='line'>NAME                       READY   STATUS    RESTARTS   AGE
+</span><span class='line'>busybox-5497486bf5-fkzls   1/1     Running   0          3m8s
+</span><span class='line'>busybox-5497486bf5-rv7k7   1/1     Running   0          3m8s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec busybox-5497486bf5-fkzls -- sh -c 'echo $(hostname) &gt;/data/$(hostname).txt'
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec busybox-5497486bf5-rv7k7 -- sh -c 'echo $(hostname) &gt;/data/$(hostname).txt'                        
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 查看服务端目录结构
+</span><span class='line'>[ec2-user@k8s ~]$ ll -R /backup/
+</span><span class='line'>/backup/:
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 33 Apr 14 00:37 1.txt
+</span><span class='line'>drwxr-xr-x 2 root root 21 Apr 14 00:51 busybox-5497486bf5-csr6q
+</span><span class='line'>drwxr-xr-x 2 root root 42 Apr 14 01:20 busybox-5497486bf5-fkzls
+</span><span class='line'>drwxr-xr-x 2 root root 42 Apr 14 01:20 busybox-5497486bf5-rv7k7
+</span><span class='line'>
+</span><span class='line'>/backup/busybox-5497486bf5-csr6q:
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 25 Apr 14 00:51 pvc.txt
+</span><span class='line'>
+</span><span class='line'>/backup/busybox-5497486bf5-fkzls:
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 25 Apr 14 01:20 busybox-5497486bf5-fkzls.txt
+</span><span class='line'>
+</span><span class='line'>/backup/busybox-5497486bf5-rv7k7:
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 25 Apr 14 01:20 busybox-5497486bf5-rv7k7.txt
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>NFS Subdir External Provisioner</h3>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#NFS-Subdir-External-Provisioner">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#NFS-Subdir-External-Provisioner</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#nfs">https://kubernetes.io/docs/concepts/storage/storage-classes/#nfs</a></li>
+<li><a href="https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner">https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner</a></li>
+</ul>
+
+
+<p>NFS subdir external provisioner 使用现有的的NFS 服务器来支持通过 Persistent Volume Claims 动态供应 Kubernetes Persistent Volumes。持久卷默认被配置为${namespace}-${pvcName}-${pvName}，使用这个必须已经拥有 NFS 服务器。</p>
+
+<ul>
+<li><a href="http://dockone.io/article/2598">http://dockone.io/article/2598</a> External NFS驱动的工作原理</li>
+</ul>
+
+
+<blockquote><p>K8S的外部NFS驱动，可以按照其工作方式（是作为NFS server还是NFS client）分为两类：</p>
+
+<p>1.nfs-client:</p>
+
+<p>也就是我们接下来演示的这一类，它通过K8S的内置的NFS驱动挂载远端的NFS服务器到本地目录；然后将自身作为storage provider，关联storage class。当用户创建对应的PVC来申请PV时，该provider就将PVC的要求与自身的属性比较，一旦满足就在本地挂载好的NFS目录中创建PV所属的子目录，为Pod提供动态的存储服务。</p>
+
+<p>2.nfs:
+与nfs-client不同，该驱动并不使用k8s的NFS驱动来挂载远端的NFS到本地再分配，而是直接将本地文件映射到容器内部，然后在容器内使用ganesha.nfsd来对外提供NFS服务；在每次创建PV的时候，直接在本地的NFS根目录中创建对应文件夹，并export出该子目录。</p>
+
+<p>接下来我们来操作一个nfs-client驱动的例子，先对其有个直观的认识！</p>
+
+<p>External NFS驱动的部署实例</p>
+
+<p>这里，我们将nfs-client驱动做一个deployment部署到K8S集群中，然后对外提供存储服务。</p>
+
+<p>1.部署nfs-client-provisioner</p>
+
+<p>环境变量的PROVISIONER_NAME、NFS服务器地址、NFS对外提供服务的路径信息等需要设置好；部署所使用的yaml文件关键代码如下所示：</p>
+
+<p>2.创建Storage Class</p>
+
+<p>storage class的定义，需要注意的是：provisioner属性要等于驱动所传入的环境变量PROVISIONER_NAME的值。否则，驱动不知道知道如何绑定storage class。</p>
+
+<p>3.创建PVC</p>
+
+<p>这里指定了其对应的storage-class的名字为wise2c-nfs-storage，如下：</p>
+
+<p>4.创建pod</p>
+
+<p>指定该pod使用我们刚刚创建的PVC：henry-claim：</p>
+
+<p>完成之后，如果attach到pod中执行一些文件的读写操作，就可以确定pod的/mnt已经使用了NFS的存储服务了。</p></blockquote>
+
+<ul>
+<li><a href="https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner#without-helm">https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner#without-helm</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># Set the subject of the RBAC objects to the current namespace where the provisioner is being deployed
+</span><span class='line'>$ NS=$(kubectl config get-contexts|grep -e "^\*" |awk '{print $5}')
+</span><span class='line'>$ NAMESPACE=${NS:-default}
+</span><span class='line'>$ sed -i'' "s/namespace:.*/namespace: $NAMESPACE/g" ./deploy/rbac.yaml ./deploy/deployment.yaml
+</span><span class='line'>$ kubectl create -f deploy/rbac.yaml</span></code></pre></td></tr></table></div></figure>
+
+
+<p>操作步骤：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ git clone https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/
+</span><span class='line'>[ec2-user@k8s ~]$ cd nfs-subdir-external-provisioner/
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ NS=$(kubectl config get-contexts|grep -e "^\*" |awk '{print $5}')
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ NAMESPACE=${NS:-default}
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ sed -i'' "s/namespace:.*/namespace: $NAMESPACE/g" ./deploy/rbac.yaml ./deploy/deployment.yaml
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl create -f deploy/rbac.yaml
+</span><span class='line'>serviceaccount/nfs-client-provisioner created
+</span><span class='line'>clusterrole.rbac.authorization.k8s.io/nfs-client-provisioner-runner created
+</span><span class='line'>clusterrolebinding.rbac.authorization.k8s.io/run-nfs-client-provisioner created
+</span><span class='line'>role.rbac.authorization.k8s.io/leader-locking-nfs-client-provisioner created
+</span><span class='line'>rolebinding.rbac.authorization.k8s.io/leader-locking-nfs-client-provisioner created
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>$ vi deploy/deployment.yaml
+</span><span class='line'>
+</span><span class='line'>            - name: NFS_SERVER
+</span><span class='line'>              value: 192.168.191.131
+</span><span class='line'>            - name: NFS_PATH
+</span><span class='line'>              value: /backup
+</span><span class='line'>      volumes:
+</span><span class='line'>        - name: nfs-client-root
+</span><span class='line'>          nfs:
+</span><span class='line'>            server: 192.168.191.131
+</span><span class='line'>            path: /backup
+</span><span class='line'>
+</span><span class='line'>$ vi deploy/class.yaml
+</span><span class='line'>
+</span><span class='line'>parameters:
+</span><span class='line'>  archiveOnDelete: "false"
+</span><span class='line'>#  pathPattern: "${.PVC.namespace}/${.PVC.annotations.nfs.io/storage-path}" # waits for nfs.io/storage-path annotation, if not specified will accept as empty string.
+</span><span class='line'>#  onDelete: delete
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 先把镜像拉下来 k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl apply -f deploy/deployment.yaml 
+</span><span class='line'>deployment.apps/nfs-client-provisioner created
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl apply -f deploy/class.yaml 
+</span><span class='line'>storageclass.storage.k8s.io/nfs-client created
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$
+</span><span class='line'>
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>测试：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl create -f deploy/test-claim.yaml -f deploy/test-pod.yaml
+</span><span class='line'>persistentvolumeclaim/test-claim created
+</span><span class='line'>pod/test-pod created
+</span><span class='line'>
+</span><span class='line'># kubectl delete -f deploy/test-pod.yaml -f deploy/test-claim.yaml
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p><code>test pod</code> 在共享文件系统下写了一个 <code>touch /mnt/SUCCESS</code> 文件：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ ll /backup/default-test-claim-pvc-9857153a-6c2b-42d7-b464-aa5fc2acbf90/
+</span><span class='line'>total 0
+</span><span class='line'>-rw-r--r-- 1 root root 0 Apr 14 02:14 SUCCESS
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>NFS Ganesha server and external provisioner</h3>
+
+<ul>
+<li><a href="https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner">https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner</a></li>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#nfs-ganesha-server-and-external-provisioner">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#nfs-ganesha-server-and-external-provisioner</a></li>
+</ul>
+
+
+<p>直接在k8s装一个NFS server。感觉没有直接在系统安装NFS管理方便，先搁置了。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2022/04/11/xiaomi-r4a-install-padavan/">Xiaomi R4a Install Padavan</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2022-04-11T21:19:31+08:00" pubdate data-updated="true">Mon 2022-04-11 21:19</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>最近换了个小米的路由，想着登录ssh，能在路由上跑一些小的定时任务。但是无奈，绑定不通过，那就直接刷机了。</p>
+
+<p>一开始是按照csdn上的文章刷opewrt的，但是都不成功，最后换成 老毛子Padavan 了。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://blog.csdn.net/qq_43206901/article/details/119106511">小米路由器R4A(千兆版)固件刷opewrt、刷官方固件</a></li>
+<li><a href="https://www.0412.cyou/type/xiaomi.html">小米路由4A千兆版安装openwrt教程（R4A）</a></li>
+</ul>
+
+
+<h2>步骤描述</h2>
+
+<h3>获取root权限</h3>
+
+<p>使用 <code>WSL Ubuntu</code> 进行访问，python3已经安装了。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>winse@LAPTOP-I9ECVAQ4:OpenWRTInvasion-master$ python3 --version
+</span><span class='line'>Python 3.8.5
+</span><span class='line'>
+</span><span class='line'># https://github.com/acecilia/OpenWRTInvasion
+</span><span class='line'>winse@LAPTOP-I9ECVAQ4:OpenWRTInvasion-master$ ls
+</span><span class='line'>Dockerfile  readme                                     requirements.txt  set_english.py
+</span><span class='line'>extras      README.md                                  script.sh         speedtest_urls_template.xml
+</span><span class='line'>firmwares   remote_command_execution_vulnerability.py  script_tools      tcp_file_server.py
+</span><span class='line'>
+</span><span class='line'>winse@LAPTOP-I9ECVAQ4:OpenWRTInvasion-master$ sudo apt install python3-pip
+</span><span class='line'>
+</span><span class='line'>winse@LAPTOP-I9ECVAQ4:OpenWRTInvasion-master$ pip3 install -r requirements.txt
+</span><span class='line'>Requirement already satisfied: requests in /usr/lib/python3/dist-packages (from -r requirements.txt (line 1)) (2.22.0)
+</span><span class='line'>
+</span><span class='line'># stok获取：登录web访问后，浏览器的地址上就有stok的参数。
+</span><span class='line'># 详情可查看参考的文章
+</span><span class='line'>winse@LAPTOP-I9ECVAQ4:OpenWRTInvasion-master$ python3 remote_command_execution_vulnerability.py
+</span><span class='line'>Router IP address [press enter for using the default 'miwifi.com']:
+</span><span class='line'>Enter router admin password: __xxx__
+</span><span class='line'>There two options to provide the files needed for invasion:
+</span><span class='line'>   1. Use a local TCP file server runing on random port to provide files in local directory `script_tools`.
+</span><span class='line'>   2. Download needed files from remote github repository. (choose this option only if github is accessable inside router device.)
+</span><span class='line'>Which option do you prefer? (default: 1)
+</span><span class='line'>****************
+</span><span class='line'>router_ip_address: miwifi.com
+</span><span class='line'>stok: __xxx__
+</span><span class='line'>file provider: local file server
+</span><span class='line'>****************
+</span><span class='line'>start uploading config file...
+</span><span class='line'>start exec command...
+</span><span class='line'>local file server is runing on 0.0.0.0:1135. root='script_tools'
+</span><span class='line'>local file server is getting 'busybox-mipsel' for 192.168.31.1.
+</span><span class='line'>local file server is getting 'dropbearStaticMipsel.tar.bz2' for 192.168.31.1.
+</span><span class='line'>done! Now you can connect to the router using several options: (user: root, password: root)
+</span><span class='line'>* telnet miwifi.com
+</span><span class='line'>* ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -c 3des-cbc -o UserKnownHostsFile=/dev/null root@miwifi.com
+</span><span class='line'>* ftp: using a program like cyberduck
+</span><span class='line'>
+</span><span class='line'>winse@LAPTOP-I9ECVAQ4:OpenWRTInvasion-master$ ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -c 3des-cbc -o UserKnownHostsFile=/dev/null root@miwifi.com
+</span><span class='line'>The authenticity of host 'miwifi.com (192.168.31.1)' can't be established.
+</span><span class='line'>RSA key fingerprint is SHA256:AT91yqVuqPnmOO5wmke6V0Hl67GKXdkb48W/FU3WfEM.
+</span><span class='line'>Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+</span><span class='line'>Warning: Permanently added 'miwifi.com,192.168.31.1' (RSA) to the list of known hosts.
+</span><span class='line'>root@miwifi.com's password:
+</span><span class='line'>
+</span><span class='line'>BusyBox v1.19.4 (2021-09-30 03:16:53 UTC) built-in shell (ash)
+</span><span class='line'>Enter 'help' for a list of built-in commands.
+</span><span class='line'>
+</span><span class='line'> -----------------------------------------------------
+</span><span class='line'>       Welcome to XiaoQiang!
+</span><span class='line'> -----------------------------------------------------
+</span><span class='line'>  $$$$$$\  $$$$$$$\  $$$$$$$$\      $$\      $$\        $$$$$$\  $$\   $$\
+</span><span class='line'> $$  __$$\ $$  __$$\ $$  _____|     $$ |     $$ |      $$  __$$\ $$ | $$  |
+</span><span class='line'> $$ /  $$ |$$ |  $$ |$$ |           $$ |     $$ |      $$ /  $$ |$$ |$$  /
+</span><span class='line'> $$$$$$$$ |$$$$$$$  |$$$$$\         $$ |     $$ |      $$ |  $$ |$$$$$  /
+</span><span class='line'> $$  __$$ |$$  __$$&lt; $$  __|        $$ |     $$ |      $$ |  $$ |$$  $$&lt;
+</span><span class='line'> $$ |  $$ |$$ |  $$ |$$ |           $$ |     $$ |      $$ |  $$ |$$ |\$$\
+</span><span class='line'> $$ |  $$ |$$ |  $$ |$$$$$$$$\       $$$$$$$$$  |       $$$$$$  |$$ | \$$\
+</span><span class='line'> \__|  \__|\__|  \__|\________|      \_________/        \______/ \__|  \__|
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>root@XiaoQiang:~# 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>安装breed</h3>
+
+<p>用WinSCP登入路由，使用 <code>ftp协议</code> ，ip地址 <code>miwifi.com</code> ，账号 <code>root</code>，把 <code>breed-mt7621-pbr-m1.bin</code> 文件上传到tmp文件夹内，之后执行如下命令：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>root@XiaoQiang:~# cd /tmp
+</span><span class='line'>root@XiaoQiang:/tmp# ls breed-mt7621-pbr-*
+</span><span class='line'>breed-mt7621-pbr-m1.bin
+</span><span class='line'>
+</span><span class='line'>root@XiaoQiang:/tmp# mtd -r write breed-mt7621-pbr-m1.bin Bootloader
+</span><span class='line'>Unlocking Bootloader ...
+</span><span class='line'>
+</span><span class='line'>Writing from breed-mt7621-pbr-m1.bin to Bootloader ...
+</span><span class='line'>Rebooting ...
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>接上网线，再等一阵子（1,2分钟），然后访问 <code>http://192.168.1.1/</code> 。</p>
+
+<h3>刷padavan</h3>
+
+<p>下载r4a版本的padavan: <code>https://opt.cn2qq.com/padavan/</code></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>MI-R4A_3.4.3.9-099.trx</span></code></pre></td></tr></table></div></figure>
+
+
+<p>访问 <code>192.168.1.1</code> ，备份eeprom和固件（重要），然后勾选固件，然后将小米4A的trx固件文件进行上传，然后完成固件更新流程。</p>
+
+<p>更新过程请不要切断路由电源！更新完成后, 页面并不会自动刷新, 自己尝试能否进入路由配置页面。。</p>
+
+<p>刷完后，这里需要多等待一点时间，耐心一点。</p>
+
+<h3>访问</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>http://192.168.123.1/
+</span><span class='line'>admin/admin
+</span><span class='line'>
+</span><span class='line'>在 [系统管理 - 服务] 页签开启ssh公钥登录。
+</span><span class='line'>
+</span><span class='line'>[MI-R4A /home/root]# uname -a
+</span><span class='line'>Linux MI-R4A 3.4.113 #3 SMP Sun Apr 3 14:26:03 CST 2022 mips GNU/Linux
+</span><span class='line'>[MI-R4A /home/root]# uname -r
+</span><span class='line'>3.4.113
+</span><span class='line'>[MI-R4A /home/root]# uname -m
+</span><span class='line'>mips
+</span><span class='line'>
+</span><span class='line'>#CPU/Memory information
+</span><span class='line'>$ cat /proc/cpuinfo
+</span><span class='line'>
+</span><span class='line'>#Version
+</span><span class='line'>$ cat /proc/version
+</span><span class='line'>
+</span><span class='line'>#SCSI/Sata devices
+</span><span class='line'>$ cat /proc/scsi/scsi
+</span><span class='line'>
+</span><span class='line'>#Partitions
+</span><span class='line'>$ cat /proc/partitions
+</span><span class='line'>
+</span><span class='line'>#安装 okpg , 进入 Shell 后，在根目录安装，输入如下：
+</span><span class='line'>[MI-R4A /home/root]# opkg.sh
+</span><span class='line'>
+</span><span class='line'># 升级：
+</span><span class='line'>[MI-R4A /home/root]# opkg update
+</span><span class='line'>Downloading http://bin.entware.net/mipselsf-k3.4/Packages.gz
+</span><span class='line'>Updated list of available packages in /opt/var/opkg-lists/entware
+</span><span class='line'>
+</span><span class='line'>[MI-R4A /home/root]# opkg install jq
+</span><span class='line'>Installing jq (1.6-2) to root...
+</span><span class='line'>Downloading http://bin.entware.net/mipselsf-k3.4/jq_1.6-2_mipsel-3.4.ipk
+</span><span class='line'>Configuring jq.
+</span><span class='line'>
+</span><span class='line'># opkg list
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -431,6 +1727,16 @@
 </span><span class='line'>[ec2-user@k8s ~]$ curl http://demo.localdev.me:8080/
 </span><span class='line'>&lt;html&gt;&lt;body&gt;&lt;h1&gt;It works!&lt;/h1&gt;&lt;/body&gt;&lt;/html&gt;
 </span></code></pre></td></tr></table></div></figure>
+
+
+<p>clean</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>kubectl delete deployment demo 
+</span><span class='line'>kubectl delete service demo 
+</span><span class='line'>kubectl delete ingress demo</span></code></pre></td></tr></table></div></figure>
 
 
 <h2>集成（发布）</h2>
@@ -964,6 +2270,29 @@
 </span><span class='line'>(No info could be read for "-p": geteuid()=1002 but you should be root.)
 </span><span class='line'>tcp        0      0 0.0.0.0:31443           0.0.0.0:*               LISTEN      -                   
 </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>其他参考</h2>
+
+<ul>
+<li><a href="https://blog.51cto.com/tansong/4850092">多种方式访问AWS EKS的 Kubernetes Dashboard 下篇</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 创建证书
+</span><span class='line'>openssl genrsa 2048 &gt; k8s-dashboard-private.key
+</span><span class='line'>openssl req -new -x509 -nodes -sha1 -days 3650 -extensions v3_ca -key k8s-dashboard-private.key &gt; k8s-dashboard.crt
+</span><span class='line'>
+</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li><a href="https://segmentfault.com/a/1190000019908991">k8s ingress原理及ingress-nginx部署测试</a></li>
+</ul>
 
 
 <p>&ndash;END</p>
@@ -2201,9 +3530,7 @@
 <span class='line-number'>79</span>
 <span class='line-number'>80</span>
 <span class='line-number'>81</span>
-<span class='line-number'>82</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>[ec2-user@k8s ~]$ sudo su - 
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ sudo su - 
 </span><span class='line'>
 </span><span class='line'>[root@k8s ~]# kubeadm init 
 </span><span class='line'>[init] Using Kubernetes version: v1.23.5
@@ -3621,6 +4948,13 @@
 </span></code></pre></td></tr></table></div></figure>
 
 
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/">https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/</a></li>
+</ul>
+
+
 <p>&ndash;END</p>
 </div>
   
@@ -4016,791 +5350,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2022/01/13/openeuler20-dot-03lts-sp3-install-docker/">欧拉20.03LTS_SP3安装docker</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2022-01-13T11:46:25+08:00" pubdate data-updated="true">Thu 2022-01-13 11:46</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>随着时间车轮往前滚滚，Centos-7正逐渐的走下神坛，国内开源操作系统蓬勃发展，跟上时代的步伐，先把docker在欧拉上安装起来。</p>
-
-<p>使用欧拉自带库非常容易安装，但是相对版本比较旧：18.09。还有就是，使用docker官网最新版，可以使用centos-8版本的库来进行安装。</p>
-
-<p>这里两种方式都试了一下，关键步骤罗列如下：</p>
-
-<h2>欧拉自带</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# cat /etc/yum.repos.d/openEuler.repo   
-</span><span class='line'>[root@localhost ~]# yum search docker 
-</span><span class='line'>[root@localhost ~]# yum list | grep docker 
-</span><span class='line'>docker-engine.x86_64                                    18.09.0-206.oe1                           OS        
-</span><span class='line'>
-</span><span class='line'># 默认已经disabled
-</span><span class='line'>[root@localhost ~]# getenforce 
-</span><span class='line'>Disabled
-</span><span class='line'>[root@localhost ~]# cat /etc/sysconfig/selinux
-</span><span class='line'>
-</span><span class='line'># 安装
-</span><span class='line'>[root@localhost ~]# yum install docker
-</span><span class='line'>Last metadata expiration check: 1:22:48 ago on Thu 13 Jan 2022 10:19:38 AM CST.
-</span><span class='line'>Dependencies resolved.
-</span><span class='line'>================================================================================================================================================================
-</span><span class='line'> Package                                   Architecture                       Version                                      Repository                      Size
-</span><span class='line'>================================================================================================================================================================
-</span><span class='line'>Installing:
-</span><span class='line'> docker-engine                             x86_64                             18.09.0-206.oe1                              OS                              45 M
-</span><span class='line'>Installing dependencies:
-</span><span class='line'> libcgroup                                 x86_64                             0.42.2-1.oe1                                 OS                              96 k
-</span><span class='line'>
-</span><span class='line'>Transaction Summary
-</span><span class='line'>================================================================================================================================================================
-</span><span class='line'>Install  2 Packages
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# docker version 
-</span><span class='line'>Client:
-</span><span class='line'> Version:           18.09.0
-</span><span class='line'> EulerVersion:      18.09.0.206
-</span><span class='line'> API version:       1.39
-</span><span class='line'> Go version:        go1.15.7
-</span><span class='line'> Git commit:        e4c0fb8
-</span><span class='line'> Built:             Fri Dec 31 21:47:09 2021
-</span><span class='line'> OS/Arch:           linux/amd64
-</span><span class='line'> Experimental:      false
-</span><span class='line'>
-</span><span class='line'>Server:
-</span><span class='line'> Engine:
-</span><span class='line'>  Version:          18.09.0
-</span><span class='line'>  EulerVersion:     18.09.0.206
-</span><span class='line'>  API version:      1.39 (minimum version 1.12)
-</span><span class='line'>  Go version:       go1.15.7
-</span><span class='line'>  Git commit:       e4c0fb8
-</span><span class='line'>  Built:            Fri Dec 31 21:46:37 2021
-</span><span class='line'>  OS/Arch:          linux/amd64
-</span><span class='line'>  Experimental:     false
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# docker ps -a 
-</span><span class='line'>CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>安装最新版</h2>
-
-<ul>
-<li><a href="https://docs.docker.com/engine/install/centos/">https://docs.docker.com/engine/install/centos/</a></li>
-<li><a href="https://blog.csdn.net/Jairoguo/article/details/118403323">https://blog.csdn.net/Jairoguo/article/details/118403323</a></li>
-</ul>
-
-
-<h3>安装包repo的国内源</h3>
-
-<ul>
-<li>aliyun源：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>dnf config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>huawei源：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>sudo yum-config-manager \
-</span><span class='line'>    --add-repo \
-</span><span class='line'>    https://repo.huaweicloud.com/docker-ce/linux/centos/docker-ce.repo
-</span><span class='line'>sudo sed -i 's+download.docker.com+repo.huaweicloud.com/docker-ce+' /etc/yum.repos.d/docker-ce.repo</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>问题1：$releasever</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# yum search docker 
-</span><span class='line'>Docker CE Stable - x86_64                                                                                                       240  B/s | 394  B     00:01    
-</span><span class='line'>Errors during downloading metadata for repository 'docker-ce-stable':
-</span><span class='line'>  - Status code: 404 for https://download.docker.com/linux/centos/20.03LTS_SP3/x86_64/stable/repodata/repomd.xml (IP: 13.224.160.26)
-</span><span class='line'>Error: Failed to download metadata for repo 'docker-ce-stable': Cannot download repomd.xml: Cannot download repodata/repomd.xml: All mirrors were tried
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>解决：</p>
-
-<p>跟centos的对不上，直接用centos-8的版本，把 <code>$releasever</code> 改成 <code>8</code> :</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# cat /etc/os-release 
-</span><span class='line'>NAME="openEuler"
-</span><span class='line'>VERSION="20.03 (LTS-SP3)"
-</span><span class='line'>ID="openEuler"
-</span><span class='line'>VERSION_ID="20.03"
-</span><span class='line'>PRETTY_NAME="openEuler 20.03 (LTS-SP3)"
-</span><span class='line'>ANSI_COLOR="0;31"
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# arch
-</span><span class='line'>x86_64
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'># 修改release-version版本为8：
-</span><span class='line'>vi /etc/yum.repos.d/docker-ce.repo 
-</span><span class='line'>:%s/$releasever/8/g
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>问题2：Base依赖</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>  - cannot install the best candidate for the job
-</span><span class='line'>  - nothing provides fuse-overlayfs &gt;= 0.7 needed by docker-ce-rootless-extras-20.10.0-3.el8.x86_64
-</span><span class='line'>  - nothing provides slirp4netns &gt;= 0.4 needed by docker-ce-rootless-extras-20.10.0-3.el8.x86_64</span></code></pre></td></tr></table></div></figure>
-
-
-<p>解决：</p>
-
-<p>添加centos-base库，同样替换成centos-8的版本。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>wget -O /etc/yum.repos.d/CentOS-Base.repo https://repo.huaweicloud.com/repository/conf/CentOS-8-reg.repo
-</span><span class='line'>[root@localhost ~]# vi /etc/yum.repos.d/CentOS-Base.repo 
-</span><span class='line'>:%s/$releasever/8/g
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>正式安装</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# yum install docker-ce docker-ce-cli containerd.io
-</span><span class='line'>CentOS-8 - Base - repo.huaweicloud.com                                                                                          583 kB/s | 4.6 MB     00:08    
-</span><span class='line'>CentOS-8 - AppStream - repo.huaweicloud.com                                                                                     565 kB/s | 8.4 MB     00:15    
-</span><span class='line'>CentOS-8 - PowerTools - repo.huaweicloud.com                                                                                    626 kB/s | 2.3 MB     00:03    
-</span><span class='line'>CentOS-8 - Extras - repo.huaweicloud.com                                                                                         43 kB/s |  10 kB     00:00    
-</span><span class='line'>Dependencies resolved.
-</span><span class='line'>================================================================================================================================================================
-</span><span class='line'> Package                                  Architecture          Version                                                   Repository                       Size
-</span><span class='line'>================================================================================================================================================================
-</span><span class='line'>Installing:
-</span><span class='line'> containerd.io                            x86_64                1.4.12-3.1.el8                                            docker-ce-stable                 28 M
-</span><span class='line'> docker-ce                                x86_64                3:20.10.12-3.el8                                          docker-ce-stable                 22 M
-</span><span class='line'> docker-ce-cli                            x86_64                1:20.10.12-3.el8                                          docker-ce-stable                 30 M
-</span><span class='line'>Upgrading:
-</span><span class='line'> selinux-policy                           noarch                3.14.3-80.el8_5.2                                         BaseOS                          636 k
-</span><span class='line'> selinux-policy-targeted                  noarch                3.14.3-80.el8_5.2                                         BaseOS                           15 M
-</span><span class='line'>Installing dependencies:
-</span><span class='line'> container-selinux                        noarch                2:2.167.0-1.module_el8.5.0+911+f19012f9                   AppStream                        54 k
-</span><span class='line'> docker-ce-rootless-extras                x86_64                20.10.12-3.el8                                            docker-ce-stable                4.6 M
-</span><span class='line'> docker-scan-plugin                       x86_64                0.12.0-3.el8                                              docker-ce-stable                3.7 M
-</span><span class='line'> fuse-overlayfs                           x86_64                1.7.1-1.module_el8.5.0+890+6b136101                       AppStream                        73 k
-</span><span class='line'> fuse3                                    x86_64                3.9.2-8.oe1                                               OS                              112 k
-</span><span class='line'> libcgroup                                x86_64                0.42.2-1.oe1                                              OS                               96 k
-</span><span class='line'> libslirp                                 x86_64                4.4.0-1.module_el8.5.0+890+6b136101                       AppStream                        70 k
-</span><span class='line'> slirp4netns                              x86_64                1.1.8-1.module_el8.5.0+890+6b136101                       AppStream                        51 k
-</span><span class='line'>Installing weak dependencies:
-</span><span class='line'> fuse3-help                               x86_64                3.9.2-8.oe1                                               OS                               14 k
-</span><span class='line'>Enabling module streams:
-</span><span class='line'> container-tools                                                rhel8                                                                                          
-</span><span class='line'>
-</span><span class='line'>Transaction Summary
-</span><span class='line'>================================================================================================================================================================
-</span><span class='line'>Install  12 Packages
-</span><span class='line'>Upgrade   2 Packages
-</span><span class='line'>
-</span><span class='line'>Total download size: 105 M
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>使用</h3>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# docker version
-</span><span class='line'>Client: Docker Engine - Community
-</span><span class='line'> Version:           20.10.12
-</span><span class='line'> API version:       1.41
-</span><span class='line'> Go version:        go1.16.12
-</span><span class='line'> Git commit:        e91ed57
-</span><span class='line'> Built:             Mon Dec 13 11:45:22 2021
-</span><span class='line'> OS/Arch:           linux/amd64
-</span><span class='line'> Context:           default
-</span><span class='line'> Experimental:      true
-</span><span class='line'>
-</span><span class='line'>Server: Docker Engine - Community
-</span><span class='line'> Engine:
-</span><span class='line'>  Version:          20.10.12
-</span><span class='line'>  API version:      1.41 (minimum version 1.12)
-</span><span class='line'>  Go version:       go1.16.12
-</span><span class='line'>  Git commit:       459d0df
-</span><span class='line'>  Built:            Mon Dec 13 11:43:44 2021
-</span><span class='line'>  OS/Arch:          linux/amd64
-</span><span class='line'>  Experimental:     false
-</span><span class='line'> containerd:
-</span><span class='line'>  Version:          1.4.12
-</span><span class='line'>  GitCommit:        7b11cfaabd73bb80907dd23182b9347b4245eb5d
-</span><span class='line'> runc:
-</span><span class='line'>  Version:          1.0.2
-</span><span class='line'>  GitCommit:        v1.0.2-0-g52b36a2
-</span><span class='line'> docker-init:
-</span><span class='line'>  Version:          0.19.0
-</span><span class='line'>  GitCommit:        de40ad0
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# docker ps -a 
-</span><span class='line'>CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# docker pull centos:7
-</span><span class='line'>7: Pulling from library/centos
-</span><span class='line'>2d473b07cdd5: Pull complete 
-</span><span class='line'>Digest: sha256:9d4bcbbb213dfd745b58be38b13b996ebb5ac315fe75711bd618426a630e0987
-</span><span class='line'>Status: Downloaded newer image for centos:7
-</span><span class='line'>docker.io/library/centos:7
-</span><span class='line'>[root@localhost ~]# 
-</span><span class='line'>[root@localhost ~]# docker images 
-</span><span class='line'>REPOSITORY   TAG       IMAGE ID       CREATED        SIZE
-</span><span class='line'>centos       7         eeb6ee3f44bd   3 months ago   204MB
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# docker run --rm centos:7 hostname 
-</span><span class='line'>3c7a047ec95e
-</span><span class='line'>[root@localhost ~]# docker run --rm centos:7 date 
-</span><span class='line'>Thu Jan 13 03:33:12 UTC 2022
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>docker镜像加速</h2>
-
-<ul>
-<li><a href="https://www.runoob.com/docker/docker-mirror-acceleration.html">https://www.runoob.com/docker/docker-mirror-acceleration.html</a></li>
-<li><a href="https://mirrors.ustc.edu.cn/help/dockerhub.html">https://mirrors.ustc.edu.cn/help/dockerhub.html</a></li>
-</ul>
-
-
-<p>添加镜像配置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># https://docker.mirrors.ustc.edu.cn/
-</span><span class='line'># https://hub-mirror.c.163.com
-</span><span class='line'># https://reg-mirror.qiniu.com
-</span><span class='line'>[root@localhost ~]# cat /etc/docker/daemon.json
-</span><span class='line'>{
-</span><span class='line'>"registry-mirrors":["https://reg-mirror.qiniu.com/"]
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>[root@localhost ~]# service docker restart 
-</span><span class='line'>Redirecting to /bin/systemctl restart docker.service
-</span><span class='line'>[root@localhost ~]# docker info 
-</span><span class='line'>Registry Mirrors:
-</span><span class='line'> https://reg-mirror.qiniu.com/
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>运行一个hello-world看看速度：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@localhost ~]# docker run hello-world 
-</span><span class='line'>Unable to find image 'hello-world:latest' locally
-</span><span class='line'>latest: Pulling from library/hello-world
-</span><span class='line'>2db29710123e: Pull complete 
-</span><span class='line'>Digest: sha256:975f4b14f326b05db86e16de00144f9c12257553bba9484fed41f9b6f2257800
-</span><span class='line'>Status: Downloaded newer image for hello-world:latest
-</span><span class='line'>
-</span><span class='line'>Hello from Docker!
-</span><span class='line'>This message shows that your installation appears to be working correctly.
-</span><span class='line'>
-</span><span class='line'>To generate this message, Docker took the following steps:
-</span><span class='line'> 1. The Docker client contacted the Docker daemon.
-</span><span class='line'> 2. The Docker daemon pulled the "hello-world" image from the Docker Hub.
-</span><span class='line'>    (amd64)
-</span><span class='line'> 3. The Docker daemon created a new container from that image which runs the
-</span><span class='line'>    executable that produces the output you are currently reading.
-</span><span class='line'> 4. The Docker daemon streamed that output to the Docker client, which sent it
-</span><span class='line'>    to your terminal.
-</span><span class='line'>
-</span><span class='line'>To try something more ambitious, you can run an Ubuntu container with:
-</span><span class='line'> $ docker run -it ubuntu bash
-</span><span class='line'>
-</span><span class='line'>Share images, automate workflows, and more with a free Docker ID:
-</span><span class='line'> https://hub.docker.com/
-</span><span class='line'>
-</span><span class='line'>For more examples and ideas, visit:
-</span><span class='line'> https://docs.docker.com/get-started/
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2021/12/08/octopress-generate-toc/">octopress生成TOC</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2021-12-08T18:23:23+08:00" pubdate data-updated="true">Wed 2021-12-08 18:23</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>尝试了jekyll直接生成toc的方式都失败了，最终通过jquery运行时生成的方式实现目录导航。</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://brizzled.clapper.org/blog/2012/02/04/generating-a-table-of-contents-in-octopress/">Generating a Table of Contents in Octopress</a></li>
-</ul>
-
-
-<h2>步骤实现</h2>
-
-<h3>添加jquery.toc.min.js</h3>
-
-<p>1、下载 <a href="https://ndabas.github.io/toc/">https://ndabas.github.io/toc/</a> 当前是 0.4.0 版本。解压把 jquery.toc.min.js 放到 source/javascripts/libs/ 目录下。</p>
-
-<p>2、在 source/_includes/head.html 文件的 jquery.min.js 下一行引入 jquery.toc.min.js ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>  &lt;script&gt;!window.jQuery && document.write(unescape('%3Cscript src="{{ root_url }}/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))&lt;/script&gt;
-</span><span class='line'>  &lt;script src="{{ root_url }}/javascripts/libs/jquery.toc.min.js" type="text/javascript"&gt;&lt;/script&gt;
-</span><span class='line'></span></code></pre></td></tr></table></div></figure>
-
-
-<h3>使用toc创建目录导航</h3>
-
-<p>3、在 source/javascripts 目录下创建 generate-toc.js ，内容如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>function generateTOC(insertBefore, heading) {
-</span><span class='line'>  var container = jQuery("&lt;div id='tocBlock'&gt;&lt;/div&gt;");
-</span><span class='line'>  var div = jQuery("&lt;ul id='toc'&gt;&lt;/ul&gt;");
-</span><span class='line'>  
-</span><span class='line'>  var content = $(insertBefore).first();
-</span><span class='line'>
-</span><span class='line'>  if (heading != undefined && heading != null) {
-</span><span class='line'>    container.append('&lt;span class="tocHeading"&gt;' + heading + '&lt;/span&gt;');
-</span><span class='line'>  }
-</span><span class='line'>
-</span><span class='line'>// div.tableOfContents(content);
-</span><span class='line'>  div.toc({content: content, headings: "h2,h3,h4"});
-</span><span class='line'>  container.append(div);
-</span><span class='line'>  container.insertBefore(insertBefore);
-</span><span class='line'>}
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>并在 source/_includes/custom/head.html 引入该文件：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>&lt;script src="{{ root_url }}/javascripts/generate-toc.js" type="text/javascript"&gt;&lt;/script&gt;
-</span><span class='line'></span></code></pre></td></tr></table></div></figure>
-
-
-<p>4、运行时调用toc创建目录，在 source/_includes/custom/after_footer.html 添加如下内容：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>{% if index %}
-</span><span class='line'>  {% comment %}
-</span><span class='line'>  No table of contents on the index page.
-</span><span class='line'>  {% endcomment %}
-</span><span class='line'>
-</span><span class='line'>{% elsif page.toc == true %}
-</span><span class='line'>  &lt;script type="text/javascript"&gt;
-</span><span class='line'>  jQuery(document).ready(function() {
-</span><span class='line'>    // Put a TOC right before the entry content.
-</span><span class='line'>    generateTOC('.entry-content', '目录');
-</span><span class='line'>  });
-</span><span class='line'>  &lt;/script&gt;
-</span><span class='line'>{% endif %}
-</span><span class='line'></span></code></pre></td></tr></table></div></figure>
-
-
-<h3>CSS样式</h3>
-
-<p>5、添加样式，在 sass/custom 目录下添加 _screen.scss 文件，内容如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>$toc-bg: #dfdfdf;
-</span><span class='line'>
-</span><span class='line'>$toc-incr: 5px;
-</span><span class='line'>
-</span><span class='line'>div#tocBlock {
-</span><span class='line'>border-radius: 10px;
-</span><span class='line'>padding: 10px;
-</span><span class='line'>box-shadow: 5px 5px 5px #999;
-</span><span class='line'>
-</span><span class='line'>    float: right;
-</span><span class='line'>    font-size: 10pt;
-</span><span class='line'>    width: 300px;
-</span><span class='line'>    padding-left: 20px;
-</span><span class='line'>    padding-right: 10px;
-</span><span class='line'>    padding-top: 10px;
-</span><span class='line'>    padding-bottom: 0px;
-</span><span class='line'>
-</span><span class='line'>    background: $toc-bg;
-</span><span class='line'>    border: solid 1px #999999;
-</span><span class='line'>    margin: 0 0 10px 15px;
-</span><span class='line'>
-</span><span class='line'>    .tocHeading {
-</span><span class='line'>        font-weight: bold;
-</span><span class='line'>        font-size: 125%;
-</span><span class='line'>    }
-</span><span class='line'>
-</span><span class='line'>    #toc {
-</span><span class='line'>        background: $toc-bg;
-</span><span class='line'>        ul {
-</span><span class='line'>            list-style: disc;
-</span><span class='line'>            li {
-</span><span class='line'>                margin-left: $toc-incr !important;
-</span><span class='line'>                padding: 0 !important;
-</span><span class='line'>            }
-</span><span class='line'>        }
-</span><span class='line'>    }
-</span><span class='line'>}
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>并把该文件添加到 sass/screen.scss ：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>@import "custom/screen";
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>运行调试</h3>
-
-<p>6、删除 source/stylesheets/screen.css</p>
-
-<p>7、预览看效果 <code>rake preview</code></p>
-
-<h2>jekyll生成 查看</h2>
-
-<blockquote><p>{:toc} ，jekyll-toc ，jekyll html 都没试成功，难道是jekyll-2太老了？</p></blockquote>
-
-<ul>
-<li><a href="https://plutotree.me/jekyll/2019/01/30/jekyll-toc-solution.html">https://plutotree.me/jekyll/2019/01/30/jekyll-toc-solution.html</a></li>
-<li><a href="http://www.zhengjiachao.com/topics/github.io/add-outline-on-jekyll-post.html">http://www.zhengjiachao.com/topics/github.io/add-outline-on-jekyll-post.html</a></li>
-<li><a href="https://github.com/allejo/jekyll-toc#usage">https://github.com/allejo/jekyll-toc#usage</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/2">&larr; Older</a>
@@ -4935,6 +5484,14 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2022/04/14/k8s-nfs/">k8s共享存储使用NFS</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2022/04/11/xiaomi-r4a-install-padavan/">Xiaomi R4a Install Padavan</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2022/03/26/k8s-ingress/">K8s Ingress</a>
       </li>
     
@@ -4956,14 +5513,6 @@
     
       <li class="post">
         <a href="/blog/2021/12/08/recommand-blogs/">认真的博客</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2021/09/15/k2-again/">斐讯K2刷机padavan</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine</a>
       </li>
     
   </ul>
@@ -5072,7 +5621,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (12) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (13) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -5080,7 +5629,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/kubeadm/'>kubeadm</a> (2) 
+			<a class='category' href='/blog/categories/kubeadm/'>kubeadm</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -5092,11 +5641,19 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/nfs/'>nfs</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/r4a/'>r4a</a> (1) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -5132,7 +5689,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (69) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (70) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -5153,7 +5710,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (223)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (225)</li>
 	</ul>
 	
 </section>
