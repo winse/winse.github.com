@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Nfs | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/nfs/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2022-04-14T02:59:06+08:00</updated>
+  <updated>2022-04-16T17:20:44+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -97,6 +97,115 @@ exporting 192.168.191.0/24:/backup
 [ec2-user@k8s ~]$ showmount -e 192.168.191.131
 Export list for 192.168.191.131:
 /backup 192.168.191.0/24
+</code></pre>
+
+<p>也可以通过docker来启动nfs server：</p>
+
+<ul>
+<li><a href="https://blog.ruanbekker.com/blog/2020/09/20/setup-a-nfs-server-with-docker/">https://blog.ruanbekker.com/blog/2020/09/20/setup-a-nfs-server-with-docker/</a></li>
+<li><a href="https://westzq1.github.io/k8s/2019/06/28/nfs-server-on-K8S.html">https://westzq1.github.io/k8s/2019/06/28/nfs-server-on-K8S.html</a></li>
+</ul>
+
+
+<pre><code>[ec2-user@k8s ~]$ sudo mkdir -p /data/kubernetes-volumes
+[ec2-user@k8s ~]$ docker run --privileged -itd --name nfs -p 2049:2049 -e SHARED_DIRECTORY=/data -v /data/kubernetes-volumes:/data itsthenetwork/nfs-server-alpine:12 
+f84b70dcca6bd5abb275fbee50fd161d8befdd709ce6523b3a514f04b7af8677
+
+[ec2-user@k8s ~]$ docker logs f84b70dcca6bd5abb2 
+Writing SHARED_DIRECTORY to /etc/exports file
+The PERMITTED environment variable is unset or null, defaulting to '*'.
+This means any client can mount.
+The READ_ONLY environment variable is unset or null, defaulting to 'rw'.
+Clients have read/write access.
+The SYNC environment variable is unset or null, defaulting to 'async' mode.
+Writes will not be immediately written to disk.
+Displaying /etc/exports contents:
+/data *(rw,fsid=0,async,no_subtree_check,no_auth_nlm,insecure,no_root_squash)
+
+Starting rpcbind...
+Displaying rpcbind status...
+   program version netid     address                service    owner
+    100000    4    tcp6      ::.0.111               -          superuser
+    100000    3    tcp6      ::.0.111               -          superuser
+    100000    4    udp6      ::.0.111               -          superuser
+    100000    3    udp6      ::.0.111               -          superuser
+    100000    4    tcp       0.0.0.0.0.111          -          superuser
+    100000    3    tcp       0.0.0.0.0.111          -          superuser
+    100000    2    tcp       0.0.0.0.0.111          -          superuser
+    100000    4    udp       0.0.0.0.0.111          -          superuser
+    100000    3    udp       0.0.0.0.0.111          -          superuser
+    100000    2    udp       0.0.0.0.0.111          -          superuser
+    100000    4    local     /var/run/rpcbind.sock  -          superuser
+    100000    3    local     /var/run/rpcbind.sock  -          superuser
+Starting NFS in the background...
+rpc.nfsd: knfsd is currently down
+rpc.nfsd: Writing version string to kernel: -2 -3 +4 +4.1 +4.2
+rpc.nfsd: Created AF_INET TCP socket.
+rpc.nfsd: Created AF_INET6 TCP socket.
+Exporting File System...
+exporting *:/data
+/data           &lt;world&gt;
+Starting Mountd in the background...These
+Startup successful.
+
+[ec2-user@k8s ~]$ sudo mount -v -o vers=4,loud 127.0.0.1:/ nfsmnt
+mount.nfs: timeout set for Thu Apr 14 08:26:48 2022
+mount.nfs: trying text-based options 'vers=4.1,addr=127.0.0.1,clientaddr=127.0.0.1'
+
+[ec2-user@k8s ~]$ df -h | grep nfsmnt
+127.0.0.1:/      25G  9.8G   16G  39% /home/ec2-user/nfsmnt
+
+[ec2-user@k8s ~]$ touch nfsmnt/$(hostname).txt
+[ec2-user@k8s ~]$ ls -l nfsmnt/
+total 0
+-rw-rw-r-- 1 ec2-user ec2-user 0 Apr 14 08:25 k8s.txt
+[ec2-user@k8s ~]$ ls -l /data/kubernetes-volumes/
+total 0
+-rw-rw-r-- 1 ec2-user ec2-user 0 Apr 14 08:25 k8s.txt
+[ec2-user@k8s ~]$ 
+
+# vi /etc/fstab
+# 192.168.0.4:/   /mnt   nfs4    _netdev,auto  0  0
+
+### pod
+# kubectl create -f nfs-server.yml
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: nfs-server
+spec:
+  replicas: 1           # &lt;- no more replicas
+  template:
+    metadata:
+      labels:
+        app: nfs-server
+    spec:
+      nodeSelector:     # &lt;- use selector to fix nfs-server on k8s2.zhangqiaoc.com
+        kubernetes.io/hostname: k8s2.zhangqiaoc.com
+      containers:
+      - name: nfs-server
+        image: itsthenetwork/nfs-server-alpine:latest
+        volumeMounts:
+        - name: nfs-storage
+          mountPath: /nfsshare
+        env:
+        - name: SHARED_DIRECTORY
+          value: "/nfsshare"
+        ports:
+        - name: nfs  
+          containerPort: 2049   # &lt;- export port
+        securityContext:
+          privileged: true      # &lt;- privileged mode is mandentory.
+      volumes:
+      - name: nfs-storage  
+        hostPath:               # &lt;- the folder on the host machine.
+          path: /root/fileshare
+# kubectl expose deployment nfs-server --type=ClusterIP
+# kubectl get svc
+
+# yum install -y nfs-utils
+# mkdir /root/nfsmnt
+# mount -v 10.101.117.226:/ /root/nfsmnt
 </code></pre>
 
 <p>client</p>
@@ -234,6 +343,7 @@ spec:
   nfs:
     path: /backup
     server: 192.168.191.131
+
 [ec2-user@k8s ~]$ kubectl apply -f pv-nfs.yaml 
 persistentvolume/pv-nfs created
 [ec2-user@k8s ~]$ kubectl get pv 
@@ -532,7 +642,20 @@ storageclass.storage.k8s.io/nfs-client created
 
 <p>测试：</p>
 
-<pre><code>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl create -f deploy/test-claim.yaml -f deploy/test-pod.yaml
+<pre><code># https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/blob/master/deploy/test-claim.yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: test-claim
+spec:
+  storageClassName: nfs-client
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Mi
+
+[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl create -f deploy/test-claim.yaml -f deploy/test-pod.yaml
 persistentvolumeclaim/test-claim created
 pod/test-pod created
 
@@ -554,7 +677,7 @@ total 0
 </ul>
 
 
-<p>直接在k8s装一个NFS server。感觉没有直接在系统安装NFS管理方便，先搁置了。</p>
+<p>就是直接在k8s集群中装一个NFS server。感觉没有直接在系统安装NFS管理方便，先搁置了。</p>
 
 <p>&ndash;END</p>
 ]]></content>

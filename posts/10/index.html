@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="由于Java代码生成的是中间过程字节码，javap以及一些反编译的工具基本能看代码的大概，对于提供给客户的代码需要做一些处理：混淆或者加密。下面分几块把在实际操作过程中参考的内容罗列出来，希望对看到本文并感兴趣的你有所帮助。 自定义ClassLoader 混淆+ClassLoader &hellip;">
+  <meta name="description" content="上一篇安装的文章操作过程中需要用到代理，期间会遇到穿插了各种问题，显的有点乱。在本地虚拟机安装调通后，今天把测试环境也升级了一下。再写一篇思路清晰一点的总结。 安装需要的rpm和docker images可以通过百度网盘下载：http://pan.baidu.com/s/1hrRs5MW 。 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +85,656 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2017/08/13/kubeadm-install-k8s-on-centos7-with-resources/">Kubeadm部署k8s(资源已有)</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-08-13T08:05:33+08:00" pubdate data-updated="true">Sun 2017-08-13 08:05</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>上一篇安装的文章操作过程中需要用到代理，期间会遇到穿插了各种问题，显的有点乱。在本地虚拟机安装调通后，今天把测试环境也升级了一下。再写一篇思路清晰一点的总结。</p>
+
+<p>安装需要的rpm和docker images可以通过百度网盘下载：<a href="http://pan.baidu.com/s/1hrRs5MW">http://pan.baidu.com/s/1hrRs5MW</a> 。</p>
+
+<p>预先需要做的工作，这些都已经配置好了的：  <br/>
+* 时间同步， <br/>
+* 主机名，<br/>
+* /etc/hosts，
+* 防火墙，<br/>
+* selinux，  <br/>
+* 无密钥登录，  <br/>
+* 安装docker-1.12.6</p>
+
+<p>主机集群的情况：
+* 机器：cu[1-5]
+* 主节点： cu3
+* 跳板机： cu2（有外网IP）</p>
+
+<h2>首先做YUM本地仓库，并把docker镜像导入到所有node节点</h2>
+
+<p>首先在一台主机上部署YUM本地仓库</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 ~]# cd /var/www/html/kubernetes/
+</span><span class='line'>[root@cu2 kubernetes]# createrepo .
+</span><span class='line'>[root@cu2 kubernetes]# ll
+</span><span class='line'>total 42500
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  8974214 Aug 10 15:22 1a6f5f73f43077a50d877df505481e5a3d765c979b89fda16b8b9622b9ebd9a4-kubeadm-1.7.2-0.x86_64.rpm
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 17372710 Aug 10 15:22 1e508e26f2b02971a7ff5f034b48a6077d613e0b222e0ec973351117b4ff45ea-kubelet-1.7.2-0.x86_64.rpm
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  9361006 Aug 10 15:22 dc8329515fc3245404fea51839241b58774e577d7736f99f21276e764c309db5-kubectl-1.7.2-0.x86_64.rpm
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  7800562 Aug 10 15:22 e7a4403227dd24036f3b0615663a371c4e07a95be5fee53505e647fd8ae58aa6-kubernetes-cni-0.5.1-0.x86_64.rpm
+</span><span class='line'>drwxr-xr-x 2 root   root       4096 Aug 10 15:58 repodata
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>（所有node）导入新镜像</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>在cu2上操作，导入docker镜像
+</span><span class='line'>
+</span><span class='line'>docker load &lt;/home/hadoop/kubeadm.tar
+</span><span class='line'>ssh cu1 docker load &lt;/home/hadoop/kubeadm.tar 
+</span><span class='line'>ssh cu3 docker load &lt;/home/hadoop/kubeadm.tar
+</span><span class='line'>ssh cu4 docker load &lt;/home/hadoop/kubeadm.tar
+</span><span class='line'>ssh cu5 docker load &lt;/home/hadoop/kubeadm.tar
+</span><span class='line'>
+</span><span class='line'>Loaded image: gcr.io/google_containers/etcd-amd64:3.0.17
+</span><span class='line'>Loaded image: gcr.io/google_containers/kubernetes-dashboard-amd64:v1.6.3
+</span><span class='line'>Loaded image: gcr.io/google_containers/kube-controller-manager-amd64:v1.7.2
+</span><span class='line'>Loaded image: gcr.io/google_containers/k8s-dns-sidecar-amd64:1.14.4
+</span><span class='line'>Loaded image: gcr.io/google_containers/heapster-amd64:v1.3.0
+</span><span class='line'>Loaded image: gcr.io/google_containers/kube-scheduler-amd64:v1.7.2
+</span><span class='line'>Loaded image: gcr.io/google_containers/heapster-grafana-amd64:v4.4.1
+</span><span class='line'>Loaded image: gcr.io/google_containers/k8s-dns-kube-dns-amd64:1.14.4
+</span><span class='line'>Loaded image: gcr.io/google_containers/k8s-dns-dnsmasq-nanny-amd64:1.14.4
+</span><span class='line'>Loaded image: centos:centos6
+</span><span class='line'>Loaded image: gcr.io/google_containers/heapster-influxdb-amd64:v1.1.1
+</span><span class='line'>Loaded image: gcr.io/google_containers/pause-amd64:3.0
+</span><span class='line'>Loaded image: nginx:latest
+</span><span class='line'>Loaded image: gcr.io/google_containers/kube-apiserver-amd64:v1.7.2
+</span><span class='line'>Loaded image: gcr.io/google_containers/kube-proxy-amd64:v1.7.2
+</span><span class='line'>Loaded image: quay.io/coreos/flannel:v0.8.0-amd64
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>YUM仓库配置</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>在cu2上操作
+</span><span class='line'>
+</span><span class='line'>cat &gt; /etc/yum.repos.d/dta.repo  &lt;&lt;EOF
+</span><span class='line'>[K8S]
+</span><span class='line'>name=K8S Local
+</span><span class='line'>baseurl=http://cu2:801/kubernetes
+</span><span class='line'>enabled=1
+</span><span class='line'>gpgcheck=0
+</span><span class='line'>EOF
+</span><span class='line'>
+</span><span class='line'>for h in cu{1,3:5} ; do scp /etc/yum.repos.d/dta.repo $h:/etc/yum.repos.d/ ; done
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>安装kubeadm、kubelet</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>pdsh -w cu[1-5] "yum clean all; yum install -y kubelet kubeadm; systemctl enable kubelet "
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>使用kubeadm部署集群</h2>
+
+<h4>master节点</h4>
+
+<p>初始化</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu3 ~]# kubeadm init --skip-preflight-checks --pod-network-cidr=10.244.0.0/16 --kubernetes-version=v1.7.2 </span></code></pre></td></tr></table></div></figure>
+
+
+<p>启动后会卡在了 <strong> Created API client, waiting for the control plane to become ready </strong> ， 不要关闭当前的窗口。新开一个窗口，查看并定位解决错误：</p>
+
+<p>问题1</p>
+
+<p>新打开一个窗口，查看 /var/log/messages 有如下错误：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Aug 12 23:40:10 cu3 kubelet: error: failed to run Kubelet: failed to create kubelet: misconfiguration: kubelet cgroup driver: "systemd" is different from docker cgroup driver: "cgroupfs"</span></code></pre></td></tr></table></div></figure>
+
+
+<p>docker和kubelet的cgroup driver不一样，修改kubelet的配置。同时把docker启动参数 masq 一起改了。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu3 ~]# sed -i 's/KUBELET_CGROUP_ARGS=--cgroup-driver=systemd/KUBELET_CGROUP_ARGS=--cgroup-driver=cgroupfs/' /etc/systemd/system/kubelet.service.d/10-kubeadm.conf 
+</span><span class='line'>[root@cu3 ~]# sed -i 's#/usr/bin/dockerd.*#/usr/bin/dockerd --ip-masq=false#' /usr/lib/systemd/system/docker.service
+</span><span class='line'>
+</span><span class='line'>[root@cu3 ~]# systemctl daemon-reload; systemctl restart docker kubelet 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>多开几个窗口来解决问题，不会影响kubeadm运行的。就是说，由于其他的问题导致kubeadm中间卡住，只要你解决了问题，kubeadm就会继续配置直到成功。</p>
+
+<p>初始化完后，窗口完整日志如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu3 ~]# kubeadm init --skip-preflight-checks --pod-network-cidr=10.244.0.0/16 --kubernetes-version=v1.7.2 
+</span><span class='line'>[kubeadm] WARNING: kubeadm is in beta, please do not use it for production clusters.
+</span><span class='line'>[init] Using Kubernetes version: v1.7.2
+</span><span class='line'>[init] Using Authorization modes: [Node RBAC]
+</span><span class='line'>[preflight] Skipping pre-flight checks
+</span><span class='line'>[kubeadm] WARNING: starting in 1.8, tokens expire after 24 hours by default (if you require a non-expiring token use --token-ttl 0)
+</span><span class='line'>[certificates] Generated CA certificate and key.
+</span><span class='line'>[certificates] Generated API server certificate and key.
+</span><span class='line'>[certificates] API Server serving cert is signed for DNS names [cu3 kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local] and IPs [10.96.0.1 192.168.0.148]
+</span><span class='line'>[certificates] Generated API server kubelet client certificate and key.
+</span><span class='line'>[certificates] Generated service account token signing key and public key.
+</span><span class='line'>[certificates] Generated front-proxy CA certificate and key.
+</span><span class='line'>[certificates] Generated front-proxy client certificate and key.
+</span><span class='line'>[certificates] Valid certificates and keys now exist in "/etc/kubernetes/pki"
+</span><span class='line'>[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/controller-manager.conf"
+</span><span class='line'>[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/scheduler.conf"
+</span><span class='line'>[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/admin.conf"
+</span><span class='line'>[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/kubelet.conf"
+</span><span class='line'>[apiclient] Created API client, waiting for the control plane to become ready
+</span><span class='line'> [apiclient] All control plane components are healthy after 494.001036 seconds
+</span><span class='line'>[token] Using token: ad430d.beff5be4b98dceec
+</span><span class='line'>[apiconfig] Created RBAC rules
+</span><span class='line'>[addons] Applied essential addon: kube-proxy
+</span><span class='line'>[addons] Applied essential addon: kube-dns
+</span><span class='line'>
+</span><span class='line'>Your Kubernetes master has initialized successfully!
+</span><span class='line'>
+</span><span class='line'>To start using your cluster, you need to run (as a regular user):
+</span><span class='line'>
+</span><span class='line'>  mkdir -p $HOME/.kube
+</span><span class='line'>  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+</span><span class='line'>  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+</span><span class='line'>
+</span><span class='line'>You should now deploy a pod network to the cluster.
+</span><span class='line'>Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+</span><span class='line'>  http://kubernetes.io/docs/admin/addons/
+</span><span class='line'>
+</span><span class='line'>You can now join any number of machines by running the following on each node
+</span><span class='line'>as root:
+</span><span class='line'>
+</span><span class='line'>  kubeadm join --token ad430d.beff5be4b98dceec 192.168.0.148:6443
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>然后按照上面的提示，把kubectl要用的配置文件弄好：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  mkdir -p $HOME/.kube
+</span><span class='line'>  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+</span><span class='line'>  sudo chown $(id -u):$(id -g) $HOME/.kube/config</span></code></pre></td></tr></table></div></figure>
+
+
+<p>到这里K8S的基础服务controller，apiserver，scheduler是起来了，但是dns还是有问题：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu3 kubeadm]# kubectl get pods --all-namespaces
+</span><span class='line'>NAMESPACE     NAME                          READY     STATUS    RESTARTS   AGE
+</span><span class='line'>kube-system   etcd-cu3                      1/1       Running   0          6m
+</span><span class='line'>kube-system   kube-apiserver-cu3            1/1       Running   0          5m
+</span><span class='line'>kube-system   kube-controller-manager-cu3   1/1       Running   0          6m
+</span><span class='line'>kube-system   kube-dns-2425271678-wwnkp     0/3       Pending   0          6m
+</span><span class='line'>kube-system   kube-proxy-ptnlx              1/1       Running   0          6m
+</span><span class='line'>kube-system   kube-scheduler-cu3            1/1       Running   0          6m
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>dns的容器是使用bridge网络，需要配置网络才能跑起来。有如下错误日志：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Aug 12 23:54:04 cu3 kubelet: W0812 23:54:04.800316   12886 cni.go:189] Unable to update cni config: No networks found in /etc/cni/net.d
+</span><span class='line'>Aug 12 23:54:04 cu3 kubelet: E0812 23:54:04.800472   12886 kubelet.go:2136] Container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:docker: network plugin is not ready: cni config uninitialized</span></code></pre></td></tr></table></div></figure>
+
+
+<p>下载 <a href="https://github.com/winse/docker-hadoop/tree/master/kube-deploy/kubeadm">https://github.com/winse/docker-hadoop/tree/master/kube-deploy/kubeadm</a> 目录下的 flannel 配置：</p>
+
+<p>flannel配置文件稍微改了一下，在官网的文件基础上 cni-conf.json 增加了： <code>"ipMasq": false,</code></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 配置网络
+</span><span class='line'>[root@cu3 kubeadm]# kubectl apply -f kube-flannel.yml 
+</span><span class='line'>kubectl apply -f kube-flannel-rbac.yml 
+</span><span class='line'>serviceaccount "flannel" created
+</span><span class='line'>configmap "kube-flannel-cfg" created
+</span><span class='line'>daemonset "kube-flannel-ds" created
+</span><span class='line'>[root@cu3 kubeadm]# kubectl apply -f kube-flannel-rbac.yml 
+</span><span class='line'>clusterrole "flannel" created
+</span><span class='line'>clusterrolebinding "flannel" created
+</span><span class='line'>
+</span><span class='line'># 等待一段时间后，dns的pods也启动好了
+</span><span class='line'>[root@cu3 kubeadm]# kubectl get pods --all-namespaces
+</span><span class='line'>NAMESPACE     NAME                          READY     STATUS    RESTARTS   AGE
+</span><span class='line'>kube-system   etcd-cu3                      1/1       Running   0          7m
+</span><span class='line'>kube-system   kube-apiserver-cu3            1/1       Running   0          7m
+</span><span class='line'>kube-system   kube-controller-manager-cu3   1/1       Running   0          7m
+</span><span class='line'>kube-system   kube-dns-2425271678-wwnkp     3/3       Running   0          8m
+</span><span class='line'>kube-system   kube-flannel-ds-dbvkj         2/2       Running   0          38s
+</span><span class='line'>kube-system   kube-proxy-ptnlx              1/1       Running   0          8m
+</span><span class='line'>kube-system   kube-scheduler-cu3            1/1       Running   0          7m</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>Node节点部署</h2>
+
+<p>配置kubelet、docker</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>sed -i 's/KUBELET_CGROUP_ARGS=--cgroup-driver=systemd/KUBELET_CGROUP_ARGS=--cgroup-driver=cgroupfs/' /etc/systemd/system/kubelet.service.d/10-kubeadm.conf 
+</span><span class='line'>sed -i 's#/usr/bin/dockerd.*#/usr/bin/dockerd --ip-masq=false#' /usr/lib/systemd/system/docker.service 
+</span><span class='line'>
+</span><span class='line'>systemctl daemon-reload; systemctl restart docker kubelet </span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：加了 ip-masq=false 后，docker0就不能上外网了。也就是说用docker命令单独起的docker容器不能上外网了！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>ExecStart=/usr/bin/dockerd --ip-masq=false</span></code></pre></td></tr></table></div></figure>
+
+
+<p>加入集群</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>kubeadm join --token ad430d.beff5be4b98dceec 192.168.0.148:6443 --skip-preflight-checks
+</span><span class='line'>
+</span><span class='line'>[kubeadm] WARNING: kubeadm is in beta, please do not use it for production clusters.
+</span><span class='line'>[preflight] Skipping pre-flight checks
+</span><span class='line'>[discovery] Trying to connect to API Server "192.168.0.148:6443"
+</span><span class='line'>[discovery] Created cluster-info discovery client, requesting info from "https://192.168.0.148:6443"
+</span><span class='line'>[discovery] Cluster info signature and contents are valid, will use API Server "https://192.168.0.148:6443"
+</span><span class='line'>[discovery] Successfully established connection with API Server "192.168.0.148:6443"
+</span><span class='line'>[bootstrap] Detected server version: v1.7.2
+</span><span class='line'>[bootstrap] The server supports the Certificates API (certificates.k8s.io/v1beta1)
+</span><span class='line'>[csr] Created API client to obtain unique certificate for this node, generating keys and certificate signing request
+</span><span class='line'>[csr] Received signed certificate from the API server, generating KubeConfig...
+</span><span class='line'>[kubeconfig] Wrote KubeConfig file to disk: "/etc/kubernetes/kubelet.conf"
+</span><span class='line'>
+</span><span class='line'>Node join complete:
+</span><span class='line'>* Certificate signing request sent to master and response
+</span><span class='line'>  received.
+</span><span class='line'>* Kubelet informed of new secure connection details.
+</span><span class='line'>
+</span><span class='line'>Run 'kubectl get nodes' on the master to see this machine join.</span></code></pre></td></tr></table></div></figure>
+
+
+<p>CU2是跳板机，把kubectl的config配置拷贝过来，然后就可以在CU2上面运行命令：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 kube-deploy]# kubectl get nodes
+</span><span class='line'>NAME      STATUS     AGE         VERSION
+</span><span class='line'>cu2       NotReady   &lt;invalid&gt;   v1.7.2
+</span><span class='line'>cu3       Ready      25m         v1.7.2
+</span><span class='line'>
+</span><span class='line'>[root@cu2 kube-deploy]# kubectl proxy 
+</span><span class='line'>Starting to serve on 127.0.0.1:8001</span></code></pre></td></tr></table></div></figure>
+
+
+<p>我SecureCRT Socks代理做在这台机器上，本地浏览器访问 <a href="http://localhost:8001/ui">http://localhost:8001/ui</a>。。。咔咔</p>
+
+<p>5台机器都添加成功后：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu3 ~]# kubectl get nodes 
+</span><span class='line'>NAME      STATUS    AGE       VERSION
+</span><span class='line'>cu1       Ready     32s       v1.7.2
+</span><span class='line'>cu2       Ready     3m        v1.7.2
+</span><span class='line'>cu3       Ready     29m       v1.7.2
+</span><span class='line'>cu4       Ready     26s       v1.7.2
+</span><span class='line'>cu5       Ready     20s       v1.7.2</span></code></pre></td></tr></table></div></figure>
+
+
+<p>所有节点防火墙配置(由于是云主机，增加防火墙)：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>firewall-cmd --zone=trusted --add-source=192.168.0.0/16 --permanent 
+</span><span class='line'>firewall-cmd --zone=trusted --add-source=10.0.0.0/8 --permanent 
+</span><span class='line'>firewall-cmd --complete-reload</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>SOURCE IP测试</h2>
+
+<p>上次操作时有Sourceip的问题，现在应该不存在。。。看了iptables-save的信息，没有cni0/cbr0的相关的数据</p>
+
+<p>还是再来测一遍：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>kubectl run centos --image=cu.eshore.cn/library/java:jdk8 --command -- vi 
+</span><span class='line'>kubectl scale --replicas=4 deployment/centos
+</span><span class='line'>
+</span><span class='line'>[root@cu2 kube-deploy]# pods
+</span><span class='line'>NAMESPACE     NAME                                    READY     STATUS    RESTARTS   AGE         IP              NODE
+</span><span class='line'>default       centos-3954723268-62tpc                 1/1       Running   0          &lt;invalid&gt;   10.244.2.2      cu1
+</span><span class='line'>default       centos-3954723268-6cmf9                 1/1       Running   0          &lt;invalid&gt;   10.244.1.2      cu2
+</span><span class='line'>default       centos-3954723268-blfc4                 1/1       Running   0          &lt;invalid&gt;   10.244.3.2      cu4
+</span><span class='line'>default       centos-3954723268-tb1rn                 1/1       Running   0          &lt;invalid&gt;   10.244.4.2      cu5
+</span><span class='line'>default       nexus-djr9c                             1/1       Running   0          2m          192.168.0.37    cu1
+</span><span class='line'>
+</span><span class='line'># ping互通没问题 TEST
+</span><span class='line'>
+</span><span class='line'>[root@cu2 hadoop]# ./pod_bash centos-3954723268-62tpc default
+</span><span class='line'>[root@centos-3024873821-4490r /]# ping 10.244.4.2 -c 1
+</span><span class='line'>
+</span><span class='line'># 源IP没问题 TEST
+</span><span class='line'>
+</span><span class='line'>[root@centos-3954723268-62tpc opt]# yum install epel-release -y  
+</span><span class='line'>[root@centos-3954723268-62tpc opt]# yum install -y nginx 
+</span><span class='line'>[root@centos-3954723268-62tpc opt]# service nginx start
+</span><span class='line'>
+</span><span class='line'>[root@centos-3954723268-blfc4 opt]# curl 10.244.2.2
+</span><span class='line'>[root@centos-3954723268-tb1rn opt]# curl 10.244.2.2
+</span><span class='line'>
+</span><span class='line'>[root@centos-3954723268-62tpc opt]# less /var/log/nginx/access.log 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h4>DNS/heaspter</h4>
+
+<p>奇了怪了，这次重新安装DNS时没遇到问题，heaspter安装也一次通过。</p>
+
+<p>在cu3起的pods上执行 <code>nslookup kubernetes.default</code> 也是通的！</p>
+
+<h4>监控</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># -- heaspter
+</span><span class='line'>[root@cu2 kubeadm]# kubectl apply -f heapster/influxdb/
+</span><span class='line'>deployment "monitoring-grafana" created
+</span><span class='line'>service "monitoring-grafana" created
+</span><span class='line'>serviceaccount "heapster" created
+</span><span class='line'>deployment "heapster" created
+</span><span class='line'>service "heapster" created
+</span><span class='line'>deployment "monitoring-influxdb" created
+</span><span class='line'>service "monitoring-influxdb" created
+</span><span class='line'>[root@cu2 kubeadm]# kubectl apply -f heapster/rbac/
+</span><span class='line'>clusterrolebinding "heapster" created
+</span><span class='line'>
+</span><span class='line'># -- dashboard
+</span><span class='line'>[root@cu2 kubeadm]# kubectl apply -f kubernetes-dashboard.yaml 
+</span><span class='line'>serviceaccount "kubernetes-dashboard" created
+</span><span class='line'>clusterrolebinding "kubernetes-dashboard" created
+</span><span class='line'>deployment "kubernetes-dashboard" created
+</span><span class='line'>service "kubernetes-dashboard" created
+</span><span class='line'>
+</span><span class='line'>[root@cu2 kubeadm]# kubectl get service --all-namespaces
+</span><span class='line'>NAMESPACE     NAME                   CLUSTER-IP      EXTERNAL-IP   PORT(S)         AGE
+</span><span class='line'>default       kubernetes             10.96.0.1       &lt;none&gt;        443/TCP         18m
+</span><span class='line'>kube-system   kube-dns               10.96.0.10      &lt;none&gt;        53/UDP,53/TCP   18m
+</span><span class='line'>kube-system   kubernetes-dashboard   10.104.165.81   &lt;none&gt;        80/TCP          5m</span></code></pre></td></tr></table></div></figure>
+
+
+<p>等一小段时间，查看所有的服务：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@cu2 kubeadm]# kubectl get services --all-namespaces
+</span><span class='line'>NAMESPACE     NAME                   CLUSTER-IP       EXTERNAL-IP   PORT(S)         AGE
+</span><span class='line'>default       kubernetes             10.96.0.1        &lt;none&gt;        443/TCP         2h
+</span><span class='line'>kube-system   heapster               10.102.176.168   &lt;none&gt;        80/TCP          3m
+</span><span class='line'>kube-system   kube-dns               10.96.0.10       &lt;none&gt;        53/UDP,53/TCP   2h
+</span><span class='line'>kube-system   kubernetes-dashboard   10.110.2.118     &lt;none&gt;        80/TCP          2m
+</span><span class='line'>kube-system   monitoring-grafana     10.106.251.155   &lt;none&gt;        80/TCP          3m
+</span><span class='line'>kube-system   monitoring-influxdb    10.100.168.147   &lt;none&gt;        8086/TCP        3m</span></code></pre></td></tr></table></div></figure>
+
+
+<p>直接访问 10.106.251.155 或者查看 monitoring的pod 日志，查看heaspter的状态。dashboard上面出图要等一小段时间才行。</p>
+
+<p>如果通过 monitoring-grafana 的IP访问能看到CLUSTER和POD的监控图，但是dashboard上的图就是出不来，可以重新部署dashboard：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>kubectl delete -f kubernetes-dashboard.yaml 
+</span><span class='line'>kubectl create -f kubernetes-dashboard.yaml </span></code></pre></td></tr></table></div></figure>
+
+
+<p>到此整个K8S就在测试环境上重新运行起来了。</p>
+
+<p>harbor就不安装了，平时没怎么用，也就5台机器直接save然后load工作量也不多。</p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://github.com/kubernetes/kubernetes/issues/40969">https://github.com/kubernetes/kubernetes/issues/40969</a></li>
+<li><a href="http://mp.weixin.qq.com/s?__biz=MzI4MTQyMDAxMA==&amp;mid=2247483665&amp;idx=1&amp;sn=d8b61666fe0a0965336d15250e2648cb&amp;scene=0">http://mp.weixin.qq.com/s?__biz=MzI4MTQyMDAxMA==&amp;mid=2247483665&amp;idx=1&amp;sn=d8b61666fe0a0965336d15250e2648cb&amp;scene=0</a></li>
+<li><a href="http://cizixs.com/2017/05/23/container-network-cni">http://cizixs.com/2017/05/23/container-network-cni</a></li>
+<li><a href="https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration">https://github.com/containernetworking/cni/blob/master/SPEC.md#network-configuration</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2180,68 +2830,6 @@ Ok, so it turns out that this flag is not enough, we still have an issue reachin
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2017/07/16/consistent-hashing/">[转]一致性Hash</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2017-07-16T09:03:51+08:00" pubdate data-updated="true">Sun 2017-07-16 09:03</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p><a href="http://gywbd.github.io/posts/2016/10/consistent-hashing.html">一致性哈希</a></p>
-
-<p>图文并茂，写的非常好。</p>
-
-<p>要点：</p>
-
-<ol>
-<li>解决Hash的随机分布带来的增删节点的需重新全部映射的问题：对主机使用同样的函数把主机A分布到环上（其实就是分配一段范围），然后在Hash后在这段范围内的数据全部存储到主机A上。这样增删节点只需要对部分数据重新映射。</li>
-</ol>
-
-
-<p><img src="http://gywbd.github.io/images/ch1.png" alt="" /></p>
-
-<p><img src="http://gywbd.github.io/images/ch8.png" alt="" /></p>
-
-<p><img src="http://gywbd.github.io/images/ch10.png" alt="" /></p>
-
-<ol>
-<li>由此又引入了一个优化的点。（随机在环上放置节点）机器硬件不同，能力不同，以及数据分布均衡（热点机器）等的问题。所以，虚拟节点就是用来节点这个问题的。每个节点可以指定分配的虚拟节点数。</li>
-</ol>
-
-
-<p><img src="http://gywbd.github.io/images/ch13.png" alt="" /></p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/11">&larr; Older</a>
@@ -2386,6 +2974,10 @@ Ok, so it turns out that this flag is not enough, we still have an issue reachin
       </li>
     
       <li class="post">
+        <a href="/blog/2022/04/06/minikube-guide/">Minikube Guide</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2022/03/26/k8s-ingress/">K8s Ingress</a>
       </li>
     
@@ -2403,10 +2995,6 @@ Ok, so it turns out that this flag is not enough, we still have an issue reachin
     
       <li class="post">
         <a href="/blog/2021/12/08/octopress-generate-toc/">octopress生成TOC</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2021/12/08/recommand-blogs/">认真的博客</a>
       </li>
     
   </ul>
@@ -2515,7 +3103,7 @@ Ok, so it turns out that this flag is not enough, we still have an issue reachin
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (13) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (14) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2604,7 +3192,7 @@ Ok, so it turns out that this flag is not enough, we still have an issue reachin
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (225)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (226)</li>
 	</ul>
 	
 </section>
