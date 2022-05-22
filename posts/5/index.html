@@ -9,10 +9,8 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="到新的环境就会遇到新的问题，需要不断的学习更新来适应新的环境。上网也是一样，工作地点和家里存在了一道鸿沟。过去断断续续的有一些解决的方式，但是总是有点间接。 使用TeamviewerVPN访问公司内网
-使用Privoxy把shadowsocks转换为Http代理
-安装配置OpenVPN
-搭梯笔记 &hellip;">
+  <meta name="description" content="Java里面随处可见annotation（注解），RetentionPolicy 指示了注解使用的情况： SOURCE，比如 @Override, @SuppressWarnings
+RUNTIME，最熟悉的莫过于Spring Bean中使用的 @Controller, @Service &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -88,6 +86,534 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2018/06/10/java-source-annotation-processor/">使用注解生成代码</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2018-06-10T12:51:39+08:00" pubdate data-updated="true">Sun 2018-06-10 12:51</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>Java里面随处可见annotation（注解），RetentionPolicy 指示了注解使用的情况：</p>
+
+<ul>
+<li>SOURCE，比如 @Override, @SuppressWarnings</li>
+<li>RUNTIME，最熟悉的莫过于Spring Bean中使用的 @Controller, @Service 一般和反射同时使用。</li>
+<li>CLASS</li>
+</ul>
+
+
+<p>而 CLASS 则是用于 compile 编译阶段的注解。一个注解的处理器，以Java代码（或编译过的字节码）作为输入，生成Java文件。这些生成的Java文件，会同其他普通的手动编写的Java源代码一样被javac编译。</p>
+
+<p>可以自己实现一些类似groovy语法糖的功能（lombok框架修改bytecode为类生成新方法getter/setter、或者使用生成新的辅助类等）；减少机械的、冗余代码的管理，使得代码更简洁便于阅读。</p>
+
+<h2>代码生成</h2>
+
+<p>先来了解下整个过程，javac 从 ServiceLoader 获取一个 Processor 标注处理类，判断是否为符合条件的标注，再收集类的相关信息，然后使用 Filer 创建新的类。<a href="http://www.baeldung.com/java-annotation-processing-builder">Java Annotation Processing and Creating a Builder</a> ，<a href="https://liuzhengyang.github.io/2017/10/20/annotation-processing/">java annotation processor</a> 主要涉及到如下三部分：</p>
+
+<ul>
+<li>Annotation: @BuilderProperty</li>
+<li>Processor: BuilderProcessor</li>
+<li><p>Service:</p>
+
+<p>通过google的auto-service来注册服务，最终会在 META-INF/services/ 生成名称为 javax.annotation.processing.Processor 的文件，内容为当前被标注的类名。</p></li>
+</ul>
+
+
+<p>项目的目录结构如下：</p>
+
+<p><img src="/images/blogs/annotation-processor-projects.png" alt="" /></p>
+
+<h3>具体实现：</h3>
+
+<ul>
+<li>BuilderProperty 注解</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>package com.github.winse.annotation;
+</span><span class='line'>
+</span><span class='line'>import java.lang.annotation.ElementType;
+</span><span class='line'>import java.lang.annotation.Retention;
+</span><span class='line'>import java.lang.annotation.RetentionPolicy;
+</span><span class='line'>import java.lang.annotation.Target;
+</span><span class='line'>
+</span><span class='line'>@Target(ElementType.METHOD)
+</span><span class='line'>@Retention(RetentionPolicy.SOURCE)
+</span><span class='line'>public @interface BuilderProperty {
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>BuilderProcessor</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+<span class='line-number'>100</span>
+<span class='line-number'>101</span>
+<span class='line-number'>102</span>
+<span class='line-number'>103</span>
+<span class='line-number'>104</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>package com.github.winse.processor;
+</span><span class='line'>
+</span><span class='line'>import com.github.winse.annotation.BuilderProperty;
+</span><span class='line'>import com.google.auto.service.AutoService;
+</span><span class='line'>
+</span><span class='line'>import javax.annotation.processing.*;
+</span><span class='line'>import javax.lang.model.SourceVersion;
+</span><span class='line'>import javax.lang.model.element.Element;
+</span><span class='line'>import javax.lang.model.element.TypeElement;
+</span><span class='line'>import javax.lang.model.type.ExecutableType;
+</span><span class='line'>import javax.tools.Diagnostic;
+</span><span class='line'>import javax.tools.JavaFileObject;
+</span><span class='line'>import java.io.IOException;
+</span><span class='line'>import java.io.PrintWriter;
+</span><span class='line'>import java.util.List;
+</span><span class='line'>import java.util.Map;
+</span><span class='line'>import java.util.Set;
+</span><span class='line'>import java.util.stream.Collectors;
+</span><span class='line'>
+</span><span class='line'>/**
+</span><span class='line'> * @see BuilderProperty
+</span><span class='line'> */
+</span><span class='line'>@SupportedAnnotationTypes("com.github.winse.annotation.BuilderProperty")
+</span><span class='line'>@SupportedSourceVersion(SourceVersion.RELEASE_8)
+</span><span class='line'>@AutoService(Processor.class)
+</span><span class='line'>public class BuilderProcessor extends AbstractProcessor {
+</span><span class='line'>
+</span><span class='line'>    @Override
+</span><span class='line'>    public boolean process(Set&lt;? extends TypeElement&gt; annotations, RoundEnvironment roundEnv) {
+</span><span class='line'>        for (TypeElement annotation : annotations) {
+</span><span class='line'>            Set&lt;? extends Element&gt; annotationElements = roundEnv.getElementsAnnotatedWith(annotation);
+</span><span class='line'>
+</span><span class='line'>            Map&lt;Boolean, List&lt;Element&gt;&gt; annotationMethods = annotationElements.stream()
+</span><span class='line'>                    .collect(Collectors.partitioningBy(element -&gt; ((ExecutableType) element.asType()).getParameterTypes().size() == 1 && element.getSimpleName().toString().startsWith("set")));
+</span><span class='line'>
+</span><span class='line'>            List&lt;Element&gt; setters = annotationMethods.get(true);
+</span><span class='line'>            List&lt;Element&gt; otherMethods = annotationMethods.get(false);
+</span><span class='line'>
+</span><span class='line'>            otherMethods.forEach(element -&gt; processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, "@BuildProperty must be applied to a setXxx method with a single argument", element));
+</span><span class='line'>
+</span><span class='line'>            if (setters.isEmpty()) {
+</span><span class='line'>                continue;
+</span><span class='line'>            }
+</span><span class='line'>
+</span><span class='line'>            String className = ((TypeElement) setters.get(0).getEnclosingElement()).getQualifiedName().toString();
+</span><span class='line'>
+</span><span class='line'>            Map&lt;String, String&gt; setterMap = setters.stream().collect(Collectors.toMap(
+</span><span class='line'>                    setter -&gt; setter.getSimpleName().toString(),
+</span><span class='line'>                    setter -&gt; ((ExecutableType) setter.asType()).getParameterTypes().get(0).toString()
+</span><span class='line'>            ));
+</span><span class='line'>
+</span><span class='line'>            try {
+</span><span class='line'>                writeBuilderType(className, setterMap);
+</span><span class='line'>            } catch (IOException e) {
+</span><span class='line'>                processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, e.getMessage());
+</span><span class='line'>            }
+</span><span class='line'>        }
+</span><span class='line'>        return true;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    private void writeBuilderType(String className, Map&lt;String, String&gt; setterMap) throws IOException {
+</span><span class='line'>        String packageName = null;
+</span><span class='line'>        int lastDot = className.lastIndexOf(".");
+</span><span class='line'>        if (lastDot &gt; 0) {
+</span><span class='line'>            packageName = className.substring(0, lastDot);
+</span><span class='line'>        }
+</span><span class='line'>
+</span><span class='line'>        String simpleClassName = className.substring(lastDot + 1);
+</span><span class='line'>        String builderClassName = className + "Builder";
+</span><span class='line'>        String builderSimpleClassName = builderClassName.substring(lastDot + 1);
+</span><span class='line'>
+</span><span class='line'>        JavaFileObject builderFile = processingEnv.getFiler().createSourceFile(builderClassName);
+</span><span class='line'>        try (PrintWriter out = new PrintWriter(builderFile.openWriter())) {
+</span><span class='line'>            if (packageName != null) {
+</span><span class='line'>                out.printf("package %s;\n", packageName);
+</span><span class='line'>                out.println();
+</span><span class='line'>            }
+</span><span class='line'>
+</span><span class='line'>            out.printf("public class %s {\n", builderSimpleClassName);
+</span><span class='line'>            out.println();
+</span><span class='line'>            out.printf("  private %s object = new %s();\n", simpleClassName, simpleClassName);
+</span><span class='line'>            out.println();
+</span><span class='line'>            out.printf("  public %s build() {\n", simpleClassName);
+</span><span class='line'>            out.printf("    return object;\n");
+</span><span class='line'>            out.printf("  }\n");
+</span><span class='line'>            out.println();
+</span><span class='line'>
+</span><span class='line'>            setterMap.entrySet().forEach(setter -&gt; {
+</span><span class='line'>                String methodName = setter.getKey();
+</span><span class='line'>                String argumentType = setter.getValue();
+</span><span class='line'>
+</span><span class='line'>                out.printf("  public %s %s(%s value){\n", builderSimpleClassName, methodName, argumentType);
+</span><span class='line'>                out.printf("    object.%s(value);\n", methodName);
+</span><span class='line'>                out.printf("    return this;\n");
+</span><span class='line'>                out.printf("  }\n");
+</span><span class='line'>                out.println();
+</span><span class='line'>            });
+</span><span class='line'>
+</span><span class='line'>            out.printf("}\n");
+</span><span class='line'>
+</span><span class='line'>        }
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>测试使用：</h3>
+
+<ul>
+<li>build.gradle</li>
+</ul>
+
+
+<p>我使用的是4.7的版本，4.7及以上版本可以直接使用 annotationProcessor 来添加标注处理器。（其他版本可以使用 apt 来处理）</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>plugins {
+</span><span class='line'>    id "net.ltgt.apt" version "0.10"
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>sourceSets.main.java.srcDirs += ['build/generated/source/apt/main']
+</span><span class='line'>
+</span><span class='line'>dependencies {
+</span><span class='line'>    compile rootProject
+</span><span class='line'>    annotationProcessor project(':compiler')
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>Person</li>
+</ul>
+
+
+<p>这是一个POJO类，BuilderProcessor处理器会根据BuilderProperty注解来生成PersonBuilder类。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>package com.github.winse.example;
+</span><span class='line'>
+</span><span class='line'>import com.github.winse.annotation.BuilderProperty;
+</span><span class='line'>
+</span><span class='line'>public class Person {
+</span><span class='line'>    private int age;
+</span><span class='line'>    private String name;
+</span><span class='line'>
+</span><span class='line'>    @BuilderProperty
+</span><span class='line'>    public void setAge(int age) {
+</span><span class='line'>        this.age = age;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    @BuilderProperty
+</span><span class='line'>    public void setName(String name) {
+</span><span class='line'>        this.name = name;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    public int getAge() {
+</span><span class='line'>        return age;
+</span><span class='line'>    }
+</span><span class='line'>
+</span><span class='line'>    public String getName() {
+</span><span class='line'>        return name;
+</span><span class='line'>    }
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>生成代码效果</h3>
+
+<p>在 gradle 面板中选择子项目 <code>:example</code> ，然后选择 Tasks 下的 build 任务进行构建。构建完后在 <code>example/build/generated/source/apt</code> 目录下生成了对应的 Builder 代码。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>package com.github.winse.example;
+</span><span class='line'>
+</span><span class='line'>public class PersonBuilder {
+</span><span class='line'>
+</span><span class='line'>  private Person object = new Person();
+</span><span class='line'>
+</span><span class='line'>  public Person build() {
+</span><span class='line'>    return object;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public PersonBuilder setName(java.lang.String value){
+</span><span class='line'>    object.setName(value);
+</span><span class='line'>    return this;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public PersonBuilder setAge(int value){
+</span><span class='line'>    object.setAge(value);
+</span><span class='line'>    return this;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>注解处理器调试</h2>
+
+<p>不会调试说明还没有真正的入门。并且没有调试的情况下，解决异常、错误也是一件异常痛苦的事情。注解处理器生成代码是在编译阶段来生成代码的，所以调试的选项配置添加到 javac 。而 gradle 提供了一种相对简单的方式来进行。</p>
+
+<p>参考</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/8587096/how-do-you-debug-java-annotation-processors-using-intellij">how do you debug java annotation processors using intellij?
+</a></li>
+<li><a href="https://discuss.gradle.org/t/how-do-you-attach-a-debugger-to-gradle-so-that-i-can-debug-it-running-a-task/7526/5">How do you attach a debugger to gradle so that I can debug it running a task?</a></li>
+</ul>
+
+
+<p>具体步骤如下：</p>
+
+<ol>
+<li><p>在命令行运行构建</p>
+
+<p>添加调试参数后，gradle 会 <strong>暂停等待远程调试</strong> ，相当于添加了 JVM 调试参数。<a href="https://docs.gradle.org/current/userguide/build_environment.html#sec:gradle_configuration_properties">Gradle properties</a></p>
+
+<pre><code>hello-annotation-processor\example&gt;gradle clean build --no-daemon -Dorg.gradle.debug=true
+或者
+hello-annotation-processor&gt;gradle example:clean example:compileJava --no-daemon -Dorg.gradle.debug=true
+</code></pre>
+
+<p>注： &ndash;no-daemon 不加也是可以的，但是运行该次构建后不会停止。</p>
+
+<p><img src="/images/blogs/annotation-processor-debug-s1.png" alt="" /></p></li>
+<li><p>远程调试</p>
+
+<p><img src="/images/blogs/annotation-processor-debug-s2.png" alt="" /></p></li>
+</ol>
+
+
+<h3>其他调试配置方式</h3>
+
+<ul>
+<li><p>通过环境变量</p>
+
+<pre><code>example&gt;set GRADLE_OPTS=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005
+
+example&gt;gradle clean build
+Listening for transport dt_socket at address: 5005
+</code></pre></li>
+<li><p>修改 ~/.gradle/gradle.properties</p>
+
+<p>这种方式不推荐，因为它是全局的。</p>
+
+<pre><code>org.gradle.daemon=false
+org.gradle.debug=true
+</code></pre>
+
+<p>或者</p>
+
+<pre><code>org.gradle.daemon=true
+org.gradle.jvmargs=-XX:MaxPermSize=4g -XX:+HeapDumpOnOutOfMemoryError -Xmx4g -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5006
+
+$ gradle --daemon
+</code></pre>
+
+<p>Then attach your debugger client to port 5006, set your breakpoint, then run your test.</p>
+
+<p>注：该配置放到项目目录下没用。</p></li>
+</ul>
+
+
+<h2>其他</h2>
+
+<ul>
+<li>Gradle参数优化 <a href="https://stackoverflow.com/questions/16775197/building-and-running-app-via-gradle-and-android-studio-is-slower-than-via-eclips/19500539#19500539">Building and running app via Gradle and Android Studio is slower than via Eclipse</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1423,418 +1949,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2018/01/26/proxy-on-java-via-shandowsocks/">Java中使用代理-基于Shandowsocks</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2018-01-26T20:50:05+08:00" pubdate data-updated="true">Fri 2018-01-26 20:50</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>在开发过程中，时不时需要要代理一下，来访问我们需要的资源，比方说：DEBUG生产<strong>集群</strong>的应用、还有在Java中翻墙等等。解决了全局的代理能完成我们访问到资源的时刻，又有新的要求，比方说：只有特定的资源走代理等等。</p>
-
-<p>下面把要点简单罗列下，以供参考：</p>
-
-<ul>
-<li><a href="https://stackoverflow.com/questions/1432961/how-do-i-make-httpurlconnection-use-a-proxy">https://stackoverflow.com/questions/1432961/how-do-i-make-httpurlconnection-use-a-proxy</a></li>
-<li><a href="http://www.aneasystone.com/archives/2015/12/java-and-http-using-proxy.html">http://www.aneasystone.com/archives/2015/12/java-and-http-using-proxy.html</a></li>
-<li><a href="https://stackoverflow.com/questions/120797/how-do-i-set-the-proxy-to-be-used-by-the-jvm">https://stackoverflow.com/questions/120797/how-do-i-set-the-proxy-to-be-used-by-the-jvm</a></li>
-<li><a href="https://docs.oracle.com/javase/8/docs/technotes/guides/net/proxies.html">https://docs.oracle.com/javase/8/docs/technotes/guides/net/proxies.html</a></li>
-</ul>
-
-
-<p>JDK官网基本内容全部都包括了，其他链接作为理解辅助，看看人家的实际需求与具体解决方法。</p>
-
-<h2>Java全应用级代理（全局）</h2>
-
-<ul>
-<li>走HTTP</li>
-</ul>
-
-
-<p>Shandowsocks转HTTP，前面Docker翻墙安装Kubernate有弄过，参考：<a href="/blog/2017/02/04/privoxy-http-proxy-for-shadowsocks/">Privoxy</a> 。</p>
-
-<p>也可以直接用Shandowsocks提供的 <code>启用系统代理 -&gt; 系统代理模式 -&gt; 全局模式</code> 来转换，启用HTTP代理功能。（开全局模式，本地会把socks代理转成为一个http的代理）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>-Dhttp.proxyHost=127.0.0.1
-</span><span class='line'>-Dhttp.proxyPort=7070
-</span><span class='line'>-Dhttps.proxyHost=127.0.0.1
-</span><span class='line'>-Dhttps.proxyPort=7070
-</span><span class='line'>-Dhttp.nonProxyHosts="localhost|127.0.0.1|192.168.*"</span></code></pre></td></tr></table></div></figure>
-
-
-<blockquote><ul>
-<li>http.proxyHost: the host name of the proxy server</li>
-<li>http.proxyPort: the port number, the default value being 80.</li>
-<li>http.nonProxyHosts:a list of hosts that should be reached directly, bypassing the proxy. This is a list of patterns separated by &lsquo;|&rsquo;. The patterns may start or end with a &lsquo;*&rsquo; for wildcards. Any host matching one of these patterns will be reached through a direct connection instead of through a proxy.</li>
-</ul>
-</blockquote>
-
-<ul>
-<li>走Socks</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>-DsocksProxyHost=127.0.0.1 -DsocksProxyPort=7070</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>使用系统代理</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>-Djava.net.useSystemProxies=true</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>部分/使用时设置（自动切换）</h2>
-
-<ul>
-<li>应用内通过 setProperty <strong>临时</strong> 进行设置（这种有缺陷，中间一段时间相当于全局代理了，不推荐）</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>System.setProperty("http.proxyHost", proxyHost);
-</span><span class='line'>System.setProperty("http.proxyPort", proxyPort);
-</span><span class='line'>System.setProperty("https.proxyHost", proxyHost);
-</span><span class='line'>System.setProperty("https.proxyPort", proxyPort);</span></code></pre></td></tr></table></div></figure>
-
-
-<p>用完之后，取消设置：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>System.clearProperty("http.proxyHost");
-</span><span class='line'>...</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>请求时指定代理：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>SocketAddress addr = new InetSocketAddress("webcache.example.com", 8080);
-</span><span class='line'>Proxy proxy = new Proxy(Proxy.Type.HTTP, addr);
-</span><span class='line'>
-</span><span class='line'>URL url = new URL("http://java.example.org/");
-</span><span class='line'>URLConnection conn = url.openConnection(proxy);</span></code></pre></td></tr></table></div></figure>
-
-
-<ul>
-<li>（选择性的）配置哪些访问走代理：ProxySelector</li>
-</ul>
-
-
-<p>任何请求访问网络之前，会被ProxySelector拦截。根据规则获取一个符合的Proxy（或者Proxy.NO_PROXY），然后通过这个代理去访问网络。</p>
-
-<blockquote><p>As you can see, with Java SE 5.0, the developer gains quite a bit of control and flexibility when it comes to proxies. Still, there are situations where one would like to decide which proxy to use dynamically, for instance to do some load balancing between proxies, or depending on the destination, in which case the API described so far would be quite cumbersome. That&rsquo;s where the ProxySelector comes into play.</p>
-
-<p>The best thing about the ProxySelector is that it is plugable! Which means that if you have needs that are not covered by the default one, you can write a replacement for it and plug it in!</p></blockquote>
-
-<p>基本上看JDK官网的内容就好了，非常全。也可以参考下 <a href="http://archive.oreilly.com/pub/a/onjava/excerpt/jvntwkprg_3e/index.html?page=3#javanp3-CHP-7-SECT-4">URLs and URIs, Proxies and Passwords</a></p>
-
-<p>注册自定义的Selector：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>public static void main(String[] args) {
-</span><span class='line'>    MyProxySelector ps = new MyProxySelector(ProxySelector.getDefault());
-</span><span class='line'>    ProxySelector.setDefault(ps);
-</span><span class='line'>    // rest of the application
-</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
-
-
-<p>Selector实现：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>public class MyProxySelector extends ProxySelector {
-</span><span class='line'>    // Keep a reference on the previous default
-</span><span class='line'>    ProxySelector defsel = null;
-</span><span class='line'>    
-</span><span class='line'>    /*
-</span><span class='line'>     * Inner class representing a Proxy and a few extra data
-</span><span class='line'>     */
-</span><span class='line'>    class InnerProxy {
-</span><span class='line'>        Proxy proxy;
-</span><span class='line'>        SocketAddress addr;
-</span><span class='line'>        // How many times did we fail to reach this proxy?
-</span><span class='line'>        int failedCount = 0;
-</span><span class='line'>        
-</span><span class='line'>        InnerProxy(InetSocketAddress a) {
-</span><span class='line'>            this(a, Proxy.Type.HTTP);
-</span><span class='line'>        }
-</span><span class='line'>        
-</span><span class='line'>        InnerProxy(InetSocketAddress a, Proxy.Type type) {
-</span><span class='line'>            addr = a;
-</span><span class='line'>            proxy = new Proxy(type, a);
-</span><span class='line'>        }
-</span><span class='line'>        
-</span><span class='line'>        SocketAddress address() {
-</span><span class='line'>            return addr;
-</span><span class='line'>        }
-</span><span class='line'>        
-</span><span class='line'>        Proxy toProxy() {
-</span><span class='line'>            return proxy;
-</span><span class='line'>        }
-</span><span class='line'>        
-</span><span class='line'>        int failed() {
-</span><span class='line'>            return ++failedCount;
-</span><span class='line'>        }
-</span><span class='line'>    }
-</span><span class='line'>    
-</span><span class='line'>    /*
-</span><span class='line'>     * A list of proxies, indexed by their address.
-</span><span class='line'>     */
-</span><span class='line'>    HashMap&lt;SocketAddress, InnerProxy&gt; proxies = new HashMap&lt;SocketAddress, InnerProxy&gt;();
-</span><span class='line'>
-</span><span class='line'>    MyProxySelector(ProxySelector def) {
-</span><span class='line'>        // Save the previous default
-</span><span class='line'>        defsel = def;
-</span><span class='line'>        
-</span><span class='line'>        // Populate the HashMap (List of proxies)
-</span><span class='line'>        InnerProxy i = new InnerProxy(new InetSocketAddress("webcache1.example.com", 8080));
-</span><span class='line'>        proxies.put(i.address(), i);
-</span><span class='line'>        i = new InnerProxy(new InetSocketAddress("webcache2.example.com", 8080));
-</span><span class='line'>        proxies.put(i.address(), i);
-</span><span class='line'>        i = new InnerProxy(new InetSocketAddress("webcache3.example.com", 8080));
-</span><span class='line'>        proxies.put(i.address(), i);
-</span><span class='line'>    }
-</span><span class='line'>        
-</span><span class='line'>    /*
-</span><span class='line'>     * This is the method that the handlers will call.
-</span><span class='line'>     * Returns a List of proxy.
-</span><span class='line'>     */
-</span><span class='line'>    public java.util.List&lt;Proxy&gt; select(URI uri) {
-</span><span class='line'>        // Let's stick to the specs. 
-</span><span class='line'>        if (uri == null) {
-</span><span class='line'>            throw new IllegalArgumentException("URI can't be null.");
-</span><span class='line'>        }
-</span><span class='line'>        
-</span><span class='line'>        /* 这里可以指定你自己的规则/配置
-</span><span class='line'>         * If it's a http (or https) URL, then we use our own list.
-</span><span class='line'>         */
-</span><span class='line'>        String protocol = uri.getScheme();
-</span><span class='line'>        if ("http".equalsIgnoreCase(protocol) ||
-</span><span class='line'>                "https".equalsIgnoreCase(protocol)) {
-</span><span class='line'>            ArrayList&lt;Proxy&gt; l = new ArrayList&lt;Proxy&gt;();
-</span><span class='line'>            for (InnerProxy p : proxies.values()) {
-</span><span class='line'>                l.add(p.toProxy());
-</span><span class='line'>            }
-</span><span class='line'>            return l;
-</span><span class='line'>        }
-</span><span class='line'>        
-</span><span class='line'>        /*
-</span><span class='line'>         * Not HTTP or HTTPS (could be SOCKS or FTP)
-</span><span class='line'>         * defer to the default selector.
-</span><span class='line'>         */
-</span><span class='line'>        if (defsel != null) {
-</span><span class='line'>            return defsel.select(uri);
-</span><span class='line'>        } else {
-</span><span class='line'>            ArrayList&lt;Proxy&gt; l = new ArrayList&lt;Proxy&gt;();
-</span><span class='line'>            l.add(Proxy.NO_PROXY);
-</span><span class='line'>            return l;
-</span><span class='line'>        }
-</span><span class='line'>    }
-</span><span class='line'>    
-</span><span class='line'>    /*
-</span><span class='line'>     * Method called by the handlers when it failed to connect
-</span><span class='line'>     * to one of the proxies returned by select().
-</span><span class='line'>     */
-</span><span class='line'>    public void connectFailed(URI uri, SocketAddress sa, IOException ioe) {
-</span><span class='line'>        // Let's stick to the specs again.
-</span><span class='line'>        if (uri == null || sa == null || ioe == null) {
-</span><span class='line'>            throw new IllegalArgumentException("Arguments can't be null.");
-</span><span class='line'>        }
-</span><span class='line'>        
-</span><span class='line'>        /*
-</span><span class='line'>         * Let's lookup for the proxy 
-</span><span class='line'>         */
-</span><span class='line'>        InnerProxy p = proxies.get(sa); 
-</span><span class='line'>        if (p != null) {
-</span><span class='line'>            /*
-</span><span class='line'>             * It's one of ours, if it failed more than 3 times
-</span><span class='line'>             * let's remove it from the list.
-</span><span class='line'>             */
-</span><span class='line'>            if (p.failed() &gt;= 3)
-</span><span class='line'>                    proxies.remove(sa);
-</span><span class='line'>        } else {
-</span><span class='line'>            /*
-</span><span class='line'>             * Not one of ours, let's delegate to the default.
-</span><span class='line'>             */
-</span><span class='line'>            if (defsel != null)
-</span><span class='line'>              defsel.connectFailed(uri, sa, ioe);
-</span><span class='line'>        }
-</span><span class='line'>    }
-</span><span class='line'>}
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/6">&larr; Older</a>
@@ -1925,6 +2039,10 @@
 			</li>
 		
 			<li class="post">
+				<a href="/blog/2015/09/13/review-linux-101-hacks/">【linux 101 Hacks】读后感</a>
+			</li>
+		
+			<li class="post">
 				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
 			</li>
 		
@@ -1971,6 +2089,10 @@
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2022/04/19/k8s-nfs-run-example/">K8S官方例子NFS</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2022/04/14/k8s-nfs/">k8s共享存储使用NFS</a>
       </li>
     
@@ -1996,10 +2118,6 @@
     
       <li class="post">
         <a href="/blog/2022/01/13/openeuler20-dot-03lts-sp3-install-docker/">欧拉20.03LTS_SP3安装docker</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2021/12/08/octopress-generate-toc/">octopress生成TOC</a>
       </li>
     
   </ul>
@@ -2108,7 +2226,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (14) 
+			<a class='category' href='/blog/categories/k8s/'>k8s</a> (15) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2136,6 +2254,10 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/openeuler/'>openeuler</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
 		</li>
 		 
@@ -2144,7 +2266,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (27) 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (28) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2197,7 +2319,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (226)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (227)</li>
 	</ul>
 	
 </section>
