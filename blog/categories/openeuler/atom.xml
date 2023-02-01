@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Openeuler | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/openeuler/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2022-05-22T20:01:34+08:00</updated>
+  <updated>2023-02-01T08:30:22+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,1005 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[信创环境迁移浅析-以Postgres为例]]></title>
+    <link href="http://winse.github.io/blog/2022/07/24/xinchuang-install-postgres/"/>
+    <updated>2022-07-24T09:16:24+08:00</updated>
+    <id>http://winse.github.io/blog/2022/07/24/xinchuang-install-postgres</id>
+    <content type="html"><![CDATA[<p>国内服务器操作系统主要还是在Linux各个发行版上嫁接过来的，又做了各种小改动，本来在主流的操作系统上可以比较容易安装的应用迁移带来了各种困难，路径异常的艰辛。</p>
+
+<p>首先，纯源码编译方式这种不在我的选择之中，网上也有很多参考。不重复了，同时这种方式不具有操作简单和可脚本话的潜质！
+如: <a href="https://blog.csdn.net/luo805914196/article/details/121083885">银河麒麟v10 安装 postgis</a>
+主要还是寻求包管理yum/rpm的方式进行安装。
+其次，寻找依赖版本时，以系统自带能适配最佳；再就是不改变系统核心前提下（gcc，glibc），使用rpmbuild重新编译依赖的src.rpm。</p>
+
+<p>下面以kylin v10安装postgres9.6+postgis2.4为例进行说明。</p>
+
+<h2>第一步，了解系统</h2>
+
+<pre><code>[root@col ~]# cat /etc/os-release 
+NAME="Kylin Linux Advanced Server"
+VERSION="V10 (Tercel)"
+ID="kylin"
+VERSION_ID="V10"
+PRETTY_NAME="Kylin Linux Advanced Server V10 (Tercel)"
+ANSI_COLOR="0;31"
+
+[root@col ~]# cat /etc/kylin-release 
+Kylin Linux Advanced Server release V10 (Tercel)
+
+
+[root@col ~]# uname -a 
+Linux col 4.19.90-17.ky10.aarch64 #1 SMP Sun Jun 28 14:27:40 CST 2020 aarch64 aarch64 aarch64 GNU/Linux
+
+
+[root@col ~]# tail -n10 /proc/cpuinfo  
+processor       : 15
+model name      : HUAWEI,Kunpeng 920
+BogoMIPS        : 200.00
+Features        : fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma dcpop asimddp asimdfhm
+CPU implementer : 0x48
+CPU architecture: 8
+CPU variant     : 0x1
+CPU part        : 0xd01
+CPU revision    : 0
+
+
+[root@col ~]# yum list glibc
+Last metadata expiration check: 1:03:03 ago on Sat 23 Jul 2022 07:54:01 PM CST.
+Installed Packages
+glibc.aarch64                                                                     2.28-36.1.ky10                                                                     @anaconda
+[root@col ~]# yum list gcc
+Last metadata expiration check: 1:04:34 ago on Sat 23 Jul 2022 07:54:01 PM CST.
+Installed Packages
+gcc.aarch64                                                                 7.3.0-20190804.h30.ky10                                                                  @anaconda
+[root@col ~]# yum list cpp
+Last metadata expiration check: 1:04:42 ago on Sat 23 Jul 2022 07:54:01 PM CST.
+Installed Packages
+cpp.aarch64                                                                 7.3.0-20190804.h30.ky10                                                                  @anaconda
+</code></pre>
+
+<h2>第二步 安装一下应用</h2>
+
+<pre><code>[root@col ~]# vi /etc/yum.repos.d/pgdg-redhat-all.repo 
+[pgdg-common]
+name=PostgreSQL common RPMs for RHEL / Rocky 8 - $basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/common/redhat/rhel-8-$basearch
+enabled=1
+gpgcheck=0
+
+[pgdg96]
+name=PostgreSQL 9.6 for RHEL / Rocky 8 - $basearch
+baseurl=https://download.postgresql.org/pub/repos/yum/9.6/redhat/rhel-8-$basearch
+enabled=1
+gpgcheck=0
+
+[epel]
+name=epel
+baseurl=https://dl.fedoraproject.org/pub/epel/8/Everything/aarch64/
+enabled=1
+gpgcheck=0
+
+[pgdg96-source]
+name=PostgreSQL 9.6 for RHEL / Rocky 8 - $basearch - Source
+baseurl=https://download.postgresql.org/pub/repos/yum/srpms/9.6/redhat/rhel-8-$basearch
+enabled=0
+gpgcheck=0
+
+[pgdg96-debuginfo]
+name=PostgreSQL 9.6 for RHEL / Rocky 8 - $basearch - Debuginfo
+baseurl=https://download.postgresql.org/pub/repos/yum/debug/9.6/redhat/rhel-8-$basearch
+enabled=0
+gpgcheck=0
+
+
+[root@col ~]# yum install postgresql96 postgresql96-server postgis24_96
+PostgreSQL common RPMs for RHEL / Rocky 8 - aarch64                                                                                           122 kB/s | 406 kB     00:03    
+PostgreSQL 9.6 for RHEL / Rocky 8 - aarch64                                                                                                    19 kB/s | 276 kB     00:14    
+epel                                                                                                                                           13 kB/s |  12 MB     16:11    
+Error: 
+ Problem: package postgis24_96-2.4.9-3.rhel8.aarch64 requires libgdal.so.28()(64bit), but none of the providers can be installed
+  - package postgis24_96-2.4.9-3.rhel8.aarch64 requires gdal32-libs &gt;= 3.2.0, but none of the providers can be installed
+  - package gdal32-libs-3.2.2-12.rhel8.aarch64 requires libhdf5.so.103()(64bit), but none of the providers can be installed
+  - package gdal32-libs-3.2.2-13.rhel8.aarch64 requires libhdf5.so.103()(64bit), but none of the providers can be installed
+  - cannot install the best candidate for the job
+  - nothing provides libgfortran.so.5()(64bit) needed by hdf5-1.10.5-4.el8.aarch64
+  - nothing provides libgfortran.so.5(GFORTRAN_8)(64bit) needed by hdf5-1.10.5-4.el8.aarch64
+(try to add '--skip-broken' to skip uninstallable packages or '--nobest' to use not only best candidate packages)
+</code></pre>
+
+<p>如果按centos8的包管理<a href="https://centos.pkgs.org/8/epel-aarch64/hdf5-1.10.5-4.el8.aarch64.rpm.html">hdf5-1.10.5-4.el8.aarch64</a>，可以看出 <code>libgfortran.so.5(GFORTRAN_8)(64bit)</code> 依赖最终就依赖到 <code>gcc-8.5.0</code> 。gcc升级会比较复杂。</p>
+
+<p>参照 <a href="http://c.biancheng.net/view/2921.html">Linux SRPM源码包安装</a> <a href="https://blog.csdn.net/jiajane/article/details/104409541">rpmrebuild 提取spec重新打包</a>的方式，使用rpmbuild在当前系统上重新编译打包。</p>
+
+<pre><code>[root@col ~]# yum install rpmrebuild -y 
+</code></pre>
+
+<h2>hdf5</h2>
+
+<pre><code>[root@col ~]# rpmbuild --rebuild hdf5-1.10.5-4.el8.src.rpm 
+Installing hdf5-1.10.5-4.el8.src.rpm
+warning: hdf5-1.10.5-4.el8.src.rpm: Header V3 RSA/SHA256 Signature, key ID 2f86d6a1: NOKEY
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+error: Failed build dependencies:
+        hamcrest is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        java-devel is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        javapackages-tools is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        junit is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        krb5-devel is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        libaec-devel is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        mpich-devel is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        openmpi-devel is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        openssl-devel is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+        slf4j is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+</code></pre>
+
+<p>查找 <code>https://pkgs.org/search/?q=hamcrest</code> 并下载java相关的模块centos8依赖：</p>
+
+<pre><code>[root@col ~]# ll *.rpm
+-rw------- 1 root root  305031 Jul 23 22:12 cglib-3.2.4-7.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  147131 Jul 23 22:11 easymock-3.5-4.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  131075 Jul 23 22:08 hamcrest-1.3-23.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root   60043 Jul 23 22:08 hamcrest-core-1.3-23.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw-r--r-- 1 root root 8739906 Jul 22 14:57 hdf5-1.10.5-4.el8.src.rpm
+-rw------- 1 root root  307067 Jul 23 22:08 junit-4.12-9.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  457315 Jul 23 22:12 objectweb-asm-6.2-5.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  108627 Jul 23 22:12 objenesis-2.6-2.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  305655 Jul 23 22:12 qdox-2.0-3.M9.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root   78511 Jul 23 22:08 slf4j-1.7.25-4.module_el8.0.0+39+6a9b6e22.noarch.rpm
+
+[root@col ~]# yum install ./hamcrest-* ./junit-* ./slf4j-* ./easymock-* ./qdox-* ./cglib-* ./objectweb-asm-* ./objenesis-*
+Last metadata expiration check: 0:48:28 ago on Sat 23 Jul 2022 09:25:01 PM CST.
+Dependencies resolved.
+==============================================================================================================================================================================
+ Package                                         Architecture                Version                                                   Repository                        Size
+==============================================================================================================================================================================
+Installing:
+ hamcrest                                        noarch                      1.3-23.module_el8.0.0+30+832da3a1                         @commandline                     128 k
+ hamcrest-core                                   noarch                      1.3-23.module_el8.0.0+30+832da3a1                         @commandline                      59 k
+ junit                                           noarch                      1:4.12-9.module_el8.0.0+30+832da3a1                       @commandline                     300 k
+ slf4j                                           noarch                      1.7.25-4.module_el8.0.0+39+6a9b6e22                       @commandline                      77 k
+ easymock                                        noarch                      3.5-4.module_el8.0.0+30+832da3a1                          @commandline                     144 k
+ qdox                                            noarch                      2.0-3.M9.module_el8.0.0+30+832da3a1                       @commandline                     298 k
+ cglib                                           noarch                      3.2.4-7.module_el8.0.0+30+832da3a1                        @commandline                     298 k
+ objectweb-asm                                   noarch                      6.2-5.module_el8.0.0+30+832da3a1                          @commandline                     447 k
+ objenesis                                       noarch                      2.6-2.module_el8.0.0+30+832da3a1                          @commandline                     106 k
+Installing dependencies:
+ copy-jdk-configs                                noarch                      3.7-3.ky10                                                ks10-adv-os                       23 k
+ java-1.8.0-openjdk-headless                     aarch64                     1:1.8.0.242.b08-1.h5.ky10                                 ks10-adv-os                       32 M
+ javapackages-filesystem                         noarch                      5.3.0-2.ky10                                              ks10-adv-os                      9.8 k
+ javapackages-tools                              noarch                      5.3.0-2.ky10                                              ks10-adv-os                       30 k
+
+Transaction Summary
+==============================================================================================================================================================================
+Install  13 Packages
+
+Total size: 34 M
+Total download size: 32 M
+Installed size: 111 M
+Is this ok [y/N]: y
+Downloading Packages:
+(1/4): javapackages-filesystem-5.3.0-2.ky10.noarch.rpm                                                                                         36 kB/s | 9.8 kB     00:00    
+(2/4): copy-jdk-configs-3.7-3.ky10.noarch.rpm                                                                                                  72 kB/s |  23 kB     00:00    
+(3/4): javapackages-tools-5.3.0-2.ky10.noarch.rpm                                                                                             641 kB/s |  30 kB     00:00    
+(4/4): java-1.8.0-openjdk-headless-1.8.0.242.b08-1.h5.ky10.aarch64.rpm                                                                        259 kB/s |  32 MB     02:07    
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                                                                         260 kB/s |  32 MB     02:07     
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Running scriptlet: copy-jdk-configs-3.7-3.ky10.noarch                                                                                                                   1/1 
+  Running scriptlet: java-1.8.0-openjdk-headless-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                        1/1 
+  Preparing        :                                                                                                                                                      1/1 
+  Installing       : javapackages-filesystem-5.3.0-2.ky10.noarch                                                                                                         1/13 
+  Installing       : copy-jdk-configs-3.7-3.ky10.noarch                                                                                                                  2/13 
+  Installing       : java-1.8.0-openjdk-headless-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                       3/13 
+  Running scriptlet: java-1.8.0-openjdk-headless-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                       3/13 
+  Installing       : hamcrest-core-1.3-23.module_el8.0.0+30+832da3a1.noarch                                                                                              4/13 
+  Installing       : javapackages-tools-5.3.0-2.ky10.noarch                                                                                                              5/13 
+  Installing       : objectweb-asm-6.2-5.module_el8.0.0+30+832da3a1.noarch                                                                                               6/13 
+  Installing       : cglib-3.2.4-7.module_el8.0.0+30+832da3a1.noarch                                                                                                     7/13 
+  Installing       : qdox-2.0-3.M9.module_el8.0.0+30+832da3a1.noarch                                                                                                     8/13 
+  Installing       : objenesis-2.6-2.module_el8.0.0+30+832da3a1.noarch                                                                                                   9/13 
+  Installing       : easymock-3.5-4.module_el8.0.0+30+832da3a1.noarch                                                                                                   10/13 
+  Installing       : hamcrest-1.3-23.module_el8.0.0+30+832da3a1.noarch                                                                                                  11/13 
+  Installing       : junit-1:4.12-9.module_el8.0.0+30+832da3a1.noarch                                                                                                   12/13 
+  Installing       : slf4j-1.7.25-4.module_el8.0.0+39+6a9b6e22.noarch                                                                                                   13/13 
+  Running scriptlet: copy-jdk-configs-3.7-3.ky10.noarch                                                                                                                 13/13 
+  Running scriptlet: slf4j-1.7.25-4.module_el8.0.0+39+6a9b6e22.noarch                                                                                                   13/13 
+  Verifying        : copy-jdk-configs-3.7-3.ky10.noarch                                                                                                                  1/13 
+  Verifying        : java-1.8.0-openjdk-headless-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                       2/13 
+  Verifying        : javapackages-filesystem-5.3.0-2.ky10.noarch                                                                                                         3/13 
+  Verifying        : javapackages-tools-5.3.0-2.ky10.noarch                                                                                                              4/13 
+  Verifying        : hamcrest-1.3-23.module_el8.0.0+30+832da3a1.noarch                                                                                                   5/13 
+  Verifying        : hamcrest-core-1.3-23.module_el8.0.0+30+832da3a1.noarch                                                                                              6/13 
+  Verifying        : junit-1:4.12-9.module_el8.0.0+30+832da3a1.noarch                                                                                                    7/13 
+  Verifying        : slf4j-1.7.25-4.module_el8.0.0+39+6a9b6e22.noarch                                                                                                    8/13 
+  Verifying        : easymock-3.5-4.module_el8.0.0+30+832da3a1.noarch                                                                                                    9/13 
+  Verifying        : qdox-2.0-3.M9.module_el8.0.0+30+832da3a1.noarch                                                                                                    10/13 
+  Verifying        : cglib-3.2.4-7.module_el8.0.0+30+832da3a1.noarch                                                                                                    11/13 
+  Verifying        : objectweb-asm-6.2-5.module_el8.0.0+30+832da3a1.noarch                                                                                              12/13 
+  Verifying        : objenesis-2.6-2.module_el8.0.0+30+832da3a1.noarch                                                                                                  13/13 
+
+Installed:
+  hamcrest-1.3-23.module_el8.0.0+30+832da3a1.noarch    hamcrest-core-1.3-23.module_el8.0.0+30+832da3a1.noarch           junit-1:4.12-9.module_el8.0.0+30+832da3a1.noarch    
+  slf4j-1.7.25-4.module_el8.0.0+39+6a9b6e22.noarch     easymock-3.5-4.module_el8.0.0+30+832da3a1.noarch                 qdox-2.0-3.M9.module_el8.0.0+30+832da3a1.noarch     
+  cglib-3.2.4-7.module_el8.0.0+30+832da3a1.noarch      objectweb-asm-6.2-5.module_el8.0.0+30+832da3a1.noarch            objenesis-2.6-2.module_el8.0.0+30+832da3a1.noarch   
+  copy-jdk-configs-3.7-3.ky10.noarch                   java-1.8.0-openjdk-headless-1:1.8.0.242.b08-1.h5.ky10.aarch64    javapackages-filesystem-5.3.0-2.ky10.noarch         
+  javapackages-tools-5.3.0-2.ky10.noarch              
+
+Complete!
+[root@col ~]# 
+
+[root@col ~]# yum install java-devel javapackages-tools krb5-devel libaec-devel mpich-devel openssl-devel
+Last metadata expiration check: 0:54:34 ago on Sat 23 Jul 2022 09:25:01 PM CST.
+Package javapackages-tools-5.3.0-2.ky10.noarch is already installed.
+Dependencies resolved.
+==============================================================================================================================================================================
+ Package                                          Architecture                    Version                                           Repository                           Size
+==============================================================================================================================================================================
+Installing:
+ java-1.8.0-openjdk-devel                         aarch64                         1:1.8.0.242.b08-1.h5.ky10                         ks10-adv-os                         7.8 M
+ krb5-devel                                       aarch64                         1.17-9.ky10                                       ks10-adv-os                         160 k
+ libaec-devel                                     aarch64                         1.0.4-1.ky10                                      ks10-adv-os                         9.9 k
+ mpich-devel                                      aarch64                         3.2.1-10.ky10                                     ks10-adv-os                         121 k
+ openssl-devel                                    aarch64                         1:1.1.1d-9.ky10                                   ks10-adv-os                         1.7 M
+Installing dependencies:
+ e2fsprogs-devel                                  aarch64                         1.45.3-4.p01.ky10                                 ks10-adv-os                         287 k
+ hwloc                                            aarch64                         1.11.9-3.ky10                                     ks10-adv-os                         1.7 M
+ java-1.8.0-openjdk                               aarch64                         1:1.8.0.242.b08-1.h5.ky10                         ks10-adv-os                         382 k
+ keyutils-libs-devel                              aarch64                         1.5.10-11.ky10                                    ks10-adv-os                         9.8 k
+ libaec                                           aarch64                         1.0.4-1.ky10                                      ks10-adv-os                          34 k
+ libverto-devel                                   aarch64                         0.3.1-2.ky10                                      ks10-adv-os                          16 k
+ lua-filesystem                                   aarch64                         1.6.3-10.ky10                                     ks10-adv-os                          17 k
+ mpich                                            aarch64                         3.2.1-10.ky10                                     ks10-adv-os                         1.0 M
+ Lmod                                             aarch64                         8.7.7-1.el8                                       epel                                261 k
+ lua-term                                         aarch64                         0.07-9.el8                                        epel                                 16 k
+
+Transaction Summary
+==============================================================================================================================================================================
+Install  15 Packages
+
+Total download size: 13 M
+Installed size: 60 M
+Is this ok [y/N]: y
+Downloading Packages:
+(1/15): e2fsprogs-devel-1.45.3-4.p01.ky10.aarch64.rpm                                                                                          46 kB/s | 287 kB     00:06    
+(2/15): java-1.8.0-openjdk-1.8.0.242.b08-1.h5.ky10.aarch64.rpm                                                                                 60 kB/s | 382 kB     00:06    
+(3/15): keyutils-libs-devel-1.5.10-11.ky10.aarch64.rpm                                                                                        454 kB/s | 9.8 kB     00:00    
+(4/15): krb5-devel-1.17-9.ky10.aarch64.rpm                                                                                                    7.4 MB/s | 160 kB     00:00    
+(5/15): libaec-1.0.4-1.ky10.aarch64.rpm                                                                                                       1.9 MB/s |  34 kB     00:00    
+(6/15): libaec-devel-1.0.4-1.ky10.aarch64.rpm                                                                                                 619 kB/s | 9.9 kB     00:00    
+(7/15): libverto-devel-0.3.1-2.ky10.aarch64.rpm                                                                                               1.1 MB/s |  16 kB     00:00    
+(8/15): lua-filesystem-1.6.3-10.ky10.aarch64.rpm                                                                                              1.1 MB/s |  17 kB     00:00    
+(9/15): mpich-3.2.1-10.ky10.aarch64.rpm                                                                                                       491 kB/s | 1.0 MB     00:02    
+(10/15): mpich-devel-3.2.1-10.ky10.aarch64.rpm                                                                                                3.4 MB/s | 121 kB     00:00    
+(11/15): hwloc-1.11.9-3.ky10.aarch64.rpm                                                                                                      161 kB/s | 1.7 MB     00:10    
+(12/15): openssl-devel-1.1.1d-9.ky10.aarch64.rpm                                                                                              376 kB/s | 1.7 MB     00:04    
+(13/15): lua-term-0.07-9.el8.aarch64.rpm                                                                                                       15 kB/s |  16 kB     00:01    
+(14/15): java-1.8.0-openjdk-devel-1.8.0.242.b08-1.h5.ky10.aarch64.rpm                                                                         274 kB/s | 7.8 MB     00:28    
+(15/15): Lmod-8.7.7-1.el8.aarch64.rpm                                                                                                         9.0 kB/s | 261 kB     00:29    
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                                                                         346 kB/s |  13 MB     00:39     
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                                                                                                                      1/1 
+  Installing       : lua-term-0.07-9.el8.aarch64                                                                                                                         1/15 
+  Installing       : lua-filesystem-1.6.3-10.ky10.aarch64                                                                                                                2/15 
+  Installing       : Lmod-8.7.7-1.el8.aarch64                                                                                                                            3/15 
+  Running scriptlet: Lmod-8.7.7-1.el8.aarch64                                                                                                                            3/15 
+  Installing       : libverto-devel-0.3.1-2.ky10.aarch64                                                                                                                 4/15 
+  Installing       : libaec-1.0.4-1.ky10.aarch64                                                                                                                         5/15 
+  Installing       : keyutils-libs-devel-1.5.10-11.ky10.aarch64                                                                                                          6/15 
+  Installing       : java-1.8.0-openjdk-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                                7/15 
+  Running scriptlet: java-1.8.0-openjdk-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                                7/15 
+  Installing       : hwloc-1.11.9-3.ky10.aarch64                                                                                                                         8/15 
+  Installing       : mpich-3.2.1-10.ky10.aarch64                                                                                                                         9/15 
+  Running scriptlet: mpich-3.2.1-10.ky10.aarch64                                                                                                                         9/15 
+  Installing       : e2fsprogs-devel-1.45.3-4.p01.ky10.aarch64                                                                                                          10/15 
+  Running scriptlet: e2fsprogs-devel-1.45.3-4.p01.ky10.aarch64                                                                                                          10/15 
+  Installing       : krb5-devel-1.17-9.ky10.aarch64                                                                                                                     11/15 
+  Installing       : openssl-devel-1:1.1.1d-9.ky10.aarch64                                                                                                              12/15 
+  Installing       : mpich-devel-3.2.1-10.ky10.aarch64                                                                                                                  13/15 
+  Installing       : java-1.8.0-openjdk-devel-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                         14/15 
+  Running scriptlet: java-1.8.0-openjdk-devel-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                         14/15 
+  Installing       : libaec-devel-1.0.4-1.ky10.aarch64                                                                                                                  15/15 
+  Running scriptlet: java-1.8.0-openjdk-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                               15/15 
+  Running scriptlet: java-1.8.0-openjdk-devel-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                         15/15 
+  Running scriptlet: libaec-devel-1.0.4-1.ky10.aarch64                                                                                                                  15/15 
+  Verifying        : e2fsprogs-devel-1.45.3-4.p01.ky10.aarch64                                                                                                           1/15 
+  Verifying        : hwloc-1.11.9-3.ky10.aarch64                                                                                                                         2/15 
+  Verifying        : java-1.8.0-openjdk-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                                3/15 
+  Verifying        : java-1.8.0-openjdk-devel-1:1.8.0.242.b08-1.h5.ky10.aarch64                                                                                          4/15 
+  Verifying        : keyutils-libs-devel-1.5.10-11.ky10.aarch64                                                                                                          5/15 
+  Verifying        : krb5-devel-1.17-9.ky10.aarch64                                                                                                                      6/15 
+  Verifying        : libaec-1.0.4-1.ky10.aarch64                                                                                                                         7/15 
+  Verifying        : libaec-devel-1.0.4-1.ky10.aarch64                                                                                                                   8/15 
+  Verifying        : libverto-devel-0.3.1-2.ky10.aarch64                                                                                                                 9/15 
+  Verifying        : lua-filesystem-1.6.3-10.ky10.aarch64                                                                                                               10/15 
+  Verifying        : mpich-3.2.1-10.ky10.aarch64                                                                                                                        11/15 
+  Verifying        : mpich-devel-3.2.1-10.ky10.aarch64                                                                                                                  12/15 
+  Verifying        : openssl-devel-1:1.1.1d-9.ky10.aarch64                                                                                                              13/15 
+  Verifying        : Lmod-8.7.7-1.el8.aarch64                                                                                                                           14/15 
+  Verifying        : lua-term-0.07-9.el8.aarch64                                                                                                                        15/15 
+
+Installed:
+  java-1.8.0-openjdk-devel-1:1.8.0.242.b08-1.h5.ky10.aarch64       krb5-devel-1.17-9.ky10.aarch64                             libaec-devel-1.0.4-1.ky10.aarch64               
+  mpich-devel-3.2.1-10.ky10.aarch64                                openssl-devel-1:1.1.1d-9.ky10.aarch64                      e2fsprogs-devel-1.45.3-4.p01.ky10.aarch64       
+  hwloc-1.11.9-3.ky10.aarch64                                      java-1.8.0-openjdk-1:1.8.0.242.b08-1.h5.ky10.aarch64       keyutils-libs-devel-1.5.10-11.ky10.aarch64      
+  libaec-1.0.4-1.ky10.aarch64                                      libverto-devel-0.3.1-2.ky10.aarch64                        lua-filesystem-1.6.3-10.ky10.aarch64            
+  mpich-3.2.1-10.ky10.aarch64                                      Lmod-8.7.7-1.el8.aarch64                                   lua-term-0.07-9.el8.aarch64                     
+
+Complete!
+[root@col ~]# 
+
+[root@col ~]# rpmbuild --rebuild hdf5-1.10.5-4.el8.src.rpm 
+Installing hdf5-1.10.5-4.el8.src.rpm
+warning: hdf5-1.10.5-4.el8.src.rpm: Header V3 RSA/SHA256 Signature, key ID 2f86d6a1: NOKEY
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+error: Failed build dependencies:
+        openmpi-devel is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+</code></pre>
+
+<h3>再编译openmpi</h3>
+
+<p>源码<a href="https://centos.pkgs.org/8/centos-appstream-aarch64/openmpi-devel-4.1.1-2.el8.aarch64.rpm.html">查找后选择centos8的版本</a></p>
+
+<pre><code>[root@col ~]# rpmbuild --rebuild openmpi-4.1.1-2.el8.src.rpm 
+Installing openmpi-4.1.1-2.el8.src.rpm
+warning: openmpi-4.1.1-2.el8.src.rpm: Header V3 RSA/SHA256 Signature, key ID 8483c65d: NOKEY
+warning: user mockbuild does not exist - using root
+warning: group mockbuild does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mockbuild does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mockbuild does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mockbuild does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mockbuild does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mockbuild does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mockbuild does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mockbuild does not exist - using root
+error: Failed build dependencies:
+        hwloc-devel &gt;= 2.2.0 is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+        libevent-devel is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+        libfabric-devel is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+        opensm-devel &gt; 3.3.0 is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+        papi-devel is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+        pmix-devel is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+        rdma-core-devel is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+        rpm-mpi-hooks is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+        ucx-devel is needed by openmpi-4.1.1-2.ky10.ky10.aarch64
+</code></pre>
+
+<p>下载依赖</p>
+
+<pre><code>[root@col ~]# ll *.rpm
+-rw------- 1 root root  305031 Jul 23 22:12 cglib-3.2.4-7.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  147131 Jul 23 22:11 easymock-3.5-4.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  131075 Jul 23 22:08 hamcrest-1.3-23.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root   60043 Jul 23 22:08 hamcrest-core-1.3-23.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw-r--r-- 1 root root 8739906 Jul 22 14:57 hdf5-1.10.5-4.el8.src.rpm
+-rw------- 1 root root  254060 Jul 23 22:32 hwloc-devel-2.2.0-3.el8.aarch64.rpm
+-rw------- 1 root root   67048 Jul 23 22:32 hwloc-gui-2.2.0-3.el8.aarch64.rpm
+-rw------- 1 root root 2085332 Jul 23 22:32 hwloc-libs-2.2.0-3.el8.aarch64.rpm
+-rw------- 1 root root  307067 Jul 23 22:08 junit-4.12-9.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  457315 Jul 23 22:12 objectweb-asm-6.2-5.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  108627 Jul 23 22:12 objenesis-2.6-2.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root 9846455 Jul 23 22:26 openmpi-4.1.1-2.el8.src.rpm
+-rw------- 1 root root  685564 Jul 24 06:23 pmix-2.2.4rc1-1.el8.aarch64.rpm
+-rw------- 1 root root   60776 Jul 24 06:23 pmix-devel-2.2.4rc1-1.el8.aarch64.rpm
+-rw------- 1 root root  305655 Jul 23 22:12 qdox-2.0-3.M9.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root   13320 Jul 23 22:27 rpm-mpi-hooks-8-2.el8.noarch.rpm
+-rw------- 1 root root   78511 Jul 23 22:08 slf4j-1.7.25-4.module_el8.0.0+39+6a9b6e22.noarch.rpm
+-rw------- 1 root root  541892 Jul 23 22:27 ucx-1.10.1-2.el8.aarch64.rpm
+-rw------- 1 root root  162896 Jul 23 22:27 ucx-devel-1.10.1-2.el8.aarch64.rpm
+
+[root@col ~]# yum install ./rpm-mpi-hooks-8-2.el8.noarch.rpm ./ucx-* 
+Last metadata expiration check: 1:03:14 ago on Sat 23 Jul 2022 09:25:01 PM CST.
+Dependencies resolved.
+==============================================================================================================================================================================
+ Package                                    Architecture                         Version                                      Repository                                 Size
+==============================================================================================================================================================================
+Installing:
+ rpm-mpi-hooks                              noarch                               8-2.el8                                      @commandline                               13 k
+ ucx                                        aarch64                              1.10.1-2.el8                                 @commandline                              529 k
+ ucx-devel                                  aarch64                              1.10.1-2.el8                                 @commandline                              159 k
+
+Transaction Summary
+==============================================================================================================================================================================
+Install  3 Packages
+
+Total size: 701 k
+Installed size: 2.5 M
+Is this ok [y/N]: y
+Downloading Packages:
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                                                                                                                      1/1 
+  Installing       : ucx-1.10.1-2.el8.aarch64                                                                                                                             1/3 
+  Running scriptlet: ucx-1.10.1-2.el8.aarch64                                                                                                                             1/3 
+  Installing       : ucx-devel-1.10.1-2.el8.aarch64                                                                                                                       2/3 
+  Installing       : rpm-mpi-hooks-8-2.el8.noarch                                                                                                                         3/3 
+  Running scriptlet: rpm-mpi-hooks-8-2.el8.noarch                                                                                                                         3/3 
+  Verifying        : rpm-mpi-hooks-8-2.el8.noarch                                                                                                                         1/3 
+  Verifying        : ucx-1.10.1-2.el8.aarch64                                                                                                                             2/3 
+  Verifying        : ucx-devel-1.10.1-2.el8.aarch64                                                                                                                       3/3 
+
+Installed:
+  rpm-mpi-hooks-8-2.el8.noarch                              ucx-1.10.1-2.el8.aarch64                              ucx-devel-1.10.1-2.el8.aarch64                             
+
+Complete!
+
+[root@col ~]# yum remove hwloc
+Dependencies resolved.
+=============================================================================================================================================================================
+ Package                                  Architecture                         Version                                       Repository                                 Size
+=============================================================================================================================================================================
+Removing:
+ hwloc                                    aarch64                              1.11.9-3.ky10                                 @ks10-adv-os                              3.2 M
+Removing dependent packages:
+ hwloc-devel                              aarch64                              1.11.9-3.ky10                                 @ks10-adv-os                              405 k
+ pmix-devel                               aarch64                              3.1.4-2.oe1                                   @ks10-adv-os                              295 k
+Removing unused dependencies:
+ munge                                    aarch64                              0.5.13-3.oe1                                  @ks10-adv-os                              442 k
+ pmix                                     aarch64                              3.1.4-2.oe1                                   @ks10-adv-os                              2.7 M
+
+Transaction Summary
+=============================================================================================================================================================================
+Remove  5 Packages
+
+Freed space: 7.0 M
+Is this ok [y/N]: y
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                                                                                                                     1/1 
+  Erasing          : pmix-devel-3.1.4-2.oe1.aarch64                                                                                                                      1/5 
+  Running scriptlet: pmix-devel-3.1.4-2.oe1.aarch64                                                                                                                      1/5 
+  Erasing          : hwloc-devel-1.11.9-3.ky10.aarch64                                                                                                                   2/5 
+  Erasing          : pmix-3.1.4-2.oe1.aarch64                                                                                                                            3/5 
+  Running scriptlet: pmix-3.1.4-2.oe1.aarch64                                                                                                                            3/5 
+  Erasing          : hwloc-1.11.9-3.ky10.aarch64                                                                                                                         4/5 
+  Running scriptlet: munge-0.5.13-3.oe1.aarch64                                                                                                                          5/5 
+  Erasing          : munge-0.5.13-3.oe1.aarch64                                                                                                                          5/5 
+  Running scriptlet: munge-0.5.13-3.oe1.aarch64                                                                                                                          5/5 
+  Verifying        : hwloc-1.11.9-3.ky10.aarch64                                                                                                                         1/5 
+  Verifying        : hwloc-devel-1.11.9-3.ky10.aarch64                                                                                                                   2/5 
+  Verifying        : munge-0.5.13-3.oe1.aarch64                                                                                                                          3/5 
+  Verifying        : pmix-3.1.4-2.oe1.aarch64                                                                                                                            4/5 
+  Verifying        : pmix-devel-3.1.4-2.oe1.aarch64                                                                                                                      5/5 
+
+Removed:
+  hwloc-1.11.9-3.ky10.aarch64      hwloc-devel-1.11.9-3.ky10.aarch64      pmix-devel-3.1.4-2.oe1.aarch64      munge-0.5.13-3.oe1.aarch64      pmix-3.1.4-2.oe1.aarch64     
+
+Complete!
+[root@col ~]# 
+
+
+[root@col ~]# yum install libevent-devel libfabric-devel papi-devel rdma-core-devel opensm-devel ./hwloc-libs-2.2.0-3.el8.aarch64.rpm ./hwloc-devel-2.2.0-3.el8.aarch64.rpm ./hwloc-gui-2.2.0-3.el8.aarch64.rpm ./pmix-2.2.4rc1-1.el8.aarch64.rpm ./pmix-devel-2.2.4rc1-1.el8.aarch64.rpm            
+
+[root@col ~]# rpmbuild --rebuild openmpi-4.1.1-2.el8.src.rpm 
+
+[root@col ~]# yum install ~/rpmbuild/RPMS/aarch64/openmpi-4.1.1-2.ky10.ky10.aarch64.rpm ~/rpmbuild/RPMS/aarch64/openmpi-devel-4.1.1-2.ky10.ky10.aarch64.rpm 
+</code></pre>
+
+<h3>mpich</h3>
+
+<pre><code>[root@col ~]# rpmbuild --rebuild hdf5-1.10.5-4.el8.src.rpm   
+Installing hdf5-1.10.5-4.el8.src.rpm
+warning: hdf5-1.10.5-4.el8.src.rpm: Header V3 RSA/SHA256 Signature, key ID 2f86d6a1: NOKEY
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+warning: user mockbuild does not exist - using root
+warning: group mock does not exist - using root
+error: Failed build dependencies:
+        mpich-devel is needed by hdf5-1.10.5-4.ky10.ky10.aarch64
+
+[root@col ~]# yum install mpich-devel mpich 
+Last metadata expiration check: 1:55:24 ago on Sun 24 Jul 2022 04:56:06 AM CST.
+Error: 
+ Problem 1: package hwloc-1.11.9-3.ky10.aarch64 obsoletes hwloc-libs provided by hwloc-libs-2.2.0-3.el8.aarch64
+  - package mpich-3.2.1-10.ky10.aarch64 requires libhwloc.so.5()(64bit), but none of the providers can be installed
+  - package openmpi-4.1.1-2.ky10.ky10.aarch64 requires libhwloc.so.15()(64bit), but none of the providers can be installed
+  - conflicting requests
+  - problem with installed package openmpi-4.1.1-2.ky10.ky10.aarch64
+ Problem 2: package mpich-3.2.1-10.ky10.aarch64 requires libhwloc.so.5()(64bit), but none of the providers can be installed
+  - package hwloc-1.11.9-3.ky10.aarch64 obsoletes hwloc-libs provided by hwloc-libs-2.2.0-3.el8.aarch64
+  - package mpich-devel-3.2.1-10.ky10.aarch64 requires mpich = 3.2.1-10.ky10, but none of the providers can be installed
+  - package openmpi-devel-4.1.1-2.ky10.ky10.aarch64 requires libhwloc.so.15()(64bit), but none of the providers can be installed
+  - conflicting requests
+  - problem with installed package openmpi-devel-4.1.1-2.ky10.ky10.aarch64
+(try to add '--skip-broken' to skip uninstallable packages or '--nobest' to use not only best candidate packages)
+
+
+[root@col ~]# ll *.rpm
+-rw------- 1 root root   305031 Jul 23 22:12 cglib-3.2.4-7.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root   147131 Jul 23 22:11 easymock-3.5-4.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root   131075 Jul 23 22:08 hamcrest-1.3-23.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root    60043 Jul 23 22:08 hamcrest-core-1.3-23.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw-r--r-- 1 root root  8739906 Jul 22 14:57 hdf5-1.10.5-4.el8.src.rpm
+-rw------- 1 root root   254060 Jul 23 22:32 hwloc-devel-2.2.0-3.el8.aarch64.rpm
+-rw------- 1 root root    67048 Jul 23 22:32 hwloc-gui-2.2.0-3.el8.aarch64.rpm
+-rw------- 1 root root  2085332 Jul 23 22:32 hwloc-libs-2.2.0-3.el8.aarch64.rpm
+-rw------- 1 root root   307067 Jul 23 22:08 junit-4.12-9.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root 30515938 Jul 24 06:55 mpich-3.4.1-1.el8.src.rpm
+-rw------- 1 root root   457315 Jul 23 22:12 objectweb-asm-6.2-5.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root   108627 Jul 23 22:12 objenesis-2.6-2.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root  9846455 Jul 23 22:26 openmpi-4.1.1-2.el8.src.rpm
+-rw------- 1 root root   685564 Jul 24 06:23 pmix-2.2.4rc1-1.el8.aarch64.rpm
+-rw------- 1 root root    60776 Jul 24 06:23 pmix-devel-2.2.4rc1-1.el8.aarch64.rpm
+-rw------- 1 root root   305655 Jul 23 22:12 qdox-2.0-3.M9.module_el8.0.0+30+832da3a1.noarch.rpm
+-rw------- 1 root root    13320 Jul 23 22:27 rpm-mpi-hooks-8-2.el8.noarch.rpm
+-rw------- 1 root root    78511 Jul 23 22:08 slf4j-1.7.25-4.module_el8.0.0+39+6a9b6e22.noarch.rpm
+-rw------- 1 root root   541892 Jul 23 22:27 ucx-1.10.1-2.el8.aarch64.rpm
+-rw------- 1 root root   162896 Jul 23 22:27 ucx-devel-1.10.1-2.el8.aarch64.rpm
+
+
+[root@col ~]# rpmbuild --rebuild --nocheck mpich-3.4.1-1.el8.src.rpm                                                                                    
+
+[root@col ~]# rpm -ivh --force ~/rpmbuild/RPMS/aarch64/mpich-3.4.1-1.ky10.ky10.aarch64.rpm ~/rpmbuild/RPMS/aarch64/mpich-devel-3.4.1-1.ky10.ky10.aarch64.rpm           
+error: Failed dependencies:
+        redhat-rpm-config is needed by mpich-devel-3.4.1-1.ky10.ky10.aarch64
+[root@col ~]# rpm -ivh --force --nodeps ~/rpmbuild/RPMS/aarch64/mpich-3.4.1-1.ky10.ky10.aarch64.rpm ~/rpmbuild/RPMS/aarch64/mpich-devel-3.4.1-1.ky10.ky10.aarch64.rpm
+Verifying...                          ################################# [100%]
+Preparing...                          ################################# [100%]
+Updating / installing...
+   1:mpich-3.4.1-1.ky10.ky10          ################################# [ 50%]
+   2:mpich-devel-3.4.1-1.ky10.ky10    ################################# [100%]
+</code></pre>
+
+<p>这次终于可以编译hdf5了，时间会相对长一点，慢慢等。</p>
+
+<pre><code>[root@col ~]# rpmbuild --rebuild hdf5-1.10.5-4.el8.src.rpm
+
+[root@col ~]# yum install ~/rpmbuild/RPMS/aarch64/hdf5-1.10.5-4.ky10.ky10.aarch64.rpm ~/rpmbuild/RPMS/aarch64/hdf5-devel-1.10.5-4.ky10.ky10.aarch64.rpm 
+</code></pre>
+
+<h2>armadillo</h2>
+
+<pre><code>[root@col ~]# yum install postgresql96 postgresql96-server postgis24_96                                  
+Last metadata expiration check: 0:46:44 ago on Sun 24 Jul 2022 07:56:56 AM CST.
+Error: 
+ Problem: package postgis24_96-2.4.9-3.rhel8.aarch64 requires libgdal.so.28()(64bit), but none of the providers can be installed
+  - package postgis24_96-2.4.9-3.rhel8.aarch64 requires gdal32-libs &gt;= 3.2.0, but none of the providers can be installed
+  - package gdal32-libs-3.2.2-12.rhel8.aarch64 requires libhdf5.so.103()(64bit), but none of the providers can be installed
+  - package gdal32-libs-3.2.2-13.rhel8.aarch64 requires libhdf5.so.103()(64bit), but none of the providers can be installed
+  - cannot install both hdf5-1.8.20-7.ky10.aarch64 and hdf5-1.10.5-4.ky10.ky10.aarch64
+  - package armadillo-9.600.6-3.oe1.aarch64 requires libhdf5.so.10()(64bit), but none of the providers can be installed
+  - package gdal32-libs-3.2.2-12.rhel8.aarch64 requires libarmadillo.so.9()(64bit), but none of the providers can be installed
+  - package gdal32-libs-3.2.2-13.rhel8.aarch64 requires libarmadillo.so.9()(64bit), but none of the providers can be installed
+  - cannot install the best candidate for the job
+  - nothing provides libgfortran.so.5()(64bit) needed by hdf5-1.10.5-4.el8.aarch64
+  - nothing provides libgfortran.so.5(GFORTRAN_8)(64bit) needed by hdf5-1.10.5-4.el8.aarch64
+(try to add '--allowerasing' to command line to replace conflicting packages or '--skip-broken' to skip uninstallable packages or '--nobest' to use not only best candidate packages)
+
+[root@col ~]# yum list armadillo --showduplicates
+Last metadata expiration check: 0:47:59 ago on Sun 24 Jul 2022 07:56:56 AM CST.
+Available Packages
+armadillo.aarch64                                                                  9.600.6-3.oe1                                                                  ks10-adv-os
+armadillo.aarch64                                                                  10.8.2-1.el8                                                                   epel       
+</code></pre>
+
+<p>gdal32-libs 依赖的是 libarmadillo.so.9 ，直接找openEuler的版本<a href="https://cmcc.mirrors.ustc.edu.cn/openeuler/openEuler-20.03-LTS-SP1/update/source/Packages/">armadillo-9.600.6-4.oe1.src.rpm</a> 。</p>
+
+<pre><code>[root@col ~]# rpmbuild --rebuild armadillo-9.600.6-4.oe1.src.rpm 
+Installing armadillo-9.600.6-4.oe1.src.rpm
+warning: armadillo-9.600.6-4.oe1.src.rpm: Header V3 RSA/SHA1 Signature, key ID b25e7f66: NOKEY
+error: bad date in %changelog: Fri 26 Mar 2021 sunguoshuai &lt;sunguoshuai@huawei.com&gt; - 9.600.6-4
+error: Failed build dependencies:
+        SuperLU-devel is needed by armadillo-9.600.6-4.ky10.aarch64
+        arpack-devel is needed by armadillo-9.600.6-4.ky10.aarch64
+        lapack-devel is needed by armadillo-9.600.6-4.ky10.aarch64
+        openblas-devel is needed by armadillo-9.600.6-4.ky10.aarch64
+
+[root@col ~]# yum install SuperLU-devel arpack-devel-3.5.0
+Last metadata expiration check: 0:55:00 ago on Sun 24 Jul 2022 07:56:56 AM CST.
+Dependencies resolved.
+=============================================================================================================================================================================
+ Package                                     Architecture                         Version                                     Repository                                Size
+=============================================================================================================================================================================
+Installing:
+ SuperLU-devel                               aarch64                              5.2.1-6.oe1                                 ks10-adv-os                               22 k
+ arpack-devel                                aarch64                              3.5.0-7.oe1                                 ks10-adv-os                              8.2 k
+Installing dependencies:
+ SuperLU                                     aarch64                              5.2.1-6.oe1                                 ks10-adv-os                              139 k
+ arpack                                      aarch64                              3.5.0-7.oe1                                 ks10-adv-os                              141 k
+ openblas                                    aarch64                              0.3.3-3.ky10                                ks10-adv-os                               46 M
+ openblas-devel                              aarch64                              0.3.3-3.ky10                                ks10-adv-os                               83 k
+
+Transaction Summary
+=============================================================================================================================================================================
+Install  6 Packages
+
+Total download size: 47 M
+Installed size: 286 M
+Is this ok [y/N]: y
+Downloading Packages:
+(1/6): SuperLU-devel-5.2.1-6.oe1.aarch64.rpm                                                                                                 3.5 kB/s |  22 kB     00:06    
+(2/6): arpack-3.5.0-7.oe1.aarch64.rpm                                                                                                         11 kB/s | 141 kB     00:12    
+(3/6): SuperLU-5.2.1-6.oe1.aarch64.rpm                                                                                                        11 kB/s | 139 kB     00:12    
+(4/6): arpack-devel-3.5.0-7.oe1.aarch64.rpm                                                                                                  1.4 kB/s | 8.2 kB     00:06    
+(5/6): openblas-devel-0.3.3-3.ky10.aarch64.rpm                                                                                               2.6 MB/s |  83 kB     00:00    
+(6/6): openblas-0.3.3-3.ky10.aarch64.rpm                                                                                                     258 kB/s |  46 MB     03:03    
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                                                                        244 kB/s |  47 MB     03:15     
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                                                                                                                     1/1 
+  Installing       : openblas-devel-0.3.3-3.ky10.aarch64                                                                                                                 1/6 
+  Installing       : openblas-0.3.3-3.ky10.aarch64                                                                                                                       2/6 
+  Running scriptlet: openblas-0.3.3-3.ky10.aarch64                                                                                                                       2/6 
+  Installing       : SuperLU-5.2.1-6.oe1.aarch64                                                                                                                         3/6 
+  Running scriptlet: SuperLU-5.2.1-6.oe1.aarch64                                                                                                                         3/6 
+  Installing       : arpack-3.5.0-7.oe1.aarch64                                                                                                                          4/6 
+  Running scriptlet: arpack-3.5.0-7.oe1.aarch64                                                                                                                          4/6 
+  Installing       : arpack-devel-3.5.0-7.oe1.aarch64                                                                                                                    5/6 
+  Installing       : SuperLU-devel-5.2.1-6.oe1.aarch64                                                                                                                   6/6 
+  Running scriptlet: SuperLU-devel-5.2.1-6.oe1.aarch64                                                                                                                   6/6 
+  Verifying        : SuperLU-5.2.1-6.oe1.aarch64                                                                                                                         1/6 
+  Verifying        : SuperLU-devel-5.2.1-6.oe1.aarch64                                                                                                                   2/6 
+  Verifying        : arpack-3.5.0-7.oe1.aarch64                                                                                                                          3/6 
+  Verifying        : arpack-devel-3.5.0-7.oe1.aarch64                                                                                                                    4/6 
+  Verifying        : openblas-0.3.3-3.ky10.aarch64                                                                                                                       5/6 
+  Verifying        : openblas-devel-0.3.3-3.ky10.aarch64                                                                                                                 6/6 
+
+Installed:
+  SuperLU-devel-5.2.1-6.oe1.aarch64      arpack-devel-3.5.0-7.oe1.aarch64    SuperLU-5.2.1-6.oe1.aarch64    arpack-3.5.0-7.oe1.aarch64    openblas-0.3.3-3.ky10.aarch64   
+  openblas-devel-0.3.3-3.ky10.aarch64   
+
+Complete!
+[root@col ~]# 
+
+[root@col ~]# yum install lapack-devel 
+Last metadata expiration check: 0:59:07 ago on Sun 24 Jul 2022 07:56:56 AM CST.
+Dependencies resolved.
+=============================================================================================================================================================================
+ Package                                   Architecture                         Version                                       Repository                                Size
+=============================================================================================================================================================================
+Installing:
+ lapack-devel                              aarch64                              3.8.0-16.ky10                                 ks10-adv-os                              4.7 M
+Installing dependencies:
+ lapack                                    aarch64                              3.8.0-16.ky10                                 ks10-adv-os                              4.5 M
+
+Transaction Summary
+=============================================================================================================================================================================
+Install  2 Packages
+
+Total download size: 9.2 M
+Installed size: 47 M
+Is this ok [y/N]: y
+Downloading Packages:
+(1/2): lapack-3.8.0-16.ky10.aarch64.rpm                                                                                                      176 kB/s | 4.5 MB     00:26    
+(2/2): lapack-devel-3.8.0-16.ky10.aarch64.rpm                                                                                                184 kB/s | 4.7 MB     00:26    
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                                                                        360 kB/s | 9.2 MB     00:26     
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                                                                                                                     1/1 
+  Installing       : lapack-3.8.0-16.ky10.aarch64                                                                                                                        1/2 
+  Running scriptlet: lapack-3.8.0-16.ky10.aarch64                                                                                                                        1/2 
+  Installing       : lapack-devel-3.8.0-16.ky10.aarch64                                                                                                                  2/2 
+  Running scriptlet: lapack-devel-3.8.0-16.ky10.aarch64                                                                                                                  2/2 
+  Verifying        : lapack-3.8.0-16.ky10.aarch64                                                                                                                        1/2 
+  Verifying        : lapack-devel-3.8.0-16.ky10.aarch64                                                                                                                  2/2 
+
+Installed:
+  lapack-devel-3.8.0-16.ky10.aarch64                                                       lapack-3.8.0-16.ky10.aarch64                                                      
+
+Complete!
+[root@col ~]# 
+
+[root@col ~]# rpmbuild --rebuild armadillo-9.600.6-4.oe1.src.rpm 
+
+[root@col ~]# yum install ~/rpmbuild/RPMS/aarch64/armadillo-9.600.6-4.ky10.aarch64.rpm 
+</code></pre>
+
+<h2>安装</h2>
+
+<pre><code>[root@col ~]# yum install postgresql96 postgresql96-server postgis24_96                                                                                                      
+Last metadata expiration check: 1:00:42 ago on Sun 24 Jul 2022 07:56:56 AM CST.
+Dependencies resolved.
+=============================================================================================================================================================================
+ Package                                         Architecture                      Version                                       Repository                             Size
+=============================================================================================================================================================================
+Installing:
+ postgis24_96                                    aarch64                           2.4.9-3.rhel8                                 pgdg96                                3.2 M
+ postgresql96                                    aarch64                           9.6.24-1PGDG.rhel8                            pgdg96                                1.5 M
+ postgresql96-server                             aarch64                           9.6.24-1PGDG.rhel8                            pgdg96                                4.5 M
+Upgrading:
+ minizip                                         aarch64                           2.8.9-2.el8                                   epel                                  119 k
+Installing dependencies:
+ boost-atomic                                    aarch64                           1.66.0-18.ky10                                ks10-adv-os                            11 k
+ boost-chrono                                    aarch64                           1.66.0-18.ky10                                ks10-adv-os                            20 k
+ boost-date-time                                 aarch64                           1.66.0-18.ky10                                ks10-adv-os                            26 k
+ boost-serialization                             aarch64                           1.66.0-18.ky10                                ks10-adv-os                           105 k
+ boost-system                                    aarch64                           1.66.0-18.ky10                                ks10-adv-os                            15 k
+ boost-thread                                    aarch64                           1.66.0-18.ky10                                ks10-adv-os                            53 k
+ cfitsio                                         aarch64                           3.450-5.oe1                                   ks10-adv-os                           508 k
+ jasper-libs                                     aarch64                           2.0.14-7.ky10                                 ks10-adv-os                           146 k
+ libdap                                          aarch64                           3.19.1-3.oe1                                  ks10-adv-os                           562 k
+ libusb                                          aarch64                           1:0.1.5-15.ky10                               ks10-adv-os                            32 k
+ protobuf                                        aarch64                           3.9.0-7.ky10                                  ks10-adv-os                           1.5 M
+ protobuf-c                                      aarch64                           1.3.2-2.ky10                                  ks10-adv-os                           103 k
+ CGAL                                            aarch64                           4.14-1.rhel8                                  pgdg-common                           473 k
+ SFCGAL                                          aarch64                           1.3.8-1.rhel8                                 pgdg-common                            20 k
+ SFCGAL-libs                                     aarch64                           1.3.8-1.rhel8                                 pgdg-common                           1.6 M
+ gdal32-libs                                     aarch64                           3.2.2-13.rhel8                                pgdg-common                           7.4 M
+ geos39                                          aarch64                           3.9.2-1.rhel8                                 pgdg-common                           619 k
+ libgeotiff16                                    aarch64                           1.6.0-6.rhel8                                 pgdg-common                            98 k
+ libgeotiff16-devel                              aarch64                           1.6.0-6.rhel8                                 pgdg-common                            33 k
+ librttopo                                       aarch64                           1.1.0-1.rhel8                                 pgdg-common                           161 k
+ libspatialite50                                 aarch64                           5.0.1-2.rhel8                                 pgdg-common                           2.7 M
+ libspatialite50-devel                           aarch64                           5.0.1-2.rhel8                                 pgdg-common                            99 k
+ ogdi41                                          aarch64                           4.1.0-3.rhel8                                 pgdg-common                           220 k
+ proj72                                          aarch64                           7.2.1-1.rhel8                                 pgdg-common                           2.4 M
+ proj80                                          aarch64                           8.0.1-1.rhel8                                 pgdg-common                           2.4 M
+ postgresql96-contrib                            aarch64                           9.6.24-1PGDG.rhel8                            pgdg96                                576 k
+ postgresql96-libs                               aarch64                           9.6.24-1PGDG.rhel8                            pgdg96                                339 k
+ freexl                                          aarch64                           1.0.6-4.el8                                   epel                                   33 k
+ gpsbabel                                        aarch64                           1.6.0-3.el8                                   epel                                  892 k
+ hdf                                             aarch64                           4.2.14-5.el8                                  epel                                  615 k
+ libbsd                                          aarch64                           0.9.1-4.el8                                   epel                                  104 k
+ libgta                                          aarch64                           1.2.1-1.el8                                   epel                                   33 k
+ minizip1.2                                      aarch64                           1.2.11-24.el8                                 epel                                   32 k
+ netcdf                                          aarch64                           4.7.0-2.el8                                   epel                                  617 k
+ shapelib                                        aarch64                           1.5.0-1.el8                                   epel                                   78 k
+ xerces-c                                        aarch64                           3.2.2-3.el8                                   epel                                  861 k
+
+Transaction Summary
+=============================================================================================================================================================================
+Install  39 Packages
+Upgrade   1 Package
+
+Total download size: 35 M
+Is this ok [y/N]: y
+Downloading Packages:
+(1/40): boost-atomic-1.66.0-18.ky10.aarch64.rpm                                                                                               51 kB/s |  11 kB     00:00    
+(2/40): boost-chrono-1.66.0-18.ky10.aarch64.rpm                                                                                               85 kB/s |  20 kB     00:00    
+(3/40): boost-date-time-1.66.0-18.ky10.aarch64.rpm                                                                                           108 kB/s |  26 kB     00:00    
+(4/40): boost-system-1.66.0-18.ky10.aarch64.rpm                                                                                              996 kB/s |  15 kB     00:00    
+(5/40): boost-thread-1.66.0-18.ky10.aarch64.rpm                                                                                              2.4 MB/s |  53 kB     00:00    
+(6/40): boost-serialization-1.66.0-18.ky10.aarch64.rpm                                                                                       2.4 MB/s | 105 kB     00:00    
+(7/40): jasper-libs-2.0.14-7.ky10.aarch64.rpm                                                                                                3.3 MB/s | 146 kB     00:00    
+(8/40): libusb-0.1.5-15.ky10.aarch64.rpm                                                                                                     1.8 MB/s |  32 kB     00:00    
+(9/40): cfitsio-3.450-5.oe1.aarch64.rpm                                                                                                      4.5 MB/s | 508 kB     00:00    
+(10/40): protobuf-c-1.3.2-2.ky10.aarch64.rpm                                                                                                 3.1 MB/s | 103 kB     00:00    
+(11/40): libdap-3.19.1-3.oe1.aarch64.rpm                                                                                                     3.9 MB/s | 562 kB     00:00    
+(12/40): SFCGAL-1.3.8-1.rhel8.aarch64.rpm                                                                                                     16 kB/s |  20 kB     00:01    
+(13/40): CGAL-4.14-1.rhel8.aarch64.rpm                                                                                                       220 kB/s | 473 kB     00:02    
+(14/40): SFCGAL-libs-1.3.8-1.rhel8.aarch64.rpm                                                                                               1.2 MB/s | 1.6 MB     00:01    
+(15/40): gdal32-libs-3.2.2-13.rhel8.aarch64.rpm                                                                                              4.4 MB/s | 7.4 MB     00:01    
+(16/40): protobuf-3.9.0-7.ky10.aarch64.rpm                                                                                                   385 kB/s | 1.5 MB     00:04    
+(17/40): geos39-3.9.2-1.rhel8.aarch64.rpm                                                                                                    452 kB/s | 619 kB     00:01    
+(18/40): libgeotiff16-1.6.0-6.rhel8.aarch64.rpm                                                                                              438 kB/s |  98 kB     00:00    
+(19/40): libgeotiff16-devel-1.6.0-6.rhel8.aarch64.rpm                                                                                        152 kB/s |  33 kB     00:00    
+(20/40): librttopo-1.1.0-1.rhel8.aarch64.rpm                                                                                                 602 kB/s | 161 kB     00:00    
+(21/40): libspatialite50-5.0.1-2.rhel8.aarch64.rpm                                                                                           4.2 MB/s | 2.7 MB     00:00    
+(22/40): libspatialite50-devel-5.0.1-2.rhel8.aarch64.rpm                                                                                     202 kB/s |  99 kB     00:00    
+(23/40): ogdi41-4.1.0-3.rhel8.aarch64.rpm                                                                                                    499 kB/s | 220 kB     00:00    
+(24/40): proj72-7.2.1-1.rhel8.aarch64.rpm                                                                                                    5.1 MB/s | 2.4 MB     00:00    
+(25/40): proj80-8.0.1-1.rhel8.aarch64.rpm                                                                                                    2.8 MB/s | 2.4 MB     00:00    
+(26/40): postgis24_96-2.4.9-3.rhel8.aarch64.rpm                                                                                              2.2 MB/s | 3.2 MB     00:01    
+(27/40): postgresql96-contrib-9.6.24-1PGDG.rhel8.aarch64.rpm                                                                                 961 kB/s | 576 kB     00:00    
+(28/40): postgresql96-9.6.24-1PGDG.rhel8.aarch64.rpm                                                                                         1.2 MB/s | 1.5 MB     00:01    
+(29/40): postgresql96-libs-9.6.24-1PGDG.rhel8.aarch64.rpm                                                                                    1.5 MB/s | 339 kB     00:00    
+(30/40): postgresql96-server-9.6.24-1PGDG.rhel8.aarch64.rpm                                                                                  5.3 MB/s | 4.5 MB     00:00    
+(31/40): freexl-1.0.6-4.el8.aarch64.rpm                                                                                                       17 kB/s |  33 kB     00:01    
+(32/40): libbsd-0.9.1-4.el8.aarch64.rpm                                                                                                       43 kB/s | 104 kB     00:02    
+(33/40): libgta-1.2.1-1.el8.aarch64.rpm                                                                                                       17 kB/s |  33 kB     00:01    
+(34/40): minizip1.2-1.2.11-24.el8.aarch64.rpm                                                                                                 16 kB/s |  32 kB     00:02    
+(35/40): hdf-4.2.14-5.el8.aarch64.rpm                                                                                                         18 kB/s | 615 kB     00:33    
+(36/40): shapelib-1.5.0-1.el8.aarch64.rpm                                                                                                     21 kB/s |  78 kB     00:03    
+(37/40): gpsbabel-1.6.0-3.el8.aarch64.rpm                                                                                                     21 kB/s | 892 kB     00:42    
+(38/40): minizip-2.8.9-2.el8.aarch64.rpm                                                                                                      26 kB/s | 119 kB     00:04    
+(39/40): netcdf-4.7.0-2.el8.aarch64.rpm                                                                                                       11 kB/s | 617 kB     00:55    
+(40/40): xerces-c-3.2.2-3.el8.aarch64.rpm                                                                                                     12 kB/s | 861 kB     01:09    
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                                                                        310 kB/s |  35 MB     01:53     
+Running transaction check
+Transaction check succeeded.
+Running transaction test
+Transaction test succeeded.
+Running transaction
+  Preparing        :                                                                                                                                                     1/1 
+  Installing       : postgresql96-libs-9.6.24-1PGDG.rhel8.aarch64                                                                                                       1/41 
+  Running scriptlet: postgresql96-libs-9.6.24-1PGDG.rhel8.aarch64                                                                                                       1/41 
+  Installing       : geos39-3.9.2-1.rhel8.aarch64                                                                                                                       2/41 
+  Running scriptlet: geos39-3.9.2-1.rhel8.aarch64                                                                                                                       2/41 
+  Installing       : boost-system-1.66.0-18.ky10.aarch64                                                                                                                3/41 
+  Installing       : postgresql96-9.6.24-1PGDG.rhel8.aarch64                                                                                                            4/41 
+  Running scriptlet: postgresql96-9.6.24-1PGDG.rhel8.aarch64                                                                                                            4/41 
+  Installing       : proj80-8.0.1-1.rhel8.aarch64                                                                                                                       5/41 
+  Running scriptlet: proj80-8.0.1-1.rhel8.aarch64                                                                                                                       5/41 
+  Installing       : libgeotiff16-1.6.0-6.rhel8.aarch64                                                                                                                 6/41 
+  Running scriptlet: libgeotiff16-1.6.0-6.rhel8.aarch64                                                                                                                 6/41 
+  Installing       : boost-chrono-1.66.0-18.ky10.aarch64                                                                                                                7/41 
+  Installing       : boost-thread-1.66.0-18.ky10.aarch64                                                                                                                8/41 
+  Installing       : xerces-c-3.2.2-3.el8.aarch64                                                                                                                       9/41 
+  Installing       : hdf-4.2.14-5.el8.aarch64                                                                                                                          10/41 
+  Installing       : freexl-1.0.6-4.el8.aarch64                                                                                                                        11/41 
+  Installing       : boost-date-time-1.66.0-18.ky10.aarch64                                                                                                            12/41 
+  Installing       : boost-atomic-1.66.0-18.ky10.aarch64                                                                                                               13/41 
+  Installing       : CGAL-4.14-1.rhel8.aarch64                                                                                                                         14/41 
+  Running scriptlet: CGAL-4.14-1.rhel8.aarch64                                                                                                                         14/41 
+  Installing       : netcdf-4.7.0-2.el8.aarch64                                                                                                                        15/41 
+  Installing       : libgeotiff16-devel-1.6.0-6.rhel8.aarch64                                                                                                          16/41 
+  Running scriptlet: postgresql96-server-9.6.24-1PGDG.rhel8.aarch64                                                                                                    17/41 
+  Installing       : postgresql96-server-9.6.24-1PGDG.rhel8.aarch64                                                                                                    17/41 
+  Running scriptlet: postgresql96-server-9.6.24-1PGDG.rhel8.aarch64                                                                                                    17/41 
+  Installing       : postgresql96-contrib-9.6.24-1PGDG.rhel8.aarch64                                                                                                   18/41 
+  Installing       : librttopo-1.1.0-1.rhel8.aarch64                                                                                                                   19/41 
+  Installing       : shapelib-1.5.0-1.el8.aarch64                                                                                                                      20/41 
+  Installing       : libgta-1.2.1-1.el8.aarch64                                                                                                                        21/41 
+  Installing       : libbsd-0.9.1-4.el8.aarch64                                                                                                                        22/41 
+  Upgrading        : minizip-2.8.9-2.el8.aarch64                                                                                                                       23/41 
+  Running scriptlet: minizip-2.8.9-2.el8.aarch64                                                                                                                       23/41 
+  Installing       : libspatialite50-5.0.1-2.rhel8.aarch64                                                                                                             24/41 
+  Running scriptlet: libspatialite50-5.0.1-2.rhel8.aarch64                                                                                                             24/41 
+  Installing       : libspatialite50-devel-5.0.1-2.rhel8.aarch64                                                                                                       25/41 
+  Running scriptlet: libspatialite50-devel-5.0.1-2.rhel8.aarch64                                                                                                       25/41 
+  Installing       : proj72-7.2.1-1.rhel8.aarch64                                                                                                                      26/41 
+  Running scriptlet: proj72-7.2.1-1.rhel8.aarch64                                                                                                                      26/41 
+  Installing       : ogdi41-4.1.0-3.rhel8.aarch64                                                                                                                      27/41 
+  Installing       : protobuf-3.9.0-7.ky10.aarch64                                                                                                                     28/41 
+  Installing       : protobuf-c-1.3.2-2.ky10.aarch64                                                                                                                   29/41 
+  Running scriptlet: protobuf-c-1.3.2-2.ky10.aarch64                                                                                                                   29/41 
+  Installing       : libusb-1:0.1.5-15.ky10.aarch64                                                                                                                    30/41 
+  Running scriptlet: libusb-1:0.1.5-15.ky10.aarch64                                                                                                                    30/41 
+  Installing       : gpsbabel-1.6.0-3.el8.aarch64                                                                                                                      31/41 
+  Installing       : libdap-3.19.1-3.oe1.aarch64                                                                                                                       32/41 
+  Running scriptlet: libdap-3.19.1-3.oe1.aarch64                                                                                                                       32/41 
+  Installing       : jasper-libs-2.0.14-7.ky10.aarch64                                                                                                                 33/41 
+  Installing       : cfitsio-3.450-5.oe1.aarch64                                                                                                                       34/41 
+  Running scriptlet: cfitsio-3.450-5.oe1.aarch64                                                                                                                       34/41 
+  Installing       : boost-serialization-1.66.0-18.ky10.aarch64                                                                                                        35/41 
+  Installing       : SFCGAL-libs-1.3.8-1.rhel8.aarch64                                                                                                                 36/41 
+  Running scriptlet: SFCGAL-libs-1.3.8-1.rhel8.aarch64                                                                                                                 36/41 
+  Installing       : SFCGAL-1.3.8-1.rhel8.aarch64                                                                                                                      37/41 
+  Running scriptlet: SFCGAL-1.3.8-1.rhel8.aarch64                                                                                                                      37/41 
+  Installing       : gdal32-libs-3.2.2-13.rhel8.aarch64                                                                                                                38/41 
+  Running scriptlet: gdal32-libs-3.2.2-13.rhel8.aarch64                                                                                                                38/41 
+  Installing       : postgis24_96-2.4.9-3.rhel8.aarch64                                                                                                                39/41 
+  Running scriptlet: postgis24_96-2.4.9-3.rhel8.aarch64                                                                                                                39/41 
+  Installing       : minizip1.2-1.2.11-24.el8.aarch64                                                                                                                  40/41 
+  Cleanup          : minizip-1.2.11-17.1.ky10.aarch64                                                                                                                  41/41 
+  Running scriptlet: minizip-1.2.11-17.1.ky10.aarch64                                                                                                                  41/41 
+  Verifying        : boost-atomic-1.66.0-18.ky10.aarch64                                                                                                                1/41 
+  Verifying        : boost-chrono-1.66.0-18.ky10.aarch64                                                                                                                2/41 
+  Verifying        : boost-date-time-1.66.0-18.ky10.aarch64                                                                                                             3/41 
+  Verifying        : boost-serialization-1.66.0-18.ky10.aarch64                                                                                                         4/41 
+  Verifying        : boost-system-1.66.0-18.ky10.aarch64                                                                                                                5/41 
+  Verifying        : boost-thread-1.66.0-18.ky10.aarch64                                                                                                                6/41 
+  Verifying        : cfitsio-3.450-5.oe1.aarch64                                                                                                                        7/41 
+  Verifying        : jasper-libs-2.0.14-7.ky10.aarch64                                                                                                                  8/41 
+  Verifying        : libdap-3.19.1-3.oe1.aarch64                                                                                                                        9/41 
+  Verifying        : libusb-1:0.1.5-15.ky10.aarch64                                                                                                                    10/41 
+  Verifying        : protobuf-3.9.0-7.ky10.aarch64                                                                                                                     11/41 
+  Verifying        : protobuf-c-1.3.2-2.ky10.aarch64                                                                                                                   12/41 
+  Verifying        : CGAL-4.14-1.rhel8.aarch64                                                                                                                         13/41 
+  Verifying        : SFCGAL-1.3.8-1.rhel8.aarch64                                                                                                                      14/41 
+  Verifying        : SFCGAL-libs-1.3.8-1.rhel8.aarch64                                                                                                                 15/41 
+  Verifying        : gdal32-libs-3.2.2-13.rhel8.aarch64                                                                                                                16/41 
+  Verifying        : geos39-3.9.2-1.rhel8.aarch64                                                                                                                      17/41 
+  Verifying        : libgeotiff16-1.6.0-6.rhel8.aarch64                                                                                                                18/41 
+  Verifying        : libgeotiff16-devel-1.6.0-6.rhel8.aarch64                                                                                                          19/41 
+  Verifying        : librttopo-1.1.0-1.rhel8.aarch64                                                                                                                   20/41 
+  Verifying        : libspatialite50-5.0.1-2.rhel8.aarch64                                                                                                             21/41 
+  Verifying        : libspatialite50-devel-5.0.1-2.rhel8.aarch64                                                                                                       22/41 
+  Verifying        : ogdi41-4.1.0-3.rhel8.aarch64                                                                                                                      23/41 
+  Verifying        : proj72-7.2.1-1.rhel8.aarch64                                                                                                                      24/41 
+  Verifying        : proj80-8.0.1-1.rhel8.aarch64                                                                                                                      25/41 
+  Verifying        : postgis24_96-2.4.9-3.rhel8.aarch64                                                                                                                26/41 
+  Verifying        : postgresql96-9.6.24-1PGDG.rhel8.aarch64                                                                                                           27/41 
+  Verifying        : postgresql96-contrib-9.6.24-1PGDG.rhel8.aarch64                                                                                                   28/41 
+  Verifying        : postgresql96-libs-9.6.24-1PGDG.rhel8.aarch64                                                                                                      29/41 
+  Verifying        : postgresql96-server-9.6.24-1PGDG.rhel8.aarch64                                                                                                    30/41 
+  Verifying        : freexl-1.0.6-4.el8.aarch64                                                                                                                        31/41 
+  Verifying        : gpsbabel-1.6.0-3.el8.aarch64                                                                                                                      32/41 
+  Verifying        : hdf-4.2.14-5.el8.aarch64                                                                                                                          33/41 
+  Verifying        : libbsd-0.9.1-4.el8.aarch64                                                                                                                        34/41 
+  Verifying        : libgta-1.2.1-1.el8.aarch64                                                                                                                        35/41 
+  Verifying        : minizip1.2-1.2.11-24.el8.aarch64                                                                                                                  36/41 
+  Verifying        : netcdf-4.7.0-2.el8.aarch64                                                                                                                        37/41 
+  Verifying        : shapelib-1.5.0-1.el8.aarch64                                                                                                                      38/41 
+  Verifying        : xerces-c-3.2.2-3.el8.aarch64                                                                                                                      39/41 
+  Verifying        : minizip-2.8.9-2.el8.aarch64                                                                                                                       40/41 
+  Verifying        : minizip-1.2.11-17.1.ky10.aarch64                                                                                                                  41/41 
+
+Upgraded:
+  minizip-2.8.9-2.el8.aarch64                                                                                                                                                
+
+Installed:
+  postgis24_96-2.4.9-3.rhel8.aarch64                     postgresql96-9.6.24-1PGDG.rhel8.aarch64                    postgresql96-server-9.6.24-1PGDG.rhel8.aarch64           
+  boost-atomic-1.66.0-18.ky10.aarch64                    boost-chrono-1.66.0-18.ky10.aarch64                        boost-date-time-1.66.0-18.ky10.aarch64                   
+  boost-serialization-1.66.0-18.ky10.aarch64             boost-system-1.66.0-18.ky10.aarch64                        boost-thread-1.66.0-18.ky10.aarch64                      
+  cfitsio-3.450-5.oe1.aarch64                            jasper-libs-2.0.14-7.ky10.aarch64                          libdap-3.19.1-3.oe1.aarch64                              
+  libusb-1:0.1.5-15.ky10.aarch64                         protobuf-3.9.0-7.ky10.aarch64                              protobuf-c-1.3.2-2.ky10.aarch64                          
+  CGAL-4.14-1.rhel8.aarch64                              SFCGAL-1.3.8-1.rhel8.aarch64                               SFCGAL-libs-1.3.8-1.rhel8.aarch64                        
+  gdal32-libs-3.2.2-13.rhel8.aarch64                     geos39-3.9.2-1.rhel8.aarch64                               libgeotiff16-1.6.0-6.rhel8.aarch64                       
+  libgeotiff16-devel-1.6.0-6.rhel8.aarch64               librttopo-1.1.0-1.rhel8.aarch64                            libspatialite50-5.0.1-2.rhel8.aarch64                    
+  libspatialite50-devel-5.0.1-2.rhel8.aarch64            ogdi41-4.1.0-3.rhel8.aarch64                               proj72-7.2.1-1.rhel8.aarch64                             
+  proj80-8.0.1-1.rhel8.aarch64                           postgresql96-contrib-9.6.24-1PGDG.rhel8.aarch64            postgresql96-libs-9.6.24-1PGDG.rhel8.aarch64             
+  freexl-1.0.6-4.el8.aarch64                             gpsbabel-1.6.0-3.el8.aarch64                               hdf-4.2.14-5.el8.aarch64                                 
+  libbsd-0.9.1-4.el8.aarch64                             libgta-1.2.1-1.el8.aarch64                                 minizip1.2-1.2.11-24.el8.aarch64                         
+  netcdf-4.7.0-2.el8.aarch64                             shapelib-1.5.0-1.el8.aarch64                               xerces-c-3.2.2-3.el8.aarch64                             
+
+Complete!
+[root@col ~]# 
+</code></pre>
+
+<p>打包备份：</p>
+
+<pre><code>[root@col ~]# tar zcf kylin-postgres96.tgz *.rpm rpmbuild /etc/yum.repos.d/
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[欧拉20.03LTS_SP3安装docker]]></title>
