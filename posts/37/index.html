@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="javadoc 在一些节点满了或者加入了新的节点情况下，使用balancer工具可以平衡HDFS集群磁盘空间使用率。该功能作为一个单独的程序，能同时与集群的其他文件操作一起进行。 threshold（阀值）参数是个介于1%~100%的值，默认情况下是10%。指定了集群达到平衡的指标值。 &hellip;">
+  <meta name="description" content="当数据达到一定量时，自然就想到了对数据进行压缩来降低存储压力。在Hadoop的任务中提供了5个参数来控制输入输出的数据的压缩格式。添加map输出数据压缩可以降低集群间的网络传输，最终reduce输出压缩可以减低hdfs的集群存储空间。 如果是使用hive等工具的话，效果会更加明显。 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +85,858 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/09/01/hadoop2-mapreduce-compress/">Hadoop2 Mapreduce输入输出压缩</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-09-01T16:05:13+08:00" pubdate data-updated="true">Mon 2014-09-01 16:05</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>当数据达到一定量时，自然就想到了对数据进行压缩来降低存储压力。在Hadoop的任务中提供了5个参数来控制输入输出的数据的压缩格式。添加map输出数据压缩可以降低集群间的网络传输，最终reduce输出压缩可以减低hdfs的集群存储空间。</p>
+
+<p>如果是使用hive等工具的话，效果会更加明显。因为hive的查询结果是临时存储在hdfs中，然后再通过一个<strong>Fetch Operator</strong>来获取数据，最后清理掉，压缩存储临时的数据可以减少磁盘的读写。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
+</span><span class='line'>  &lt;description&gt;Should the job outputs be compressed?
+</span><span class='line'>  &lt;/description&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress.type&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;RECORD&lt;/value&gt;
+</span><span class='line'>  &lt;description&gt;If the job outputs are to compressed as SequenceFiles, how should
+</span><span class='line'>               they be compressed? Should be one of NONE, RECORD or BLOCK.
+</span><span class='line'>  &lt;/description&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;mapreduce.output.fileoutputformat.compress.codec&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;org.apache.hadoop.io.compress.DefaultCodec&lt;/value&gt;
+</span><span class='line'>  &lt;description&gt;If the job outputs are compressed, how should they be compressed?
+</span><span class='line'>  &lt;/description&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;mapreduce.map.output.compress&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
+</span><span class='line'>  &lt;description&gt;Should the outputs of the maps be compressed before being
+</span><span class='line'>               sent across the network. Uses SequenceFile compression.
+</span><span class='line'>  &lt;/description&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;mapreduce.map.output.compress.codec&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;org.apache.hadoop.io.compress.DefaultCodec&lt;/value&gt;
+</span><span class='line'>  &lt;description&gt;If the map outputs are compressed, how should they be 
+</span><span class='line'>               compressed?
+</span><span class='line'>  &lt;/description&gt;
+</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>上面5个属性弄好，在core-sitem.xml加下<code>io.compression.codecs</code>基本就完成配置了。</p>
+
+<p>这里主要探究下mapreduce（下面全部简称MR）过程中自动解压缩。刚刚接触Hadoop一般都不会去了解什么压缩不压缩的，先把hdfs-api，MR-api弄一遭。配置的TextInputFormat竟然能正确的读取tar.gz文件的内容，觉得不可思议，TextInputFormat不是直接读取txt行记录的输入嘛？难道还能读取压缩文件，先解压再&hellip;？？</p>
+
+<p>先说下OutputFormat，在MR中调用context.write写入数据的方法时，最终使用OutputFormat创建的RecordWriter进行持久化。在TextOutputFormat创建RecordWriter时，如果使用压缩会在结果文件名上<strong>加对应压缩库的后缀</strong>，如gzip压缩对应的后缀gz、snappy压缩对应后缀snappy等。对应下面代码的<code>getDefaultWorkFile</code>。</p>
+
+<p><img src="http://file.bmob.cn/M00/0B/03/wKhkA1QEjD2ASHiZAAExjXuQ25Y062.png" alt="" /></p>
+
+<p>同样对应的TextInputFormat的RecordReader也进行类似的处理：根据<strong>文件的后缀</strong>来判定该文件是否使用压缩，并使用对应的输入流InputStream来解码。</p>
+
+<p><img src="http://file.bmob.cn/M00/0B/03/wKhkA1QEjZaAdBeJAAEvRVMKVWY059.png" alt="" /></p>
+
+<p>此处的关键代码为<code>CompressionCodec codec = new CompressionCodecFactory(job).getCodec(file);</code>，根据分块（split）的文件名来判断使用的压缩算法。
+初始化Codec实现、以及根据文件名来获取压缩算法的实现还是挺有意思的：通过反转字符串然后最近匹配（headMap）来获取对应的结果。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>  private void addCodec(CompressionCodec codec) {
+</span><span class='line'>    String suffix = codec.getDefaultExtension();
+</span><span class='line'>    codecs.put(new StringBuilder(suffix).reverse().toString(), codec);
+</span><span class='line'>    codecsByClassName.put(codec.getClass().getCanonicalName(), codec);
+</span><span class='line'>
+</span><span class='line'>    String codecName = codec.getClass().getSimpleName();
+</span><span class='line'>    codecsByName.put(codecName.toLowerCase(), codec);
+</span><span class='line'>    if (codecName.endsWith("Codec")) {
+</span><span class='line'>      codecName = codecName.substring(0, codecName.length() - "Codec".length());
+</span><span class='line'>      codecsByName.put(codecName.toLowerCase(), codec);
+</span><span class='line'>    }
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  public CompressionCodec getCodec(Path file) {
+</span><span class='line'>    CompressionCodec result = null;
+</span><span class='line'>    if (codecs != null) {
+</span><span class='line'>      String filename = file.getName();
+</span><span class='line'>      String reversedFilename = new StringBuilder(filename).reverse().toString();
+</span><span class='line'>      SortedMap&lt;String, CompressionCodec&gt; subMap = 
+</span><span class='line'>        codecs.headMap(reversedFilename);
+</span><span class='line'>      if (!subMap.isEmpty()) {
+</span><span class='line'>        String potentialSuffix = subMap.lastKey();
+</span><span class='line'>        if (reversedFilename.startsWith(potentialSuffix)) {
+</span><span class='line'>          result = codecs.get(potentialSuffix);
+</span><span class='line'>        }
+</span><span class='line'>      }
+</span><span class='line'>    }
+</span><span class='line'>    return result;
+</span><span class='line'>  }</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>了解了这些，MR（TextInputFormat）的输入文件可以比较随意些：各种压缩文件、原始文件都可以，只要文件有对应压缩算法的后缀即可。hive的解压缩功能也很容易了，如果使用hive存储text形式的文件，进行压缩无需进行额外的程序代码修改，仅仅修改MR的配置即可，注意下<strong>文件后缀</strong>！！</p>
+
+<p>如，在MR中生成了snappy压缩的文件，此时<strong>不能</strong>在文件的后面添加东西。否则在hive查询时，根据<strong>后缀</strong>进行解压会导致结果乱码/不正确。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;hive.exec.compress.output&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
+</span><span class='line'>  &lt;description&gt; This controls whether the final outputs of a query (to a local/hdfs file or a hive table) is compressed. The compression codec and other options are determined from hadoop config variables mapred.output.compress* &lt;/description&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;hive.exec.compress.intermediate&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;false&lt;/value&gt;
+</span><span class='line'>  &lt;description&gt; This controls whether intermediate files produced by hive between multiple map-reduce jobs are compressed. The compression codec and other options are determined from hadoop config variables mapred.output.compress* &lt;/description&gt;
+</span><span class='line'>&lt;/property&gt;
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>hive也弄了两个参数来控制它自己的MR的输出输入压缩控制属性。其他的配置使用mapred-site.xml的配置即可。</p>
+
+<p><img src="http://file.bmob.cn/M00/0B/1D/wKhkA1QFQLmAfyZSAAIOx4UEIbY016.png" alt="" /></p>
+
+<p>网上一些资料有<code>hive.intermediate.compression.codec</code>和<code>hive.intermediate.compression.type</code>两个参数能调整中间过程的压缩算法。其实和mapreduce的参数功能是一样的。</p>
+
+<p><img src="http://file.bmob.cn/M00/0B/1F/wKhkA1QFQWyAUDMLAAGyNqR_X-c417.png" alt="" /></p>
+
+<p>附上解压缩的全部配置：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$#core-site.xml
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;io.compression.codecs&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;
+</span><span class='line'>  org.apache.hadoop.io.compress.GzipCodec,
+</span><span class='line'>  org.apache.hadoop.io.compress.DefaultCodec,
+</span><span class='line'>  org.apache.hadoop.io.compress.BZip2Codec,
+</span><span class='line'>  org.apache.hadoop.io.compress.SnappyCodec
+</span><span class='line'>      &lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>$#mapred-site.xml
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapreduce.map.output.compress&lt;/name&gt; 
+</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapreduce.map.output.compress.codec&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapreduce.output.fileoutputformat.compress&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapreduce.output.fileoutputformat.compress.codec&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapred.output.compression.codec&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;org.apache.hadoop.io.compress.SnappyCodec&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>$#hive-site.xml
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;hive.exec.compress.output&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;true&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>运行hive后，临时存储在HDFS的结果数据，注意文件的后缀。</p>
+
+<p><img src="http://file.bmob.cn/M00/0B/20/wKhkA1QFRjSACnLfAABVdoK0f1c803.png" alt="" /></p>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://www.geek521.com/?p=4814">深入学习《Programing Hive》：数据压缩</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/08/29/xamarin-application-use-adt-eclipse-debug-java-code/">用ADT调试Xamarin程序中的Java库</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-08-29T12:08:11+08:00" pubdate data-updated="true">Fri 2014-08-29 12:08</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>在编写SDK的时刻，有用户需要使用Xamarin来开发应用。我们这边暂时没有这个方面的经验，有点瞎扯扯意味，路是崎岖的前进是痛苦的。</p>
+
+<h2>封装Android-SDK</h2>
+
+<p>Xamarin是使用C#语言来编写代码的，所以需要先把Android的jar库包装成为C#的代码。<a href="http://developer.xamarin.com/guides/android/advanced_topics/java_integration_overview/">可选方式有3种</a>)，这里选用Wrapper的形式，不过多讲解，看文章<a href="http://developer.xamarin.com/guides/android/advanced_topics/java_integration_overview/binding_a_java_library_(.jar">Binding a Java Library - Consuming .JARs from C#</a>/)。</p>
+
+<p>建立Binding项目，把依赖的包加入到Jars目录下。由于Bmob-Android官方的包是进行混淆的，有些代码不会用到的/没有必要Wrapper生成jni代码调用的，可以通过removenote去掉不生成C#的wrapper类。第二点就是java的泛型是会被抹掉的，而C#的是会编入程序中的，遇到Comparable这种类型的方法时，需要进行参数强制转换下。第三点就是接口回调，有多个方法时会导致名称冲突，需要为每个接口的方法都配置一个Args的节点属性。这些都是官网的例子中有说明，有需要可以具体参考上面链接的文章内容。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;metadata&gt;
+</span><span class='line'>  &lt;remove-node path="/api/package[@name='cn.bmob.im.db']" /&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;attr path="/api/package[@name='cn.bmob.im.inteface']/interface[@name='DownloadListener']/method[@name='onError']" name="argsType"&gt;DownloadListenerErrorEventArgs&lt;/attr&gt;
+</span><span class='line'>&lt;/metadata&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;enum-method-mappings&gt;
+</span><span class='line'>  &lt;mapping jni-class="cn/bmob/im/bean/BmobRecent"&gt;
+</span><span class='line'>    &lt;method jni-name="compareTo" parameter="p0" clr-enum-type="Java.Lang.Object" /&gt;
+</span><span class='line'>  &lt;/mapping&gt;
+</span><span class='line'>  &lt;mapping jni-class="cn/bmob/im/BmobDownloadManager"&gt;
+</span><span class='line'>    &lt;method jni-name="doInBackground" parameter="p0" clr-enum-type="Java.Lang.Object[]" /&gt;
+</span><span class='line'>  &lt;/mapping&gt;
+</span><span class='line'>&lt;/enum-method-mappings&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>还有另一个坑是，混淆后内部类会被扁平化，导致jar2xml执行时获取类的getSimpleName名称会抛异常，我这里直接反编译源码改成getName就好了，仅仅是代码中全路径和仅类名的却别，暂时来看没啥印象。</p>
+
+<p>然后编译，加入到主项目的依赖中就可以使用该库的Java功能了。名称可能并不能全部对应上，与Java中的方法名和常量名大小写、下划线的不同罢了。</p>
+
+<h2>调试</h2>
+
+<p>下面是重点，但是很简短。</p>
+
+<p>作为写SDK的，肯定不仅仅要用特定的工具，还的把中间的过程也扭顺，即既要做一个好点（example），又得实现连接的线（SDK）。</p>
+
+<p>如果Android SDK的代码没有执行，该怎么办？Xamarin中都是C#的代码并不能用于调试java啊！问题自然归结到怎么用两个工具（Xamarin和Eclipse）来同时调试一个Xamarin Android应用的问题？！</p>
+
+<p>先讲讲我遇到的坑，由于是开发者发给我的应用，不知道结构是怎么样的。我直接用Xamarin打开，是没有带可执行属性的，在Run-With菜单中是能看到我的实体机器的，但是就是不能把程序发布上去！提示【执行失败。未将对象引用设置到对象的实例。】然后就没了。最终在stackoverflow中找到了类型问题的解决方法，需要设置运行属性。</p>
+
+<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QAAt6AVtg6AALZEEiP4tQ304.png" alt="" /></p>
+
+<p>配置如下，在解决方案属性中【构建-配置-ConfigurationMappings】把项目添加为构建项。</p>
+
+<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QAA4uAT9qmAAKI8-zKAn8494.png" alt="" /></p>
+
+<p>可能还会遇到的问题是版本的问题，报错【java.lang.RuntimeException: Unable to get provider mono.MonoRuntimeProvider: java.lang.RuntimeException: Unable to find application Mono.Android.DebugRuntime or Mono.Android.Platform.ApiLevel_19!】需要在csproj的配置中修改AndroidUseLatestPlatformSdk属性为false。</p>
+
+<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QAC4KAOV-HAAFU6knDvFQ527.png" alt="" /></p>
+
+<p>下面的步骤才是本文的关键：</p>
+
+<p>首先，在MainActivity的onCreate方法开始出打个断点，便于初始化功能调试，点击左上角的开始运行按钮。这样就能把代码发布到机器，且运行后会停留在onCreate处。</p>
+
+<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QACtCAHOqDAAELanVrybU938.png" alt="" /></p>
+
+<p>Xamarin调试效果图</p>
+
+<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QAC_yAYqbpAAHBQT48VSA253.png" alt="" /></p>
+
+<p>再，打开ecilpse导入<code>obj\Debug\android</code>目录下的项目【Import-Android-Existing Android Code Into Workspace】，错误什么的无所谓。这个项目只是用了ADT能识别而已。然后再java包的代码里面打上断点。</p>
+
+<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QADTuAd3cyAACtJUn8Pdk976.png" alt="" /></p>
+
+<p>最后，起到定乾坤作用的就是DDMS的Devices试图的小爬虫，选择你要调试的程序，然后点击它就可以了。切换到Xamarin继续运行程序，接下来就会运行停留到eclipse中的java包中的断点程序出。</p>
+
+<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QADnWAJQyIAABt1LtWjUA456.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/0A/3C/wKhkA1QADueALec-AAEQhd4vxMY835.png" alt="" /></p>
+
+<p>OK，接下来就按照eclipse的调试技巧弄就好了。</p>
+
+<p>步骤很简单，查询的路子却是艰辛的。第一次尝试成本总是昂贵的，第二步自然会慢慢顺起来。fighting&hellip;</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-08-25T21:12:13+08:00" pubdate data-updated="true">Mon 2014-08-25 21:12</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>类C语言，继C++之后的最辉煌耀眼的明星都属Java，其中最突出的又数内存管理。JVM对运行在其上的程序进行内存自动化分配和管理，减少开发人员的工作量之外便于统一的维护和管理。JDK提供了各种各样的工具来让开发实施人员了解运行的运行状态。</p>
+
+<ul>
+<li>jps -l -v -m</li>
+<li>jstat -gcutil 2000 100</li>
+<li>jmap</li>
+<li>jinfo <a href="http://file.bmob.cn/M00/03/AD/wKhkA1PE2MGAB4-fAAGTqUeu-cE940.png">查看参数例子</a></li>
+<li>jstack</li>
+<li>jvisualvm/jconsole</li>
+<li>mat(MemoryAnalyzer)</li>
+<li>btrace</li>
+<li>jclasslib（查看局部变量表）</li>
+</ul>
+
+
+<p>前段时间，接手(前面已经有成型的东西)使用Hadoop存储转换的项目，但是生产环境的程序总是隔三差五的OOM，同时使用的hive0.12.0也偶尔出现内存异常。这对于运维来说就是灭顶之灾！搞不好什么时刻程序就挂了！！必须咬咬牙把这个问题处理解决，开始把老古董们请出来，翻来基本不看的后半部分&ndash;Java内存管理。</p>
+
+<ul>
+<li>《Java程序性能优化-让你的Java程序更快、更稳定》第5章JVM调优/第6章Java性能调优工具</li>
+<li>《深入理解Java虚拟机-JVM高级特性与最佳实践》第二部分自动内存管理机制</li>
+</ul>
+
+
+<p>这里用到的理论知识比较少。主要用Java自带的工具，加上内存堆分析工具（mat/jvisualvm）找出大对象，同时结合源代码定位问题。</p>
+
+<p>下面主要讲讲实践，查找问题的思路。在本地进行测试的话，我们可以打断点，可以通过jvisualvm来查看整个运行过程内存的变化趋势图。但是到了linux服务器，并且还是生产环境的话，想要有本地一样的图形化工具来监控是比较困难的！一般服务器的内存都设置的比较大，而windows设置的内存又有限！所以内存达到1G左右，立马dump一个堆的内存快照然后下载到本地进行来分析（可以通过<code>-J-Xmx</code><a href="http://file.bmob.cn/M00/09/83/wKhkA1P7TV-ABDnOAAB-OnVBQic050.png">调整jvisualvm的内存</a>）。</p>
+
+<ul>
+<li>首先，由于报错是在Configuration加载配置文件时抛出OOM，第一反应肯定Configuraiton对象太多导致！同时查看dump的堆内存也佐证了这一点。直接把程序中的Configuration改成单例。</li>
+</ul>
+
+
+<p>程序对象内存占比排行（<code>jmap -histo PID</code>）：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7S8yARYSkAAiFW9cVN5w526.png" alt="" /></p>
+
+<p>使用mat或者jvisualvm查看堆，确实Configuration对象过多（<code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code>）：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TbmAIdDEAAq3ktPBs6Q266.png" alt="" /></p>
+
+<ul>
+<li><p>修改后再次运行，但是没多大用！还是OOM！！</p></li>
+<li><p>进一步分析，发现在Configuration中的属性/缓冲的都是弱引用是weakhashmap。</p></li>
+</ul>
+
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TfaAf4nwAAbcdgFiyXs804.png" alt="" /></p>
+
+<p>OOM最终问题不在Configuration对象中的属性，哪谁hold住了Configuration对象呢？？</p>
+
+<ul>
+<li>再次从根源开始查找问题。程序中FileSystem对象使用<code>FileSystem.get(URI, Configuration, String)</code>获取，然后调用<code>get(URI,Configuration)</code>方法，其中的<strong>CACHE</strong>很是刺眼啊！</li>
+</ul>
+
+
+<p><img src="http://file.bmob.cn/M00/09/8D/wKhkA1P72pmAAMdnAAEYMjHFUAI853.png" alt="" /></p>
+
+<p>缓冲FileSystem的Cache对象的Key是URI和UserGroupInformation两个属性来判断是否相等的。对于一个程序来说一般就读取一个HDFS的数据即URI前部分是确定的，重点在UserGroupInformation是通过<code>UserGroupInformation.getCurrentUser()</code>来获取的。</p>
+
+<p>即获取在get时<code>UserGroupInformation.getBestUGI</code>得到的对象。而这个对象在UnSecure情况下每次都是调用<code>createRemoteUser</code>创建新的对象！也就是每调用一次<code>FileSystem.get(URI, Configuration, String)</code>就会缓存一个FileSystem对象，以及其hold住的Configuration都会被保留在内存中。
+<img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TBSAaYEoAAhzUA5j5MI991.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TJ2AfwJzAAhEVFjK7Ek367.png" alt="" /></p>
+
+<p>只消耗不释放终究会坐吃山空啊！到最后也就必然OOM了。从mat的UserGroupInformation的个数查询，以及Cache对象的总量可以印证。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/82/wKhkA1P7TNeAB7JAAAdMg-udeR8285.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/83/wKhkA1P7TU-ACoaCAApK4n-52hI027.png" alt="" /></p>
+
+<h2>问题处理</h2>
+
+<p>把程序涉及到FileSystem.get调用去掉user参数，使两个参数的方法。由于都使用getCurrentUser获取对象，也就是说程序整个运行过程中就一个FileSystem对象，但是与此同时就不能关闭获取到的FileSystem，如果当前运行的用户与集群所属用户不同，需要设置环境变量指定当前操作的用户！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>System.setProperty("HADOOP_USER_NAME", "hadoop");</span></code></pre></td></tr></table></div></figure>
+
+
+<p>查找代码中调用了FileSystem#close是一个痛苦的过程，由于FileSystem实现的是Closeable的close方法，用<strong>Open Call Hierarchy</strong>基本是大海捞中啊，根本不知道那个代码是自己的！！这里用btrace神器让咋也高大上一把。。。</p>
+
+<p>当时操作的步骤找不到了，下图是调用Cache#getInternal方法监控代码<a href="https://gist.github.com/winse/161f6fe9120f2ec6b024">GIST</a>：</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7UD2AFk2cAAXRQWzniL0296.png" alt="" /></p>
+
+<h2>hive0.12内存溢出问题</h2>
+
+<p>hive0.12.0查询程序MR内容溢出</p>
+
+<p><img src="http://file.bmob.cn/M00/09/81/wKhkA1P7StSAOgX1AAoW9v-Fd4s439.png" alt="" /></p>
+
+<p>在hive-0.13前官网文档中有提到内存溢出这一点，可以对应到FileSystem中代码的判断。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/85/wKhkA1P7UP-ACRVdAAJHBKNTq94580.png" alt="" /></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>String disableCacheName = String.format("fs.%s.impl.disable.cache", scheme);
+</span><span class='line'>if (conf.getBoolean(disableCacheName, false)) {
+</span><span class='line'>  return createFileSystem(uri, conf);
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<p>hive0.13.1处理</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T_CAcxVqAARr7CGiDvY177.png" alt="" /></p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T6KAKoUiAAvODPwh1po815.png" alt="" /></p>
+
+<p>新版本在每次查询（session）结束后都会把本次涉及到的FileSystem关闭掉。</p>
+
+<p><img src="http://file.bmob.cn/M00/09/84/wKhkA1P7T9uAQQB3AAWrj_efwZU495.png" alt="" /></p>
+
+<h2>理论知识</h2>
+
+<p>从GC类型开始讲，对自动化内存的垃圾收集有个整体的感知： 新生代/s0（survivor space0、from space）/s1（survivor space1、to space）/永久代。虚拟机参数<code>-Xmx</code>,<code>-Xms</code>,<code>-Xmn</code>（<code>-Xss</code>）来调节各个代的大小和比例。</p>
+
+<ul>
+<li><code>-Xss</code> 参数来设置栈的大小。栈的大小直接决定了函数的调用可达深度</li>
+<li><code>-XX:PrintGCDetails -XX:SurvivorRatio=8 -XX:MaxTenuringThreshold=15 -Xms40m -Xmx40m -Xmn20m</code></li>
+<li><code>-XX:NewSize</code>和<code>-XX:MaxNewSize</code></li>
+<li><code>-XX:NewRatio</code>和<code>-XX:SurvivorRatio</code></li>
+<li><code>-XX:PermSize=2m -XX:MaxPermSize=4m -XX:+PrintGCDetails</code></li>
+<li><code>-verbose:gc</code></li>
+<li><code>-XX:+PrintGC</code></li>
+<li><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp/bug.hprof -XX:OnOutOfMemoryError=/reset.sh</code></li>
+<li><code>jmap -dump:format=b,file=/tmp/bug.hprof PID</code></li>
+<li><code>jmap -histo PID &gt; /tmp/s.txt</code></li>
+<li><code>jstack -l PID</code></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/08/20/magical-use-java-equals-hashcode/">巧用Equals和Hashcode</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-08-20T11:03:54+08:00" pubdate data-updated="true">Wed 2014-08-20 11:03</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>java中让人疑惑的一点就是等于的判断，有使用<code>==</code>和<code>equals</code>， 有一些专门字符串初始化的资料来考你在是否已经真正的掌握判断两个对象是否一致。</p>
+
+<p>同时，在重写equals时很多资料都强调要重写hashcode。</p>
+
+<p>java中HashMap就是基于equals和hashcode来实现拉链的键值对。Map中存储了entry&lt;K,V>的数组，数组的下标是基于对象的hashcode再对entry长度[并]<code>&amp;</code>的结果。</p>
+
+<p><img src="http://file.bmob.cn/M00/08/55/wKhkA1P0OO-AE9u3AABNzQK0pr8747.png" alt="" /></p>
+
+<p>使用set/map来实现集合，并且对象重写了equals但没有重写hashcode的情况下，得到的结果与你臆想的不同。同时，在特定场景结合hashcode和equals可以实现很酷的效果。</p>
+
+<ul>
+<li>第一个例子A 重写了equals但是没有重写hashcode(ERROR)，此时判断元素是否在集合中结果可能并不是你想要的。</li>
+<li>第二个B的例子 重写hashcode和equals对应后就正确了。</li>
+<li>第三个AA是个很酷的例子 equals的条件更强，可以实现类似<code>map&lt;string, list&lt;string&gt;&gt;</code>的效果。</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>static class A {
+</span><span class='line'>
+</span><span class='line'>  String name;
+</span><span class='line'>  int age;
+</span><span class='line'>
+</span><span class='line'>  public A(String name, int age) {
+</span><span class='line'>      this.name = name;
+</span><span class='line'>      this.age = age;
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public boolean equals(Object obj) {
+</span><span class='line'>      return new EqualsBuilder().append(getClass(), obj.getClass()).append(name, ((A) obj).name).isEquals();
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>@Test
+</span><span class='line'>public void testA() {
+</span><span class='line'>  Set&lt;A&gt; set = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>  set.add(new A("abc", 12));
+</span><span class='line'>  set.add(new A("abc", 14));
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.size());
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.contains(new A("abc", 0)));
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>static class B extends A {
+</span><span class='line'>
+</span><span class='line'>  public B(String name, int age) {
+</span><span class='line'>      super(name, age);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public int hashCode() {
+</span><span class='line'>      return this.name.hashCode();
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>@Test
+</span><span class='line'>public void testB() {
+</span><span class='line'>  /* Set&lt;A&gt; */Set&lt;B&gt; set = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>  set.add(new B("abc", 12));
+</span><span class='line'>  set.add(new B("abc", 14));
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.size());
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.contains(new B("abc", 0)));
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>static class AA extends A {
+</span><span class='line'>  public AA(String name, int age) {
+</span><span class='line'>      super(name, age);
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public boolean equals(Object obj) {
+</span><span class='line'>      return new EqualsBuilder().append(getClass(), obj.getClass()).append(name, ((A) obj).name)
+</span><span class='line'>              .append(age, ((A) obj).age).isEquals();
+</span><span class='line'>  }
+</span><span class='line'>
+</span><span class='line'>  @Override
+</span><span class='line'>  public int hashCode() {
+</span><span class='line'>      return this.name.hashCode();
+</span><span class='line'>  }
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>@Test
+</span><span class='line'>public void testAA() {
+</span><span class='line'>  // 实现Map&lt;String, Set&lt;String&gt;&gt;的效果
+</span><span class='line'>  Set&lt;AA&gt; set = new HashSet&lt;&gt;();
+</span><span class='line'>
+</span><span class='line'>  set.add(new AA("abc", 12));
+</span><span class='line'>  set.add(new AA("abc", 14));
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.size());
+</span><span class='line'>
+</span><span class='line'>  System.out.println(set.contains(new AA("abc", 0)));
+</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://java.chinaitlab.com/base/879319.html">java中HashMap详解</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -168,1096 +1020,6 @@
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/08/02/hadoop-datanode-config-should-equals/">Hadoop的datanode数据节点软/硬件配置应该一致</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-08-02T22:21:12+08:00" pubdate data-updated="true">Sat 2014-08-02 22:21</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>最好的就是集群的所有的datanode的节点的<strong>硬件配置一样</strong>！当然系统时间也的一致，hosts等等这些。机器配置一样时可以使用脚本进行批量处理，给维护带来很大的便利性。</p>
-
-<p>今天收到运维的信息，说集群的一台机器硬盘爆了！上到环境查看<code>df -h</code>发现硬盘配置和其他datanode的不同！但是hadoop hdfs-site.xml的<code>dfs.datanode.data.dir</code>却是一样的！</p>
-
-<p>经验： dir的配置应该是一个系统设备对应一个路径，而不是一个系统目录对应dir的一个路径！</p>
-
-<h2>问题现象以及根源</h2>
-
-<p>问题机器A的磁盘情况：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-slaver8 ~]$ df -h
-</span><span class='line'>文件系统              容量  已用  可用 已用%% 挂载点
-</span><span class='line'>/dev/sda3             2.7T  2.5T   53G  98% /
-</span><span class='line'>tmpfs                  32G  260K   32G   1% /dev/shm
-</span><span class='line'>/dev/sda1              97M   32M   61M  35% /boot
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-slaver8 /]$ ll
-</span><span class='line'>总用量 170
-</span><span class='line'>dr-xr-xr-x.   2 root   root    4096 2月  12 19:39 bin
-</span><span class='line'>dr-xr-xr-x.   5 root   root    1024 2月  13 02:40 boot
-</span><span class='line'>drwxr-xr-x.   2 root   root    4096 2月  23 2012 cgroup
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data1
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data10
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data11
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data12
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data13
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data14
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data15
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data2
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data3
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data4
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data5
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data6
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data7
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data8
-</span><span class='line'>drwxr-xr-x.   3 hadoop hadoop  4096 6月  30 10:36 data9</span></code></pre></td></tr></table></div></figure>
-
-
-<p>再看集群其他机器：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-slaver1 ~]$ df -h
-</span><span class='line'>文件系统              容量  已用  可用 已用%% 挂载点
-</span><span class='line'>/dev/sda3             2.7T   32G  2.5T   2% /
-</span><span class='line'>tmpfs                  32G   88K   32G   1% /dev/shm
-</span><span class='line'>/dev/sda1              97M   32M   61M  35% /boot
-</span><span class='line'>/dev/sdb1             1.8T  495G  1.3T  29% /data1
-</span><span class='line'>/dev/sdb2             1.8T  485G  1.3T  28% /data2
-</span><span class='line'>/dev/sdb3             1.8T  492G  1.3T  29% /data3
-</span><span class='line'>/dev/sdb4             1.8T  488G  1.3T  28% /data4
-</span><span class='line'>/dev/sdb5             1.8T  486G  1.3T  28% /data5
-</span><span class='line'>/dev/sdb6             1.8T  480G  1.3T  28% /data6
-</span><span class='line'>/dev/sdb7             1.8T  479G  1.3T  28% /data7
-</span><span class='line'>/dev/sdb8             1.8T  474G  1.3T  28% /data8
-</span><span class='line'>/dev/sdb9             1.8T  480G  1.3T  28% /data9
-</span><span class='line'>/dev/sdb10            1.8T  478G  1.3T  28% /data10
-</span><span class='line'>/dev/sdb11            1.8T  475G  1.3T  28% /data11
-</span><span class='line'>/dev/sdb12            1.8T  489G  1.3T  29% /data12
-</span><span class='line'>/dev/sdb13            1.8T  475G  1.3T  28% /data13
-</span><span class='line'>/dev/sdb14            1.8T  476G  1.3T  28% /data14
-</span><span class='line'>/dev/sdb15            1.8T  469G  1.3T  27% /data15</span></code></pre></td></tr></table></div></figure>
-
-
-<p>出问题机器没有挂存储，仅仅是建立了对应的目录结构，并不是把目录挂载到单独的存储设备上。</p>
-
-<p>同时查看50070的前面的信息，hadoop把每个逗号分隔后的路径默认都做一个磁盘设备来计算！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Node               Address             ..Admin State CC    Used  NU    RU(%) R(%)      Blocks Block  Pool Used Block Pool Used (%)
-</span><span class='line'>hadoop-slaver1    192.168.32.21:50010 2   In Service  26.86   7.05    1.37    18.44   26.25       68.66   264844  7.05    26.25   
-</span><span class='line'>hadoop-slaver8    192.168.32.28:50010 1   In Service  37.94   2.46    34.71   0.77    6.48        2.03    29637   2.46    6.48    </span></code></pre></td></tr></table></div></figure>
-
-
-<p>配置容量是所有配置的路径所在盘容量的<strong>累加</strong>。总的剩余空间（余量）也是各个dir配置路径的剩余空间<strong>累加</strong>的！这样很容易出现问题！
-最好的就是集群的所有的datanode的节点的<strong>硬件配置一样</strong>！当然系统时间也的一致，hosts等等这些。</p>
-
-<h2>问题处理</h2>
-
-<p>首先得把问题解决啊：</p>
-
-<ul>
-<li>把<code>dfs.datanode.data.dir</code>路径个数调整为磁盘个数！</li>
-<li>修改该datanode的hdfs-site的配置，添加<code>dfs.datanode.du.reserved</code>，留给系统的空间设置为400多G。</li>
-<li>冗余份数也没有必要3份，浪费空间。如果两台机器同时出现问题，还是同一份数据，那只能说是天意！你可以去趟澳门赌一圈了！</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;/data1/hadoop/data&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;dfs.datanode.du.reserved&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;437438953472&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>&lt;name&gt;dfs.replication&lt;/name&gt;
-</span><span class='line'>&lt;value&gt;2&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>设置了reserved保留空间后，再看LIVE页面slaver8的容量变少了且正好等于(盘的容量2.7T-430G~=2.26T 计算容量的hdfs源码在<code>FsVolumeImpl.getCapacity()</code>)。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>hadoop-slaver8   192.168.32.28:50010 1   In Service  2.26    2.23    0.00    0.03    98.66</span></code></pre></td></tr></table></div></figure>
-
-
-<p>datanode和blockpool的平衡处理，可以参考<a href="http://hadoop-master1:50070/dfsnodelist.jsp?whatNodes=LIVE">Live Datanodes</a>的容量和进行！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-master1 ~]$ hdfs balancer -help
-</span><span class='line'>Usage: java Balancer
-</span><span class='line'>        [-policy &lt;policy&gt;]      the balancing policy: datanode or blockpool
-</span><span class='line'>        [-threshold &lt;threshold&gt;]        Percentage of disk capacity
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-slaver8 ~]$ hadoop-2.2.0/bin/hdfs getconf -confkey dfs.datanode.du.reserved
-</span><span class='line'>137438953472</span></code></pre></td></tr></table></div></figure>
-
-
-<p>删除一些没用的备份数据。配置好以后，重启当前slaver8节点，并进行数据平衡（如果觉得麻烦，直接丢掉原来的一个目录下的数据也行，可能更快！均衡器运行的太慢！！）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@hadoop-slaver8 ~]$  ~/hadoop-2.2.0/sbin/hadoop-daemon.sh stop datanode
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-slaver8 ~]$  for i in 6 7 8 9 10 11 12 13 14 15; do  cd /data$i/hadoop/data/current/BP-1414312971-192.168.32.11-1392479369615/current/finalized;  find . -type f -exec mv {} /data1/hadoop/data/current/BP-1414312971-192.168.32.11-1392479369615/current/finalized/{} \;; done
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-slaver8 ~]$  ~/hadoop-2.2.0/sbin/hadoop-daemon.sh start datanode
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ hdfs dfsadmin -setBalancerBandwidth 10485760
-</span><span class='line'>[hadoop@hadoop-master1 ~]$ hdfs balancer -threshold 60
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>查看datanode的日志，由于移动数据，有些blk的id一样，会清理一些数据。对于均衡器程序的阀值越小集群越平衡！默认是10（%），会移动很多的数据（准备看下均衡器的源码，了解各个参数以及运行的逻辑）！</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://blog.csdn.net/lingzihan1215/article/details/8700532">hadoop的datanode多磁盘空间处理</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2014-07-30T00:25:39+08:00" pubdate data-updated="true">Wed 2014-07-30 00:25</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>网上查了很多资料说的很复杂，要叉叉叉叉叉！其实hadoop2已经集成了hadoop-snappy，只要安装snappy即可。但是也没有一些文章说的只要编译snappy然后放到lib/native路径下即可，还需要重新编译libhadoop的library包。</p>
-
-<p>查找hadoop-snappy的源码的时刻，在C代码里面定义了<code>HADOOP_SNAPPY_LIBRARY</code>，然后理着这个思路去查找，发现在CMakeFile文件中也定义了对应的变量，然后再查找pom.xml的native profile中定义了snappy.prefix的属性。最后就有了下面的步骤。</p>
-
-<ul>
-<li>2016-1 更新编译2.6.3</li>
-</ul>
-
-
-<h2>centos6编译2.6.3命令</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>-- linux已经自带了libsnappy.so.1文件，用于编译。如果系统没有libsnappy.so.1，需要把编译好的so拷贝到$HADOOP_HOME/lib/native目录下（方便拷贝到其他机器）。
-</span><span class='line'>-- 
-</span><span class='line'>-- https://www.rpmfind.net/linux/rpm2html/search.php?query=snappy&submit=Search+...&system=&arch= 
-</span><span class='line'>-- 去看这里看下系统版本有哪些snappy版本，然后再下载相应的snappy版本编译
-</span><span class='line'>-- http://google.github.io/snappy/
-</span><span class='line'>-- 
-</span><span class='line'>[root@cu2 ~]# yum install -y libtool*
-</span><span class='line'>[root@cu2 ~]# exit
-</span><span class='line'>logout
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 snappy-1.1.3]$ ./autogen.sh 
-</span><span class='line'>[hadoop@cu2 snappy-1.1.3]$ 
-</span><span class='line'>[hadoop@cu2 snappy-1.1.3]$ ./configure --prefix=/home/hadoop/snappy
-</span><span class='line'>[hadoop@cu2 snappy-1.1.3]$ make 
-</span><span class='line'>[hadoop@cu2 snappy-1.1.3]$ make install
-</span><span class='line'>
-</span><span class='line'># -Dbundle.snappy=true -Dsnappy.lib=/usr/lib64 
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3-src]$ mvn package -Pdist -Pnative -Dtar -Dmaven.javadoc.skip=true -DskipTests -Dsnappy.prefix=/home/hadoop/snappy -Drequire.snappy=true 
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 ~]$ tar zxvf sources/hadoop-2.6.3-src/hadoop-dist/target/hadoop-2.6.3.tar.gz 
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 ~]$ cd hadoop-2.6.3
-</span><span class='line'>[hadoop@cu2 hadoop-2.6.3]$ bin/hadoop checknative
-</span><span class='line'>16/01/09 19:25:46 WARN bzip2.Bzip2Factory: Failed to load/initialize native-bzip2 library system-native, will use pure-Java version
-</span><span class='line'>16/01/09 19:25:46 INFO zlib.ZlibFactory: Successfully loaded & initialized native-zlib library
-</span><span class='line'>Native library checking:
-</span><span class='line'>hadoop:  true /home/hadoop/hadoop-2.6.3/lib/native/libhadoop.so.1.0.0
-</span><span class='line'>zlib:    true /lib64/libz.so.1
-</span><span class='line'>snappy:  true /usr/lib64/libsnappy.so.1
-</span><span class='line'>lz4:     true revision:99
-</span><span class='line'>bzip2:   false 
-</span><span class='line'>openssl: false Cannot load libcrypto.so (libcrypto.so: cannot open shared object file: No such file or directory)!
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu2 ~]$ for h in hadoop-slaver1 hadoop-slaver2 hadoop-slaver3 ; do rsync -vaz --delete --exclude=logs hadoop-2.6.3 $h:~/ ; done
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>正文部分</h2>
-
-<p>1) build snappy</p>
-
-<p>编译Snappy，并把lib拷贝/同步到hadoop的native目录下。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>tar zxf snappy-1.1.1.tar.gz 
-</span><span class='line'>cd snappy-1.1.1
-</span><span class='line'>./configure --prefix=/home/hadoop/snappy
-</span><span class='line'>make
-</span><span class='line'>make install
-</span><span class='line'>
-</span><span class='line'>cd snappy
-</span><span class='line'>cd lib/
-</span><span class='line'># 拷贝到hadoop/lib目录下
-</span><span class='line'>rysnc -vaz * ~/hadoop-2.2.0/lib/native/</span></code></pre></td></tr></table></div></figure>
-
-
-<p>2) rebuild hadoop common project</p>
-
-<p>重新编译hadoop的lib，覆盖原来的文件。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop-common]$ mvn package -Dmaven.javadoc.skip=true -DskipTests -Dsnappy.prefix=/home/hadoop/snappy -Drequire.snappy=true -Pnative 
-</span><span class='line'>
-</span><span class='line'>[hadoop@master1 hadoop-common]$ cd ~/hadoop-2.2.0-src/hadoop-common-project/hadoop-common/
-</span><span class='line'>[hadoop@master1 hadoop-common]$ cd target/native/target/usr/local/lib/
-</span><span class='line'>[hadoop@master1 lib]$ ll
-</span><span class='line'>total 1252
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 820824 Jul 30 00:18 libhadoop.a
-</span><span class='line'>lrwxrwxrwx. 1 hadoop hadoop     18 Jul 30 00:18 libhadoop.so -&gt; libhadoop.so.1.0.0
-</span><span class='line'>-rwxrwxr-x. 1 hadoop hadoop 455542 Jul 30 00:18 libhadoop.so.1.0.0
-</span><span class='line'>[hadoop@master1 lib]$ rsync -vaz * ~/hadoop-2.2.0/lib/native/
-</span><span class='line'>sending incremental file list
-</span><span class='line'>libhadoop.a
-</span><span class='line'>libhadoop.so.1.0.0
-</span><span class='line'>
-</span><span class='line'>sent 409348 bytes  received 53 bytes  818802.00 bytes/sec
-</span><span class='line'>total size is 1276384  speedup is 3.12
-</span><span class='line'>[hadoop@master1 lib]$ </span></code></pre></td></tr></table></div></figure>
-
-
-<p>3) check</p>
-
-<p>检查程序snappy是否已经配置成功</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ hadoop checknative -a
-</span><span class='line'>14/07/30 00:22:14 WARN bzip2.Bzip2Factory: Failed to load/initialize native-bzip2 library system-native, will use pure-Java version
-</span><span class='line'>14/07/30 00:22:14 INFO zlib.ZlibFactory: Successfully loaded & initialized native-zlib library
-</span><span class='line'>Native library checking:
-</span><span class='line'>hadoop: true /home/hadoop/hadoop-2.2.0/lib/native/libhadoop.so.1.0.0
-</span><span class='line'>zlib:   true /lib64/libz.so.1
-</span><span class='line'>snappy: true /home/hadoop/hadoop-2.2.0/lib/native/libsnappy.so.1
-</span><span class='line'>lz4:    true revision:43
-</span><span class='line'>bzip2:  false 
-</span><span class='line'>14/07/30 00:22:14 INFO util.ExitUtil: Exiting with status 1
-</span><span class='line'>[hadoop@master1 ~]$ </span></code></pre></td></tr></table></div></figure>
-
-
-<p>4) 跑一个压缩程序</p>
-
-<p>先参考网上的，直接用hbase的带的测试类运行（前提：需要在hbase-env.sh中配置HADOOP_HOME，这样hbase才能找到hadoop下的lib本地库）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ hbase-0.98.3-hadoop2/bin/hbase org.apache.hadoop.hbase.util.CompressionTest file:///tmp/abc.snappy snappy
-</span><span class='line'>2014-07-30 08:50:42,617 INFO  [main] Configuration.deprecation: hadoop.native.lib is deprecated. Instead, use io.native.lib.available
-</span><span class='line'>SLF4J: Class path contains multiple SLF4J bindings.
-</span><span class='line'>SLF4J: Found binding in [jar:file:/home/hadoop/hbase-0.98.3-hadoop2/lib/slf4j-log4j12-1.6.4.jar!/org/slf4j/impl/StaticLoggerBinder.class]
-</span><span class='line'>SLF4J: Found binding in [jar:file:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/slf4j-log4j12-1.7.5.jar!/org/slf4j/impl/StaticLoggerBinder.class]
-</span><span class='line'>SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
-</span><span class='line'>2014-07-30 08:50:44,515 INFO  [main] util.ChecksumType: Checksum using org.apache.hadoop.util.PureJavaCrc32
-</span><span class='line'>2014-07-30 08:50:44,522 INFO  [main] util.ChecksumType: Checksum can use org.apache.hadoop.util.PureJavaCrc32C
-</span><span class='line'>2014-07-30 08:50:45,388 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
-</span><span class='line'>2014-07-30 08:50:45,408 INFO  [main] compress.CodecPool: Got brand-new compressor [.snappy]
-</span><span class='line'>2014-07-30 08:50:45,430 ERROR [main] hbase.KeyValue: Unexpected getShortMidpointKey result, fakeKey:testkey, firstKeyInBlock:testkey
-</span><span class='line'>2014-07-30 08:50:47,088 INFO  [main] compress.CodecPool: Got brand-new decompressor [.snappy]
-</span><span class='line'>SUCCESS
-</span><span class='line'>[hadoop@master1 ~]$ </span></code></pre></td></tr></table></div></figure>
-
-
-<p>看到最后的<strong>SUCCESS</strong>就说明安装配置成功了！</p>
-
-<p>接下来自己写程序测试压缩/解压缩，首先编写java类：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>import java.io.FileInputStream;
-</span><span class='line'>import java.io.FileNotFoundException;
-</span><span class='line'>import java.io.FileOutputStream;
-</span><span class='line'>import java.io.IOException;
-</span><span class='line'>
-</span><span class='line'>import org.apache.commons.lang.StringUtils;
-</span><span class='line'>import org.apache.hadoop.conf.Configuration;
-</span><span class='line'>import org.apache.hadoop.io.compress.CompressionCodec;
-</span><span class='line'>import org.apache.hadoop.io.compress.CompressionInputStream;
-</span><span class='line'>import org.apache.hadoop.io.compress.CompressionOutputStream;
-</span><span class='line'>import org.apache.hadoop.io.compress.SnappyCodec;
-</span><span class='line'>import org.apache.hadoop.util.ReflectionUtils;
-</span><span class='line'>import org.apache.zookeeper.common.IOUtils;
-</span><span class='line'>
-</span><span class='line'>public class SnappyCompressTest {
-</span><span class='line'>
-</span><span class='line'>        public static void main(String[] args) throws FileNotFoundException, IOException {
-</span><span class='line'>                try {
-</span><span class='line'>                        execute(args);
-</span><span class='line'>                } catch (Exception e) {
-</span><span class='line'>                        System.out.println("Usage: $0 read|write file[.snappy]");
-</span><span class='line'>                }
-</span><span class='line'>        }
-</span><span class='line'>
-</span><span class='line'>        private static void execute(String[] args) throws FileNotFoundException, IOException {
-</span><span class='line'>                String op = args[0];
-</span><span class='line'>                String file = args[1];
-</span><span class='line'>                String snappyFile = file + ".snappy";
-</span><span class='line'>
-</span><span class='line'>                Class&lt;? extends CompressionCodec&gt; clazz = SnappyCodec.class;
-</span><span class='line'>                CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
-</span><span class='line'>
-</span><span class='line'>                if (StringUtils.equalsIgnoreCase(op, "read")) {
-</span><span class='line'>                        FileInputStream fin = new FileInputStream(snappyFile);
-</span><span class='line'>                        CompressionInputStream in = codec.createInputStream(fin);
-</span><span class='line'>                        FileOutputStream fout = new FileOutputStream(file);
-</span><span class='line'>                        IOUtils.copyBytes(in, fout, 4096, true);
-</span><span class='line'>                } else {
-</span><span class='line'>                        FileInputStream fin = new FileInputStream(file);
-</span><span class='line'>                        CompressionOutputStream out = codec.createOutputStream(new FileOutputStream(snappyFile));
-</span><span class='line'>                        IOUtils.copyBytes(fin, out, 4096, true);
-</span><span class='line'>                }
-</span><span class='line'>        }
-</span><span class='line'>
-</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
-
-
-<p>编译运行，测试读写功能。使用hadoop命令可以简化很多工作，把当前路径加入到<code>HADOOP_CLASSPATH</code>。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 test]$ javac -cp `hadoop classpath` SnappyCompressTest.java 
-</span><span class='line'>[hadoop@master1 test]$ export HADOOP_CLASSPATH=$PWD
-</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest 
-</span><span class='line'>Usage: $0 read|write file[.snappy]
-</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest write test.txt 
-</span><span class='line'>[hadoop@master1 test]$ ll
-</span><span class='line'>total 16
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:23 test.txt
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
-</span><span class='line'>[hadoop@master1 test]$ rm test.txt
-</span><span class='line'>[hadoop@master1 test]$ hadoop SnappyCompressTest read test.txt 
-</span><span class='line'>[hadoop@master1 test]$ ll
-</span><span class='line'>total 16
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1991 Jul 30 09:27 SnappyCompressTest.class
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop 1586 Jul 30 09:23 SnappyCompressTest.java
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   12 Jul 30 09:28 test.txt
-</span><span class='line'>-rw-rw-r--. 1 hadoop hadoop   22 Jul 30 09:28 test.txt.snappy
-</span><span class='line'>[hadoop@master1 test]$ cat test.txt
-</span><span class='line'>abc
-</span><span class='line'>abc
-</span><span class='line'>abc</span></code></pre></td></tr></table></div></figure>
-
-
-<p>5) hbase中添加压缩</p>
-
-<p>把所有library，以及hbase的配置同步其他所有从节点。对hbase的表使用Snappy压缩。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>hbase(main):001:0&gt; create 'st1', 'f1'
-</span><span class='line'>hbase(main):005:0&gt; alter 'st1', {NAME=&gt;'f1', COMPRESSION=&gt;'snappy'}
-</span><span class='line'>Updating all regions with the new schema...
-</span><span class='line'>0/1 regions updated.
-</span><span class='line'>1/1 regions updated.
-</span><span class='line'>Done.
-</span><span class='line'>0 row(s) in 2.7880 seconds
-</span><span class='line'>
-</span><span class='line'>hbase(main):010:0&gt; create 'sst1','f1'
-</span><span class='line'>0 row(s) in 0.5730 seconds
-</span><span class='line'>
-</span><span class='line'>=&gt; Hbase::Table - sst1
-</span><span class='line'>hbase(main):011:0&gt; flush 'sst1'
-</span><span class='line'>0 row(s) in 2.5380 seconds
-</span><span class='line'>
-</span><span class='line'>hbase(main):012:0&gt; flush 'st1'
-</span><span class='line'>0 row(s) in 7.5470 seconds</span></code></pre></td></tr></table></div></figure>
-
-
-<p>对于hbase来说，使用压缩消耗还是挺大的。插入10w数据中间进行compaction时停顿比较久。最后flush写数据的时间也长了很多！
-下面是文件写入后的文件大小对比（由于是进行简单的测试，写入的数据重复比较多。具体比例没有参考价值）：</p>
-
-<p><img src="http://file.bmob.cn/M00/05/5A/wKhkA1PYz9CAB-TdAAEWX8LGpUo149.png" alt="" /></p>
-
-<p>6) 正式环境下解压snappy文件</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>
-</span><span class='line'>import java.io.FileOutputStream;
-</span><span class='line'>import java.io.IOException;
-</span><span class='line'>import java.io.InputStream;
-</span><span class='line'>
-</span><span class='line'>import org.apache.hadoop.conf.Configuration;
-</span><span class='line'>import org.apache.hadoop.fs.FileSystem;
-</span><span class='line'>import org.apache.hadoop.fs.Path;
-</span><span class='line'>import org.apache.hadoop.io.compress.CompressionCodec;
-</span><span class='line'>import org.apache.hadoop.io.compress.CompressionInputStream;
-</span><span class='line'>import org.apache.hadoop.io.compress.SnappyCodec;
-</span><span class='line'>import org.apache.hadoop.util.ReflectionUtils;
-</span><span class='line'>import org.apache.zookeeper.common.IOUtils;
-</span><span class='line'>
-</span><span class='line'>public class DecompressTest {
-</span><span class='line'>  public static void main(String[] args) throws IOException {
-</span><span class='line'>
-</span><span class='line'>      Configuration conf = new Configuration();
-</span><span class='line'>      Path path = new Path(args[0]);
-</span><span class='line'>      FileSystem fs = path.getFileSystem(conf);
-</span><span class='line'>
-</span><span class='line'>      Class&lt;? extends CompressionCodec&gt; clazz = SnappyCodec.class;
-</span><span class='line'>      CompressionCodec codec = ReflectionUtils.newInstance(clazz, new Configuration());
-</span><span class='line'>
-</span><span class='line'>      InputStream fin = fs.open(path);
-</span><span class='line'>      CompressionInputStream in = codec.createInputStream(fin);
-</span><span class='line'>
-</span><span class='line'>      IOUtils.copyBytes(in, System.out, 4096, true);
-</span><span class='line'>
-</span><span class='line'>      fin.close();
-</span><span class='line'>
-</span><span class='line'>      System.out.println("SUCCESS");
-</span><span class='line'>
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>// build & run
-</span><span class='line'>
-</span><span class='line'>&gt;DecompressTest.java 
-</span><span class='line'>vi DecompressTest.java 
-</span><span class='line'>javac -cp `hadoop classpath`  DecompressTest.java 
-</span><span class='line'>export HADOOP_CLASSPATH=.
-</span><span class='line'># snappyfile on hdfs
-</span><span class='line'>hadoop DecompressTest /user/hive/t_ods_access_log2/month=201408/day=20140828/hour=2014082808/t_ods_access_log2-2014082808.our.snappy.1409187524328
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/07/29/hadoop2-use-shortcircuit-local-reading/">Hadoop2 ShortCircuit Local Reading</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-
-  
-<time datetime="2014-07-29T20:11:58+08:00" pubdate data-updated="true">Tue 2014-07-29 20:11</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>hadoop一直以来认为是本地读写文件的，但是其实也是通过TCP端口去获取数据，只是都在同一台机器。在hivetuning调优hive的文档中看到了ShortCircuit的HDFS配置属性，查看了ShortCircuit的来由，真正的实现了本地读取文件。蒙查查表示看的不是很明白，最终大致就是通过linux的<strong>文件描述符</strong>来实现功能同时保证文件的权限。</p>
-
-<p>由于仅在自己的机器上面配置来查询hbase的数据，性能方面提升感觉不是很明显。等以后整到正式环境再对比对比。</p>
-
-<ul>
-<li>2016-1 添加测试方法数据是否通过short-circuit读取</li>
-</ul>
-
-
-<p>配置如下。</p>
-
-<p>1 修改hdfs-site.xml</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>注意：socket路径的权限控制的比较严格。dn_socket<strong>所有的父路径</strong>要么仅有当前启动用户的写权限，要么仅root可写。</p>
-
-<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXfbKANLOrAADWJQ5taVs391.png" alt="" /></p>
-
-<p>2 修改hbase的配置，并添加HADOOP_HOME（hbase查找hadoop-native）</p>
-
-<p><img src="http://file.bmob.cn/M00/05/52/wKhkA1PXhRKAZDs6AAChrEauBoU738.png" alt="" /></p>
-
-<p>hbase的脚本找到hadoop命令后，会把hadoop的java.library.path配置加入到hbase的启动脚本中。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>// 更好的方式是Hbase直接共享HADOOP_CONF_DIR
-</span><span class='line'>[hadoop@master1 ~]$ tail -15 hbase-0.98.3-hadoop2/conf/hbase-site.xml 
-</span><span class='line'>    &lt;name&gt;hbase.tmp.dir&lt;/name&gt;
-</span><span class='line'>    &lt;value&gt;/home/hadoop/data/hbase&lt;/value&gt;
-</span><span class='line'>  &lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.client.read.shortcircuit&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;true&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.domain.socket.path&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;/home/hadoop/data/sockets/dn_socket&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>
-</span><span class='line'>// IBM部署是直接把一系列的bigdata的环境变量写到一个FILE，然后加入到/etc/profile.d/FILE。
-</span><span class='line'>[hadoop@master1 ~]$ cat hbase-0.98.3-hadoop2/conf/hbase-env.sh
-</span><span class='line'>...
-</span><span class='line'>export HADOOP_HOME=/home/hadoop/hadoop-2.2.0
-</span><span class='line'>...
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>3 同步到其他节点，然后重启hdfs,hbase</p>
-
-<h2>测试</h2>
-
-<ul>
-<li><a href="https://www.zybuluo.com/jewes/note/37713">https://www.zybuluo.com/jewes/note/37713</a></li>
-</ul>
-
-
-<p>在datanode读取该机器上的block（fsck命令可以查看文件的块在哪些机器）。通过查看日志，或者通过HdfsDataInputStream.getReadStatistics().getTotalShortCircuitBytesRead()来获取从ShortCircuit读取数据量。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># datanode.log
-</span><span class='line'>2017-05-05 09:53:16,089 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: cliID: DFSClient_attempt_1492660490127_17873_m_001534_0_698465397_1, src: 127.0.0.1, dest: 127.0.
-</span><span class='line'>0.1, op: REQUEST_SHORT_CIRCUIT_SHM, shmId: 3a2653121c6cb5acd0050fbb6a086fcf, srvID: 732ce1ee-3f4f-4be5-b806-22edcab58e6b, success: true
-</span><span class='line'>2017-05-05 09:53:16,095 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: cliID: DFSClient_attempt_1492660490127_17873_m_001469_0_936154908_1, src: 127.0.0.1, dest: 127.0.
-</span><span class='line'>0.1, op: REQUEST_SHORT_CIRCUIT_SHM, shmId: c9082d6420bc980b60bde78a437a90fd, srvID: 732ce1ee-3f4f-4be5-b806-22edcab58e6b, success: true
-</span><span class='line'>2017-05-05 09:53:16,122 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: src: 127.0.0.1, dest: 127.0.0.1, op: REQUEST_SHORT_CIRCUIT_FDS, blockid: 1211094391, srvID: 732ce
-</span><span class='line'>1ee-3f4f-4be5-b806-22edcab58e6b, success: true
-</span><span class='line'>2017-05-05 09:53:16,126 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: src: 127.0.0.1, dest: 127.0.0.1, op: REQUEST_SHORT_CIRCUIT_FDS, blockid: 1211095681, srvID: 732ce
-</span><span class='line'>1ee-3f4f-4be5-b806-22edcab58e6b, success: true
-</span><span class='line'>
-</span><span class='line'>[hadoop@cu3 ~]$ ~/hadoop-2.6.3/bin/hdfs fsck /spark-assembly-1.6.0-hadoop2.6.3.jar -files -blocks -locations</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://vdisk.weibo.com/s/z_44nz36hNM3Z">hive-tuning</a></li>
-<li><a href="http://blog.cloudera.com/blog/2013/08/how-improved-short-circuit-local-reads-bring-better-performance-and-security-to-hadoop/">How Improved Short-Circuit Local Reads Bring Better Performance and Security to Hadoop</a></li>
-<li><a href="http://hbase.apache.org/book/perf.hdfs.html">HDFS&ndash;Apache HBase Performance Tuning</a></li>
-<li><a href="http://archive.cloudera.com/cdh4/cdh/4/hadoop/hadoop-project-dist/hadoop-hdfs/ShortCircuitLocalReads.html">HDFS Short-Circuit Local Reads</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/07/29/safely-remove-datanode/">Hadoop安全的关闭datanode节点</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-07-29T15:08:41+08:00" pubdate data-updated="true">Tue 2014-07-29 15:08</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>hadoop默认就有冗余（dfs.replication）的机制，所以一般情况下，一台机器挂了也没所谓。集群会自动的进行复制均衡处理。</p>
-
-<p>作为测试，如果dfs.replication设置为1的情况下，怎么安全的把datanode节点服务关闭呢？例如说，刚刚开始搭建环境是把namenode、datanode放在一台机器上，后面增加了机器如何把datanode分离出来呢？</p>
-
-<p>借助于<strong>dfs.hosts.exclude</strong>即可完成顺序的完成此项任务。</p>
-
-<p>修改hdfs-site.xml配置。我操作的时刻仅修改了master1上的hdfs-site.xml。把<strong>master1</strong>值写入到对应的文件中。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ cat hdfs-site.xml 
-</span><span class='line'>...
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>        &lt;name&gt;dfs.hosts.exclude&lt;/name&gt;
-</span><span class='line'>        &lt;value&gt;/home/hadoop/hadoop-2.2.0/etc/hadoop/exclude&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>[hadoop@master1 hadoop]$ cat /home/hadoop/hadoop-2.2.0/etc/hadoop/exclude
-</span><span class='line'>master1
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>修改完成后，刷新节点即可(完全没有必要重启集dfs)。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>hadoop dfsadmin -refreshNodes</span></code></pre></td></tr></table></div></figure>
-
-
-<p>可以通过<code>dfsadmin -report</code>或者网页查看master1已经变成<em>Decommission In Progress</em>了。</p>
-
-<p><img src="http://file.bmob.cn/M00/05/4C/wKhkA1PXUMOAVvvWAAED6CN-3Rg187.png" alt="" /></p>
-
-<p>注：</p>
-
-<p>问题一： 在新建节点是slaver1的防火墙没关闭，由于master1已经被exclude，而slaver1不能提供服务，上传文件时报错：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ hadoop fs -put slaves  /
-</span><span class='line'>14/07/29 15:18:21 WARN hdfs.DFSClient: DataStreamer Exception
-</span><span class='line'>org.apache.hadoop.ipc.RemoteException(java.io.IOException): File /slaves._COPYING_ could only be replicated to 0 nodes instead of minReplication (=1).  There are 2 datanode(s) running and no node(s) are excluded in this operation.
-</span><span class='line'>        at org.apache.hadoop.hdfs.server.blockmanagement.BlockManager.chooseTarget(BlockManager.java:1384)
-</span><span class='line'>        at org.apache.hadoop.hdfs.server.namenode.FSNamesystem.getAdditionalBlock(FSNamesystem.java:2477)</span></code></pre></td></tr></table></div></figure>
-
-
-<p>关闭防火墙一样再次上传，还是报同样的错误。此时，也可以通过刷新节点<code>hadoop dfsadmin -refreshNodes</code>来解决。</p>
-
-<p>问题二： 设置备份数量</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 hadoop]$ hadoop fs -setrep 3 /slaves 
-</span><span class='line'>Replication 3 set: /slaves</span></code></pre></td></tr></table></div></figure>
-
-
-<p></p>
-
-<p>问题三： 新增节点</p>
-
-<p>拷贝程序到新增节点，然后启动</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@master1 ~]$ tar zc hadoop-2.2.0 --exclude=logs | ssh slaver2 'cat | tar zx'
-</span><span class='line'>
-</span><span class='line'>[hadoop@slaver2 ~]$ cd hadoop-2.2.0/
-</span><span class='line'>[hadoop@slaver2 hadoop-2.2.0]$ sbin/hadoop-daemon.sh start datanode</span></code></pre></td></tr></table></div></figure>
-
-
-<p>也可以修改master上的slavers文件再<code>sbin/start-dfs.sh</code>启动。</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/38">&larr; Older</a>
@@ -1292,10 +1054,6 @@
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/01/20/gitalk-on-octopress/">Gitalk on Octopress</a>
-			</li>
-		
-			<li class="post">
 				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
 			</li>
 		
@@ -1312,18 +1070,6 @@
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/">Hive on Spark预测性执行BUG一枚</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2017/01/27/vnc-server-on-centos7/">在Centos7上安装VNC Server</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2017/01/19/nginx-https/">Nginx配置https</a>
-			</li>
-		
-			<li class="post">
 				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
 			</li>
 		
@@ -1336,27 +1082,11 @@
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2016/03/28/hive-on-spark/">Hive on Spark</a>
-			</li>
-		
-			<li class="post">
 				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
 			</li>
 		
 			<li class="post">
 				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/10/16/spark-build-and-configuration/">编译/搭建Spark环境</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/08/25/step-by-step-found-java-oom-error/">查找逐步定位Java程序OOM的异常实践</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/07/30/hadoop2-snappy-compress/">Hadoop2 Snappy Compress</a>
 			</li>
 		
 			<li class="post">
@@ -1372,10 +1102,6 @@
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a>
-			</li>
-		
-			<li class="post">
 				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
 			</li>
 		
@@ -1384,6 +1110,22 @@
 <section>
   <h1>Recent Posts</h1>
   <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2023/03/25/reinstall-raspberry2/">重新折腾raspberry2</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2023/03/25/mirror-request/">请求复制/镜像</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2023/03/18/wechat-on-openai/">微信对接OpenAI</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2023/02/01/git-reset-hard/">记git Reset &#8211;hard</a>
+      </li>
     
       <li class="post">
         <a href="/blog/2023/02/01/register-openai/">注册OpenAI</a>
@@ -1399,22 +1141,6 @@
     
       <li class="post">
         <a href="/blog/2022/04/14/k8s-nfs/">k8s共享存储使用NFS</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/04/11/xiaomi-r4a-install-padavan/">Xiaomi R4a Install Padavan</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/04/06/minikube-guide/">Minikube Guide</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/03/26/k8s-ingress/">K8s Ingress</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/03/18/k8s-guide-use-kubeadm/">k8s-v1.23.5安装指南 - 使用kubeadm</a>
       </li>
     
   </ul>
@@ -1483,7 +1209,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/git/'>git</a> (3) 
+			<a class='category' href='/blog/categories/git/'>git</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1547,15 +1273,19 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/nginx/'>nginx</a> (3) 
+			<a class='category' href='/blog/categories/nginx/'>nginx</a> (5) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/openai/'>openai</a> (1) 
+			<a class='category' href='/blog/categories/openai/'>openai</a> (2) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/openeuler/'>openeuler</a> (2) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/openvpn/'>openvpn</a> (1) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1567,7 +1297,11 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (25) 
+			<a class='category' href='/blog/categories/raspberry/'>raspberry</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (16) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1583,7 +1317,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/spark/'>spark</a> (12) 
+			<a class='category' href='/blog/categories/spark/'>spark</a> (13) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1599,7 +1333,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (68) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (70) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1608,6 +1342,10 @@
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/vagrant/'>vagrant</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/vnc/'>vnc</a> (1) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1620,7 +1358,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (229)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (233)</li>
 	</ul>
 	
 </section>
