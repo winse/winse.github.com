@@ -4,7 +4,7 @@
   <title><![CDATA[Category: Openai | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/openai/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2023-03-26T00:12:09+08:00</updated>
+  <updated>2023-04-09T19:31:58+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,196 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[钉钉群机器人对接ChatGPT]]></title>
+    <link href="http://winse.github.io/blog/2023/04/09/dingtalk-with-openai/"/>
+    <updated>2023-04-09T19:25:42+08:00</updated>
+    <id>http://winse.github.io/blog/2023/04/09/dingtalk-with-openai</id>
+    <content type="html"><![CDATA[<p>前面一段时刻，通过 <a href="https://github.com/zhayujie/bot-on-anything">https://github.com/zhayujie/bot-on-anything</a> 对接过个人微信的群，但是没过多久微信就被警告不能扫码了，前几天更新了钉钉机器人的对接方法，尝试了一下感觉还行马马虎虎。</p>
+
+<p>当然过程是揪心的：钉钉文档在更新升级，bot这边的文档太简单，需要对着代码，然后对着dingtalk官方的文档对照着去排查。</p>
+
+<h2>第一步 首先是创建企业内部机器人，获取Secret</h2>
+
+<p>平时对接的告警机器人是只能发消息的，不能接收消息。</p>
+
+<p>在钉钉APP中创建一个组织，然后在以这个组织登录 <a href="https://open-dev.dingtalk.com/v1/fe/old#/corprobot">https://open-dev.dingtalk.com/v1/fe/old#/corprobot</a> 然后再点击 创建机器人：</p>
+
+<p>其中基础信息中的AppSecret后面会用到，对应dingtalk_secret：</p>
+
+<p><img src="/images/blogs/openai/dingtalk1.png" alt="机器人基础信息" /></p>
+
+<p>然后配置接受消息的地址：就是钉钉服务器收到消息后，把消息转发到你的服务器（公网可访问的）地址。服务器出口IP：就是你部署服务器的公网IP，为了验证信息的合法性的一个参数。</p>
+
+<p><img src="/images/blogs/openai/dingtalk2.png" alt="服务配置" /></p>
+
+<p>创建好机器人后，在版本管理和发布页签中，上线机器人。这样我们在组织的群里面就能选择这个机器人了。</p>
+
+<h2>第二步 把机器人加入组织群，获取Token</h2>
+
+<p>选择 群设置 - 机器人 - 添加机器人，把刚刚创建的机器人加入到我们组织/公司群，然后查看机器人的设置，会提供一个webhook的地址，这一串地址中就包括了一个access_token的字符串参数，就是后面需要用的dingtalk_token。</p>
+
+<p><img src="/images/blogs/openai/dingtalk3.png" alt="机器人管理" /></p>
+
+<p><img src="/images/blogs/openai/dingtalk4.png" alt="机器人设置/配置页面" /></p>
+
+<h2>第三步 配置bot，启动服务</h2>
+
+<p>配置bot-on-anything的config.json，修改 channel - type 的类型为 dingtalk，dingtalk的参数为：机器人应用凭证的AppSecret对应dingtalk_secret；发布机器人，把机器人加入到群后，机器人设置页面的webhook地址上的access_token对应的是dingtalk_token。</p>
+
+<pre><code>"channel": {
+    "type": "dingtalk",
+    "single_chat_prefix": ["bot", "@bot"],
+    "single_chat_reply_prefix": "[bot] ",
+    "group_chat_prefix": ["@bot"],
+    "group_name_white_list": ["ChatGPT测试群"],
+    "image_create_prefix": ["画", "看", "找一张"],
+
+    "wechat": {
+    },
+
+    "wechat_mp": {
+      "token": "2023...",
+      "port": "3000"
+    },
+
+    "dingtalk": {
+      "image_create_prefix": ["画", "draw", "Draw"],
+      "port": "3000",
+      "dingtalk_token": "d55566a9e90...",
+      "dingtalk_post_token": "",
+      "dingtalk_secret": "PUMsK......"
+    },
+</code></pre>
+
+<p>启动服务，愉快的耍起来。</p>
+
+<h2>第四步 小小改进</h2>
+
+<p>在测试图片消息的时刻，发现还不太支持，还有回复消息at提问的人也小小改进了一下：</p>
+
+<pre><code>cat dingtalk_channel.py 
+# encoding:utf-8
+import json
+import hmac
+import hashlib
+import base64
+import time
+import requests
+from urllib.parse import quote_plus
+from common import log
+from flask import Flask, request, render_template, make_response
+from common import const
+from common import functions
+from config import channel_conf
+from config import channel_conf_val
+from channel.channel import Channel
+
+class DingTalkChannel(Channel):
+    def __init__(self):
+        self.dingtalk_token = channel_conf(const.DINGTALK).get('dingtalk_token')
+        self.dingtalk_post_token = channel_conf(const.DINGTALK).get('dingtalk_post_token')
+        self.dingtalk_secret = channel_conf(const.DINGTALK).get('dingtalk_secret')
+        log.info("[DingTalk] dingtalk_secret={}, dingtalk_token={} dingtalk_post_token={}".format(self.dingtalk_secret, self.dingtalk_token, self.dingtalk_post_token))
+
+    def startup(self):
+        http_app.run(host='0.0.0.0', port=channel_conf(const.DINGTALK).get('port'))
+
+    def notify_dingtalk(self, data):
+        timestamp = round(time.time() * 1000)
+        secret_enc = bytes(self.dingtalk_secret, encoding='utf-8')
+        string_to_sign = '{}\n{}'.format(timestamp, self.dingtalk_secret)
+        string_to_sign_enc = bytes(string_to_sign, encoding='utf-8')
+        hmac_code = hmac.new(secret_enc, string_to_sign_enc,
+                             digestmod=hashlib.sha256).digest()
+        sign = quote_plus(base64.b64encode(hmac_code))
+
+        notify_url = f"https://oapi.dingtalk.com/robot/send?access_token={self.dingtalk_token}&amp;timestamp={timestamp}&amp;sign={sign}"
+        try:
+            r = requests.post(notify_url, json=data)
+            reply = r.json()
+            # log.info("[DingTalk] reply={}".format(str(reply)))
+        except Exception as e:
+            log.error(e)
+
+    def handle(self, resp):
+        reply = "您好，有什么我可以帮助您解答的问题吗？"
+        prompt = resp['text']['content']
+        prompt = prompt.strip()
+        if str(prompt) != 0:
+            conversation_id = resp['conversationId']
+            sender_id = resp['senderId']
+            context = dict()
+            img_match_prefix = functions.check_prefix(
+                prompt, channel_conf_val(const.DINGTALK, 'image_create_prefix'))
+            if img_match_prefix:
+                prompt = prompt.split(img_match_prefix, 1)[1].strip()
+                context['type'] = 'IMAGE_CREATE'
+            id = sender_id
+            nick = resp['senderNick']
+            staffid = resp['senderStaffId']
+            context['from_user_id'] = str(id)
+            reply = super().build_reply_content(prompt, context)
+        if img_match_prefix and isinstance(reply, list):
+            images = ""
+            for url in reply:
+                images += f"!['IMAGE_CREATE']({url})\n"
+            reply = images
+            resp = {
+                "msgtype": "markdown",
+                "markdown": {
+                    "title": "IMAGE @" + nick + " ", 
+                    "text": images + " \n " + "@" + nick
+                },
+                "at": {
+                    "atUserIds": [
+                        staffid
+                    ],
+                    "isAtAll": False
+                }
+            }
+        else:
+            resp = {
+                "msgtype": "text",
+                "text": {
+                    "content": reply
+                },
+                "at": {
+                    "atUserIds": [
+                       staffid 
+                    ],
+                    "isAtAll": False
+                }
+            }
+        return resp 
+
+
+dd = DingTalkChannel()
+http_app = Flask(__name__,)
+
+
+@http_app.route("/", methods=['POST'])
+def chat():
+    log.info("[DingTalk] chat_headers={}".format(str(request.headers)))
+    log.info("[DingTalk] chat={}".format(str(request.data)))
+    token = request.headers.get('token')
+    if dd.dingtalk_post_token and token != dd.dingtalk_post_token:
+        return {'ret': 203}
+    data = json.loads(request.data)
+    if data:
+        content = data['text']['content']
+        if not content:
+            return
+        reply = dd.handle(resp=data);
+        dd.notify_dingtalk(reply)
+        return {'ret': 200}
+    return {'ret': 201}
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[微信对接OpenAI]]></title>
@@ -359,7 +549,13 @@ Created symlink from /etc/systemd/system/multi-user.target.wants/phddns_mini_htt
 # phddns start（启动）| status（状态）| stop（停止）|restart（重启）| reset（重置）|enable（开机自启动）|disable（关闭开机自启动）|version（版本）
 </code></pre>
 
-<p>用上面的SN号和密码登录，在linux上会以一个设备的方式，然后绑定给到我们的账号，然后再到自己的账号设置 <code>https://console.hsk.oray.com/forward</code> 内网穿透，配置一个https映射的。</p>
+<p>用上面的SN号和密码登录，在linux上会以一个设备的方式，然后绑定到我们的账号，</p>
+
+<p>然后再到自己的账号设置 <code>https://console.hsk.oray.com/forward</code> 内网穿透，配置一个https映射的。</p>
+
+<p><img src="/images/blogs/openai/hsk1.jpg" alt="" /></p>
+
+<p><img src="/images/blogs/openai/hsk2.jpg" alt="" /></p>
 
 <p>2 修改配置连接公众号</p>
 

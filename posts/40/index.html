@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="接触集群，起始为毕业论文觉得做一个SSH的内容管理系统觉得无趣，选择了Hadoop相关的选题。尽管做的很烂，但是当时做出来一个东西还是挺开心的。中间断了近一年，但是在鼎象做游戏的时刻部署系统/维护查日志，对linux熟悉了不少。在科韵开始做插件开发，神马都的看源码。而后， &hellip;">
+  <meta name="description" content="初步了解 hadoop2自带的mapreduce任务中间只能传递一次，也即一个任务只能聚合一次（然后就的写入磁盘）。tez项目是对原有yarn架构的一个拓展，使用DAG（无环有向图）实现MRR的任务框架。 上图中，左边的MR任务完成一个步骤后，需要进行 数据存储 后再执行另一个任务来进行第二个 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +85,705 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/06/18/hadoop-tez-firststep/">Tez编译及使用</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-06-18T04:22:58+08:00" pubdate data-updated="true">Wed 2014-06-18 04:22</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><h2>初步了解</h2>
+
+<p>hadoop2自带的mapreduce任务中间只能传递一次，也即一个任务只能聚合一次（然后就的写入磁盘）。tez项目是对原有yarn架构的一个拓展，使用DAG（无环有向图）实现MRR的任务框架。</p>
+
+<p><img src="http://farm6.staticflickr.com/5571/14256993179_4990fc86d5_o.png" alt="" /></p>
+
+<p>上图中，左边的MR任务完成一个步骤后，需要进行 <strong>数据存储</strong> 后再执行另一个任务来进行第二个 <strong>reduce</strong> ； 而tez则可以在reduce后继续执行reduce，减少了中间过程的IO以及mapreduce的启动时间。</p>
+
+<h2>环境整合</h2>
+
+<ul>
+<li><a href="http://tez.incubator.apache.org/install.html">Install/Deploy</a></li>
+<li>hadoop-2.2.0（umcc97-44：hdfs， umcc97-79：yarn）</li>
+<li>windows下使用Cygwin编译</li>
+</ul>
+
+
+<h3>下载编译tez</h3>
+
+<p>首先下载<a href="http://apache.fayea.com/apache-mirror/incubator/tez/tez-0.4.0-incubating/">tez-0.4.0-incubating.tar.gz</a>，同时还需要<a href="http://code.google.com/p/protobuf">protoc</a>的程序支持（可以参考<a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/SingleCluster.html">Hadoop源码编译</a>）。
+解压后，使用mvn编译。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
+</span><span class='line'>$ tar zxvf tez-0.4.0-incubating.tar.gz
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
+</span><span class='line'>$ cd tez-0.4.0-incubating/
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
+</span><span class='line'>$ mvn install -DskipTests -Dmaven.javadoc.skip
+</span><span class='line'>...
+</span><span class='line'>[INFO] Reactor Summary:
+</span><span class='line'>[INFO]
+</span><span class='line'>[INFO] tez ............................................... SUCCESS [1.518s]
+</span><span class='line'>[INFO] tez-api ........................................... SUCCESS [8.890s]
+</span><span class='line'>[INFO] tez-common ........................................ SUCCESS [0.725s]
+</span><span class='line'>[INFO] tez-runtime-internals ............................. SUCCESS [2.529s]
+</span><span class='line'>[INFO] tez-runtime-library ............................... SUCCESS [5.100s]
+</span><span class='line'>[INFO] tez-mapreduce ..................................... SUCCESS [3.666s]
+</span><span class='line'>[INFO] tez-mapreduce-examples ............................ SUCCESS [2.692s]
+</span><span class='line'>[INFO] tez-dag ........................................... SUCCESS [13.943s]
+</span><span class='line'>[INFO] tez-tests ......................................... SUCCESS [1.691s]
+</span><span class='line'>[INFO] tez-dist .......................................... SUCCESS [14.370s]
+</span><span class='line'>[INFO] Tez ............................................... SUCCESS [0.245s]
+</span><span class='line'>[INFO] ------------------------------------------------------------------------
+</span><span class='line'>[INFO] BUILD SUCCESS
+</span><span class='line'>[INFO] ------------------------------------------------------------------------
+</span><span class='line'>[INFO] Total time: 55.791s
+</span><span class='line'>[INFO] Finished at: Tue Jun 17 17:33:45 CST 2014
+</span><span class='line'>[INFO] Final Memory: 35M/151M
+</span><span class='line'>[INFO] ------------------------------------------------------------------------
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>上传tez程序的jars到HDFS</h3>
+
+<p>为了简单我直接把tez jars上传到开发环境的集群上面去测试了。放到本地集群环境应该也类似。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
+</span><span class='line'>$ cd tez-dist/
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist
+</span><span class='line'>$ cd target/
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
+</span><span class='line'>$ export HADOOP_USER_NAME=hadoop
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
+</span><span class='line'>$ hadoop dfs -put tez-0.4.0-incubating/tez-0.4.0-incubating/ hdfs://umcc97-44:9000/apps/ 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>配置集群环境</h3>
+
+<p>首先看下原来集群的classpath路径，路径中已经包括了 <code>etc/hadoop</code> 目录，所以这里我直接把 <code>tez-site.xml</code> 放到该目录下。同时把tez-lib复制到 <code>share/hadoop/tez</code> 目录下，并添加到 <code>HADOOP_CLASSPATH</code> 环境变量。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-79 hadoop]$ hadoop classpath
+</span><span class='line'>/home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
+</span><span class='line'>
+</span><span class='line'># 用于map/reduce
+</span><span class='line'>[hadoop@umcc97-79 hadoop]$ cat tez-site.xml 
+</span><span class='line'>&lt;?xml version="1.0"?&gt;
+</span><span class='line'>&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
+</span><span class='line'>
+</span><span class='line'>&lt;configuration&gt;
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;tez.lib.uris&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span><span class='line'>&lt;/configuration&gt;
+</span><span class='line'>
+</span><span class='line'>[hadoop@umcc97-79 hadoop]$ cd ~/hadoop-2.2.0/share/hadoop/tez/
+</span><span class='line'>[hadoop@umcc97-79 tez]$ ll
+</span><span class='line'>total 9616
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  303139 Jun 17 17:33 avro-1.7.4.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   41123 Jun 17 17:33 commons-cli-1.2.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  610259 Jun 17 17:33 commons-collections4-4.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 1648200 Jun 17 17:33 guava-11.0.2.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  710492 Jun 17 17:33 guice-3.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  656365 Jun 17 17:33 hadoop-mapreduce-client-common-2.2.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 1455001 Jun 17 17:33 hadoop-mapreduce-client-core-2.2.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   21537 Jun 17 17:33 hadoop-mapreduce-client-shuffle-2.2.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   81743 Jun 17 17:33 jettison-1.3.4.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  533455 Jun 17 17:33 protobuf-java-2.5.0.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  995968 Jun 17 17:33 snappy-java-1.0.4.1.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  749917 Jun 17 17:33 tez-api-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   34049 Jun 17 17:33 tez-common-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  970987 Jun 17 17:33 tez-dag-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  246409 Jun 17 17:33 tez-mapreduce-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  199934 Jun 17 17:33 tez-mapreduce-examples-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  114692 Jun 17 17:33 tez-runtime-internals-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  352177 Jun 17 17:33 tez-runtime-library-0.4.0-incubating.jar
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop    6845 Jun 17 17:33 tez-tests-0.4.0-incubating.jar
+</span><span class='line'>
+</span><span class='line'># MR配置，用于client任务提交
+</span><span class='line'>[hadoop@umcc97-79 hadoop]$ grep HADOOP_CLASSPATH hadoop-env.sh
+</span><span class='line'>export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
+</span><span class='line'>
+</span><span class='line'>[hadoop@umcc97-79 hadoop]$ sed -n 19,23p mapred-site.xml
+</span><span class='line'>&lt;configuration&gt;
+</span><span class='line'>&lt;property&gt;
+</span><span class='line'>  &lt;name&gt;mapreduce.framework.name&lt;/name&gt;
+</span><span class='line'>  &lt;value&gt;yarn-tez&lt;/value&gt;
+</span><span class='line'>&lt;/property&gt;
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>同步，重启yarn</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>for h in `cat hadoop-2.2.0/etc/hadoop/slaves ` ; do 
+</span><span class='line'>  rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 $h:~/ ; 
+</span><span class='line'>done
+</span><span class='line'>
+</span><span class='line'># 同步到secondnamenode
+</span><span class='line'>rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 umcc97-44:~/</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>测试</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-79 ~]$ hadoop classpath
+</span><span class='line'>/home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/lib/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
+</span><span class='line'>
+</span><span class='line'>[hadoop@umcc97-79 ~]$ cd hadoop-2.2.0/share/hadoop/mapreduce/
+</span><span class='line'>[hadoop@umcc97-79 mapreduce]$ hadoop jar hadoop-mapreduce-client-jobclient-2.2.0-tests.jar sleep -mt 1 -rt 1 -m 1 -r 1
+</span><span class='line'>
+</span><span class='line'>cd hadoop-2.2.0/share/hadoop/tez/
+</span><span class='line'>
+</span><span class='line'>hadoop fs -put ~/hadoop-2.2.0/logs/yarn-hadoop-resourcemanager-umcc97-79.* /hello/in
+</span><span class='line'>hadoop fs -rmr /hello/out
+</span><span class='line'>hadoop jar tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount  /hello/in /hello/out
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>回滚，使用时临时修改环境变量即可</h3>
+
+<p>使用了tez后，导致hive-0.12.0不能运行。由于其他同事需要用hive，得把配置全部修改回去。【升级hive请查看<a href="/blog/2014/06/21/upgrade-hive/">hive-0.13中使用tez</a>】</p>
+
+<p>在配置文件中配置为yarn，要使用tez在 <strong>提交任务</strong> 时指定配置参数即可。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
+</span><span class='line'>hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount \
+</span><span class='line'>  -Dmapreduce.framework.name=yarn-tez  /hello/in /hello/out</span></code></pre></td></tr></table></div></figure>
+
+
+<p>org.apache.tez.mapreduce.examples.OrderedWordCount不仅计算出了结果，同时按个数大小进行了排序。</p>
+
+<p>问题： tez的任务的history还不知道怎么弄的，启动historyserver没作用？</p>
+
+<p>0.6版本已经有ui了。</p>
+
+<h3>持续更新</h3>
+
+<p>本来想编译好tez-0.6就往hive-0.13上面放，没想到遇到钉子了！！hive-0.13不支持！！</p>
+
+<p>在编译tez并想集成到hive，先下载hive的源码，看看pom.xml中使用的是到底是什么版本的tez，再编译tez不迟！！！</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>apache-hive-1.1.0-src.tar.gz/pom.xml
+</span><span class='line'>    &lt;tez.version&gt;0.5.2&lt;/tez.version&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>tez-0.6在hadoop-2.2基础上编译：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\opt\bigdata\apache-tez-0.6.0-src&gt;mvn  package -Dhadoop.version=2.2.0 -DskipTests -Dmaven.javadoc.skip=true -DskipATS
+</span><span class='line'>
+</span><span class='line'>vi tez-dist/pom.xml
+</span><span class='line'>&lt;profile&gt;
+</span><span class='line'>      &lt;id&gt;hadoop26&lt;/id&gt;
+</span><span class='line'>      &lt;activation&gt;
+</span><span class='line'>        &lt;activeByDefault&gt;false&lt;/activeByDefault&gt;
+</span><span class='line'>      &lt;/activation&gt;</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2014/04/22/remote-debug-hadoop2/">远程调试hadoop2以及错误处理方法</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2014-04-22T06:47:48+08:00" pubdate data-updated="true">Tue 2014-04-22 06:47</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>了解程序运行过程，除了一行行代码的扫射源代码。更快捷的方式是运行调试源码，通过F6/F7来一步步的带领我们熟悉程序。针对特定细节具体数据，打个断点调试则是水到渠成的方式。</p>
+
+<h2>Java远程调试</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'> * JDK 1.3 or earlier -Xnoagent -Djava.compiler=NONE -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=6006
+</span><span class='line'> * JDK 1.4(linux ok) -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=6006
+</span><span class='line'> * newer JDK(win7 & jdk7) -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=6006</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>同一操作系统任务提交</h2>
+
+<p>windows提交到windows，linux提交到linux，可以直接通过命令行添加参数调试wordcount任务：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\dotfile&gt;hdfs dfs -rmr /out # native-lib放在非path路径下，cmd脚本中有对其进行处理
+</span><span class='line'>
+</span><span class='line'>E:\local\dotfile&gt;hadoop org.apache.hadoop.examples.WordCount  "-Dmapreduce.map.java.opts=-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090 -Djava.library.path=E:\local\libs\big\hadoop-2.2.0\lib\native -Dmapreduce.reduce.java.opts=-Djava.library.path=E:\local\libs\big\hadoop-2.2.0\lib\native"  /in /out</span></code></pre></td></tr></table></div></figure>
+
+
+<p><strong>suspend设置为y，会等待客户端连接再运行</strong>。在eclipse中在WordCount$TokenizerMapper#map打个断点，然后再使用<code>Remote Java Application</code>就可以调试程序了。</p>
+
+<h2>Hadoop集群环境下调试任务</h2>
+
+<p>hadoop有很多的程序，同样有对应的环境变量选项来进行设置！</p>
+
+<ul>
+<li>主程序-调试Job提交
+
+<ul>
+<li><code>set HADOOP_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=8090"</code></li>
+<li>可以在配置文件中进行设置。需要注意可能会覆盖已经设置的该参数的值。</li>
+</ul>
+</li>
+<li>Nodemanager调试
+
+<ul>
+<li><code>set HADOOP_NODEMANAGER_OPTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=8092"</code></li>
+<li>(linux下需要定义在文件中)<code>YARN_NODEMANAGER_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8092"</code></li>
+</ul>
+</li>
+<li>ResourceManager调试
+
+<ul>
+<li>HADOOP_RESOURCEMANAGER_OPTS</li>
+<li><code>export YARN_RESOURCEMANAGER_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=8091"</code></li>
+</ul>
+</li>
+</ul>
+
+
+<p>Linux上的设置略有不同，通过SSH再调用的进程(如NodeManager)需要把其OPTS写到命令行脚本文件中！！
+linux需要远程调试NodeManager的话，需要写到etc/hadoop/yarn-env.sh文件中！不然，nodemanger不生效（通过ssh去执行的）！</p>
+
+<h3>其他调试技巧</h3>
+
+<p>调试测试集群环境，比本地windows开发环境复杂点。毕竟本地windows的就一个主一个从。而把<strong>任务放到分布式集群</strong>上时，例如调试分布式缓存的！
+那么就需要一些小技巧来获取任务运行所在的机器！下面的步骤中有具体操作命令。</p>
+
+<h3>任务配置及运行</h3>
+
+<p>eclipse下windows提交job到linux的补丁，查阅<a href="https://issues.apache.org/jira/browse/MAPREDUCE-5655">[MAPREDUCE-5655]</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 配置
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapred.remote.os&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;Linux&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapreduce.job.jar&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;dta-analyser-all.jar&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapreduce.map.java.opts&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;-Xmx1024m -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'>  &lt;property&gt;
+</span><span class='line'>      &lt;name&gt;mapred.task.timeout&lt;/name&gt;
+</span><span class='line'>      &lt;value&gt;1800000&lt;/value&gt;
+</span><span class='line'>  &lt;/property&gt;
+</span><span class='line'>
+</span><span class='line'># 代码，map/reduce数都设置为1 
+</span><span class='line'>job.setNumReduceTasks(1);
+</span><span class='line'>job.getConfiguration().setInt(MRJobConfig.NUM_MAPS, 1);
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p></p>
+
+<ul>
+<li>调试的时刻把超时时间设置的久一点，否则：</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'> Got exception: java.net.SocketTimeoutException: Call From winseliu/127.0.0.1 to winse.com:2850 failed on socket timeout exception: java.net.SocketTimeoutException: 60000 millis timeout while waiting for channel to be ready for read. ch :</span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>调试main方法参数设置</li>
+</ul>
+
+
+<p>调试main（转瞬即逝的把suspend设置为true！），map的调试选项的语句写在配置文件里面</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>export HADOOP_OPTS="-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=8073"
+</span><span class='line'>
+</span><span class='line'>Administrator@winseliu ~/hadoop
+</span><span class='line'>$ sh -x bin/hadoop org.apache.hadoop.examples.WordCount /in /out </span></code></pre></td></tr></table></div></figure>
+
+
+<h3>遍历所有子节点，查找节点运行map程序的信息</h3>
+
+<p>map调试的端口配置为18090，根据这个选项来查找程序运行的机器。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-44 ~]$ for h in `cat hadoop-2.2.0/etc/hadoop/slaves` ; do ssh $h 'ps aux|grep java | grep 18090'; echo $h;  done
+</span><span class='line'>hadoop    8667  0.0  0.0  63888  1268 ?        Ss   18:21   0:00 bash -c ps aux|grep java | grep 18090
+</span><span class='line'>umcc97-142
+</span><span class='line'>hadoop   12686  0.0  0.0  63868  1260 ?        Ss   18:21   0:00 bash -c ps aux|grep java | grep 18090
+</span><span class='line'>umcc97-143
+</span><span class='line'>hadoop   23516  0.0  0.0  63856  1108 ?        Ss   18:11   0:00 /bin/bash -c /home/java/jdk1.7.0_45/bin/java -Djava.net.preferIPv4Stack=true -Dhadoop.metrics.log.level=WARN  -Xmx256m -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 -Djava.io.tmpdir=/home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1605/container_1397006359464_1605_01_000002/tmp -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1605/container_1397006359464_1605_01_000002 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA org.apache.hadoop.mapred.YarnChild 10.18.97.143 57576 attempt_1397006359464_1605_m_000000_0 2 1&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1605/container_1397006359464_1605_01_000002/stdout 2&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1605/container_1397006359464_1605_01_000002/stderr 
+</span><span class='line'>hadoop   23522  0.0  0.0 605136 15728 ?        Sl   18:11   0:00 /home/java/jdk1.7.0_45/bin/java -Djava.net.preferIPv4Stack=true -Dhadoop.metrics.log.level=WARN -Xmx256m -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 -Djava.io.tmpdir=/home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1605/container_1397006359464_1605_01_000002/tmp -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1605/container_1397006359464_1605_01_000002 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA org.apache.hadoop.mapred.YarnChild 10.18.97.143 57576 attempt_1397006359464_1605_m_000000_0 2
+</span><span class='line'>hadoop   23665  0.0  0.0  63856  1264 ?        Ss   18:21   0:00 bash -c ps aux|grep java | grep 18090
+</span><span class='line'>umcc97-144</span></code></pre></td></tr></table></div></figure>
+
+
+<p>仅打印运行map的节点名称</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-44 ~]$ for h in `cat hadoop-2.2.0/etc/hadoop/slaves` ; do ssh $h 'if ps aux|grep -v grep | grep java | grep 18090 | grep -v bash 2&gt;&1 1&gt;/dev/null ; then echo `hostname`; fi'; done
+</span><span class='line'>umcc97-142
+</span><span class='line'>[hadoop@umcc97-44 ~]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<p>后面的操作就和普通的java程序调试步骤一样了。不再赘述。</p>
+
+<h2>任务运行过程中的数据</h2>
+
+<h4>辅助运行的两个bash程序</h4>
+
+<p>运行的第一个程序（000001）为AppMaster，第二程序（000002）才是我们提交job的map任务。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-143 ~]$ cd hadoop-2.2.0/tmp/nm-local-dir/nmPrivate
+</span><span class='line'>[hadoop@umcc97-143 nmPrivate]$ ls -Rl
+</span><span class='line'>.:
+</span><span class='line'>total 12
+</span><span class='line'>drwxrwxr-x 4 hadoop hadoop 4096 Apr 21 18:34 application_1397006359464_1606
+</span><span class='line'>-rw-rw-r-- 1 hadoop hadoop    6 Apr 21 18:34 container_1397006359464_1606_01_000001.pid
+</span><span class='line'>-rw-rw-r-- 1 hadoop hadoop    6 Apr 21 18:34 container_1397006359464_1606_01_000002.pid
+</span><span class='line'>
+</span><span class='line'>./application_1397006359464_1606:
+</span><span class='line'>total 8
+</span><span class='line'>drwxrwxr-x 2 hadoop hadoop 4096 Apr 21 18:34 container_1397006359464_1606_01_000001
+</span><span class='line'>drwxrwxr-x 2 hadoop hadoop 4096 Apr 21 18:34 container_1397006359464_1606_01_000002
+</span><span class='line'>
+</span><span class='line'>./application_1397006359464_1606/container_1397006359464_1606_01_000001:
+</span><span class='line'>total 8
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   95 Apr 21 18:34 container_1397006359464_1606_01_000001.tokens
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 3121 Apr 21 18:34 launch_container.sh
+</span><span class='line'>
+</span><span class='line'>./application_1397006359464_1606/container_1397006359464_1606_01_000002:
+</span><span class='line'>total 8
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  129 Apr 21 18:34 container_1397006359464_1606_01_000002.tokens
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 3532 Apr 21 18:34 launch_container.sh
+</span><span class='line'>[hadoop@umcc97-143 nmPrivate]$ 
+</span><span class='line'>[hadoop@umcc97-143 nmPrivate]$ jps
+</span><span class='line'>4692 NodeManager
+</span><span class='line'>4173 DataNode
+</span><span class='line'>13497 YarnChild
+</span><span class='line'>7538 HRegionServer
+</span><span class='line'>13376 MRAppMaster
+</span><span class='line'>13574 Jps
+</span><span class='line'>[hadoop@umcc97-143 nmPrivate]$ cat *.pid
+</span><span class='line'>13366
+</span><span class='line'>13491
+</span><span class='line'>[hadoop@umcc97-143 nmPrivate]$ ps aux | grep 13366
+</span><span class='line'>hadoop   13366  0.0  0.0  63868  1088 ?        Ss   18:34   0:00 /bin/bash -c /home/java/jdk1.7.0_45/bin/java -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000001 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA  -Xmx1024m org.apache.hadoop.mapreduce.v2.app.MRAppMaster 1&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000001/stdout 2&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000001/stderr 
+</span><span class='line'>hadoop   13594  0.0  0.0  61204   760 pts/2    S+   18:36   0:00 grep 13366
+</span><span class='line'>[hadoop@umcc97-143 nmPrivate]$ ps aux | grep 13491
+</span><span class='line'>hadoop   13491  0.0  0.0  63868  1100 ?        Ss   18:34   0:00 /bin/bash -c /home/java/jdk1.7.0_45/bin/java -Djava.net.preferIPv4Stack=true -Dhadoop.metrics.log.level=WARN  -Xmx256m -Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=18090 -Djava.io.tmpdir=/home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1606/container_1397006359464_1606_01_000002/tmp -Dlog4j.configuration=container-log4j.properties -Dyarn.app.container.log.dir=/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000002 -Dyarn.app.container.log.filesize=0 -Dhadoop.root.logger=INFO,CLA org.apache.hadoop.mapred.YarnChild 10.18.97.143 52046 attempt_1397006359464_1606_m_000000_0 2 1&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000002/stdout 2&gt;/home/hadoop/hadoop-2.2.0/logs/userlogs/application_1397006359464_1606/container_1397006359464_1606_01_000002/stderr 
+</span><span class='line'>hadoop   13599  0.0  0.0  61204   760 pts/2    S+   18:37   0:00 grep 13491
+</span><span class='line'>[hadoop@umcc97-143 nmPrivate]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<h4>程序运行本地缓存数据</h4>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-143 container_1397006359464_1606_01_000002]$ ls -l
+</span><span class='line'>total 28
+</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  129 Apr 21 18:34 container_tokens
+</span><span class='line'>-rwx------ 1 hadoop hadoop  516 Apr 21 18:34 default_container_executor.sh
+</span><span class='line'>lrwxrwxrwx 1 hadoop hadoop   65 Apr 21 18:34 filter.io -&gt; /home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/filecache/10/filter.io
+</span><span class='line'>lrwxrwxrwx 1 hadoop hadoop  120 Apr 21 18:34 job.jar -&gt; /home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1606/filecache/10/job.jar
+</span><span class='line'>lrwxrwxrwx 1 hadoop hadoop  120 Apr 21 18:34 job.xml -&gt; /home/hadoop/hadoop-2.2.0/tmp/nm-local-dir/usercache/hadoop/appcache/application_1397006359464_1606/filecache/13/job.xml
+</span><span class='line'>-rwx------ 1 hadoop hadoop 3532 Apr 21 18:34 launch_container.sh
+</span><span class='line'>drwx--x--- 2 hadoop hadoop 4096 Apr 21 18:34 tmp
+</span><span class='line'>[hadoop@umcc97-143 container_1397006359464_1606_01_000002]$ </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>处理问题方法</h2>
+
+<ul>
+<li>打印DEBUG日志：<code>export HADOOP_ROOT_LOGGER=DEBUG,console</code>
+
+<ul>
+<li>日志文件放置在nodemanager节点的logs/userlogs目录下。</li>
+</ul>
+</li>
+<li>打印DEBUG日志也搞不定时，可以在源码里面sysout信息然后把<strong>class覆盖</strong>，来进行定位配置的问题。</li>
+<li>如果不清楚shell的执行过程，可以通过<code>sh -x [CMD]</code>，或者在脚本文件的操作前加上<code>set -x</code>。相当于windows-batch的<code>echo on</code>功能。</li>
+</ul>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://stackoverflow.com/questions/975271/remote-debugging-a-java-application">remote debugger opts</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2956,513 +3655,6 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/03/20/jekyll-tag-per-page/">Jekyll按照tag分页面</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-03-20T06:21:36+08:00" pubdate data-updated="true">Thu 2014-03-20 06:21</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>单页实现</h2>
-
-<p>从jekll-bootstrap检出的代码中，<code>tags.html</code>实现了标签的显示。但是所有的标签和日志列表都码在一个文件里面，总感觉有点太拥挤。</p>
-
-<pre><code>&lt;div class="page-header"&gt;
-    &lt;h1&gt;{{ page.title }} {% if page.tagline %} &lt;small&gt;{{ page.tagline }}&lt;/small&gt;{% endif %}&lt;/h1&gt;
-&lt;/div&gt;
-
-&lt;ul class="tag_box inline"&gt;
-    {% assign tags_list = site.tags %}  
-
-    {% if tags_list.first[0] == null %}
-        {% for tag in tags_list %} 
-        &lt;li&gt;&lt;a href="#{{ tag }}-ref"&gt;{{ tag }} &lt;span&gt;{{ site.tags[tag].size }}&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
-        {% endfor %}
-    {% else %}
-        {% for tag in tags_list %} 
-        &lt;li&gt;&lt;a href="#{{ tag[0] }}-ref"&gt;{{ tag[0] }} &lt;span&gt;{{ tag[1].size }}&lt;/span&gt;&lt;/a&gt;&lt;/li&gt;
-        {% endfor %}
-    {% endif %}
-
-    {% assign tags_list = nil %}
-&lt;/ul&gt;
-
-{% for tag in site.tags %} 
-&lt;h2 id="{{ tag[0] }}-ref"&gt;{{ tag[0] }}&lt;/h2&gt;
-&lt;ul class="index"&gt;
-    {% assign pages_list = tag[1] %}  
-
-    {% if site.JB.pages_list.provider == "custom" %}
-        {% include custom/pages_list %}
-    {% else %}
-        {% for node in pages_list %}
-            {% if node.title != null %}
-                {% if group == null or group == node.group %}
-                    {% if page.url == node.url %}
-                    &lt;li class="active"&gt;
-                        &lt;a href="{{ BASE_PATH }}{{ node.url }}" class="active"&gt;{{ node.title | xml_escape }}&lt;/a&gt;
-                        &lt;span&gt;&lt;time datetime="{{ node.date | date: "%Y-%m-%d" }}"&gt;{{ node.date | date: "%Y/%m/%d" }}&lt;/time&gt;&lt;/span&gt;
-                    &lt;/li&gt;
-                    {% else %}
-                    &lt;li&gt;
-                        &lt;a href="{{ BASE_PATH }}{{ node.url }}" class="active"&gt;{{ node.title | xml_escape }}&lt;/a&gt;
-                        &lt;span&gt;&lt;time datetime="{{ node.date | date: "%Y-%m-%d" }}"&gt;{{ node.date | date: "%Y/%m/%d" }}&lt;/time&gt;&lt;/span&gt;
-                    &lt;/li&gt;
-                    {% endif %}
-                {% endif %}
-            {% endif %}
-        {% endfor %}
-    {% endif %}
-
-    {% assign pages_list = nil %}
-    {% assign group = nil %}   
-&lt;/ul&gt;
-{% endfor %}
-</code></pre>
-
-<h2>插件实现分页面</h2>
-
-<p>找了一些资料，使用plugin的方式可以生成文件，以及页面的自定义标签。在<code>_plugins</code>目录下新增<code>jekyll-tag-page.rb</code> :</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>module Jekyll
-</span><span class='line'>
-</span><span class='line'>  class TagPage &lt; Page
-</span><span class='line'>      def initialize(site, base, dir, tag)
-</span><span class='line'>          @site = site
-</span><span class='line'>          @base = base
-</span><span class='line'>          @dir = dir
-</span><span class='line'>          @name = 'index.html'
-</span><span class='line'>
-</span><span class='line'>          self.process(@name)
-</span><span class='line'>          self.read_yaml(File.join(base, '_layouts'), 'tag_index.html')
-</span><span class='line'>
-</span><span class='line'>          self.data['tags'] = tag
-</span><span class='line'>      end
-</span><span class='line'>  end
-</span><span class='line'>
-</span><span class='line'>  class TagPageGenerator &lt; Generator
-</span><span class='line'>      safe true
-</span><span class='line'>
-</span><span class='line'>      def generate(site)
-</span><span class='line'>          if site.layouts.key? 'tag_index'
-</span><span class='line'>              dir = site.config['tag_dir'] || 'tags'
-</span><span class='line'>              site.tags.keys.each do |tag|
-</span><span class='line'>                  site.pages &lt;&lt; TagPage.new(site, site.source, File.join(dir, tag), tag)
-</span><span class='line'>              end
-</span><span class='line'>          end
-</span><span class='line'>      end
-</span><span class='line'>  end
-</span><span class='line'>end
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>生成插件为每个TAG生成了一个页面，<code>_layout</code>模板设置为tag_index.html，在模板中可以根据当前页面的tags过滤并只显示该tag的日志列表。文件默认保存到<code>tags/TAG</code>目录下。</p>
-
-<pre><code>{% for tag in site.tags %} 
-    {% if page.tags == tag[0] %}
-    &lt;h2&gt;{{ tag[0] }}&lt;/h2&gt;
-    &lt;ul class="index"&gt;
-        {% assign pages_list = tag[1] %}  
-
-        {% for node in pages_list %}
-            {% if node.title != null %}
-            &lt;li&gt;
-                &lt;a href="{{ BASE_PATH }}{{ node.url }}"&gt;{{ node.title | xml_escape }}&lt;/a&gt;
-                &lt;span&gt;&lt;time datetime="{{ node.date | date: "%Y-%m-%d" }}"&gt;{{ node.date | date: "%Y/%m/%d" }}&lt;/time&gt;&lt;/span&gt;
-            &lt;/li&gt;
-            {% endif %}
-        {% endfor %}
-
-        {% assign pages_list = nil %}
-    &lt;/ul&gt;
-    {% endif %}
-{% endfor %}
-</code></pre>
-
-<h2>使用脚本生成目录和md文件来实现</h2>
-
-<p>但是由于github不支持自定义插件功能，也就是说，就算我提交了<code>_plugin</code>的代码也是无效的。<strong>最终最后的实现</strong>，使用Shell脚本在tags目录下生成文件夹和内容：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>cd $tools/../tags
-</span><span class='line'>
-</span><span class='line'>find * -type d -exec rm -rf {} +
-</span><span class='line'>
-</span><span class='line'>for tag in `cat tags`; do 
-</span><span class='line'>mkdir $tag
-</span><span class='line'>cat &gt; $tag/index.md &lt;&lt;EOF
-</span><span class='line'>---
-</span><span class='line'>layout: tag
-</span><span class='line'>categories: [$tag]
-</span><span class='line'>---
-</span><span class='line'>
-</span><span class='line'>EOF
-</span><span class='line'>done;
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>脚本列表tags文件内容生成目录和index.md文件。</p>
-
-<p>layout模板tag.html页面代码如下：</p>
-
-<pre><code>&lt;h3&gt;Tag: {{ page.categories[-1] }}&lt;/h3&gt;
-&lt;ul class="archive-list"&gt;
-
-{% for tag in site.tags %}
-{% if page.categories[-1] == tag[0] %}
-
-{% assign pages_list = tag[1] %} 
-{% for node in pages_list %}
-    {% if node.title != null %}
-        &lt;li class="archive"&gt;
-            &lt;span&gt;
-                &lt;time datetime="{{ node.date | date: "%Y-%m-%d" }}"&gt;
-                    {{ node.date | date: "%Y/%m/%d" }}
-                &lt;/time&gt;
-            &lt;/span&gt;
-            &lt;a href="{{ BASE_PATH }}{{ node.url }}" class="archive-link"&gt;{{ node.title | xml_escape }}&lt;/a&gt;
-        &lt;/li&gt;
-    {% endif %}
-{% endfor %}
-{% assign pages_list = nil %} 
-
-{% endif %}
-{% endfor %}
-
-&lt;/ul&gt;
-</code></pre>
-
-<p>&ndash;END</p>
-
-<h1>参考</h1>
-
-<ul>
-<li><a href="https://github.com/shopify/liquid/wiki/liquid-for-designers">liquid页面渲染语言</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2014/03/18/jekyll-edit-link-in-web-page/">Jekyll页面添加编辑按钮</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-03-18T05:56:53+08:00" pubdate data-updated="true">Tue 2014-03-18 05:56</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>近期把其他博客的日志导出成Markdown后导入到自己的blog。想在本地预览后，看到不好的地方就进行修改，想法是美好的，现实是残酷的！<strong>找文件太麻烦</strong>了，定位到了文件夹，还需要找文件。反正就是觉得很不爽！最终通过<a href="https://gist.github.com/4548d6c182f8162497fa.git">自定义URL协议的方式完美的解决</a>。</p>
-
-<h3>尝试ActiveXObject</h3>
-
-<p>IE下可以通过<a href="http://iask.sina.com.cn/b/8583473.html?sudaref=www.google.com.hk&amp;retcode=0">ActiveXObject调用本地的程序</a>打开文件。尽管局限于IE，但是如果能实现的话将就下也OK的。
-理所当然认为IE下是没有问题，就找chrome下能否执行<a href="http://stackoverflow.com/questions/7022568/javascript-activexobject-in-firefox-or-chrome-not-ie">ActiveXObject的兼容对象</a>。</p>
-
-<p>在chrome下，没啥很好的替代实现。同时在IE11下，ActiveXObject调用shell对象报<a href="http://www.cnblogs.com/dongyongjing/archive/2007/04/18/718629.html"><strong>automation服务器不能创建对象</strong></a>，需要额外开启功能、降低IE的安全性等等，也很麻烦！！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>function callShellApplication(){
-</span><span class='line'>  var objShell = new ActiveXObject("WScript.shell");
-</span><span class='line'>  objShell.run('"C:\Program Files (x86)\wkhtmltopdf\wkhtmltopdf.exe" "c:\PDFTestPage.html" "c:\TEST.pdf"');
-</span><span class='line'>}</span></code></pre></td></tr></table></div></figure>
-
-
-<h3>尝试Flash</h3>
-
-<p>有想过使用flash解决，毕竟剪贴板复制功能的<code>ZeroClipboard.swf</code>是那么的完美^_^。但是<a href="http://www.cnblogs.com/yao/archive/2008/01/02/1022721.html">swf不能执行exe程序</a>，没办法只能再寻求其他办法。</p>
-
-<h3>自定义URL协议</h3>
-
-<p>最后看到了<a href="http://hi.baidu.com/pluto632/item/5007737da31344326f29f666"><strong>URL Protocol的实现方式</strong></a>，是的哦，Github-Windows、以及QQ等这些网页的工具不都是调用系统的程序吗？！</p>
-
-<p>然后试着按照网页的教程，试着弄弄！<del>又是一个新鲜事物，有挑战的事情做起来就更有激情！</del></p>
-
-<p>添加注册表项<code>reg-npp-windows.bat</code>：（可以先导出github-windows的注册表项参考。这里使用用bat来实现，注册脚本中可以通过<strong>相对路径</strong>指向执行的程序）</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>set NPP_APP=%~dp0npp-windows.bat
-</span><span class='line'>set NPP_ARG=%%1
-</span><span class='line'>
-</span><span class='line'>set "NPP_CMD=\"%NPP_APP%\" \"%NPP_ARG%\""
-</span><span class='line'>
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows" /f
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows" /ve /t REG_SZ /d "URL:npp-windows Protocol" /f
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows" /v "URL Protocol" /t REG_SZ /d "" /f
-</span><span class='line'>
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows\DefaultIcon"  /f
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows\DefaultIcon"  /ve /t REG_SZ /d "" /f
-</span><span class='line'>
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows\shell" /f
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows\shell\open" /f
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows\shell\open\command" /f
-</span><span class='line'>reg add "HKEY_CLASSES_ROOT\npp-windows\shell\open\command" /ve /t REG_SZ /d "%NPP_CMD%" /f
-</span><span class='line'>
-</span><span class='line'>pause
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>点击URL真正调用的是<code>npp-windows.bat</code>命令（即上面的注册脚本的<code>NPP_APP</code>）:</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>@echo off
-</span><span class='line'>
-</span><span class='line'>set fileRelativePath=%1
-</span><span class='line'>set filepath="%~dp0..\..\..\%fileRelativePath:~17,-1%"
-</span><span class='line'>
-</span><span class='line'>start D:\local\usr\npp\notepad++.exe %filepath%
-</span><span class='line'>exit
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><code>start</code>命令新起一个子进程打开程序，这样可以启动后面的程序，同时关闭/退出掉黑窗口！
-请求参数有整个url加上双引号，如<code>"npp-windows://e/about.md"</code>。数字<code>17,-1</code>获取真正的路径。由于根下的文件会被自动加反斜杠<code>"npp-windows://about.md/"</code>，所以加上<code>e/</code>进行修复。</p>
-
-<p>在网页使用链接，然后加上<code>npp-windows</code>的协议就可以打开文件进行修改编辑了。</p>
-
-<pre><code>&lt;a class="shellExecuteLink" href="npp-windows://e/{{ page.path }}" title="本地编辑"&gt;&lt;i class="icon-edit"&gt; &lt;/i&gt;&lt;/a&gt;
-</code></pre>
-
-<p>对BAT的命令相当的迷惑：</p>
-
-<ul>
-<li><code>"D:\local\usr\npp\notepad++.exe" "%~dp0..\..\..\%fileRelativePath:~17,-1%"</code> OK</li>
-<li><code>start D:\local\usr\npp\notepad++.exe "%~dp0..\..\..\%fileRelativePath:~17,-1%"</code> OK</li>
-<li><code>start "D:\local\usr\npp\notepad++.exe" "%~dp0..\..\..\%fileRelativePath:~17,-1%"</code> 弹出<strong>Windows无法打开此文件</strong>的框</li>
-</ul>
-
-
-<h3>闪黑窗口优化尝试</h3>
-
-<p>功能已经实现了，但是仍然有一个黑窗口一闪而过！</p>
-
-<p>爱折腾的程序员啊！！</p>
-
-<p>找啊找，发现<strong>vbs可以后台执行命令</strong>。直接在命令行是可以执行<strong>npp-windows.vbs</strong>的，同时那种不弹窗的效果也是自己想要的！！但把vbs作为url-protocol协议的执行程序时，点击页面链接却没一点反应！但是运行bat和exe程序是没有问题的。</p>
-
-<p>其实windows下的bat和vbs程序都是可以转成exe的。
-下载了<a href="http://www.abyssmedia.com/scriptcryptor/">ScriptCryptor Compiler</a><a href="http://www.sdbeta.com/uploads/soft/131002/1-131002113S7.rar">破解版</a>，把vbs转成exe后就可以被url-protocol调用了，且没有闪窗的现象了！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Dim CurrPath
-</span><span class='line'>CurrPath=WScript.Createobject("Scripting.FileSystemObject").GetFile(Wscript.ScriptFullName).ParentFolder.Path
-</span><span class='line'>
-</span><span class='line'>Dim fileRelativePath
-</span><span class='line'>fileRelativePath=WScript.Arguments(0)
-</span><span class='line'>
-</span><span class='line'>Dim filepath
-</span><span class='line'>filepath=Mid(fileRelativePath,17)
-</span><span class='line'>
-</span><span class='line'>Dim Wsh
-</span><span class='line'>Set Wsh = WScript.CreateObject("WScript.Shell")
-</span><span class='line'>
-</span><span class='line'>Wsh.Run "D:\local\usr\npp\notepad++.exe " + CurrPath + "\..\..\..\" + filepath,0,True
-</span><span class='line'>
-</span><span class='line'>Set Wsh=NoThing
-</span><span class='line'>WScript.quit
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>同时上面的vbs程序有一个与bat同样的问题：在<strong>文件</strong>没有关闭的前，vbs程序是一直等待的！如果使用这种方式，编辑很多文件就会存在很多进程。</p>
-
-<p>而直接在<code>Wsh.Run</code>后面加上<code>start</code>前缀就报<strong>系统找不到指定的文件</strong>的错误！整来整去最后还是调用bat文件，解决主进程一直等待的问题。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Dim CurrPath
-</span><span class='line'>CurrPath=WScript.Createobject("Scripting.FileSystemObject").GetFile(Wscript.ScriptFullName).ParentFolder.Path
-</span><span class='line'>
-</span><span class='line'>Dim fileRelativePath
-</span><span class='line'>fileRelativePath=WScript.Arguments(0)
-</span><span class='line'>
-</span><span class='line'>Dim Wsh
-</span><span class='line'>Set Wsh = WScript.CreateObject("WScript.Shell")
-</span><span class='line'>
-</span><span class='line'>Wsh.Run CurrPath + "\npp-windows.bat """ + fileRelativePath + """",0,True
-</span><span class='line'>
-</span><span class='line'>Set Wsh=NoThing
-</span><span class='line'>WScript.quit
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>然后修改<strong>添加注册表项的命令</strong>reg-npp-windows.bat，重新覆盖注册下就可以了。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>set NPP_APP=%~dp0npp-windows.vbs.exe</span></code></pre></td></tr></table></div></figure>
-
-
-<p>尽管没有黑窗口了闪现，但是速度慢了很多！！
-两种方式换着用呗，修改也简单： 改下程序的名字，重新注册下就行了。</p>
-
-<h2>其他</h2>
-
-<p>URL-protocol的用户选择设置会被chrome缓冲，可以通过<code>C:\Users\Administrator\AppData\Local\Google\Chrome\User Data\Local State</code>文件的<code>protocol_handler</code>节点来修改。</p>
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="http://stackoverflow.com/questions/15351508/using-a-wscript-shell-activex-to-execute-a-command-line">Using a WScript.shell activeX to execute a command line</a></li>
-<li><a href="http://huagenli.iteye.com/blog/552447">在html中利用WScript.Shell启用本地程序</a></li>
-<li><a href="http://blog.csdn.net/insidekernel/article/details/2033175">通过网页链接打开应用程序客户端的两种实现方式</a></li>
-<li><a href="http://hi.baidu.com/pluto632/item/5007737da31344326f29f666">浏览器打开本地程序，全面支持ie,firefox,opera,chrome,自定义url protocol</a></li>
-<li><a href="http://blog.csdn.net/lockelk/article/details/7541374">自定义URL Protocol调用Winfrom程序（exe）并实现传值——类似网页链接调用QQ、旺旺</a></li>
-<li><a href="http://www.cnblogs.com/zjneter/archive/2008/01/08/1030066.html">自定义URL Protocol Handler</a></li>
-<li><a href="https://github.com/shopify/liquid/wiki/liquid-for-designers">liquid页面渲染语言</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/41">&larr; Older</a>
@@ -3555,6 +3747,14 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
   <ul id="recent_posts">
     
       <li class="post">
+        <a href="/blog/2023/04/09/dingtalk-with-openai/">钉钉群机器人对接ChatGPT</a>
+      </li>
+    
+      <li class="post">
+        <a href="/blog/2023/03/26/clash-on-raspberry4/">树莓派4安装Clash</a>
+      </li>
+    
+      <li class="post">
         <a href="/blog/2023/03/25/reinstall-raspberry2/">重新折腾raspberry2</a>
       </li>
     
@@ -3576,14 +3776,6 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
     
       <li class="post">
         <a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/04/19/k8s-nfs-run-example/">K8S官方例子NFS</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/04/14/k8s-nfs/">k8s共享存储使用NFS</a>
       </li>
     
   </ul>
@@ -3617,6 +3809,10 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/books/'>books</a> (5) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/clash/'>clash</a> (1) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3720,7 +3916,7 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/openai/'>openai</a> (2) 
+			<a class='category' href='/blog/categories/openai/'>openai</a> (3) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3740,7 +3936,7 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/raspberry/'>raspberry</a> (4) 
+			<a class='category' href='/blog/categories/raspberry/'>raspberry</a> (5) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3801,7 +3997,7 @@ patch: <a href="https://issues.apache.org/jira/secure/attachment/12600760/HADOOP
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (233)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (235)</li>
 	</ul>
 	
 </section>
