@@ -9,8 +9,29 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="为了平复难以平复的痛苦，难以掩饰的激动，把这次遇到并解决的记录下。尽管最终解决的patch是官网的: Hive on Spark gives incorrect results when speculation is on。 版本说明下： hive-1.2.1
-spark-1.3.1 &hellip;">
+  <meta name="description" content="注：最后就是升级到JDK8(哭笑)&hellip; 最近闲得慌啊，本来不是自己职能范围内的。但是看着一台机器每天负载50+的跑，不舒服，就想去折腾折腾把负载降下来。 进程图： 1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -86,6 +107,438 @@ spark-1.3.1 &hellip;">
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2017/06/01/optimize-java-on-production-environment/">追生产的一次优化</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-06-01T08:36:33+08:00" pubdate data-updated="true">Thu 2017-06-01 08:36</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>注：最后就是升级到JDK8(哭笑)&hellip;</p>
+
+<p>最近闲得慌啊，本来不是自己职能范围内的。但是看着一台机器每天负载50+的跑，不舒服，就想去折腾折腾把负载降下来。</p>
+
+<p>进程图：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>top - 08:01:24 up 1203 days,  9:06,  4 users,  load average: 31.41, 32.97, 32.38
+</span><span class='line'>Tasks: 569 total,  11 running, 558 sleeping,   0 stopped,   0 zombie
+</span><span class='line'>Cpu(s): 20.1%us, 68.1%sy,  0.0%ni,  6.0%id,  0.1%wa,  0.0%hi,  5.7%si,  0.0%st
+</span><span class='line'>Mem:  49420852k total, 31831356k used, 17589496k free,   358748k buffers
+</span><span class='line'>Swap: 33791992k total,   519332k used, 33272660k free, 18614472k cached
+</span><span class='line'>
+</span><span class='line'>  PID USER      PR  NI  VIRT  RES  SHR S %CPU %MEM    TIME+  COMMAND                   
+</span><span class='line'> 2340 omc       20   0 29.2g 8.5g  11m S 598.1 18.1   3436:40 java                     
+</span><span class='line'>31349 omc       20   0 8071m 563m  11m S 348.4  1.2   1735:33 java                     
+</span><span class='line'>28147 omc       20   0 15.5g 1.5g  14m S 341.9  3.2   1959:42 java                     
+</span><span class='line'>   61 root      20   0     0    0    0 S 48.9  0.0  83728:05 ksoftirqd/14              
+</span><span class='line'>   73 root      20   0     0    0    0 S 48.2  0.0  82342:12 ksoftirqd/17              
+</span><span class='line'>    9 root      20   0     0    0    0 S 46.9  0.0  85312:03 ksoftirqd/1               
+</span><span class='line'>   13 root      20   0     0    0    0 S 46.6  0.0  84297:57 ksoftirqd/2               
+</span><span class='line'>   25 root      20   0     0    0    0 S 45.3  0.0  82811:49 ksoftirqd/5               
+</span><span class='line'>   89 root      20   0     0    0    0 S 45.3  0.0  84608:31 ksoftirqd/21              
+</span><span class='line'>   65 root      20   0     0    0    0 S 44.9  0.0  83475:48 ksoftirqd/15              
+</span><span class='line'>   17 root      20   0     0    0    0 R 44.6  0.0  83990:21 ksoftirqd/3               
+</span><span class='line'>   57 root      20   0     0    0    0 S 44.6  0.0  84625:38 ksoftirqd/13              
+</span><span class='line'>   33 root      20   0     0    0    0 R 44.0  0.0  80537:34 ksoftirqd/7               
+</span><span class='line'>    4 root      20   0     0    0    0 R 43.3  0.0  81489:54 ksoftirqd/0               
+</span><span class='line'>   41 root      20   0     0    0    0 R 42.0  0.0  82651:17 ksoftirqd/9               
+</span><span class='line'>   37 root      20   0     0    0    0 S 40.0  0.0  82636:26 ksoftirqd/8               
+</span><span class='line'>   85 root      20   0     0    0    0 S 39.7  0.0  84557:49 ksoftirqd/20              
+</span><span class='line'>   21 root      20   0     0    0    0 S 38.7  0.0  83271:24 ksoftirqd/4               
+</span><span class='line'>   53 root      20   0     0    0    0 R 36.1  0.0  82083:15 ksoftirqd/12              
+</span><span class='line'>   45 root      20   0     0    0    0 R 35.8  0.0  86230:39 ksoftirqd/10              
+</span><span class='line'>   93 root      20   0     0    0    0 R 35.4  0.0  86416:12 ksoftirqd/22              
+</span><span class='line'>   69 root      20   0     0    0    0 R 35.1  0.0  82726:46 ksoftirqd/16              
+</span><span class='line'>   29 root      20   0     0    0    0 S 34.8  0.0  78415:22 ksoftirqd/6               
+</span><span class='line'>   77 root      20   0     0    0    0 R 33.1  0.0  82419:34 ksoftirqd/18              
+</span><span class='line'>   81 root      20   0     0    0    0 S 30.2  0.0  80141:58 ksoftirqd/19              
+</span><span class='line'>   97 root      20   0     0    0    0 R 21.3  0.0  85993:03 ksoftirqd/23              
+</span><span class='line'>   49 root      20   0     0    0    0 S 21.0  0.0  86742:13 ksoftirqd/11              
+</span><span class='line'>28418 nobody    20   0  855m  32m 1144 S 20.7  0.1  72:23.66 gmetad</span></code></pre></td></tr></table></div></figure>
+
+
+<p>线程图：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>top - 08:03:20 up 1203 days,  9:08,  4 users,  load average: 31.07, 32.36, 32.23
+</span><span class='line'>Tasks: 940 total,  31 running, 909 sleeping,   0 stopped,   0 zombie
+</span><span class='line'>Cpu(s): 20.0%us, 70.0%sy,  0.0%ni,  4.6%id,  0.0%wa,  0.0%hi,  5.4%si,  0.0%st
+</span><span class='line'>Mem:  49420852k total, 31845576k used, 17575276k free,   358776k buffers
+</span><span class='line'>Swap: 33791992k total,   519332k used, 33272660k free, 18615376k cached
+</span><span class='line'>
+</span><span class='line'>  PID USER      PR  NI  VIRT  RES  SHR S %CPU %MEM    TIME+  COMMAND             
+</span><span class='line'>28174 omc       20   0 15.5g 1.5g  14m R 59.9  3.2 307:28.86 java                
+</span><span class='line'>28203 omc       20   0 15.5g 1.5g  14m S 55.7  3.2 272:43.21 java                
+</span><span class='line'> 2416 omc       20   0 29.2g 8.5g  11m R 55.4 18.1 274:31.07 java                
+</span><span class='line'>31384 omc       20   0 8071m 563m  11m R 53.7  1.2 240:45.47 java                
+</span><span class='line'> 2409 omc       20   0 29.2g 8.5g  11m S 53.1 18.1 245:56.03 java                
+</span><span class='line'>28197 omc       20   0 15.5g 1.5g  14m S 52.4  3.2 279:04.35 java                
+</span><span class='line'> 2406 omc       20   0 29.2g 8.5g  11m R 51.8 18.1 249:00.25 java                
+</span><span class='line'>28208 omc       20   0 15.5g 1.5g  14m R 51.8  3.2 300:50.49 java                
+</span><span class='line'> 2412 omc       20   0 29.2g 8.5g  11m S 51.5 18.1 232:11.81 java                
+</span><span class='line'> 2415 omc       20   0 29.2g 8.5g  11m R 51.5 18.1 234:57.25 java                
+</span><span class='line'> 2391 omc       20   0 29.2g 8.5g  11m R 51.1 18.1 301:52.48 java                
+</span><span class='line'>28175 omc       20   0 15.5g 1.5g  14m R 51.1  3.2 299:18.11 java                
+</span><span class='line'>31383 omc       20   0 8071m 563m  11m R 50.8  1.2 242:23.43 java                
+</span><span class='line'>16662 omc       20   0 29.2g 8.5g  11m R 49.5 18.1   3:26.22 java                
+</span><span class='line'>31381 omc       20   0 8071m 563m  11m R 49.5  1.2 237:05.25 java                
+</span><span class='line'>   41 root      20   0     0    0    0 S 48.9  0.0  82652:00 ksoftirqd/9         
+</span><span class='line'>   17 root      20   0     0    0    0 S 47.9  0.0  83990:59 ksoftirqd/3         
+</span><span class='line'>   65 root      20   0     0    0    0 S 47.9  0.0  83476:26 ksoftirqd/15        
+</span><span class='line'> 2408 omc       20   0 29.2g 8.5g  11m R 47.9 18.1 249:43.27 java                
+</span><span class='line'>31382 omc       20   0 8071m 563m  11m R 47.9  1.2 237:07.76 java                
+</span><span class='line'>   49 root      20   0     0    0    0 S 47.3  0.0  86743:04 ksoftirqd/11        
+</span><span class='line'>   89 root      20   0     0    0    0 R 46.6  0.0  84609:14 ksoftirqd/21        
+</span><span class='line'>   81 root      20   0     0    0    0 S 46.3  0.0  80142:39 ksoftirqd/19        
+</span><span class='line'>   61 root      20   0     0    0    0 R 46.0  0.0  83728:50 ksoftirqd/14        
+</span><span class='line'>31376 omc       20   0 8071m 563m  11m R 45.3  1.2 306:00.66 java                
+</span><span class='line'>   33 root      20   0     0    0    0 R 45.0  0.0  80538:15 ksoftirqd/7         
+</span><span class='line'>31385 omc       20   0 8071m 563m  11m R 45.0  1.2 272:52.36 java                
+</span><span class='line'>   13 root      20   0     0    0    0 S 44.7  0.0  84298:42 ksoftirqd/2         
+</span><span class='line'>   73 root      20   0     0    0    0 S 43.7  0.0  82342:53 ksoftirqd/17        
+</span><span class='line'>   53 root      20   0     0    0    0 R 43.4  0.0  82083:54 ksoftirqd/12        
+</span><span class='line'>   97 root      20   0     0    0    0 S 43.4  0.0  85993:53 ksoftirqd/23        
+</span><span class='line'>   45 root      20   0     0    0    0 R 42.4  0.0  86231:24 ksoftirqd/10        
+</span><span class='line'>   77 root      20   0     0    0    0 S 42.1  0.0  82420:20 ksoftirqd/18        
+</span><span class='line'> 2407 omc       20   0 29.2g 8.5g  11m R 41.1 18.1 240:01.88 java                
+</span><span class='line'> 2410 omc       20   0 29.2g 8.5g  11m R 40.8 18.1 227:49.76 java                
+</span><span class='line'>   85 root      20   0     0    0    0 R 40.5  0.0  84558:37 ksoftirqd/20        
+</span><span class='line'>28196 omc       20   0 15.5g 1.5g  14m R 38.2  3.2 276:56.00 java                
+</span><span class='line'>   29 root      20   0     0    0    0 S 37.9  0.0  78416:08 ksoftirqd/6         
+</span><span class='line'>   37 root      20   0     0    0    0 S 37.9  0.0  82637:15 ksoftirqd/8         
+</span><span class='line'> 2411 omc       20   0 29.2g 8.5g  11m R 37.9 18.1 247:22.02 java                
+</span><span class='line'> 2360 omc       20   0 29.2g 8.5g  11m S 37.6 18.1 179:49.10 java                
+</span><span class='line'> 2413 omc       20   0 29.2g 8.5g  11m S 36.9 18.1 233:48.03 java                
+</span><span class='line'>   69 root      20   0     0    0    0 R 36.3  0.0  82727:24 ksoftirqd/16        
+</span><span class='line'>    4 root      20   0     0    0    0 R 35.6  0.0  81490:34 ksoftirqd/0         
+</span><span class='line'>31369 omc       20   0 8071m 563m  11m R 35.6  1.2 192:32.42 java                
+</span><span class='line'>   21 root      20   0     0    0    0 S 35.0  0.0  83272:02 ksoftirqd/4         
+</span><span class='line'>28167 omc       20   0 15.5g 1.5g  14m R 33.7  3.2 197:02.78 java                
+</span><span class='line'>   25 root      20   0     0    0    0 S 27.2  0.0  82812:29 ksoftirqd/5         
+</span><span class='line'>   93 root      20   0     0    0    0 R 25.9  0.0  86416:55 ksoftirqd/22</span></code></pre></td></tr></table></div></figure>
+
+
+<p>按照网络上的文档，查cpu时间很长的、占用很高的线程，然后拿着ID转成16进程到jstack里面去对：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[omc@cu-omc1 ~]$ jstack 28147
+</span><span class='line'>2017-06-01 08:07:13
+</span><span class='line'>Full thread dump Java HotSpot(TM) 64-Bit Server VM (23.7-b01 mixed mode):
+</span><span class='line'>...
+</span><span class='line'>"Timer-0" daemon prio=10 tid=0x00007fbd84850000 nid=0x6e27 in Object.wait() [0x00007fbe31f98000]
+</span><span class='line'>   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+</span><span class='line'>        at java.lang.Object.wait(Native Method)
+</span><span class='line'>        at java.util.TimerThread.mainLoop(Timer.java:552)
+</span><span class='line'>        - locked &lt;0x0000000767760360&gt; (a java.util.TaskQueue)
+</span><span class='line'>        at java.util.TimerThread.run(Timer.java:505)
+</span><span class='line'>
+</span><span class='line'>"schedulerFactory_QuartzSchedulerThread" prio=10 tid=0x00007fbd843f6000 nid=0x6e26 in Object.wait() [0x00007fbe32099000]
+</span><span class='line'>   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+</span><span class='line'>        at java.lang.Object.wait(Native Method)
+</span><span class='line'>        at org.quartz.core.QuartzSchedulerThread.run(QuartzSchedulerThread.java:311)
+</span><span class='line'>        - locked &lt;0x0000000767770098&gt; (a java.lang.Object)
+</span><span class='line'>
+</span><span class='line'>"schedulerFactory_Worker-2" prio=10 tid=0x00007fbd848cd000 nid=0x6e25 in Object.wait() [0x00007fbe3219a000]
+</span><span class='line'>   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+</span><span class='line'>        at java.lang.Object.wait(Native Method)
+</span><span class='line'>        at org.quartz.simpl.SimpleThreadPool$WorkerThread.run(SimpleThreadPool.java:568)
+</span><span class='line'>        - locked &lt;0x00000007677ebb38&gt; (a java.lang.Object)
+</span><span class='line'>
+</span><span class='line'>"schedulerFactory_Worker-1" prio=10 tid=0x00007fbd848b3000 nid=0x6e24 in Object.wait() [0x00007fbe3229b000]
+</span><span class='line'>   java.lang.Thread.State: TIMED_WAITING (on object monitor)
+</span><span class='line'>        at java.lang.Object.wait(Native Method)
+</span><span class='line'>        at org.quartz.simpl.SimpleThreadPool$WorkerThread.run(SimpleThreadPool.java:568)
+</span><span class='line'>        - locked &lt;0x00000007677ec710&gt; (a java.lang.Object)
+</span><span class='line'>...
+</span><span class='line'>"GC task thread#17 (ParallelGC)" prio=10 tid=0x00007fbe64035000 nid=0x6e06 runnable 
+</span><span class='line'>
+</span><span class='line'>"VM Periodic Task Thread" prio=10 tid=0x00007fbe6411f800 nid=0x6e0e waiting on condition 
+</span><span class='line'>
+</span><span class='line'>JNI global references: 321
+</span><span class='line'>
+</span><span class='line'>[omc@cu-omc1 ~]$ echo "obase=16;28203" | bc
+</span><span class='line'>6E2B
+</span><span class='line'>[omc@cu-omc1 ~]$ cat | while read id ; do echo "obase=16;$id" | bc ; done &lt;&lt;EOF
+</span><span class='line'>28174
+</span><span class='line'>28203
+</span><span class='line'>28197
+</span><span class='line'>28208
+</span><span class='line'>28175
+</span><span class='line'>28196
+</span><span class='line'>28167
+</span><span class='line'>EOF
+</span><span class='line'>
+</span><span class='line'>6E0E
+</span><span class='line'>6E2B
+</span><span class='line'>6E25
+</span><span class='line'>6E30
+</span><span class='line'>6E0F
+</span><span class='line'>6E24
+</span><span class='line'>6E07
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p><img src="/images/blogs/linux-jdk7-jstack.png" alt="" /></p>
+
+<p>基本都是sleep，wait的线程占用cpu很大。并且导致了系统cpu软中断处理进程ksoftirqd占用了大部分系统资源。系统不停的在处理上下文，负载奇高：</p>
+
+<p><img src="/images/blogs/linux-jdk7-vmstat.png" alt="" /></p>
+
+<p>ksoftirqd 不知道干嘛的，/proc/interrupts 看不懂，查了sleep和wait的区别，strace、iostat、jmap、jstack、jstat、vmstat、pidstat、还有看到内存补齐的一些文章，反正就是找不到北。</p>
+
+<p>一开始以为是quartz的问题，对比了其他机器的quartz应用，有怀疑过版本问题（quartz-1.8.6, 2.2.0）；有试着去减少simplethreadpool的默认线程数（org.quartz.threadPool.threadCount），CPU占用是会少一点点，但是ksoftirqd还是压力很大，系统还是很大部分消耗在上下文切换，路子不对。</p>
+
+<p>问题环境：</p>
+
+<ul>
+<li>Red Hat Enterprise Linux Server release 6.3 (Santiago)/2.6.32-279.el6.x86_64</li>
+<li>Spring + quartz-2.2.&frac12;</li>
+<li>jdk1.7.0_17</li>
+</ul>
+
+
+<p>完全没辙，不是功能代码的问题啊。搞到12点，困死了，回去睡个觉。今天一早起来，想想，不如换个 <strong>JDK8</strong> 试试吧（按照部署要求jdk放local目录下，要ROOT密码的昨晚就没动）。我勒个去，重启了感觉世界都变亮了。上下文切换cs 1w不到，us、sy基本忽略不计啊。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>$ vmstat -a 1
+</span><span class='line'>procs -----------memory---------- ---swap-- -----io---- --system-- -----cpu-----
+</span><span class='line'> r  b   swpd   free  inact active   si   so    bi    bo   in   cs us sy id wa st
+</span><span class='line'> 0  0 517160 25052176 12486824 10402340    0    0     2    31    0    0  4  9 86  0  0
+</span><span class='line'> 0  0 517160 25052732 12486972 10401996    0    0     0  4676 4548 4806  0  0 99  0  0
+</span><span class='line'> 1  0 517160 25052468 12486972 10402356    0    0     0     0 4044 4419  0  0 99  0  0
+</span><span class='line'> 0  1 517160 25053664 12486852 10401992    0    0     0  8100 7608 5311  0  0 95  4  0
+</span><span class='line'> 0  1 517160 25054800 12486852 10402084    0    0     0  8228 7847 5408  1  1 95  4  0
+</span><span class='line'> 0  1 517160 25054924 12486852 10402380    0    0     0  8200 8075 4929  0  0 95  4  0
+</span><span class='line'> 1  1 517160 25054868 12486852 10402112    0    0     0  7484 7898 5754  1  1 94  4  0
+</span><span class='line'> 2  1 517160 25055544 12486848 10402148    0    0     0  8224 7537 4428  0  0 95  4  0</span></code></pre></td></tr></table></div></figure>
+
+
+<p>好吧，以后优化的第一步就是换JDK .__. 。就像优化数据库第一步就建索引 V.V 。应该是JDK8对object.wait调用linux系统调用进行了优化。</p>
+
+<h2>有点意思</h2>
+
+<ul>
+<li><a href="http://coderplay.iteye.com/blog/1481211">从Java视角理解CPU上下文切换(Context Switch)</a></li>
+<li><a href="http://coderplay.iteye.com/blog/1485760">从Java视角理解CPU缓存(CPU Cache)</a></li>
+<li><a href="http://coderplay.iteye.com/blog/1486649">从Java视角理解伪共享(False Sharing)</a></li>
+<li><a href="https://github.com/LMAX-Exchange/disruptor">disruptor</a></li>
+<li><a href="http://www.cnblogs.com/zhiranok/archive/2012/08/13/context_switch_1.html">http://www.cnblogs.com/zhiranok/archive/2012/08/13/context_switch_1.html</a></li>
+<li><a href="http://www.bijishequ.com/detail/60264?p=">http://www.bijishequ.com/detail/60264?p=</a></li>
+<li><a href="http://9leg.com/java/2016/08/09/cpu-consumption-analysis.html">http://9leg.com/java/2016/08/09/cpu-consumption-analysis.html</a></li>
+</ul>
+
+
+<blockquote><p>us过高
+当us值过高时，表示运行的应用消耗了大部分的cpu。在这种情况下，对于java应用而言，最重要的是找到具体消耗cpu的线程所执行的代码，可以采用如下方法。</p>
+
+<p>首先通过linux命令top命令查看us过高的pid值</p>
+
+<p>通过top -Hp pid查看该pid进程下的线程的cpu消耗状况，得到具体pid值</p>
+
+<p>将pid值转化为16进制，这个转化后的值对应nid值的线程</p>
+
+<p>通过jstack pid grep -C 20 “16进制的值” 命令查看运行程序的线程信息</p>
+
+<p>该线程就是消耗cpu的线程，在采样时须多执行几次上述的过程，以确保找到真实的消耗cpu的线程。</p>
+
+<p>java应用造成us过高的原因主要是线程一直处于可运行的状态Runnable，通常是这些线程在执行无阻塞、循环、正则或纯粹的计算等动作造成。 另外一个可能会造成us过高的原因是频繁的gc。如每次请求都需要分配较多内存，当访问量高时就导致不断的进行gc，系统响应速度下降， 进而造成堆积的请求更多，消耗的内存严重不足，最严重的时候会导致系统不断进行FullGC，对于频繁的gc需要通过分析jvm内存的消耗来查找原因。</p>
+
+<p>sy过高
+当sy值过高时，表示linux花费了更多的时间在进行线程切换。java应用造成这种现象的主要原因是启动的线程比较多， 且这些线程多处于不断的阻塞（例如锁等待，io等待）和执行状态的变化过程中，这就导致了操作系统要不断的切换执行的线程， 产生大量的上下文切换。在这种情况下，对java应用而言，最重要的是找出不断切换状态的原因， 可采用的方法为通过kill -3 pid 或jstack -l pid的方法dump出java应用程序的线程信息，查看线程的状态信息以及锁信息， 找出等待状态或锁竞争过多的线程。</p></blockquote>
+
+<ul>
+<li><a href="http://yaocoder.blog.51cto.com/2668309/1543352">http://yaocoder.blog.51cto.com/2668309/1543352</a></li>
+</ul>
+
+
+<p>strace -T -r -c -p pid
+pstack pid
+trace -p tid</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2138,497 +2591,6 @@ spark-1.3.1 &hellip;">
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2017/03/23/codis-usage2/">Codis使用进阶</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2017-03-23T17:48:55+08:00" pubdate data-updated="true">Thu 2017-03-23 17:48</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>去年年中的时刻有安装过codis。当时因为任务紧就使用jedis的ShardedJedisPool功能粗略的解决，由于是自己手动路由和管理，维护起来太难，特别是当初设置的实例数不够用时，相当麻烦。</p>
-
-<p>年初项目各种测试，于是有些闲暇的时间，重新弄一弄redis cluster。算是搭建一个环境来测试：</p>
-
-<p>版本：</p>
-
-<ul>
-<li>codis-3.2</li>
-<li>centos6</li>
-</ul>
-
-
-<h2>测试环境编译安装</h2>
-
-<p>现在的版本已经有了全部的依赖，直接编译即可。（centos6和官网提供的编译版本不兼容）</p>
-
-<ul>
-<li><a href="https://github.com/CodisLabs/codis/blob/release3.2/doc/tutorial_zh.md#0-%E4%B8%8B%E8%BD%BD%E4%B8%8E%E7%BC%96%E8%AF%91">官网文档</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>tar zxvf go1.6.2.linux-amd64.tar.gz 
-</span><span class='line'>
-</span><span class='line'>/etc/profile
-</span><span class='line'>export GOROOT=/opt/go
-</span><span class='line'>export GOPATH=/opt/gopath
-</span><span class='line'>export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
-</span><span class='line'>
-</span><span class='line'>-
-</span><span class='line'>
-</span><span class='line'>[root@cu2 CodisLabs]# pwd
-</span><span class='line'>/opt/go/src/github.com/CodisLabs
-</span><span class='line'>
-</span><span class='line'># @2017-06-05
-</span><span class='line'># 如果下载的是tar.gz，直接在CodisLabs目录下解压，然后做个软链接
-</span><span class='line'># cd $GOPATH ; mkdir -p src/github.com/CodisLabs/
-</span><span class='line'># cd src/github.com/CodisLabs/; ln -s codis-3.2-rc2 codis
-</span><span class='line'>[root@cu2 CodisLabs]# git clone --branch release3.2  https://github.com/CodisLabs/codis.git 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 CodisLabs]# cd codis/
-</span><span class='line'>
-</span><span class='line'># 安装一些依赖
-</span><span class='line'># # ./autogen.sh: line 5: autoconf: command not found
-</span><span class='line'># yum install autoconf 
-</span><span class='line'>[root@cu2 codis]# make 
-</span><span class='line'>
-</span><span class='line'>[root@cu2 codis]# ll bin/
-</span><span class='line'>total 101292
-</span><span class='line'>drwxr-xr-x 4 root root     4096 Mar 15 12:58 assets
-</span><span class='line'>-rwxr-xr-x 1 root root 21036930 Mar 15 12:58 codis-admin
-</span><span class='line'>-rwxr-xr-x 1 root root 22343059 Mar 15 12:58 codis-dashboard
-</span><span class='line'>-rwxr-xr-x 1 root root 18378506 Mar 15 12:58 codis-fe
-</span><span class='line'>-rwxr-xr-x 1 root root 22675153 Mar 15 12:58 codis-proxy
-</span><span class='line'>-rwxr-xr-x 1 root root  7982967 Mar 15 12:58 codis-server
-</span><span class='line'>-rwxr-xr-x 1 root root  5580431 Mar 15 12:58 redis-benchmark
-</span><span class='line'>-rwxr-xr-x 1 root root  5712419 Mar 15 12:58 redis-cli
-</span><span class='line'>-rw-r--r-- 1 root root      170 Mar 15 12:58 version
-</span><span class='line'>[root@cu2 codis]# cat bin/version 
-</span><span class='line'>version = 2017-03-15 00:40:41 +0800 @be9ee25c63a64396b5fb0076447be560497b909d @3.2-beta-10-gbe9ee25
-</span><span class='line'>compile = 2017-03-15 12:58:23 +0800 by go version go1.6.2 linux/amd64
-</span><span class='line'>
-</span><span class='line'># 生成默认配置
-</span><span class='line'>[root@cu2 codis]# bin/codis-dashboard --default-config | tee dashboard.toml
-</span><span class='line'>[root@cu2 codis]# bin/codis-proxy --default-config | tee proxy.toml
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>生产部署</h2>
-
-<p>把测试环境的GOPATH和GOROOT全部拷贝到生产即可。这里上面已经生成了dashboard和proxy的配置了哦！！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[ud@cu-ud6 opt]$ ll
-</span><span class='line'>drwxrwxr-x.  2 ud   ud   4096 3月  18 00:10 bin
-</span><span class='line'>drwxr-xr-x. 11 ud   ud   4096 4月  20 2016 go
-</span><span class='line'>drwxr-xr-x.  4 ud   ud   4096 3月  15 12:58 gopath
-</span><span class='line'>drwxr-xr-x.  8 ud   ud   4096 3月  17 20:13 jdk1.8.0_92
-</span><span class='line'>drwxr-xr-x. 10 ud   ud   4096 2月  20 2014 zookeeper-3.4.6
-</span><span class='line'>
-</span><span class='line'>[ud@cu-ud6 opt]$ ll bin
-</span><span class='line'>总用量 24
-</span><span class='line'>-rw-rw-r--. 1 ud ud 234 3月  17 20:36 codis.profile
-</span><span class='line'>lrwxrwxrwx. 1 ud ud  54 3月  17 20:34 redis-cli -&gt; ../gopath/src/github.com/CodisLabs/codis/bin/redis-cli
-</span><span class='line'>-rwxrwxr-x. 1 ud ud 487 3月  17 20:54 start-codis-dashboard.sh
-</span><span class='line'>-rwxrwxr-x. 1 ud ud 310 3月  18 00:10 start-codis-proxy.sh
-</span><span class='line'>-rwxrwxr-x. 1 ud ud 335 3月  17 21:17 start-redis.sh
-</span><span class='line'>-rwxrwxr-x. 1 ud ud 323 3月  17 20:55 start-zoo.sh
-</span><span class='line'>
-</span><span class='line'>[ud@cu-ud6 opt]$ for f in $( find bin -type f ) ; do echo " =============== $f ================= "; cat "$f" ; done
-</span><span class='line'> =============== bin/codis.profile ================= 
-</span><span class='line'>#!/bin/sh
-</span><span class='line'>
-</span><span class='line'>export GOROOT=/opt/go
-</span><span class='line'>export GOPATH=/opt/gopath
-</span><span class='line'>export CODIS_HOME=$GOPATH/src/github.com/CodisLabs/codis/
-</span><span class='line'>export LOG_DIR=/var/log
-</span><span class='line'>
-</span><span class='line'>export JAVA_HOME=/opt/jdk1.8.0_92
-</span><span class='line'>
-</span><span class='line'>export PATH=$JAVA_HOME/bin:$GOPATH/bin:$GOROOT/bin:$PATH
-</span><span class='line'>
-</span><span class='line'> =============== bin/start-zoo.sh ================= 
-</span><span class='line'>#!/bin/sh
-</span><span class='line'>
-</span><span class='line'>CODIS_BIN="${BASH_SOURCE-$0}"
-</span><span class='line'>CODIS_BIN="$(dirname "${CODIS_BIN}")"
-</span><span class='line'>CODIS_BINDIR="$(cd "${CODIS_BIN}"; pwd)"
-</span><span class='line'>
-</span><span class='line'>source $CODIS_BINDIR/codis.profile
-</span><span class='line'>
-</span><span class='line'>export ZOO_LOG_DIR=$LOG_DIR
-</span><span class='line'>
-</span><span class='line'>cd /opt/zookeeper-3.4.6
-</span><span class='line'>sed 's@dataDir=/tmp/zookeeper@dataDir=/data/zookeeper@' conf/zoo_sample.cfg &gt;conf/zoo.cfg
-</span><span class='line'>
-</span><span class='line'>bin/zkServer.sh start
-</span><span class='line'>
-</span><span class='line'> =============== bin/start-codis-dashboard.sh ================= 
-</span><span class='line'>#!/bin/sh
-</span><span class='line'>
-</span><span class='line'>CODIS_BIN="${BASH_SOURCE-$0}"
-</span><span class='line'>CODIS_BIN="$(dirname "${CODIS_BIN}")"
-</span><span class='line'>CODIS_BINDIR="$(cd "${CODIS_BIN}"; pwd)"
-</span><span class='line'>
-</span><span class='line'>source $CODIS_BINDIR/codis.profile
-</span><span class='line'>
-</span><span class='line'>cd $CODIS_HOME
-</span><span class='line'>nohup bin/codis-dashboard \
-</span><span class='line'>  --ncpu=4 \
-</span><span class='line'>  --config=dashboard.toml \
-</span><span class='line'>  --log=$LOG_DIR/codis_dashboard.log \
-</span><span class='line'>  --log-level=INFO \
-</span><span class='line'>  &gt;/dev/null 2&gt;&1 &
-</span><span class='line'>
-</span><span class='line'>nohup bin/codis-fe \
-</span><span class='line'>  --ncpu=4 \
-</span><span class='line'>  --zookeeper=127.0.0.1:2181 \
-</span><span class='line'>  --listen=0.0.0.0:28080 \
-</span><span class='line'>  --log=$LOG_DIR/codis_fe.log \
-</span><span class='line'>  --log-level=INFO \
-</span><span class='line'>  &gt;/dev/null 2&gt;&1 &
-</span><span class='line'>
-</span><span class='line'> =============== bin/start-codis-proxy.sh ================= 
-</span><span class='line'>#!/bin/sh
-</span><span class='line'>
-</span><span class='line'>CODIS_BIN="${BASH_SOURCE-$0}"
-</span><span class='line'>CODIS_BIN="$(dirname "${CODIS_BIN}")"
-</span><span class='line'>CODIS_BINDIR="$(cd "${CODIS_BIN}"; pwd)"
-</span><span class='line'>
-</span><span class='line'>source $CODIS_BINDIR/codis.profile
-</span><span class='line'>
-</span><span class='line'>cd $CODIS_HOME
-</span><span class='line'>nohup bin/codis-proxy \
-</span><span class='line'>  --ncpu=24 \
-</span><span class='line'>  --config=proxy.toml \
-</span><span class='line'>  --log=$LOG_DIR/codis_proxy.log \
-</span><span class='line'>  --log-level=INFO \
-</span><span class='line'>  &gt;/dev/null 2&gt;&1 &
-</span><span class='line'>
-</span><span class='line'> =============== bin/start-redis.sh ================= 
-</span><span class='line'>#!/bin/sh
-</span><span class='line'>
-</span><span class='line'>CODIS_BIN="${BASH_SOURCE-$0}"
-</span><span class='line'>CODIS_BIN="$(dirname "${CODIS_BIN}")"
-</span><span class='line'>CODIS_BINDIR="$(cd "${CODIS_BIN}"; pwd)"
-</span><span class='line'>
-</span><span class='line'>source $CODIS_BINDIR/codis.profile
-</span><span class='line'>
-</span><span class='line'>PORT=${1:-6379}
-</span><span class='line'>
-</span><span class='line'>cd $CODIS_HOME
-</span><span class='line'>bin/codis-server --daemonize yes --port $PORT --pidfile /var/run/redis_$PORT.pid --logfile $LOG_DIR/redis_$PORT.log --save "" --bind $(hostname) 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>环境：</p>
-
-<ul>
-<li>zookeeper: cu-ud6</li>
-<li>dashboard: cu-ud6</li>
-<li>fa: cu-ud6</li>
-<li>proxy: cu-ud6/7/8</li>
-<li>redis: cu-ud6/7/8:6378/6379</li>
-<li>nginx代理: cu-ud9</li>
-</ul>
-
-
-<p>web界面添加步骤：</p>
-
-<ul>
-<li>界面上添加proxy : cu6/7/8:11080</li>
-<li>再添加group，填数字: &frac12;/&frac34;/5/6</li>
-<li>然后添加server : cu-ud6/7/8:6378/6379</li>
-<li>最后分配slots</li>
-</ul>
-
-
-<p><img src="/images/blogs/codis.jpg" alt="" /></p>
-
-<p>nginx1.11新版本已经支持tcp的代理，可以实现proxy的负载均衡：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 编译Nginx
-</span><span class='line'>./configure --with-stream --with-http_ssl_module --with-pcre=src/pcre --with-zlib=src/zlib --prefix=/usr/local/nginx
-</span><span class='line'>make && make install
-</span><span class='line'>
-</span><span class='line'>[ud@cu-ud9 nginx]$ cat conf/nginx.conf
-</span><span class='line'>
-</span><span class='line'>#user  nobody;
-</span><span class='line'>worker_processes  1;
-</span><span class='line'>
-</span><span class='line'>#error_log  logs/error.log;
-</span><span class='line'>error_log  /var/log/nginx_error.log  notice;
-</span><span class='line'>#error_log  logs/error.log  info;
-</span><span class='line'>
-</span><span class='line'>#pid        logs/nginx.pid;
-</span><span class='line'>
-</span><span class='line'>events {
-</span><span class='line'>    worker_connections  1024;
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'>stream {
-</span><span class='line'>  upstream proxy {
-</span><span class='line'>    hash   $remote_addr;
-</span><span class='line'>    server cu-ud6:19000;
-</span><span class='line'>    server cu-ud7:19000;
-</span><span class='line'>    server cu-ud8:19000;
-</span><span class='line'>  }
-</span><span class='line'>  
-</span><span class='line'>  server {
-</span><span class='line'>    listen cu-ud9:19000;
-</span><span class='line'>    proxy_timeout 600s;
-</span><span class='line'>    proxy_pass proxy;
-</span><span class='line'>  }
-</span><span class='line'>}
-</span><span class='line'>
-</span><span class='line'># 测试获取数据
-</span><span class='line'>[ud@cu-ud6 opt]$ bin/redis-cli -h cu-ud6 -p 6379 scan 0 # 样本Key
-</span><span class='line'>[ud@cu-ud6 opt]$ bin/redis-cli -h cu-ud9 -p 19000
-</span><span class='line'>&gt; get XXX
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>重置统计量：</p>
-
-<ul>
-<li><a href="https://github.com/CodisLabs/codis/issues/1049">https://github.com/CodisLabs/codis/issues/1049</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[ud@cu-ud6 codis]$ bin/codis-admin --proxy=cu-ud6:11080 --reset-stats</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>问题</h2>
-
-<p>pipeline量太大，修改proxy的 backend_max_pipeline/session_max_pipeline 。同时在客户端代码里面执行一定量的pipe后执行sync。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>2017/03/18 00:01:23 session.go:79: [INFO] session [0xc839888d80] create: {"ops":0,"create":1489766483,"remote":"192.168.32.182:57029"}
-</span><span class='line'>2017/03/18 00:01:24 session.go:86: [INFO] session [0xc834a06d80] closed: {"ops":39601,"create":1489766483,"lastop":1489766484,"remote":"192.168.32.182:57028"}, error: too many pipelined r
-</span><span class='line'>equests</span></code></pre></td></tr></table></div></figure>
-
-
-<p>sync还是会超时，修改nginx的proxy_timeout以及客户端初始化的timeout参数。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>new JedisPool(new GenericObjectPoolConfig(), "cu-ud9", 19000, 10 * 60 * 1000)</span></code></pre></td></tr></table></div></figure>
-
-
-<p>W：感觉proxy还是会有停顿，sync后有时会出现几分钟时间没响应。</p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/15">&larr; Older</a>
@@ -2651,19 +2613,23 @@ spark-1.3.1 &hellip;">
 	<ul role="list">
 		
 			<li class="post">
-				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+				<a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+				<a href="/blog/2023/03/25/reinstall-raspberry2/">重新折腾raspberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+				<a href="/blog/2023/03/25/mirror-request/">请求复制/镜像</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+				<a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2021/12/08/recommand-blogs/">认真的博客</a>
 			</li>
 		
 			<li class="post">
@@ -2671,47 +2637,15 @@ spark-1.3.1 &hellip;">
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+				<a href="/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+				<a href="/blog/2015/09/13/review-linux-101-hacks/">【linux 101 Hacks】读后感</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
 			</li>
 		
 	</ul>
@@ -2719,6 +2653,10 @@ spark-1.3.1 &hellip;">
 <section>
   <h1>Recent Posts</h1>
   <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
+      </li>
     
       <li class="post">
         <a href="/blog/2023/04/09/dingtalk-with-openai/">钉钉群机器人对接ChatGPT</a>
@@ -2746,10 +2684,6 @@ spark-1.3.1 &hellip;">
     
       <li class="post">
         <a href="/blog/2023/02/01/register-openai/">注册OpenAI</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
       </li>
     
   </ul>
@@ -2782,7 +2716,7 @@ spark-1.3.1 &hellip;">
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (5) 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2823,6 +2757,10 @@ spark-1.3.1 &hellip;">
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/git/'>git</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/good-series-1/'>good-series-1</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2914,7 +2852,7 @@ spark-1.3.1 &hellip;">
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (16) 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (18) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2922,11 +2860,19 @@ spark-1.3.1 &hellip;">
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redmine/'>redmine</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/respberry2/'>respberry2</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/shell/'>shell</a> (3) 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2946,7 +2892,7 @@ spark-1.3.1 &hellip;">
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (70) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (71) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2971,7 +2917,7 @@ spark-1.3.1 &hellip;">
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (235)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (236)</li>
 	</ul>
 	
 </section>

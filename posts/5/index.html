@@ -9,10 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="参考链接 https://github.com/appium/appium-desktop
-https://github.com/appium/java-client
-移动端自动化测试-Appium Desktop
-√工具应用：使用Appium测试Android应用程序/小米计算器进行测试 &hellip;">
+  <meta name="description" content="变废为宝。 服务器没怎么用，但是偶尔又想访问下文档或者redmine，狠狠心咬咬牙最后把x64上的迁移到了树莓派2： Raspbian GNU/Linux 9 (stretch) 。 温故下原来redmine的安装过程： Redmine部署以及插件安装 过程中涉及到了docker的重新编译， &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -88,6 +85,353 @@ https://github.com/appium/java-client
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine - Respberrypi</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2020-05-11T10:33:44+08:00" pubdate data-updated="true">Mon 2020-05-11 10:33</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>变废为宝。</p>
+
+<p>服务器没怎么用，但是偶尔又想访问下文档或者redmine，狠狠心咬咬牙最后把x64上的迁移到了树莓派2： Raspbian GNU/Linux 9 (stretch) 。</p>
+
+<p>温故下原来redmine的安装过程： <a href="http://www.winseliu.com/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a></p>
+
+<p>过程中涉及到了docker的重新编译，这其中主要使用ubuntu apt源码在本地arm上进行再编译。其中涉及的镜像有：</p>
+
+<ul>
+<li><a href="https://github.com/sameersbn/docker-ubuntu/tree/14.04">https://github.com/sameersbn/docker-ubuntu/tree/14.04</a></li>
+<li><a href="https://github.com/sameersbn/docker-postgresql/tree/9.6-2">https://github.com/sameersbn/docker-postgresql/tree/9.6-2</a></li>
+<li><a href="https://github.com/sameersbn/docker-redmine/tree/3.4.6">https://github.com/sameersbn/docker-redmine/tree/3.4.6</a></li>
+</ul>
+
+
+<h2>备份</h2>
+
+<p>redmine直接整个目录打包 /srv/docker/redmine/redmine 。数据库的要备份出来，架构不同不兼容。</p>
+
+<p>这是编译后arm postgres直接用x64的/srv/docker/redmine/postgresql的报错信息：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~# docker run --rm -ti --entrypoint="bash" -v /srv/docker/redmine/postgresql:/var/lib/postgresql sameersbn/postgresql:9.6-2 
+</span><span class='line'>
+</span><span class='line'>root@8f39c2904607:/var/lib/postgresql# sudo -HEu postgres /usr/lib/postgresql/9.6/bin/pg_ctl -D /var/lib/postgresql/9.6/main -w start
+</span><span class='line'>waiting for server to start....FATAL:  database files are incompatible with server
+</span><span class='line'>DETAIL:  The database cluster was initialized with USE_FLOAT8_BYVAL but the server was compiled without USE_FLOAT8_BYVAL.
+</span><span class='line'>HINT:  It looks like you need to recompile or initdb.
+</span><span class='line'>LOG:  database system is shut down
+</span><span class='line'>stopped waiting
+</span><span class='line'>pg_ctl: could not start server
+</span><span class='line'>Examine the log output.</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>编译ubuntu镜像</h2>
+
+<p>直接使用最新的trusty发布版镜像。由于低版本的可能会没有 linux/arm/v7 : <a href="https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty">https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty</a></p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~/docker-ubuntu# vi Dockerfile
+</span><span class='line'>FROM ubuntu:trusty
+</span><span class='line'>
+</span><span class='line'>docker build -t sameersbn/ubuntu:14.04.20170123 . 
+</span><span class='line'>docker tag sameersbn/ubuntu:14.04.20170123 sameersbn/ubuntu:14.04.20170711 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>编译postgres镜像</h2>
+
+<p>由于postgresql apt的库中没有armhf的deb，需要先手动编译好对应的deb。先运行一个容器，再里面编译好postgres。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+</span><span class='line'> && apt-get update
+</span><span class='line'>
+</span><span class='line'>root@7d55994af11e:/# apt-get build-dep dh-exec postgresql-common  pgdg-keyring     
+</span><span class='line'>root@7d55994af11e:/# apt-get source --compile dh-exec postgresql-common  pgdg-keyring   
+</span><span class='line'>
+</span><span class='line'>root@7d55994af11e:/# apt-get build-dep postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} dh-exec
+</span><span class='line'>root@7d55994af11e:/# apt-get source --compile postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>再测试安装一下这些deb：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+</span><span class='line'> && apt-get update
+</span><span class='line'>
+</span><span class='line'>apt-get install -y acl \
+</span><span class='line'>    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6
+</span><span class='line'>
+</span><span class='line'>dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb
+</span><span class='line'>
+</span><span class='line'>dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>修改Dockerfile，直接通过dpkg安装postgresql的deb：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~/docker-postgresql# less Dockerfile 
+</span><span class='line'>...
+</span><span class='line'>COPY deb/ /tmp/psql/
+</span><span class='line'>
+</span><span class='line'>RUN wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+</span><span class='line'> && apt-get update \
+</span><span class='line'> && DEBIAN_FRONTEND=noninteractive apt-get install -y acl \
+</span><span class='line'>    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6 \
+</span><span class='line'> && cd /tmp/psql \
+</span><span class='line'> && dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb \
+</span><span class='line'> && dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb \
+</span><span class='line'> && rm -rf /tmp/psql \
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'>root@raspberrypi:~/docker-postgresql# docker build -t sameersbn/postgresql:9.6-2 .</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>编译redmine镜像</h2>
+
+<p>redmine主要是缺少ruby2.3的包，跟上面的步骤类似。先编译出arm的ruby2.3，再编译镜像。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'>&& sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list
+</span><span class='line'>
+</span><span class='line'>apt-get build-dep ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
+</span><span class='line'>apt-get source --compile ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>root@raspberrypi:~/docker-redmine# vi Dockerfile 
+</span><span class='line'>...
+</span><span class='line'>COPY deb/ /tmp/ruby/
+</span><span class='line'>
+</span><span class='line'>RUN apt-key adv --keyserver keyserver.ubuntu.com --recv E1DD270288B4E6030699E45FA1715D88E1DF1F24 \
+</span><span class='line'> && echo "deb http://ppa.launchpad.net/git-core/ppa/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+</span><span class='line'> && apt-key adv --keyserver keyserver.ubuntu.com --recv 80F70E11F0F0D5F10CB20E62F5DA5F09C3173AA6 \
+</span><span class='line'> && echo "deb http://ppa.launchpad.net/brightbox/ruby-ng/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+</span><span class='line'> && apt-key adv --keyserver keyserver.ubuntu.com --recv 8B3981E7A6852F782CC4951600A6F0A3C300EE8C \
+</span><span class='line'> && echo "deb http://ppa.launchpad.net/nginx/stable/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+</span><span class='line'> && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+</span><span class='line'> && echo 'deb-src http://apt.postgresql.org/pub/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+</span><span class='line'> && apt-get update \
+</span><span class='line'> && DEBIAN_FRONTEND=noninteractive apt-get install -y supervisor logrotate nginx mysql-client postgresql-client \
+</span><span class='line'>      imagemagick subversion git cvs bzr mercurial darcs rsync   locales openssh-client \
+</span><span class='line'>      gcc g++ make patch pkg-config gettext-base   libc6-dev zlib1g-dev libxml2-dev \
+</span><span class='line'>      libmysqlclient18 libpq5 libyaml-0-2 libcurl3 libssl1.0.0 uuid-dev xz-utils \
+</span><span class='line'>      libxslt1.1 libffi6 zlib1g gsfonts \
+</span><span class='line'>      libgmpxx4ldbl libgmp-dev libtk8.5 libxft2 libxrender1 libxss1 x11-common libtcl8.5 rubygems-integration \
+</span><span class='line'> && dpkg -i /tmp/ruby/*.deb \
+</span><span class='line'> && rm -rf /tmp/ruby \
+</span><span class='line'> && update-locale LANG=C.UTF-8 LC_MESSAGES=POSIX \
+</span><span class='line'> && gem install --no-document --version '&lt; 2.0' bundler \
+</span><span class='line'> && rm -rf /var/lib/apt/lists/*
+</span><span class='line'>...
+</span><span class='line'>
+</span><span class='line'>root@raspberrypi:~/docker-redmine# docker build -t sameersbn/redmine:3.4.6 .</span></code></pre></td></tr></table></div></figure>
+
+
+<p>如果docker构建失败，可以通过以下两种方式来进行调试：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 1
+</span><span class='line'>docker commit $container-id image-id
+</span><span class='line'>docker run -ti $image-id bash
+</span><span class='line'>
+</span><span class='line'># 2 
+</span><span class='line'>失败也会有前一步骤的镜像已经提交，再次基础上检查后面的步骤
+</span><span class='line'>The last successful step is 2. It produced an image a3acfa4ab179. Now you start a container
+</span><span class='line'>docker run -it a3acfa4ab179 bash</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>结合原有数据进行迁移</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 备份
+</span><span class='line'>psql -U postgres -cC --if-exists -d redmine_production &gt;redmine.dump 
+</span><span class='line'>
+</span><span class='line'># 安装compose
+</span><span class='line'>root@raspberrypi:~/redmine/bin# python -m pip install --upgrade pip
+</span><span class='line'>root@raspberrypi:~/redmine/bin# pip install docker-compose
+</span><span class='line'>
+</span><span class='line'># 启动
+</span><span class='line'>root@raspberrypi:~/redmine/bin# docker-compose up -d 
+</span><span class='line'>
+</span><span class='line'># 数据库还原
+</span><span class='line'>docker cp redmine.dump e472d9ec3124:/var/lib/postgresql/
+</span><span class='line'>psql -U postgres &lt;redmine.dump
+</span><span class='line'>
+</span><span class='line'># redmine修复
+</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libmysqlclient-dev                                    
+</span><span class='line'>
+</span><span class='line'>https://stackoverflow.com/questions/13086073/rails-install-pg-cant-find-the-libpq-fe-h-header
+</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libpq-dev
+</span><span class='line'>https://stackoverflow.com/questions/38200015/package-magickcore-was-not-found-in-the-pkg-config-search-path
+</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libmagickwand-dev
+</span><span class='line'>
+</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# bundle install                    
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>后面就直接安装docker-compose.yml中的端口映射配置访问即可。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -2567,687 +2911,6 @@ C:\Android\Sdk</p>
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2018/10/20/jcef-build-on-win64/">编译JCEF - Win64</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2018-10-20T10:47:59+08:00" pubdate data-updated="true">Sat 2018-10-20 10:47</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><h2>参考</h2>
-
-<ul>
-<li><a href="https://bitbucket.org/chromiumembedded/java-cef/wiki/BranchesAndBuilding">https://bitbucket.org/chromiumembedded/java-cef/wiki/BranchesAndBuilding</a></li>
-<li><a href="https://bitbucket.org/Johness/java-cef/wiki/%E7%BC%96%E8%AF%91V49%E4%B8%BAWindows%E5%B9%B3%E5%8F%B0">编译V49为Windows平台</a> gif图片，过程很清晰。就是有点旧！</li>
-<li><a href="https://my.oschina.net/penngo/blog/1538071">https://my.oschina.net/penngo/blog/1538071</a> 先下载 chromium-clang-format，最后创建项目的目录结构和添加DLL库路径</li>
-<li><a href="http://wzdark.github.io/personalInfo/2015/12/02/jcef.html">http://wzdark.github.io/personalInfo/2015/12/02/jcef.html</a></li>
-<li><a href="https://medium.com/@daniel.bischoff/integrating-chromium-as-a-web-renderer-in-a-java-application-with-jcef-72f67a677db6">https://medium.com/@daniel.bischoff/integrating-chromium-as-a-web-renderer-in-a-java-application-with-jcef-72f67a677db6</a> 创建项目，以及一些参数</li>
-</ul>
-
-
-<h2>简单过程摘录</h2>
-
-<p>注意点：</p>
-
-<ol>
-<li>依赖：git/python2.7/java8/cmake3/visual studio 2017（这是我编译的环境，具体的版本要求请查看官网文档）</li>
-<li>需要用git下载源码</li>
-<li>先把 <a href="https://storage.googleapis.com/chromium-clang-format/6ddedd571c56b8c184f30a3c1fc36984e8c10ccd">chromium-clang-format</a> 下载放到 tools 目录下面</li>
-</ol>
-
-
-<p>步骤：</p>
-
-<ol>
-<li>cmake-3.12.3-win64-x64.zip，配置环境变量PATH</li>
-<li>安装版python-2.7.15.amd64.msi、同时配置把python.exe加入到PATH</li>
-<li>把 PortableGit 加入PATH： <code>set PATH=D:\PortableGit\bin;%PATH%</code></li>
-<li>使用 VS 的命令行运行</li>
-<li>命令：</li>
-</ol>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>F:\wv&gt;git clone https://bitbucket.org/chromiumembedded/java-cef.git src
-</span><span class='line'>
-</span><span class='line'>F:\wv\src&gt;mkdir jcef_build && cd jcef_build
-</span><span class='line'>
-</span><span class='line'>F:\wv\src\jcef_build&gt;cmake -G "Visual Studio 14 Win64" ..
-</span><span class='line'>用vs编译本地代码：
-</span><span class='line'># Open jcef.sln in Visual Studio
-</span><span class='line'># - Select Build &gt; Configuration Manager and change the "Active solution configuration" to "Release"
-</span><span class='line'># - Select Build &gt; Build Solution.
-</span><span class='line'>
-</span><span class='line'>cd ..\tools
-</span><span class='line'>compile.bat win64
-</span><span class='line'>
-</span><span class='line'>run.bat win64 Release detailed
-</span><span class='line'>
-</span><span class='line'>F:\wv\src\tools&gt;make_distrib.bat win64
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>生成的运行包放在 binary_distrib 目录下。查看下 <code>binary_distrib/win64/run.bat</code> 了解运行配置，同时参考上面文章中提到的项目的创建方法。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>java -cp "./bin;./bin/*" -Djava.library.path=./bin/lib/win64 tests.detailed.MainFrame</span></code></pre></td></tr></table></div></figure>
-
-
-<p>过程截图：</p>
-
-<p><img src="/images/blogs/jcef/vs-cmd.png" alt="" /></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>**********************************************************************
-</span><span class='line'>** Visual Studio 2017 Developer Command Prompt v15.7.4
-</span><span class='line'>** Copyright (c) 2017 Microsoft Corporation
-</span><span class='line'>**********************************************************************
-</span><span class='line'>[vcvarsall.bat] Environment initialized for: 'x64'
-</span><span class='line'>
-</span><span class='line'>C:\Program Files (x86)\Microsoft Visual Studio\2017\Community&gt;F:
-</span><span class='line'>
-</span><span class='line'>F:\&gt;cd wv
-</span><span class='line'>F:\wv&gt;set PATH=D:\PortableGit\bin;%PATH%
-</span><span class='line'>F:\wv&gt;git clone https://bitbucket.org/chromiumembedded/java-cef.git src
-</span><span class='line'>
-</span><span class='line'>F:\wv\src&gt;mkdir jcef_build && cd jcef_build
-</span><span class='line'>
-</span><span class='line'>F:\wv\src\jcef_build&gt;cmake -G "Visual Studio 14 Win64" ..
-</span><span class='line'>-- Selecting Windows SDK version  to target Windows 10.0.16299.
-</span><span class='line'>-- The C compiler identification is MSVC 19.0.24234.1
-</span><span class='line'>-- The CXX compiler identification is MSVC 19.0.24234.1
-</span><span class='line'>-- Check for working C compiler: C:/Program Files (x86)/Microsoft Visual Studio 14.0/VC/bin/x86_amd64/cl.exe
-</span><span class='line'>-- Check for working C compiler: C:/Program Files (x86)/Microsoft Visual Studio 14.0/VC/bin/x86_amd64/cl.exe -- works
-</span><span class='line'>-- Detecting C compiler ABI info
-</span><span class='line'>-- Detecting C compiler ABI info - done
-</span><span class='line'>-- Detecting C compile features
-</span><span class='line'>-- Detecting C compile features - done
-</span><span class='line'>-- Check for working CXX compiler: C:/Program Files (x86)/Microsoft Visual Studio 14.0/VC/bin/x86_amd64/cl.exe
-</span><span class='line'>-- Check for working CXX compiler: C:/Program Files (x86)/Microsoft Visual Studio 14.0/VC/bin/x86_amd64/cl.exe -- works
-</span><span class='line'>-- Detecting CXX compiler ABI info
-</span><span class='line'>-- Detecting CXX compiler ABI info - done
-</span><span class='line'>-- Detecting CXX compile features
-</span><span class='line'>-- Detecting CXX compile features - done
-</span><span class='line'>-- Downloading F:/wv/src/third_party/cef/cef_binary_3.3497.1831.g461fa1f_windows64.tar.bz2.sha1...
-</span><span class='line'>-- Downloading F:/wv/src/third_party/cef/cef_binary_3.3497.1831.g461fa1f_windows64.tar.bz2...
-</span><span class='line'>-- [download 0% complete]
-</span><span class='line'>-- [download 1% complete]
-</span><span class='line'>。。。
-</span><span class='line'>-- [download 98% complete]
-</span><span class='line'>-- [download 99% complete]
-</span><span class='line'>-- [download 100% complete]
-</span><span class='line'>-- Extracting F:/wv/src/third_party/cef/cef_binary_3.3497.1831.g461fa1f_windows64.tar.bz2...
-</span><span class='line'>CMake Warning (dev) at CMakeLists.txt:153 (find_package):
-</span><span class='line'>  Policy CMP0074 is not set: find_package uses &lt;PackageName&gt;_ROOT variables.
-</span><span class='line'>  Run "cmake --help-policy CMP0074" for policy details.  Use the cmake_policy
-</span><span class='line'>  command to set the policy and suppress this warning.
-</span><span class='line'>
-</span><span class='line'>  CMake variable CEF_ROOT is set to:
-</span><span class='line'>
-</span><span class='line'>    F:/wv/src/third_party/cef/cef_binary_3.3497.1831.g461fa1f_windows64
-</span><span class='line'>
-</span><span class='line'>  For compatibility, CMake is ignoring the variable.
-</span><span class='line'>This warning is for project developers.  Use -Wno-dev to suppress it.
-</span><span class='line'>
-</span><span class='line'>-- Found PythonInterp: C:/Python27/python.exe (found version "2.7.15")
-</span><span class='line'>-- Found JNI: C:/Java/jdk/lib/jawt.lib (Required is at least version "1.7")
-</span><span class='line'>-- Generating native/jcef_version.h file...
-</span><span class='line'>File native/jcef_version.h updated.
-</span><span class='line'>-- Downloading clang-format from Google Storage...
-</span><span class='line'>0&gt; Failed to fetch file gs://chromium-clang-format/6ddedd571c56b8c184f30a3c1fc36984e8c10ccd for tools/buildtools/win/clang-format.exe, skipping. [Err: F:\wv\src\tools\buildtools\external_bin\gsutil\gsutil_4.15\gsutil\third_party\boto\boto\pyami\config.py:71: UserWarning: Unable to load AWS_CREDENTIAL_FILE ()
-</span><span class='line'>  warnings.warn('Unable to load AWS_CREDENTIAL_FILE (%s)' % full_path)
-</span><span class='line'>Failure: Unable to find the server at www.googleapis.com.
-</span><span class='line'>]
-</span><span class='line'>Downloading 1 files took 3153.963000 second(s)
-</span><span class='line'>Failed to fetch file gs://chromium-clang-format/6ddedd571c56b8c184f30a3c1fc36984e8c10ccd for tools/buildtools/win/clang-format.exe. [Err: F:\wv\src\tools\buildtools\external_bin\gsutil\gsutil_4.15\gsutil\third_party\boto\boto\pyami\config.py:71: UserWarning: Unable to load AWS_CREDENTIAL_FILE ()
-</span><span class='line'>  warnings.warn('Unable to load AWS_CREDENTIAL_FILE (%s)' % full_path)
-</span><span class='line'>Failure: Unable to find the server at www.googleapis.com.
-</span><span class='line'>]
-</span><span class='line'>CMake Error at CMakeLists.txt:265 (message):
-</span><span class='line'>  Execution failed with unexpected result: 1
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>-- Configuring incomplete, errors occurred!
-</span><span class='line'>See also "F:/wv/src/jcef_build/CMakeFiles/CMakeOutput.log".
-</span><span class='line'>
-</span><span class='line'>&lt;&lt;== https://my.oschina.net/penngo/blog/1538071
-</span><span class='line'>&lt;&lt;&lt;&lt;----https://storage.googleapis.com/chromium-clang-format/6ddedd571c56b8c184f30a3c1fc36984e8c10ccd
-</span><span class='line'>~~~~~~
-</span><span class='line'>
-</span><span class='line'>F:\wv\src\jcef_build&gt;cmake -G "Visual Studio 14 Win64" ..
-</span><span class='line'>-- Selecting Windows SDK version  to target Windows 10.0.16299.
-</span><span class='line'>CMake Warning (dev) at CMakeLists.txt:153 (find_package):
-</span><span class='line'>  Policy CMP0074 is not set: find_package uses &lt;PackageName&gt;_ROOT variables.
-</span><span class='line'>  Run "cmake --help-policy CMP0074" for policy details.  Use the cmake_policy
-</span><span class='line'>  command to set the policy and suppress this warning.
-</span><span class='line'>
-</span><span class='line'>  CMake variable CEF_ROOT is set to:
-</span><span class='line'>
-</span><span class='line'>    F:/wv/src/third_party/cef/cef_binary_3.3497.1831.g461fa1f_windows64
-</span><span class='line'>
-</span><span class='line'>  For compatibility, CMake is ignoring the variable.
-</span><span class='line'>This warning is for project developers.  Use -Wno-dev to suppress it.
-</span><span class='line'>
-</span><span class='line'>-- Generating native/jcef_version.h file...
-</span><span class='line'>File native/jcef_version.h is already up to date.
-</span><span class='line'>-- Downloading clang-format from Google Storage...
-</span><span class='line'>0&gt; File tools/buildtools/win/clang-format.exe exists and SHA1 matches. Skipping.
-</span><span class='line'>Success!
-</span><span class='line'>Downloading 1 files took 0.006000 second(s)
-</span><span class='line'>-- *** CEF CONFIGURATION SETTINGS ***
-</span><span class='line'>-- Generator:                    Visual Studio 14 2015 Win64
-</span><span class='line'>-- Platform:                     Windows
-</span><span class='line'>-- Project architecture:         x86_64
-</span><span class='line'>-- Binary distribution root:     F:/wv/src/third_party/cef/cef_binary_3.3497.1831.g461fa1f_windows64
-</span><span class='line'>-- CEF Windows sandbox:          ON
-</span><span class='line'>-- Visual Studio ATL support:    ON
-</span><span class='line'>-- Standard libraries:           comctl32.lib;rpcrt4.lib;shlwapi.lib;ws2_32.lib;dbghelp.lib;psapi.lib;version.lib;winmm.lib
-</span><span class='line'>-- Compile defines:              __STDC_CONSTANT_MACROS;__STDC_FORMAT_MACROS;WIN32;_WIN32;_WINDOWS;UNICODE;_UNICODE;WINVER=0x0601;_WIN32_WINNT=0x601;NOMINMAX;WIN32_LEAN_AND_MEAN;_HAS_EXCEPTIONS=0;PSAPI_VERSION=1;CEF_USE_SANDBOX;CEF_USE_ATL
-</span><span class='line'>-- Compile defines (Debug):
-</span><span class='line'>-- Compile defines (Release):    NDEBUG;_NDEBUG
-</span><span class='line'>-- C compile flags:              /MP;/Gy;/GR-;/W4;/WX;/wd4100;/wd4127;/wd4244;/wd4481;/wd4512;/wd4701;/wd4702;/wd4996;/Zi
-</span><span class='line'>-- C compile flags (Debug):      /MTd;/RTC1;/Od
-</span><span class='line'>-- C compile flags (Release):    /MT;/O2;/Ob2;/GF
-</span><span class='line'>-- C++ compile flags:            /MP;/Gy;/GR-;/W4;/WX;/wd4100;/wd4127;/wd4244;/wd4481;/wd4512;/wd4701;/wd4702;/wd4996;/Zi
-</span><span class='line'>-- C++ compile flags (Debug):    /MTd;/RTC1;/Od
-</span><span class='line'>-- C++ compile flags (Release):  /MT;/O2;/Ob2;/GF
-</span><span class='line'>-- Exe link flags:                /MANIFEST:NO;/LARGEADDRESSAWARE
-</span><span class='line'>-- Exe link flags (Debug):       /DEBUG
-</span><span class='line'>-- Exe link flags (Release):
-</span><span class='line'>-- Shared link flags:
-</span><span class='line'>-- Shared link flags (Debug):    /DEBUG
-</span><span class='line'>-- Shared link flags (Release):
-</span><span class='line'>-- CEF Binary files:             chrome_elf.dll;d3dcompiler_43.dll;d3dcompiler_47.dll;libcef.dll;libEGL.dll;libGLESv2.dll;natives_blob.bin;snapshot_blob.bin;v8_context_snapshot.bin;swiftshader
-</span><span class='line'>-- CEF Resource files:           cef.pak;cef_100_percent.pak;cef_200_percent.pak;cef_extensions.pak;devtools_resources.pak;icudtl.dat;locales
-</span><span class='line'>-- *** JCEF CONFIGURATION SETTINGS ***
-</span><span class='line'>-- Python executable:            C:/Python27/python.exe
-</span><span class='line'>-- Java directory:               C:/Java/jdk
-</span><span class='line'>-- JNI libraries:                C:/Java/jdk/lib/jawt.lib;C:/Java/jdk/lib/jvm.lib
-</span><span class='line'>-- JNI include directories:      C:/Java/jdk/include;C:/Java/jdk/include/win32;C:/Java/jdk/include
-</span><span class='line'>-- Configuring done
-</span><span class='line'>-- Generating done
-</span><span class='line'>-- Build files have been written to: F:/wv/src/jcef_build
-</span><span class='line'>
-</span><span class='line'>F:\wv\src\jcef_build&gt;
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p><img src="/images/blogs/jcef/vs2017.png" alt="" /></p>
-
-<p><img src="/images/blogs/jcef/compile.png" alt="" /></p>
-
-<p><img src="/images/blogs/jcef/run.png" alt="" /></p>
-
-<p><img src="/images/blogs/jcef/run-windows.png" alt="" /></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-<span class='line-number'>49</span>
-<span class='line-number'>50</span>
-<span class='line-number'>51</span>
-<span class='line-number'>52</span>
-<span class='line-number'>53</span>
-<span class='line-number'>54</span>
-<span class='line-number'>55</span>
-<span class='line-number'>56</span>
-<span class='line-number'>57</span>
-<span class='line-number'>58</span>
-<span class='line-number'>59</span>
-<span class='line-number'>60</span>
-<span class='line-number'>61</span>
-<span class='line-number'>62</span>
-<span class='line-number'>63</span>
-<span class='line-number'>64</span>
-<span class='line-number'>65</span>
-<span class='line-number'>66</span>
-<span class='line-number'>67</span>
-<span class='line-number'>68</span>
-<span class='line-number'>69</span>
-<span class='line-number'>70</span>
-<span class='line-number'>71</span>
-<span class='line-number'>72</span>
-<span class='line-number'>73</span>
-<span class='line-number'>74</span>
-<span class='line-number'>75</span>
-<span class='line-number'>76</span>
-<span class='line-number'>77</span>
-<span class='line-number'>78</span>
-<span class='line-number'>79</span>
-<span class='line-number'>80</span>
-<span class='line-number'>81</span>
-<span class='line-number'>82</span>
-<span class='line-number'>83</span>
-<span class='line-number'>84</span>
-<span class='line-number'>85</span>
-<span class='line-number'>86</span>
-<span class='line-number'>87</span>
-<span class='line-number'>88</span>
-<span class='line-number'>89</span>
-<span class='line-number'>90</span>
-<span class='line-number'>91</span>
-<span class='line-number'>92</span>
-<span class='line-number'>93</span>
-<span class='line-number'>94</span>
-<span class='line-number'>95</span>
-<span class='line-number'>96</span>
-<span class='line-number'>97</span>
-<span class='line-number'>98</span>
-<span class='line-number'>99</span>
-<span class='line-number'>100</span>
-<span class='line-number'>101</span>
-<span class='line-number'>102</span>
-<span class='line-number'>103</span>
-<span class='line-number'>104</span>
-<span class='line-number'>105</span>
-<span class='line-number'>106</span>
-<span class='line-number'>107</span>
-<span class='line-number'>108</span>
-<span class='line-number'>109</span>
-<span class='line-number'>110</span>
-<span class='line-number'>111</span>
-<span class='line-number'>112</span>
-<span class='line-number'>113</span>
-<span class='line-number'>114</span>
-<span class='line-number'>115</span>
-<span class='line-number'>116</span>
-<span class='line-number'>117</span>
-<span class='line-number'>118</span>
-<span class='line-number'>119</span>
-<span class='line-number'>120</span>
-<span class='line-number'>121</span>
-<span class='line-number'>122</span>
-<span class='line-number'>123</span>
-<span class='line-number'>124</span>
-<span class='line-number'>125</span>
-<span class='line-number'>126</span>
-<span class='line-number'>127</span>
-<span class='line-number'>128</span>
-<span class='line-number'>129</span>
-<span class='line-number'>130</span>
-<span class='line-number'>131</span>
-<span class='line-number'>132</span>
-<span class='line-number'>133</span>
-<span class='line-number'>134</span>
-<span class='line-number'>135</span>
-<span class='line-number'>136</span>
-<span class='line-number'>137</span>
-<span class='line-number'>138</span>
-<span class='line-number'>139</span>
-<span class='line-number'>140</span>
-<span class='line-number'>141</span>
-<span class='line-number'>142</span>
-<span class='line-number'>143</span>
-<span class='line-number'>144</span>
-<span class='line-number'>145</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>F:\wv\src\tools&gt;make_distrib.bat win64
-</span><span class='line'>正在加载程序包org.cef.browser的源文件...
-</span><span class='line'>正在加载程序包org.cef.browser.mac的源文件...
-</span><span class='line'>正在加载程序包org.cef.callback的源文件...
-</span><span class='line'>正在加载程序包org.cef的源文件...
-</span><span class='line'>正在加载程序包org.cef.handler的源文件...
-</span><span class='line'>正在加载程序包org.cef.misc的源文件...
-</span><span class='line'>正在加载程序包org.cef.network的源文件...
-</span><span class='line'>正在构造 Javadoc 信息...
-</span><span class='line'>.\org\cef\browser\CefRenderer.java:11: 错误: 程序包com.jogamp.opengl不存在
-</span><span class='line'>import com.jogamp.opengl.GL2;
-</span><span class='line'>                        ^
-</span><span class='line'>.\org\cef\browser\CefRenderer.java:15: 错误: 找不到符号
-</span><span class='line'>    private GL2 initialized_context_ = null;
-</span><span class='line'>            ^
-</span><span class='line'>  符号:   类 GL2
-</span><span class='line'>  位置: 类 CefRenderer
-</span><span class='line'>.\org\cef\browser\CefRenderer.java:34: 错误: 找不到符号
-</span><span class='line'>    protected void initialize(GL2 gl2) {
-</span><span class='line'>                              ^
-</span><span class='line'>  符号:   类 GL2
-</span><span class='line'>  位置: 类 CefRenderer
-</span><span class='line'>.\org\cef\browser\CefRenderer.java:64: 错误: 找不到符号
-</span><span class='line'>    protected void cleanup(GL2 gl2) {
-</span><span class='line'>                           ^
-</span><span class='line'>  符号:   类 GL2
-</span><span class='line'>  位置: 类 CefRenderer
-</span><span class='line'>.\org\cef\browser\CefRenderer.java:69: 错误: 找不到符号
-</span><span class='line'>    protected void render(GL2 gl2) {
-</span><span class='line'>                          ^
-</span><span class='line'>  符号:   类 GL2
-</span><span class='line'>  位置: 类 CefRenderer
-</span><span class='line'>.\org\cef\browser\CefRenderer.java:161: 错误: 找不到符号
-</span><span class='line'>    protected void onPaint(GL2 gl2, boolean popup, Rectangle[] dirtyRects, ByteBuffer buffer,
-</span><span class='line'>                           ^
-</span><span class='line'>  符号:   类 GL2
-</span><span class='line'>  位置: 类 CefRenderer
-</span><span class='line'>.\org\cef\browser\CefBrowserOsr.java:23: 错误: 程序包com.jogamp.nativewindow不存在
-</span><span class='line'>import com.jogamp.nativewindow.NativeSurface;
-</span><span class='line'>                              ^
-</span><span class='line'>.\org\cef\browser\CefBrowserOsr.java:24: 错误: 程序包com.jogamp.opengl.awt不存在
-</span><span class='line'>import com.jogamp.opengl.awt.GLCanvas;
-</span><span class='line'>                            ^
-</span><span class='line'>.\org\cef\browser\CefBrowserOsr.java:25: 错误: 程序包com.jogamp.opengl不存在
-</span><span class='line'>import com.jogamp.opengl.GLAutoDrawable;
-</span><span class='line'>                        ^
-</span><span class='line'>.\org\cef\browser\CefBrowserOsr.java:26: 错误: 程序包com.jogamp.opengl不存在
-</span><span class='line'>import com.jogamp.opengl.GLEventListener;
-</span><span class='line'>                        ^
-</span><span class='line'>.\org\cef\browser\CefBrowserOsr.java:27: 错误: 程序包com.jogamp.opengl不存在
-</span><span class='line'>import com.jogamp.opengl.GLProfile;
-</span><span class='line'>                        ^
-</span><span class='line'>.\org\cef\browser\CefBrowserOsr.java:28: 错误: 程序包com.jogamp.opengl不存在
-</span><span class='line'>import com.jogamp.opengl.GLCapabilities;
-</span><span class='line'>                        ^
-</span><span class='line'>.\org\cef\browser\CefBrowserOsr.java:44: 错误: 找不到符号
-</span><span class='line'>    private GLCanvas canvas_;
-</span><span class='line'>            ^
-</span><span class='line'>  符号:   类 GLCanvas
-</span><span class='line'>  位置: 类 CefBrowserOsr
-</span><span class='line'>.\org\cef\browser\mac\CefBrowserWindowMac.java:9: 错误: 程序包sun.lwawt不存在
-</span><span class='line'>import sun.lwawt.LWComponentPeer;
-</span><span class='line'>                ^
-</span><span class='line'>.\org\cef\browser\mac\CefBrowserWindowMac.java:10: 错误: 程序包sun.lwawt不存在
-</span><span class='line'>import sun.lwawt.PlatformWindow;
-</span><span class='line'>                ^
-</span><span class='line'>.\org\cef\browser\mac\CefBrowserWindowMac.java:11: 错误: 程序包sun.lwawt.macosx不存在
-</span><span class='line'>import sun.lwawt.macosx.CFRetainedResource;
-</span><span class='line'>                       ^
-</span><span class='line'>.\org\cef\browser\mac\CefBrowserWindowMac.java:12: 错误: 程序包sun.lwawt.macosx不存在
-</span><span class='line'>import sun.lwawt.macosx.CPlatformWindow;
-</span><span class='line'>                       ^
-</span><span class='line'>标准 Doclet 版本 1.8.0_181
-</span><span class='line'>正在构建所有程序包和类的树...
-</span><span class='line'>正在生成..\out\docs\org\cef\browser\CefBrowser.html...
-</span><span class='line'>正在生成..\out\docs\org\cef\browser\CefBrowserFactory.html...
-</span><span class='line'>正在生成..\out\docs\org\cef\browser\CefBrowserWindow.html...
-</span><span class='line'>正在生成..\out\docs\org\cef\browser\CefFrame.html...
-</span><span class='line'>正在生成..\out\docs\org\cef\browser\CefMessageRouter.html...
-</span><span class='line'>.\org\cef\browser\CefMessageRouter.java:185: 警告 - @return 标记没有参数。
-</span><span class='line'>.\org\cef\browser\CefMessageRouter.java:185: 警告 - @param argument "config" 不是参数名称。
-</span><span class='line'>正在生成..\out\docs\org\cef\browser\CefMessageRouter.CefMessageRouterConfig.html...
-</span><span class='line'>正在生成..\out\docs\org\cef\browser\CefRequestContext.html...
-</span><span class='line'>。。。
-</span><span class='line'>正在生成..\out\docs\constant-values.html...
-</span><span class='line'>正在构建所有程序包和类的索引...
-</span><span class='line'>正在生成..\out\docs\overview-tree.html...
-</span><span class='line'>正在生成..\out\docs\index-all.html...
-</span><span class='line'>正在构建所有类的索引...
-</span><span class='line'>正在生成..\out\docs\allclasses-frame.html...
-</span><span class='line'>正在生成..\out\docs\allclasses-noframe.html...
-</span><span class='line'>正在生成..\out\docs\index.html...
-</span><span class='line'>正在生成..\out\docs\overview-summary.html...
-</span><span class='line'>正在生成..\out\docs\help-doc.html...
-</span><span class='line'>29 个警告
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>F:\wv\src\java\tests\detailed\BrowserFrame.java -&gt; F:\wv\src\binary_distrib\win64\bin\tests\detailed\BrowserFrame.java
-</span><span class='line'>F:\wv\src\java\tests\detailed\MainFrame.java -&gt; F:\wv\src\binary_distrib\win64\bin\tests\detailed\MainFrame.java
-</span><span class='line'>。。。
-</span><span class='line'>F:\wv\src\java\tests\detailed\ui\StatusPanel.java -&gt; F:\wv\src\binary_distrib\win64\bin\tests\detailed\ui\StatusPanel.java
-</span><span class='line'>F:\wv\src\java\tests\simple\MainFrame.java -&gt; F:\wv\src\binary_distrib\win64\bin\tests\simple\MainFrame.java
-</span><span class='line'>复制了 34 个文件
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>系统找不到指定的文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>F:\wv\src\jcef_build\native\Release\cef.pak -&gt; F:\wv\src\binary_distrib\win64\bin\lib\win64\cef.pak
-</span><span class='line'>F:\wv\src\jcef_build\native\Release\cef_100_percent.pak -&gt; F:\wv\src\binary_distrib\win64\bin\lib\win64\cef_100_percent.pak
-</span><span class='line'>。。。
-</span><span class='line'>F:\wv\src\jcef_build\native\Release\locales\zh-CN.pak -&gt; F:\wv\src\binary_distrib\win64\bin\lib\win64\locales\zh-CN.pak
-</span><span class='line'>F:\wv\src\jcef_build\native\Release\locales\zh-TW.pak -&gt; F:\wv\src\binary_distrib\win64\bin\lib\win64\locales\zh-TW.pak
-</span><span class='line'>复制了 58 个文件
-</span><span class='line'>F:\wv\src\jcef_build\native\Release\swiftshader\libEGL.dll -&gt; F:\wv\src\binary_distrib\win64\bin\lib\win64\swiftshader\libEGL.dll
-</span><span class='line'>F:\wv\src\jcef_build\native\Release\swiftshader\libGLESv2.dll -&gt; F:\wv\src\binary_distrib\win64\bin\lib\win64\swiftshader\libGLESv2.dll
-</span><span class='line'>复制了 2 个文件
-</span><span class='line'>F:\wv\src\out\docs\allclasses-frame.html -&gt; F:\wv\src\binary_distrib\win64\docs\allclasses-frame.html
-</span><span class='line'>F:\wv\src\out\docs\allclasses-noframe.html -&gt; F:\wv\src\binary_distrib\win64\docs\allclasses-noframe.html
-</span><span class='line'>。。。
-</span><span class='line'>F:\wv\src\out\docs\org\cef\network\package-summary.html -&gt; F:\wv\src\binary_distrib\win64\docs\org\cef\network\package-summary.html
-</span><span class='line'>F:\wv\src\out\docs\org\cef\network\package-tree.html -&gt; F:\wv\src\binary_distrib\win64\docs\org\cef\network\package-tree.html
-</span><span class='line'>复制了 151 个文件
-</span><span class='line'>Creating README.TXT file.
-</span><span class='line'>已复制         1 个文件。
-</span><span class='line'>F:\wv\src\third_party\jogamp\gluegen.LICENSE.txt -&gt; F:\wv\src\binary_distrib\win64\gluegen.LICENSE.txt
-</span><span class='line'>F:\wv\src\third_party\jogamp\jogl.LICENSE.txt -&gt; F:\wv\src\binary_distrib\win64\jogl.LICENSE.txt
-</span><span class='line'>复制了 2 个文件
-</span><span class='line'>F:\wv\src\tools\distrib\win64\compile.bat -&gt; F:\wv\src\binary_distrib\win64\compile.bat
-</span><span class='line'>F:\wv\src\tools\distrib\win64\run.bat -&gt; F:\wv\src\binary_distrib\win64\run.bat
-</span><span class='line'>复制了 2 个文件
-</span><span class='line'>
-</span><span class='line'>F:\wv\src\tools&gt;</span></code></pre></td></tr></table></div></figure>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/6">&larr; Older</a>
@@ -3270,19 +2933,23 @@ C:\Android\Sdk</p>
 	<ul role="list">
 		
 			<li class="post">
-				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+				<a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+				<a href="/blog/2023/03/25/reinstall-raspberry2/">重新折腾raspberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+				<a href="/blog/2023/03/25/mirror-request/">请求复制/镜像</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+				<a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2021/12/08/recommand-blogs/">认真的博客</a>
 			</li>
 		
 			<li class="post">
@@ -3290,47 +2957,15 @@ C:\Android\Sdk</p>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+				<a href="/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+				<a href="/blog/2015/09/13/review-linux-101-hacks/">【linux 101 Hacks】读后感</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
 			</li>
 		
 	</ul>
@@ -3338,6 +2973,10 @@ C:\Android\Sdk</p>
 <section>
   <h1>Recent Posts</h1>
   <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
+      </li>
     
       <li class="post">
         <a href="/blog/2023/04/09/dingtalk-with-openai/">钉钉群机器人对接ChatGPT</a>
@@ -3365,10 +3004,6 @@ C:\Android\Sdk</p>
     
       <li class="post">
         <a href="/blog/2023/02/01/register-openai/">注册OpenAI</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
       </li>
     
   </ul>
@@ -3401,7 +3036,7 @@ C:\Android\Sdk</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (5) 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3442,6 +3077,10 @@ C:\Android\Sdk</p>
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/git/'>git</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/good-series-1/'>good-series-1</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3533,7 +3172,7 @@ C:\Android\Sdk</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (16) 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (18) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3541,11 +3180,19 @@ C:\Android\Sdk</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redmine/'>redmine</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/respberry2/'>respberry2</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/shell/'>shell</a> (3) 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3565,7 +3212,7 @@ C:\Android\Sdk</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (70) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (71) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -3590,7 +3237,7 @@ C:\Android\Sdk</p>
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (235)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (236)</li>
 	</ul>
 	
 </section>

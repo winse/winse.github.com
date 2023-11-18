@@ -9,7 +9,8 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="最近换了个小米的路由，想着登录ssh，能在路由上跑一些小的定时任务。但是无奈，绑定不通过，那就直接刷机了。 一开始是按照csdn上的文章刷opewrt的，但是都不成功，最后换成 老毛子Padavan 了。 参考 小米路由器R4A(千兆版)固件刷opewrt、刷官方固件 &hellip;">
+  <meta name="description" content="容器中的应用数据得保存下来，使用local/hostPath可以临时用用，还是得有一个共享的存储。 https://kubernetes.io/zh/docs/concepts/storage/volumes/#volume-types
+https://kubernetes.io/zh/docs/ &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +86,1250 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2022/04/14/k8s-nfs/">k8s共享存储使用NFS</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2022-04-14T01:23:14+08:00" pubdate data-updated="true">Thu 2022-04-14 01:23</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>容器中的应用数据得保存下来，使用local/hostPath可以临时用用，还是得有一个共享的存储。</p>
+
+<ul>
+<li><a href="https://kubernetes.io/zh/docs/concepts/storage/volumes/#volume-types">https://kubernetes.io/zh/docs/concepts/storage/volumes/#volume-types</a></li>
+<li><a href="https://kubernetes.io/zh/docs/concepts/storage/_print/#types-of-persistent-volumes">https://kubernetes.io/zh/docs/concepts/storage/_print/#types-of-persistent-volumes</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#provisioner">https://kubernetes.io/docs/concepts/storage/storage-classes/#provisioner</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/storage/volumes/#hostpath">https://kubernetes.io/docs/concepts/storage/volumes/#hostpath</a></li>
+<li><a href="https://kubernetes.io/zh/docs/concepts/storage/volumes/#local">https://kubernetes.io/zh/docs/concepts/storage/volumes/#local</a></li>
+<li><a href="https://kubernetes.io/zh/docs/concepts/storage/volumes/#cephfs">https://kubernetes.io/zh/docs/concepts/storage/volumes/#cephfs</a></li>
+</ul>
+
+
+<p>先使用最简单的NFS分区/卷。</p>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv</a></li>
+</ul>
+
+
+<h2>安装NFS server on aws ec2</h2>
+
+<ul>
+<li><a href="https://segmentfault.com/a/1190000024512057">https://segmentfault.com/a/1190000024512057</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#所有node节点安装nfs客户端
+</span><span class='line'>#yum -y install nfs-utils
+</span><span class='line'>#systemctl start nfs && systemctl enable nfs
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo yum install nfs-utils 
+</span><span class='line'>Loaded plugins: langpacks, priorities, update-motd
+</span><span class='line'>amzn2-core                                                                                                                     | 3.7 kB  00:00:00     
+</span><span class='line'>Package 1:nfs-utils-1.3.0-0.54.amzn2.0.2.x86_64 already installed and latest version
+</span><span class='line'>Nothing to do
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo mkdir /backup
+</span><span class='line'>[ec2-user@k8s ~]$ sudo chmod -R 755 /backup
+</span><span class='line'>[ec2-user@k8s ~]$ sudo chown nfsnobody:nfsnobody /backup
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo vi /etc/exports
+</span><span class='line'>[ec2-user@k8s ~]$ cat /etc/exports    
+</span><span class='line'>/backup 192.168.191.0/24(rw,sync,no_root_squash,no_all_squash)
+</span><span class='line'>
+</span><span class='line'># /k8s-fs *(rw,sync,no_root_squash,no_all_squash)
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo service nfs-server restart 
+</span><span class='line'>Redirecting to /bin/systemctl restart nfs-server.service
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span><span class='line'>[ec2-user@k8s ~]$ sudo exportfs
+</span><span class='line'>/backup         192.168.191.0/24
+</span><span class='line'>[ec2-user@k8s ~]$ sudo exportfs -arv 
+</span><span class='line'>exporting 192.168.191.0/24:/backup
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ rpcinfo -p localhost
+</span><span class='line'>   program vers proto   port  service
+</span><span class='line'>    100000    4   tcp    111  portmapper
+</span><span class='line'>    100000    3   tcp    111  portmapper
+</span><span class='line'>    100000    2   tcp    111  portmapper
+</span><span class='line'>    100000    4   udp    111  portmapper
+</span><span class='line'>    100000    3   udp    111  portmapper
+</span><span class='line'>    100000    2   udp    111  portmapper
+</span><span class='line'>    100024    1   udp  56847  status
+</span><span class='line'>    100024    1   tcp  60971  status
+</span><span class='line'>    100005    1   udp  20048  mountd
+</span><span class='line'>    100005    1   tcp  20048  mountd
+</span><span class='line'>    100005    2   udp  20048  mountd
+</span><span class='line'>    100005    2   tcp  20048  mountd
+</span><span class='line'>    100005    3   udp  20048  mountd
+</span><span class='line'>    100005    3   tcp  20048  mountd
+</span><span class='line'>    100003    3   tcp   2049  nfs
+</span><span class='line'>    100003    4   tcp   2049  nfs
+</span><span class='line'>    100227    3   tcp   2049  nfs_acl
+</span><span class='line'>    100003    3   udp   2049  nfs
+</span><span class='line'>    100227    3   udp   2049  nfs_acl
+</span><span class='line'>    100021    1   udp  47545  nlockmgr
+</span><span class='line'>    100021    3   udp  47545  nlockmgr
+</span><span class='line'>    100021    4   udp  47545  nlockmgr
+</span><span class='line'>    100021    1   tcp  40703  nlockmgr
+</span><span class='line'>    100021    3   tcp  40703  nlockmgr
+</span><span class='line'>    100021    4   tcp  40703  nlockmgr
+</span><span class='line'>[ec2-user@k8s ~]$ showmount -e 192.168.191.131
+</span><span class='line'>Export list for 192.168.191.131:
+</span><span class='line'>/backup 192.168.191.0/24
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>也可以通过docker来启动nfs server：</p>
+
+<ul>
+<li><a href="https://blog.ruanbekker.com/blog/2020/09/20/setup-a-nfs-server-with-docker/">https://blog.ruanbekker.com/blog/2020/09/20/setup-a-nfs-server-with-docker/</a></li>
+<li><a href="https://westzq1.github.io/k8s/2019/06/28/nfs-server-on-K8S.html">https://westzq1.github.io/k8s/2019/06/28/nfs-server-on-K8S.html</a></li>
+<li><a href="https://github.com/kubernetes/examples/blob/master/staging/volumes/nfs/nfs-server-deployment.yaml">https://github.com/kubernetes/examples/blob/master/staging/volumes/nfs/nfs-server-deployment.yaml</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+<span class='line-number'>94</span>
+<span class='line-number'>95</span>
+<span class='line-number'>96</span>
+<span class='line-number'>97</span>
+<span class='line-number'>98</span>
+<span class='line-number'>99</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ sudo mkdir -p /data/kubernetes-volumes
+</span><span class='line'>[ec2-user@k8s ~]$ docker run --privileged -itd --name nfs -p 2049:2049 -e SHARED_DIRECTORY=/data -v /data/kubernetes-volumes:/data itsthenetwork/nfs-server-alpine:12 
+</span><span class='line'>f84b70dcca6bd5abb275fbee50fd161d8befdd709ce6523b3a514f04b7af8677
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ docker logs f84b70dcca6bd5abb2 
+</span><span class='line'>Writing SHARED_DIRECTORY to /etc/exports file
+</span><span class='line'>The PERMITTED environment variable is unset or null, defaulting to '*'.
+</span><span class='line'>This means any client can mount.
+</span><span class='line'>The READ_ONLY environment variable is unset or null, defaulting to 'rw'.
+</span><span class='line'>Clients have read/write access.
+</span><span class='line'>The SYNC environment variable is unset or null, defaulting to 'async' mode.
+</span><span class='line'>Writes will not be immediately written to disk.
+</span><span class='line'>Displaying /etc/exports contents:
+</span><span class='line'>/data *(rw,fsid=0,async,no_subtree_check,no_auth_nlm,insecure,no_root_squash)
+</span><span class='line'>
+</span><span class='line'>Starting rpcbind...
+</span><span class='line'>Displaying rpcbind status...
+</span><span class='line'>   program version netid     address                service    owner
+</span><span class='line'>    100000    4    tcp6      ::.0.111               -          superuser
+</span><span class='line'>    100000    3    tcp6      ::.0.111               -          superuser
+</span><span class='line'>    100000    4    udp6      ::.0.111               -          superuser
+</span><span class='line'>    100000    3    udp6      ::.0.111               -          superuser
+</span><span class='line'>    100000    4    tcp       0.0.0.0.0.111          -          superuser
+</span><span class='line'>    100000    3    tcp       0.0.0.0.0.111          -          superuser
+</span><span class='line'>    100000    2    tcp       0.0.0.0.0.111          -          superuser
+</span><span class='line'>    100000    4    udp       0.0.0.0.0.111          -          superuser
+</span><span class='line'>    100000    3    udp       0.0.0.0.0.111          -          superuser
+</span><span class='line'>    100000    2    udp       0.0.0.0.0.111          -          superuser
+</span><span class='line'>    100000    4    local     /var/run/rpcbind.sock  -          superuser
+</span><span class='line'>    100000    3    local     /var/run/rpcbind.sock  -          superuser
+</span><span class='line'>Starting NFS in the background...
+</span><span class='line'>rpc.nfsd: knfsd is currently down
+</span><span class='line'>rpc.nfsd: Writing version string to kernel: -2 -3 +4 +4.1 +4.2
+</span><span class='line'>rpc.nfsd: Created AF_INET TCP socket.
+</span><span class='line'>rpc.nfsd: Created AF_INET6 TCP socket.
+</span><span class='line'>Exporting File System...
+</span><span class='line'>exporting *:/data
+</span><span class='line'>/data           &lt;world&gt;
+</span><span class='line'>Starting Mountd in the background...These
+</span><span class='line'>Startup successful.
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ sudo mount -v -o vers=4,loud 127.0.0.1:/ nfsmnt
+</span><span class='line'>mount.nfs: timeout set for Thu Apr 14 08:26:48 2022
+</span><span class='line'>mount.nfs: trying text-based options 'vers=4.1,addr=127.0.0.1,clientaddr=127.0.0.1'
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ df -h | grep nfsmnt
+</span><span class='line'>127.0.0.1:/      25G  9.8G   16G  39% /home/ec2-user/nfsmnt
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ touch nfsmnt/$(hostname).txt
+</span><span class='line'>[ec2-user@k8s ~]$ ls -l nfsmnt/
+</span><span class='line'>total 0
+</span><span class='line'>-rw-rw-r-- 1 ec2-user ec2-user 0 Apr 14 08:25 k8s.txt
+</span><span class='line'>[ec2-user@k8s ~]$ ls -l /data/kubernetes-volumes/
+</span><span class='line'>total 0
+</span><span class='line'>-rw-rw-r-- 1 ec2-user ec2-user 0 Apr 14 08:25 k8s.txt
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span><span class='line'>
+</span><span class='line'># vi /etc/fstab
+</span><span class='line'># 192.168.0.4:/   /mnt   nfs4    _netdev,auto  0  0
+</span><span class='line'>
+</span><span class='line'>### pod
+</span><span class='line'># kubectl create -f nfs-server.yml
+</span><span class='line'>apiVersion: extensions/v1beta1
+</span><span class='line'>kind: Deployment
+</span><span class='line'>metadata:
+</span><span class='line'>  name: nfs-server
+</span><span class='line'>spec:
+</span><span class='line'>  replicas: 1           # &lt;- no more replicas
+</span><span class='line'>  template:
+</span><span class='line'>    metadata:
+</span><span class='line'>      labels:
+</span><span class='line'>        app: nfs-server
+</span><span class='line'>    spec:
+</span><span class='line'>      nodeSelector:     # &lt;- use selector to fix nfs-server on k8s2.zhangqiaoc.com
+</span><span class='line'>        kubernetes.io/hostname: k8s2.zhangqiaoc.com
+</span><span class='line'>      containers:
+</span><span class='line'>      - name: nfs-server
+</span><span class='line'>        image: itsthenetwork/nfs-server-alpine:latest
+</span><span class='line'>        volumeMounts:
+</span><span class='line'>        - name: nfs-storage
+</span><span class='line'>          mountPath: /nfsshare
+</span><span class='line'>        env:
+</span><span class='line'>        - name: SHARED_DIRECTORY
+</span><span class='line'>          value: "/nfsshare"
+</span><span class='line'>        ports:
+</span><span class='line'>        - name: nfs  
+</span><span class='line'>          containerPort: 2049   # &lt;- export port
+</span><span class='line'>        securityContext:
+</span><span class='line'>          privileged: true      # &lt;- privileged mode is mandentory.
+</span><span class='line'>      volumes:
+</span><span class='line'>      - name: nfs-storage  
+</span><span class='line'>        hostPath:               # &lt;- the folder on the host machine.
+</span><span class='line'>          path: /root/fileshare
+</span><span class='line'># kubectl expose deployment nfs-server --type=ClusterIP
+</span><span class='line'># kubectl get svc
+</span><span class='line'>
+</span><span class='line'># yum install -y nfs-utils
+</span><span class='line'># mkdir /root/nfsmnt
+</span><span class='line'># mount -v 10.101.117.226:/ /root/nfsmnt
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>client</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># 所有work节点安装 nfs-utils rpcbind
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo yum install nfs-utils 
+</span><span class='line'>Loaded plugins: langpacks, priorities, update-motd
+</span><span class='line'>amzn2-core                                                                                                                                        | 3.7 kB  00:00:00     
+</span><span class='line'>Package 1:nfs-utils-1.3.0-0.54.amzn2.0.2.x86_64 already installed and latest version
+</span><span class='line'>Nothing to do
+</span><span class='line'>
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo systemctl status nfs
+</span><span class='line'>● nfs-server.service - NFS server and services
+</span><span class='line'>   Loaded: loaded (/usr/lib/systemd/system/nfs-server.service; disabled; vendor preset: disabled)
+</span><span class='line'>   Active: inactive (dead)
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo systemctl status rpcbind
+</span><span class='line'>● rpcbind.service - RPC bind service
+</span><span class='line'>   Loaded: loaded (/usr/lib/systemd/system/rpcbind.service; enabled; vendor preset: enabled)
+</span><span class='line'>   Active: active (running) since Wed 2022-04-13 20:44:34 CST; 1h 51min ago
+</span><span class='line'>  Process: 6979 ExecStart=/sbin/rpcbind -w $RPCBIND_ARGS (code=exited, status=0/SUCCESS)
+</span><span class='line'> Main PID: 7025 (rpcbind)
+</span><span class='line'>    Tasks: 1
+</span><span class='line'>   Memory: 2.1M
+</span><span class='line'>   CGroup: /system.slice/rpcbind.service
+</span><span class='line'>           └─7025 /sbin/rpcbind -w
+</span><span class='line'>
+</span><span class='line'>Apr 13 20:44:34 worker1 systemd[1]: Starting RPC bind service...
+</span><span class='line'>Apr 13 20:44:34 worker1 systemd[1]: Started RPC bind service.
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo mkdir -p /data
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo chmod 777 /data 
+</span><span class='line'>[ec2-user@worker1 ~]$ sudo mount -t nfs 192.168.191.131:/backup /data
+</span><span class='line'>[ec2-user@worker1 ~]$ df -h | grep 192.168.191.131
+</span><span class='line'>192.168.191.131:/backup   25G  9.6G   16G  39% /data
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># vi /etc/fstab
+</span><span class='line'># 172.17.30.22:/backup /data nfs defaults 0 0
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>k8s中使用NFS</h2>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/</a></li>
+</ul>
+
+
+<h3>容器直接挂载NFS</h3>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ cat nginx-1.yml 
+</span><span class='line'>apiVersion: apps/v1
+</span><span class='line'>kind: Deployment
+</span><span class='line'>metadata:
+</span><span class='line'>  name: nginx-deployment
+</span><span class='line'>  labels:
+</span><span class='line'>    app: nginx
+</span><span class='line'>spec:
+</span><span class='line'>  replicas: 3
+</span><span class='line'>  selector:
+</span><span class='line'>    matchLabels:
+</span><span class='line'>      app: nginx
+</span><span class='line'>  template:
+</span><span class='line'>    metadata:
+</span><span class='line'>      labels:
+</span><span class='line'>        app: nginx
+</span><span class='line'>    spec:
+</span><span class='line'>      containers:
+</span><span class='line'>      - name: nginx
+</span><span class='line'>        image: nginx:1.14.2
+</span><span class='line'>        ports:
+</span><span class='line'>        - containerPort: 80
+</span><span class='line'>        volumeMounts:
+</span><span class='line'>        - name: data
+</span><span class='line'>          mountPath: /usr/share/nginx/html
+</span><span class='line'>      volumes:
+</span><span class='line'>      - name: data
+</span><span class='line'>        nfs:
+</span><span class='line'>          path: /backup
+</span><span class='line'>          server: 192.168.191.131
+</span><span class='line'>        
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f nginx-1.yml
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get all 
+</span><span class='line'>NAME                                   READY   STATUS    RESTARTS   AGE
+</span><span class='line'>pod/nginx-deployment-67dcb957c-g2h8x   1/1     Running   0          2m50s
+</span><span class='line'>pod/nginx-deployment-67dcb957c-gfv28   1/1     Running   0          2m50s
+</span><span class='line'>pod/nginx-deployment-67dcb957c-rqwjs   1/1     Running   0          2m50s
+</span><span class='line'>
+</span><span class='line'>NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+</span><span class='line'>service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+</span><span class='line'>
+</span><span class='line'>NAME                               READY   UP-TO-DATE   AVAILABLE   AGE
+</span><span class='line'>deployment.apps/nginx-deployment   3/3     3            3           2m50s
+</span><span class='line'>
+</span><span class='line'>NAME                                         DESIRED   CURRENT   READY   AGE
+</span><span class='line'>replicaset.apps/nginx-deployment-67dcb957c   3         3         3       2m50s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec -ti pod/nginx-deployment-67dcb957c-g2h8x -- bash 
+</span><span class='line'>root@nginx-deployment-67dcb957c-g2h8x:/# echo $(hostname) &gt;/usr/share/nginx/html/1.txt
+</span><span class='line'>
+</span><span class='line'>root@nginx-deployment-67dcb957c-g2h8x:/# mount | grep 192
+</span><span class='line'>192.168.191.131:/backup on /usr/share/nginx/html type nfs4 (rw,relatime,vers=4.1,rsize=524288,wsize=524288,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.191.132,local_lock=none,addr=192.168.191.131)
+</span><span class='line'>root@nginx-deployment-67dcb957c-g2h8x:/# 
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 服务端查看文件内容
+</span><span class='line'>[ec2-user@k8s ~]$ cat /backup/1.txt 
+</span><span class='line'>nginx-deployment-67dcb957c-g2h8x
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl delete -f nginx-1.yml 
+</span><span class='line'>deployment.apps "nginx-deployment" deleted
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>pvc</h3>
+
+<ul>
+<li><a href="https://segmentfault.com/a/1190000040785500">https://segmentfault.com/a/1190000040785500</a></li>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#%E5%88%9B%E5%BB%BA%E7%B1%BB%E5%9E%8B%E4%B8%BAnfs%E7%9A%84%E6%8C%81%E4%B9%85%E5%8C%96%E5%AD%98%E5%82%A8%E5%8D%B7">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#%E5%88%9B%E5%BB%BA%E7%B1%BB%E5%9E%8B%E4%B8%BAnfs%E7%9A%84%E6%8C%81%E4%B9%85%E5%8C%96%E5%AD%98%E5%82%A8%E5%8D%B7</a></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+<span class='line-number'>70</span>
+<span class='line-number'>71</span>
+<span class='line-number'>72</span>
+<span class='line-number'>73</span>
+<span class='line-number'>74</span>
+<span class='line-number'>75</span>
+<span class='line-number'>76</span>
+<span class='line-number'>77</span>
+<span class='line-number'>78</span>
+<span class='line-number'>79</span>
+<span class='line-number'>80</span>
+<span class='line-number'>81</span>
+<span class='line-number'>82</span>
+<span class='line-number'>83</span>
+<span class='line-number'>84</span>
+<span class='line-number'>85</span>
+<span class='line-number'>86</span>
+<span class='line-number'>87</span>
+<span class='line-number'>88</span>
+<span class='line-number'>89</span>
+<span class='line-number'>90</span>
+<span class='line-number'>91</span>
+<span class='line-number'>92</span>
+<span class='line-number'>93</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ vi pv-nfs.yaml 
+</span><span class='line'>[ec2-user@k8s ~]$ cat pv-nfs.yaml 
+</span><span class='line'>apiVersion: v1
+</span><span class='line'>kind: PersistentVolume
+</span><span class='line'>metadata:
+</span><span class='line'>  name: pv-nfs
+</span><span class='line'>spec:
+</span><span class='line'>  capacity:
+</span><span class='line'>    storage: 10Gi
+</span><span class='line'>  accessModes:
+</span><span class='line'>    - ReadWriteMany 
+</span><span class='line'>  nfs:
+</span><span class='line'>    path: /backup
+</span><span class='line'>    server: 192.168.191.131
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f pv-nfs.yaml 
+</span><span class='line'>persistentvolume/pv-nfs created
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pv 
+</span><span class='line'>NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   REASON   AGE
+</span><span class='line'>pv-nfs   10Gi       RWX            Retain           Available                                   5s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ vi pvc-nfs.yaml 
+</span><span class='line'>[ec2-user@k8s ~]$ cat pvc-nfs.yaml 
+</span><span class='line'>kind: PersistentVolumeClaim
+</span><span class='line'>apiVersion: v1
+</span><span class='line'>metadata:
+</span><span class='line'>  name: pvc-nfs
+</span><span class='line'>spec:
+</span><span class='line'>  accessModes:
+</span><span class='line'>    - ReadWriteMany
+</span><span class='line'>  resources:
+</span><span class='line'>    requests:
+</span><span class='line'>      storage: 10Gi
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f pvc-nfs.yaml 
+</span><span class='line'>persistentvolumeclaim/pvc-nfs created
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pvc
+</span><span class='line'>NAME      STATUS   VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+</span><span class='line'>pvc-nfs   Bound    pv-nfs   10Gi       RWX                           7s
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pv 
+</span><span class='line'>NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM             STORAGECLASS   REASON   AGE
+</span><span class='line'>pv-nfs   10Gi       RWX            Retain           Bound    default/pvc-nfs                           79s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ vi dp-pvc.yaml
+</span><span class='line'>[ec2-user@k8s ~]$ cat dp-pvc.yaml 
+</span><span class='line'>apiVersion: apps/v1
+</span><span class='line'>kind: Deployment
+</span><span class='line'>metadata:
+</span><span class='line'>  name: busybox
+</span><span class='line'>  labels:
+</span><span class='line'>    app: busybox
+</span><span class='line'>spec:
+</span><span class='line'>  replicas: 1
+</span><span class='line'>  selector:
+</span><span class='line'>    matchLabels:
+</span><span class='line'>      app: busybox
+</span><span class='line'>  template:
+</span><span class='line'>    metadata:
+</span><span class='line'>      labels:
+</span><span class='line'>        app: busybox
+</span><span class='line'>    spec:
+</span><span class='line'>      containers:
+</span><span class='line'>      - name: busybox
+</span><span class='line'>        image: busybox
+</span><span class='line'>        command: ['sh', '-c', 'echo "Hello, Kubernetes!" && sleep 3600']
+</span><span class='line'>        volumeMounts:
+</span><span class='line'>        - name: data
+</span><span class='line'>          mountPath: /data
+</span><span class='line'>      volumes:
+</span><span class='line'>      - name: data
+</span><span class='line'>        persistentVolumeClaim:
+</span><span class='line'>          claimName: pvc-nfs
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+</span><span class='line'>deployment.apps/busybox created
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get all 
+</span><span class='line'>NAME                           READY   STATUS    RESTARTS   AGE
+</span><span class='line'>pod/busybox-6b99c495c9-qnvlp   1/1     Running   0          47s
+</span><span class='line'>
+</span><span class='line'>NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+</span><span class='line'>service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+</span><span class='line'>
+</span><span class='line'>NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+</span><span class='line'>deployment.apps/busybox   1/1     1            1           47s
+</span><span class='line'>
+</span><span class='line'>NAME                                 DESIRED   CURRENT   READY   AGE
+</span><span class='line'>replicaset.apps/busybox-6b99c495c9   1         1         1       47s
+</span><span class='line'>
+</span><span class='line'># 查看NFS中原来的数据
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec -ti busybox-6b99c495c9-qnvlp -- cat /data/1.txt 
+</span><span class='line'>nginx-deployment-67dcb957c-g2h8x
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>测一下subPathExpr：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ kubectl delete -f dp-pvc.yaml 
+</span><span class='line'>deployment.apps "busybox" deleted
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span><span class='line'>[ec2-user@k8s ~]$ vi dp-pvc.yaml 
+</span><span class='line'>[ec2-user@k8s ~]$ cat dp-pvc.yaml 
+</span><span class='line'>apiVersion: apps/v1
+</span><span class='line'>kind: Deployment
+</span><span class='line'>metadata:
+</span><span class='line'>  name: busybox
+</span><span class='line'>  labels:
+</span><span class='line'>    app: busybox
+</span><span class='line'>spec:
+</span><span class='line'>  replicas: 1
+</span><span class='line'>  selector:
+</span><span class='line'>    matchLabels:
+</span><span class='line'>      app: busybox
+</span><span class='line'>  template:
+</span><span class='line'>    metadata:
+</span><span class='line'>      labels:
+</span><span class='line'>        app: busybox
+</span><span class='line'>    spec:
+</span><span class='line'>      containers:
+</span><span class='line'>      - name: busybox
+</span><span class='line'>        image: busybox
+</span><span class='line'>        command: ['sh', '-c', 'echo "Hello, Kubernetes!" && sleep 3600']
+</span><span class='line'>        env:
+</span><span class='line'>        - name: POD_NAME
+</span><span class='line'>          valueFrom:
+</span><span class='line'>            fieldRef:
+</span><span class='line'>              apiVersion: v1
+</span><span class='line'>              fieldPath: metadata.name
+</span><span class='line'>        volumeMounts:
+</span><span class='line'>        - name: data
+</span><span class='line'>          mountPath: /data
+</span><span class='line'>          subPathExpr: $(POD_NAME)
+</span><span class='line'>      volumes:
+</span><span class='line'>      - name: data
+</span><span class='line'>        persistentVolumeClaim:
+</span><span class='line'>          claimName: pvc-nfs
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+</span><span class='line'>deployment.apps/busybox created
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get all 
+</span><span class='line'>NAME                           READY   STATUS    RESTARTS   AGE
+</span><span class='line'>pod/busybox-5497486bf5-csr6q   1/1     Running   0          7s
+</span><span class='line'>
+</span><span class='line'>NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+</span><span class='line'>service/kubernetes   ClusterIP   10.96.0.1    &lt;none&gt;        443/TCP   27d
+</span><span class='line'>
+</span><span class='line'>NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+</span><span class='line'>deployment.apps/busybox   1/1     1            1           7s
+</span><span class='line'>
+</span><span class='line'>NAME                                 DESIRED   CURRENT   READY   AGE
+</span><span class='line'>replicaset.apps/busybox-5497486bf5   1         1         1       7s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec -ti pod/busybox-5497486bf5-csr6q -- sh 
+</span><span class='line'>/ # ls /data
+</span><span class='line'>/ # echo $(hostname) &gt; /data/pvc.txt
+</span><span class='line'>/ # exit
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 查看服务端目录下数据
+</span><span class='line'>[ec2-user@k8s ~]$ ll /backup/
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 33 Apr 14 00:37 1.txt
+</span><span class='line'>drwxr-xr-x 2 root root 21 Apr 14 00:51 busybox-5497486bf5-csr6q
+</span><span class='line'>[ec2-user@k8s ~]$ cat /backup/busybox-5497486bf5-csr6q/pvc.txt   
+</span><span class='line'>busybox-5497486bf5-csr6q
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>把replicas改成2，再试试：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl apply -f dp-pvc.yaml 
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl get pods
+</span><span class='line'>NAME                       READY   STATUS    RESTARTS   AGE
+</span><span class='line'>busybox-5497486bf5-fkzls   1/1     Running   0          3m8s
+</span><span class='line'>busybox-5497486bf5-rv7k7   1/1     Running   0          3m8s
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec busybox-5497486bf5-fkzls -- sh -c 'echo $(hostname) &gt;/data/$(hostname).txt'
+</span><span class='line'>[ec2-user@k8s ~]$ kubectl exec busybox-5497486bf5-rv7k7 -- sh -c 'echo $(hostname) &gt;/data/$(hostname).txt'                        
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 查看服务端目录结构
+</span><span class='line'>[ec2-user@k8s ~]$ ll -R /backup/
+</span><span class='line'>/backup/:
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 33 Apr 14 00:37 1.txt
+</span><span class='line'>drwxr-xr-x 2 root root 21 Apr 14 00:51 busybox-5497486bf5-csr6q
+</span><span class='line'>drwxr-xr-x 2 root root 42 Apr 14 01:20 busybox-5497486bf5-fkzls
+</span><span class='line'>drwxr-xr-x 2 root root 42 Apr 14 01:20 busybox-5497486bf5-rv7k7
+</span><span class='line'>
+</span><span class='line'>/backup/busybox-5497486bf5-csr6q:
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 25 Apr 14 00:51 pvc.txt
+</span><span class='line'>
+</span><span class='line'>/backup/busybox-5497486bf5-fkzls:
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 25 Apr 14 01:20 busybox-5497486bf5-fkzls.txt
+</span><span class='line'>
+</span><span class='line'>/backup/busybox-5497486bf5-rv7k7:
+</span><span class='line'>total 4
+</span><span class='line'>-rw-r--r-- 1 root root 25 Apr 14 01:20 busybox-5497486bf5-rv7k7.txt
+</span><span class='line'>[ec2-user@k8s ~]$ 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>NFS Subdir External Provisioner</h3>
+
+<ul>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#NFS-Subdir-External-Provisioner">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#NFS-Subdir-External-Provisioner</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/storage/storage-classes/#nfs">https://kubernetes.io/docs/concepts/storage/storage-classes/#nfs</a></li>
+<li><a href="https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner">https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner</a></li>
+</ul>
+
+
+<p>NFS subdir external provisioner 使用现有的的NFS 服务器来支持通过 Persistent Volume Claims 动态供应 Kubernetes Persistent Volumes。持久卷默认被配置为${namespace}-${pvcName}-${pvName}，使用这个必须已经拥有 NFS 服务器。</p>
+
+<ul>
+<li><a href="http://dockone.io/article/2598">http://dockone.io/article/2598</a> External NFS驱动的工作原理</li>
+</ul>
+
+
+<blockquote><p>K8S的外部NFS驱动，可以按照其工作方式（是作为NFS server还是NFS client）分为两类：</p>
+
+<p>1.nfs-client:</p>
+
+<p>也就是我们接下来演示的这一类，它通过K8S的内置的NFS驱动挂载远端的NFS服务器到本地目录；然后将自身作为storage provider，关联storage class。当用户创建对应的PVC来申请PV时，该provider就将PVC的要求与自身的属性比较，一旦满足就在本地挂载好的NFS目录中创建PV所属的子目录，为Pod提供动态的存储服务。</p>
+
+<p>2.nfs:
+与nfs-client不同，该驱动并不使用k8s的NFS驱动来挂载远端的NFS到本地再分配，而是直接将本地文件映射到容器内部，然后在容器内使用ganesha.nfsd来对外提供NFS服务；在每次创建PV的时候，直接在本地的NFS根目录中创建对应文件夹，并export出该子目录。</p>
+
+<p>接下来我们来操作一个nfs-client驱动的例子，先对其有个直观的认识！</p>
+
+<p>External NFS驱动的部署实例</p>
+
+<p>这里，我们将nfs-client驱动做一个deployment部署到K8S集群中，然后对外提供存储服务。</p>
+
+<p>1.部署nfs-client-provisioner</p>
+
+<p>环境变量的PROVISIONER_NAME、NFS服务器地址、NFS对外提供服务的路径信息等需要设置好；部署所使用的yaml文件关键代码如下所示：</p>
+
+<p>2.创建Storage Class</p>
+
+<p>storage class的定义，需要注意的是：provisioner属性要等于驱动所传入的环境变量PROVISIONER_NAME的值。否则，驱动不知道知道如何绑定storage class。</p>
+
+<p>3.创建PVC</p>
+
+<p>这里指定了其对应的storage-class的名字为wise2c-nfs-storage，如下：</p>
+
+<p>4.创建pod</p>
+
+<p>指定该pod使用我们刚刚创建的PVC：henry-claim：</p>
+
+<p>完成之后，如果attach到pod中执行一些文件的读写操作，就可以确定pod的/mnt已经使用了NFS的存储服务了。</p></blockquote>
+
+<ul>
+<li><a href="https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner#without-helm">https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner#without-helm</a></li>
+</ul>
+
+
+<p>官方文档中的脚本：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># Set the subject of the RBAC objects to the current namespace where the provisioner is being deployed
+</span><span class='line'>$ NS=$(kubectl config get-contexts|grep -e "^\*" |awk '{print $5}')
+</span><span class='line'>$ NAMESPACE=${NS:-default}
+</span><span class='line'>$ sed -i'' "s/namespace:.*/namespace: $NAMESPACE/g" ./deploy/rbac.yaml ./deploy/deployment.yaml
+</span><span class='line'>$ kubectl create -f deploy/rbac.yaml</span></code></pre></td></tr></table></div></figure>
+
+
+<p>操作步骤：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ git clone https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/
+</span><span class='line'>[ec2-user@k8s ~]$ cd nfs-subdir-external-provisioner/
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ NS=$(kubectl config get-contexts|grep -e "^\*" |awk '{print $5}')
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ NAMESPACE=${NS:-default}
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ sed -i'' "s/namespace:.*/namespace: $NAMESPACE/g" ./deploy/rbac.yaml ./deploy/deployment.yaml
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl create -f deploy/rbac.yaml
+</span><span class='line'>serviceaccount/nfs-client-provisioner created
+</span><span class='line'>clusterrole.rbac.authorization.k8s.io/nfs-client-provisioner-runner created
+</span><span class='line'>clusterrolebinding.rbac.authorization.k8s.io/run-nfs-client-provisioner created
+</span><span class='line'>role.rbac.authorization.k8s.io/leader-locking-nfs-client-provisioner created
+</span><span class='line'>rolebinding.rbac.authorization.k8s.io/leader-locking-nfs-client-provisioner created
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>$ vi deploy/deployment.yaml
+</span><span class='line'>
+</span><span class='line'>            - name: NFS_SERVER
+</span><span class='line'>              value: 192.168.191.131
+</span><span class='line'>            - name: NFS_PATH
+</span><span class='line'>              value: /backup
+</span><span class='line'>      volumes:
+</span><span class='line'>        - name: nfs-client-root
+</span><span class='line'>          nfs:
+</span><span class='line'>            server: 192.168.191.131
+</span><span class='line'>            path: /backup
+</span><span class='line'>
+</span><span class='line'>$ vi deploy/class.yaml
+</span><span class='line'>
+</span><span class='line'>parameters:
+</span><span class='line'>  archiveOnDelete: "false"
+</span><span class='line'>#Specifies a template for creating a directory path via PVC metadata's such as labels, annotations, name or namespace. To specify metadata use ${.PVC.&lt;metadata&gt;}. Example: If folder should be named like &lt;pvc-namespace&gt;-&lt;pvc-name&gt;, use ${.PVC.namespace}-${.PVC.name} as pathPattern.
+</span><span class='line'>#  pathPattern: "${.PVC.namespace}/${.PVC.annotations.nfs.io/storage-path}" # waits for nfs.io/storage-path annotation, if not specified will accept as empty string.
+</span><span class='line'>#  onDelete: delete
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'># 先把镜像拉下来 k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl apply -f deploy/deployment.yaml 
+</span><span class='line'>deployment.apps/nfs-client-provisioner created
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl apply -f deploy/class.yaml 
+</span><span class='line'>storageclass.storage.k8s.io/nfs-client created
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$
+</span><span class='line'>
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>测试：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># PVC内容
+</span><span class='line'># https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/blob/master/deploy/test-claim.yaml
+</span><span class='line'>kind: PersistentVolumeClaim
+</span><span class='line'>apiVersion: v1
+</span><span class='line'>metadata:
+</span><span class='line'>  name: test-claim
+</span><span class='line'>spec:
+</span><span class='line'>  storageClassName: nfs-client
+</span><span class='line'>  accessModes:
+</span><span class='line'>    - ReadWriteMany
+</span><span class='line'>  resources:
+</span><span class='line'>    requests:
+</span><span class='line'>      storage: 1Mi
+</span><span class='line'>
+</span><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ kubectl create -f deploy/test-claim.yaml -f deploy/test-pod.yaml
+</span><span class='line'>persistentvolumeclaim/test-claim created
+</span><span class='line'>pod/test-pod created
+</span><span class='line'>
+</span><span class='line'># kubectl delete -f deploy/test-pod.yaml -f deploy/test-claim.yaml
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p><code>test pod</code> 在共享文件系统下写了一个 <code>touch /mnt/SUCCESS</code> 文件：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s nfs-subdir-external-provisioner]$ ll /backup/default-test-claim-pvc-9857153a-6c2b-42d7-b464-aa5fc2acbf90/
+</span><span class='line'>total 0
+</span><span class='line'>-rw-r--r-- 1 root root 0 Apr 14 02:14 SUCCESS
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h3>NFS Ganesha server and external provisioner</h3>
+
+<ul>
+<li><a href="https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner">https://github.com/kubernetes-sigs/nfs-ganesha-server-and-external-provisioner</a></li>
+<li><a href="http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#nfs-ganesha-server-and-external-provisioner">http://www.lishuai.fun/2021/08/12/k8s-nfs-pv/#nfs-ganesha-server-and-external-provisioner</a></li>
+</ul>
+
+
+<p>就是直接在k8s集群中装一个NFS server。感觉没有直接在系统安装NFS管理方便，先搁置了。</p>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -5711,393 +6956,6 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2022/03/18/k8s-deps-download/">k8s-v1.23.5依赖下载</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2022-03-18T10:57:38+08:00" pubdate data-updated="true">Fri 2022-03-18 10:57</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>几年前安装使用过k8s(kubernetes)，明白安装过程最大的一个难关是容器镜像的下载，所以找回原来的文章，试着用原来的代理翻墙的方式，但是原来可行的 <code>ssh -D</code> socks5 的方式在 Amazon Linux 2 上面不好使，最后直接在外网主机上安装并缓冲RPM，然后下载打包 k8s.gcr.io 下的所有镜像。</p>
-
-<p>尽管过程没有那么的严谨，但是每个步骤还是都得执行的。</p>
-
-<h2>参考文章</h2>
-
-<ul>
-<li><p><a href="https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/install-kubeadm/">安装 kubeadm</a></p></li>
-<li><p><a href="https://docs.docker.com/engine/install/centos/">Install Docker Engine on CentOS</a></p></li>
-<li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/docker-basics.html">Docker basics for Amazon ECS</a></li>
-<li><p><a href="https://kubernetes.io/zh/docs/setup/production-environment/container-runtimes/#docker">容器运行时 - Docker</a></p></li>
-<li><p><a href="https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#%E5%AE%89%E8%A3%85-kubeadm-kubelet-%E5%92%8C-kubectl">安装 kubeadm、kubelet 和 kubectl</a></p></li>
-<li><p><a href="https://kubernetes.io/zh/docs/reference/setup-tools/kubeadm/kubeadm-init/#%E5%9C%A8%E6%B2%A1%E6%9C%89%E4%BA%92%E8%81%94%E7%BD%91%E8%BF%9E%E6%8E%A5%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8B%E8%BF%90%E8%A1%8C-kubeadm">在没有互联网连接的情况下运行 kubeadm</a></p></li>
-<li><p><a href="https://www.jianshu.com/p/5fe108d70310">k8s metrics-server 轻量化监控</a></p></li>
-</ul>
-
-
-<h2>安装Docker</h2>
-
-<p>k8s的pod需要容器运行时（Container Runtime），这里直接选择熟悉的docker。外网的主机是centos7的，按照docker官网步骤安装。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>## https://docs.docker.com/engine/install/centos/
-</span><span class='line'>$ sudo yum remove docker \
-</span><span class='line'>                   docker-client \
-</span><span class='line'>                   docker-client-latest \
-</span><span class='line'>                   docker-common \
-</span><span class='line'>                   docker-latest \
-</span><span class='line'>                   docker-latest-logrotate \
-</span><span class='line'>                   docker-logrotate \
-</span><span class='line'>                   docker-engine
-</span><span class='line'>
-</span><span class='line'>$ sudo yum install -y yum-utils
-</span><span class='line'>$ sudo yum-config-manager \
-</span><span class='line'>     --add-repo \
-</span><span class='line'>     https://download.docker.com/linux/centos/docker-ce.repo
-</span><span class='line'>
-</span><span class='line'>$ yum list docker-ce --showduplicates | sort -r
-</span><span class='line'>
-</span><span class='line'>$ sudo yum clean all
-</span><span class='line'>$ sudo yum install docker-ce docker-ce-cli containerd.io
-</span><span class='line'>
-</span><span class='line'>$ sudo service docker start
-</span><span class='line'>$ sudo systemctl enable docker
-</span><span class='line'># docker info
-</span><span class='line'>
-</span><span class='line'>## https://kubernetes.io/zh/docs/setup/production-environment/container-runtimes/#docker
-</span><span class='line'>$ cat &lt;&lt;EOF | sudo tee /etc/docker/daemon.json
-</span><span class='line'>{
-</span><span class='line'>  "exec-opts": ["native.cgroupdriver=systemd"],
-</span><span class='line'>  "log-driver": "json-file",
-</span><span class='line'>  "log-opts": {
-</span><span class='line'>    "max-size": "100m"
-</span><span class='line'>  },
-</span><span class='line'>  "storage-driver": "overlay2"
-</span><span class='line'>}
-</span><span class='line'>EOF
-</span><span class='line'>
-</span><span class='line'>$ sudo systemctl enable docker
-</span><span class='line'>$ sudo systemctl daemon-reload
-</span><span class='line'>$ sudo systemctl restart docker
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>安装 kubeadm、kubelet 和 kubectl</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>## 设置缓冲
-</span><span class='line'># vi /etc/yum.conf 
-</span><span class='line'>keepcache=1
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>## https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#%E5%AE%89%E8%A3%85-kubeadm-kubelet-%E5%92%8C-kubectl
-</span><span class='line'>## 在官网基础上，禁用gpgcheck
-</span><span class='line'># cat &lt;&lt;EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
-</span><span class='line'>[kubernetes]
-</span><span class='line'>name=Kubernetes
-</span><span class='line'>baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
-</span><span class='line'>enabled=1
-</span><span class='line'>gpgcheck=0
-</span><span class='line'>repo_gpgcheck=0
-</span><span class='line'>gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
-</span><span class='line'>exclude=kubelet kubeadm kubectl
-</span><span class='line'>EOF
-</span><span class='line'>
-</span><span class='line'>## 将 SELinux 设置为 permissive 模式（相当于将其禁用）
-</span><span class='line'># sudo setenforce 0
-</span><span class='line'># sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
-</span><span class='line'>
-</span><span class='line'># sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
-</span><span class='line'>
-</span><span class='line'>## 无需启动 sudo systemctl enable --now kubelet
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>把缓冲的rpm下载到本地</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@ea5df05219bb /]# cd /var/cache/yum/
-</span><span class='line'>[root@ea5df05219bb yum]# ll -R 
-</span><span class='line'>
-</span><span class='line'>[root@ea5df05219bb yum]# yum install lrzsz 
-</span><span class='line'>
-</span><span class='line'>[root@ea5df05219bb yum]# sz x86_64/7/kubernetes/packages/*
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>在没有互联网连接的情况下运行kubeadm</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>## https://kubernetes.io/zh/docs/reference/setup-tools/kubeadm/kubeadm-init/#%E5%9C%A8%E6%B2%A1%E6%9C%89%E4%BA%92%E8%81%94%E7%BD%91%E8%BF%9E%E6%8E%A5%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8B%E8%BF%90%E8%A1%8C-kubeadm
-</span><span class='line'>
-</span><span class='line'># kubeadm config images list
-</span><span class='line'>k8s.gcr.io/kube-apiserver:v1.23.5
-</span><span class='line'>k8s.gcr.io/kube-controller-manager:v1.23.5
-</span><span class='line'>k8s.gcr.io/kube-scheduler:v1.23.5
-</span><span class='line'>k8s.gcr.io/kube-proxy:v1.23.5
-</span><span class='line'>k8s.gcr.io/pause:3.6
-</span><span class='line'>k8s.gcr.io/etcd:3.5.1-0
-</span><span class='line'>k8s.gcr.io/coredns/coredns:v1.8.6
-</span><span class='line'>
-</span><span class='line'># kubeadm config images pull
-</span><span class='line'>[config/images] Pulled k8s.gcr.io/kube-apiserver:v1.23.5
-</span><span class='line'>[config/images] Pulled k8s.gcr.io/kube-controller-manager:v1.23.5
-</span><span class='line'>[config/images] Pulled k8s.gcr.io/kube-scheduler:v1.23.5
-</span><span class='line'>[config/images] Pulled k8s.gcr.io/kube-proxy:v1.23.5
-</span><span class='line'>[config/images] Pulled k8s.gcr.io/pause:3.6
-</span><span class='line'>[config/images] Pulled k8s.gcr.io/etcd:3.5.1-0
-</span><span class='line'>[config/images] Pulled k8s.gcr.io/coredns/coredns:v1.8.6
-</span><span class='line'>
-</span><span class='line'># docker images
-</span><span class='line'>REPOSITORY                           TAG       IMAGE ID       CREATED         SIZE
-</span><span class='line'>k8s.gcr.io/kube-apiserver            v1.23.5   3fc1d62d6587   14 hours ago    135MB
-</span><span class='line'>k8s.gcr.io/kube-proxy                v1.23.5   3c53fa8541f9   14 hours ago    112MB
-</span><span class='line'>k8s.gcr.io/kube-controller-manager   v1.23.5   b0c9e5e4dbb1   14 hours ago    125MB
-</span><span class='line'>k8s.gcr.io/kube-scheduler            v1.23.5   884d49d6d8c9   14 hours ago    53.5MB
-</span><span class='line'>k8s.gcr.io/etcd                      3.5.1-0   25f8c7f3da61   4 months ago    293MB
-</span><span class='line'>k8s.gcr.io/coredns/coredns           v1.8.6    a4ca41631cc7   5 months ago    46.8MB
-</span><span class='line'>k8s.gcr.io/pause                     3.6       6270bb605e12   6 months ago    683kB
-</span><span class='line'>centos                               7         8652b9f0cb4c   16 months ago   204MB
-</span><span class='line'>
-</span><span class='line'># docker images | awk '{print $1}' | grep k8s | xargs echo 
-</span><span class='line'>k8s.gcr.io/kube-apiserver k8s.gcr.io/kube-proxy k8s.gcr.io/kube-controller-manager k8s.gcr.io/kube-scheduler k8s.gcr.io/etcd k8s.gcr.io/coredns/coredns k8s.gcr.io/pause
-</span><span class='line'>
-</span><span class='line'># docker save -o k8s-v1.23.5.tar k8s.gcr.io/kube-apiserver k8s.gcr.io/kube-proxy k8s.gcr.io/kube-controller-manager k8s.gcr.io/kube-scheduler k8s.gcr.io/etcd k8s.gcr.io/coredns/coredns k8s.gcr.io/pause
-</span><span class='line'># gzip k8s-v1.23.5.tar
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>把导出的images下载回来后，加载到本地主机</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ docker load -i k8s-v1.23.5.tar.gz 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>metrics-server</h2>
-
-<p>metrics server的镜像也是在google的服务上的，也下载保存下来。在dashboard上可以通过它查看node/pod的cpu/内存占用图形情况。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># docker pull k8s.gcr.io/metrics-server/metrics-server:v0.6.1
-</span><span class='line'>
-</span><span class='line'># docker save -o metrics-server-v0.6.1.tar k8s.gcr.io/metrics-server/metrics-server:v0.6.1
-</span><span class='line'># gzip metrics-server-v0.6.1.tar 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>下载回来后，加载到本地主机</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ docker load -i metrics-server-v0.6.1.tar.gz 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>基本安装好后，本地镜像如下：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ docker images 
-</span><span class='line'>REPOSITORY                                       TAG       IMAGE ID       CREATED        SIZE
-</span><span class='line'>k8s.gcr.io/kube-apiserver                        v1.23.5   3fc1d62d6587   39 hours ago   135MB
-</span><span class='line'>k8s.gcr.io/kube-proxy                            v1.23.5   3c53fa8541f9   39 hours ago   112MB
-</span><span class='line'>k8s.gcr.io/kube-scheduler                        v1.23.5   884d49d6d8c9   39 hours ago   53.5MB
-</span><span class='line'>k8s.gcr.io/kube-controller-manager               v1.23.5   b0c9e5e4dbb1   39 hours ago   125MB
-</span><span class='line'>rancher/mirrored-flannelcni-flannel              v0.17.0   9247abf08677   2 weeks ago    59.8MB
-</span><span class='line'>k8s.gcr.io/metrics-server/metrics-server         v0.6.1    e57a417f15d3   5 weeks ago    68.8MB
-</span><span class='line'>rancher/mirrored-flannelcni-flannel-cni-plugin   v1.0.1    ac40ce625740   8 weeks ago    8.1MB
-</span><span class='line'>k8s.gcr.io/etcd                                  3.5.1-0   25f8c7f3da61   4 months ago   293MB
-</span><span class='line'>k8s.gcr.io/coredns/coredns                       v1.8.6    a4ca41631cc7   5 months ago   46.8MB
-</span><span class='line'>k8s.gcr.io/pause                                 3.6       6270bb605e12   6 months ago   683kB
-</span><span class='line'>
-</span><span class='line'>[ec2-user@worker1 ~]$ docker images 
-</span><span class='line'>REPOSITORY                                       TAG       IMAGE ID       CREATED        SIZE
-</span><span class='line'>k8s.gcr.io/kube-apiserver                        v1.23.5   3fc1d62d6587   39 hours ago   135MB
-</span><span class='line'>k8s.gcr.io/kube-proxy                            v1.23.5   3c53fa8541f9   39 hours ago   112MB
-</span><span class='line'>k8s.gcr.io/kube-controller-manager               v1.23.5   b0c9e5e4dbb1   39 hours ago   125MB
-</span><span class='line'>k8s.gcr.io/kube-scheduler                        v1.23.5   884d49d6d8c9   39 hours ago   53.5MB
-</span><span class='line'>kubernetesui/dashboard                           v2.5.1    7fff914c4a61   7 days ago     243MB
-</span><span class='line'>rancher/mirrored-flannelcni-flannel              v0.17.0   9247abf08677   2 weeks ago    59.8MB
-</span><span class='line'>k8s.gcr.io/metrics-server/metrics-server         v0.6.1    e57a417f15d3   5 weeks ago    68.8MB
-</span><span class='line'>rancher/mirrored-flannelcni-flannel-cni-plugin   v1.0.1    ac40ce625740   8 weeks ago    8.1MB
-</span><span class='line'>k8s.gcr.io/etcd                                  3.5.1-0   25f8c7f3da61   4 months ago   293MB
-</span><span class='line'>k8s.gcr.io/coredns/coredns                       v1.8.6    a4ca41631cc7   5 months ago   46.8MB
-</span><span class='line'>k8s.gcr.io/pause                                 3.6       6270bb605e12   6 months ago   683kB
-</span><span class='line'>kubernetesui/metrics-scraper                     v1.0.7    7801cfc6d5c0   9 months ago   34.4MB
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>小结</h2>
-
-<p>本文就要在外网模拟了一下安装，把需要翻墙的两个组件（rpm，docker image）缓冲下来，然后在本地机器上直接使用。</p>
-
-<p>下载的 最新版本v1.23.5 的（需翻墙的）依赖可以在百度网盘下载：</p>
-
-<pre><code>链接：https://pan.baidu.com/s/1P3ABqKGt1JhNkg-9yB22yQ 
-提取码：k7af
-</code></pre>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/4">&larr; Older</a>
@@ -6120,19 +6978,23 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 	<ul role="list">
 		
 			<li class="post">
-				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+				<a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+				<a href="/blog/2023/03/25/reinstall-raspberry2/">重新折腾raspberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+				<a href="/blog/2023/03/25/mirror-request/">请求复制/镜像</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+				<a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2021/12/08/recommand-blogs/">认真的博客</a>
 			</li>
 		
 			<li class="post">
@@ -6140,47 +7002,15 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+				<a href="/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+				<a href="/blog/2015/09/13/review-linux-101-hacks/">【linux 101 Hacks】读后感</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
 			</li>
 		
 	</ul>
@@ -6188,6 +7018,10 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 <section>
   <h1>Recent Posts</h1>
   <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
+      </li>
     
       <li class="post">
         <a href="/blog/2023/04/09/dingtalk-with-openai/">钉钉群机器人对接ChatGPT</a>
@@ -6215,10 +7049,6 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
     
       <li class="post">
         <a href="/blog/2023/02/01/register-openai/">注册OpenAI</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
       </li>
     
   </ul>
@@ -6251,7 +7081,7 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (5) 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -6292,6 +7122,10 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/git/'>git</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/good-series-1/'>good-series-1</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -6383,7 +7217,7 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (16) 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (18) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -6391,11 +7225,19 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redmine/'>redmine</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/respberry2/'>respberry2</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/shell/'>shell</a> (3) 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -6415,7 +7257,7 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (70) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (71) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -6440,7 +7282,7 @@ k3d is a lightweight wrapper to run k3s (Rancher Lab’s minimal Kubernetes dist
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (235)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (236)</li>
 	</ul>
 	
 </section>

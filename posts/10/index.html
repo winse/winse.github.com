@@ -9,7 +9,8 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="STAF(Software Testing Automation Framework) 是用来构建自动化测试的框架，用来部署测试环境。包括跨平台自动化部署的各种组件：config、process、handle、fs、log、monitor、queue、var、security等各种服务， &hellip;">
+  <meta name="description" content="前面使用nat+route的方式手动连通两台机器上的docker容器。pipework是通过脚本的方式（手动）设置网络以及修改路由来进行配置的。 参考： Docker网络详解及pipework源码解读与实践
+docker技术剖析&ndash;docker网络（二）docker宿主机之间容器互通 &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +86,515 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2017/10/07/docker-network-via-pipework/">Docker多主机网络配置 - Pipework</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2017-10-07T23:24:23+08:00" pubdate data-updated="true">Sat 2017-10-07 23:24</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>前面使用nat+route的方式手动连通两台机器上的docker容器。pipework是通过脚本的方式（手动）设置网络以及修改路由来进行配置的。</p>
+
+<p>参考：</p>
+
+<ul>
+<li><a href="http://www.infoq.com/cn/articles/docker-network-and-pipework-open-source-explanation-practice">Docker网络详解及pipework源码解读与实践</a></li>
+<li><a href="http://hongge.blog.51cto.com/2083180/1843169">docker技术剖析&ndash;docker网络（二）docker宿主机之间容器互通 for centos7.2</a> 步骤更详细一点</li>
+<li><a href="http://tonybai.com/2016/02/15/understanding-docker-multi-host-networking/">理解Docker跨多主机容器网络</a></li>
+</ul>
+
+
+<blockquote><p>2、将物理网卡桥接到虚拟网桥，使得容器与宿主机配置在同一网段下</p>
+
+<p>在各个宿主机上都建立一个新虚拟网桥设备br0，将各自物理网卡eth0桥接br0上，eth0的IP地址赋给br0；同时修改Docker daemon的DOCKER_OPTS，设置-b=br0（替代docker0），并限制Container IP地址的分配范围为同物理段地址（–fixed-cidr）。重启各个主机的Docker Daemon后，处于与宿主机在同一网段的Docker容器就可以实现跨主机访问了。这个方案同样存在局限和扩展性差的问题：比如需将物理网段的地址划分 成小块，分布到各个主机上，防止IP冲突；子网划分依赖物理交换机设置；Docker容器的主机地址空间大小依赖物理网络划分等。</p></blockquote>
+
+<p>原理就是建立一条连接link，一端 <strong> 在主机 </strong> 一端 <strong> 在容器 </strong> ；然后手动配置容器ip和路由；最后把主机Ethernet和新建的Bridge桥接连接到物理网络。</p>
+
+<p>容器的ip地址和主机的ip地址在一个网段内，所以在同一交换机下的所有主机、里面的容器都互通。</p>
+
+<h2>查看原网络的信息：</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# nmcli d show ens33 
+</span><span class='line'>GENERAL.DEVICE:                         ens33
+</span><span class='line'>GENERAL.TYPE:                           ethernet
+</span><span class='line'>GENERAL.HWADDR:                         00:0C:29:2E:67:4D
+</span><span class='line'>GENERAL.MTU:                            1500
+</span><span class='line'>GENERAL.STATE:                          100 (connected)
+</span><span class='line'>GENERAL.CONNECTION:                     ens33
+</span><span class='line'>GENERAL.CON-PATH:                       /org/freedesktop/NetworkManager/ActiveConnection/0
+</span><span class='line'>WIRED-PROPERTIES.CARRIER:               on
+</span><span class='line'>IP4.ADDRESS[1]:                         192.168.191.141/24
+</span><span class='line'>IP4.GATEWAY:                            192.168.191.2
+</span><span class='line'>IP4.ROUTE[1]:                           dst = 172.17.3.0/24, nh = 192.168.191.140, mt = 100
+</span><span class='line'>IP4.DNS[1]:                             192.168.191.2
+</span><span class='line'>IP4.DOMAIN[1]:                          localdomain
+</span><span class='line'>IP6.ADDRESS[1]:                         fe80::3995:4490:e2e7:1d0f/64
+</span><span class='line'>IP6.GATEWAY:                            </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>安装pipework</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>git clone https://github.com/jpetazzo/pipework
+</span><span class='line'>cp ~/pipework/pipework /usr/local/bin/</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>运行docker</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#设置ip转发
+</span><span class='line'>echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+</span><span class='line'>
+</span><span class='line'>vi /etc/sysctl.conf
+</span><span class='line'>net.ipv4.ip_forward = 1  
+</span><span class='line'>
+</span><span class='line'>NAME=test1
+</span><span class='line'>
+</span><span class='line'>#如不需要安装软件，可以加 --net none
+</span><span class='line'>docker run -itd --name $NAME centos /bin/bash
+</span><span class='line'>
+</span><span class='line'>#docker ps -a -f name=$NAME | grep $NAME && docker start $NAME 
+</span><span class='line'>#docker exec test1 yum install -y iproute net-tools </span></code></pre></td></tr></table></div></figure>
+
+
+<h2>配置网络</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>function docker_container_ip () {
+</span><span class='line'>  local name=$1
+</span><span class='line'>  local ip=$2
+</span><span class='line'>  local gateway=${3:-$GATEWAY}
+</span><span class='line'>  
+</span><span class='line'>  pipework br0 $name $ip@$gateway
+</span><span class='line'>  #docker exec $name ifconfig 
+</span><span class='line'>  #docker exec $name route -n 
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>function docker_hosted_bridge_network_reset () {
+</span><span class='line'>  local ip=$1
+</span><span class='line'>  local gateway=$2
+</span><span class='line'>  local iface=$3
+</span><span class='line'>  
+</span><span class='line'>  if nmcli d show $iface | grep -i ethernet ; then
+</span><span class='line'>    #把地址给网桥，然后把ethernet和bridge连起来：(SSH连接操作的话，需要一条命令搞定！修改br0地址后route会变)
+</span><span class='line'>    ip addr add $ip dev br0 ; \
+</span><span class='line'>    ip addr del $ip dev $iface ; \
+</span><span class='line'>    brctl addif br0 $iface ; \
+</span><span class='line'>    #ip route del default ; \
+</span><span class='line'>    ip route add default via $gateway 
+</span><span class='line'>  fi 
+</span><span class='line'>  
+</span><span class='line'>  brctl show br0
+</span><span class='line'>}
+</span><span class='line'>
+</span><span class='line'>GATEWAY=$( route -n | grep '^0.0.0.0' | awk '{print $2}' )
+</span><span class='line'>IFACE=$( route -n | grep '^0.0.0.0' | awk '{print $8}' )
+</span><span class='line'>HOSTED_IPADDR=$( ip addr show $IFACE | grep "inet " | awk '{print $2}' )
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>设置容器的IP：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>NAME=test1
+</span><span class='line'>IP=192.168.191.210/24
+</span><span class='line'>
+</span><span class='line'>docker_container_ip $NAME $IP $GATEWAY
+</span><span class='line'>docker_hosted_bridge_network_reset $HOSTED_IPADDR $GATEWAY $IFACE</span></code></pre></td></tr></table></div></figure>
+
+
+<p>上面的方式配置方式<strong>重启就失效</strong>的，可以通过写配置文件的方式来永久生效。如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-ens33 
+</span><span class='line'>TYPE=Ethernet
+</span><span class='line'>DEVICE=ens33
+</span><span class='line'>BRIDGE=br0
+</span><span class='line'>[root@kube-worker1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-br0 
+</span><span class='line'>DEVICE=br0
+</span><span class='line'>TYPE=Bridge
+</span><span class='line'>ONBOOT=yes
+</span><span class='line'>BOOTPROTO=static
+</span><span class='line'>IPADDR=192.168.191.141
+</span><span class='line'>NETMASK=255.255.255.0
+</span><span class='line'>GATEWAY=192.168.191.2
+</span><span class='line'>DNS1=192.168.191.2
+</span><span class='line'>
+</span><span class='line'>USERCTL=no</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>测试</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# screen
+</span><span class='line'>
+</span><span class='line'>  GATEWAY=$( route -n | grep '^0.0.0.0' | awk '{print $2}' )
+</span><span class='line'>  IFACE=$( route -n | grep '^0.0.0.0' | awk '{print $8}' )
+</span><span class='line'>  HOSTED_IPADDR=$( ip addr show $IFACE | grep "inet " | awk '{print $2}' )
+</span><span class='line'>
+</span><span class='line'>  docker run -itd --name test21 centos /bin/bash
+</span><span class='line'>  docker run -itd --name test22 centos /bin/bash
+</span><span class='line'>
+</span><span class='line'>  docker_container_ip test21 192.168.191.231/24 $GATEWAY
+</span><span class='line'>  docker_container_ip test22 192.168.191.232/24 $GATEWAY
+</span><span class='line'>
+</span><span class='line'>  docker exec test21 ping  192.168.191.140
+</span><span class='line'>  docker exec test21 ping  192.168.191.141
+</span><span class='line'>
+</span><span class='line'>[root@kube-master ~]# screen #会话"不断"
+</span><span class='line'>
+</span><span class='line'>  docker_container_ip test11 192.168.191.221/24 $GATEWAY 
+</span><span class='line'>  docker_container_ip test12 192.168.191.222/24 $GATEWAY
+</span><span class='line'>
+</span><span class='line'>  docker_hosted_bridge_network_reset $HOSTED_IPADDR $GATEWAY $IFACE
+</span><span class='line'>
+</span><span class='line'>  docker exec test11 ping 192.168.191.233</span></code></pre></td></tr></table></div></figure>
+
+
+<p>注意：容器重启后，这些配置的网卡/路由都没有了，要重新配置：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# docker stop test21
+</span><span class='line'>test21
+</span><span class='line'>[root@kube-worker1 ~]# docker start test21
+</span><span class='line'>test21
+</span><span class='line'>[root@kube-worker1 ~]# pipework route test21 show 
+</span><span class='line'>default via 172.18.0.1 dev eth0 
+</span><span class='line'>172.18.0.0/16 dev eth0  proto kernel  scope link  src 172.18.0.2 
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker1 ~]# docker_container_ip test21 192.168.191.231/24 $GATEWAY
+</span><span class='line'>[root@kube-worker1 ~]# pipework route test21 show                            
+</span><span class='line'>default via 192.168.191.2 dev eth1 
+</span><span class='line'>172.18.0.0/16 dev eth0  proto kernel  scope link  src 172.18.0.2 
+</span><span class='line'>192.168.191.0/24 dev eth1  proto kernel  scope link  src 192.168.191.231 
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker1 ~]# docker exec test21 ping 192.168.191.140</span></code></pre></td></tr></table></div></figure>
+
+
+<p>了解原理后，操作起来还是比较容易的。就是每次重启都要重新配置比较烦。可以写成脚本，启动docker容器的时刻就执行下网络配置。</p>
+
+<p>pipework还可以用来配置vlan，暂时没这个需求，并且基本的操作都类似就没有实际操作了。</p>
+
+<p>话说，<strong> pipework还可以用来创建多网卡的容器。用docker network connect其实更简单。 </strong></p>
+
+<h2>后记</h2>
+
+<p>除了通过pipework来实现共享物理网络外，docker network也可以实现这个功能：</p>
+
+<ul>
+<li><a href="https://stackoverflow.com/questions/35742807/docker-1-10-containers-ip-in-lan/35799206#35799206">Docker 1.10 container&rsquo;s IP in LAN</a></li>
+<li><p><a href="https://gist.github.com/dreamcat4/bc202ae175b367bcbe693da7a52851af">using bridge driver and brctrl.md</a> 感觉原理也类似pipework，就是那一堆的netns让 docker network + docker run &ndash;net 实现了而已。</p></li>
+<li><p>建立并配置Bridge：</p></li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>#中间会导致网络断掉，一条命令搞定才行
+</span><span class='line'>docker network create --gateway=192.168.191.141 --subnet 192.168.191.0/24 --aux-address "DefaultGatewayIPv4=192.168.191.2" -o com.docker.network.bridge.name=br-home-net homenet ; \
+</span><span class='line'>ip addr del 192.168.191.141/24 dev ens33 ; \
+</span><span class='line'>brctl addif br-home-net ens33 
+</span><span class='line'>
+</span><span class='line'>#主机不上外网可以不加
+</span><span class='line'>ip route add default via 192.168.191.2 ; 
+</span><span class='line'>echo "nameserver 114.114.114.114" &gt;&gt;/etc/resolv.conf ; </span></code></pre></td></tr></table></div></figure>
+
+
+<ul>
+<li>测试 docker-net + bridge：</li>
+</ul>
+
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+<span class='line-number'>40</span>
+<span class='line-number'>41</span>
+<span class='line-number'>42</span>
+<span class='line-number'>43</span>
+<span class='line-number'>44</span>
+<span class='line-number'>45</span>
+<span class='line-number'>46</span>
+<span class='line-number'>47</span>
+<span class='line-number'>48</span>
+<span class='line-number'>49</span>
+<span class='line-number'>50</span>
+<span class='line-number'>51</span>
+<span class='line-number'>52</span>
+<span class='line-number'>53</span>
+<span class='line-number'>54</span>
+<span class='line-number'>55</span>
+<span class='line-number'>56</span>
+<span class='line-number'>57</span>
+<span class='line-number'>58</span>
+<span class='line-number'>59</span>
+<span class='line-number'>60</span>
+<span class='line-number'>61</span>
+<span class='line-number'>62</span>
+<span class='line-number'>63</span>
+<span class='line-number'>64</span>
+<span class='line-number'>65</span>
+<span class='line-number'>66</span>
+<span class='line-number'>67</span>
+<span class='line-number'>68</span>
+<span class='line-number'>69</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@kube-worker1 ~]# ip a
+</span><span class='line'>...
+</span><span class='line'>2: ens33: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast master br-home-net state UP qlen 1000
+</span><span class='line'>    link/ether 00:0c:29:2e:67:4d brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>4: docker0: &lt;NO-CARRIER,BROADCAST,MULTICAST,UP&gt; mtu 1500 qdisc noqueue state DOWN 
+</span><span class='line'>    link/ether 02:42:44:ef:32:28 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 172.18.0.1/16 scope global docker0
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>11: br-home-net: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc noqueue state UP 
+</span><span class='line'>    link/ether 02:42:84:97:c2:25 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 192.168.191.141/24 scope global br-home-net
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>    inet6 fe80::42:84ff:fe97:c225/64 scope link 
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>       
+</span><span class='line'>[root@kube-worker1 ~]# docker run -tid --name c200 --net homenet --ip 192.168.191.200 busybox /bin/sh 
+</span><span class='line'>2579c2ddd18d23322eb1e145ad630205933dbc527b8981169ec6b125da8d8f1e
+</span><span class='line'>
+</span><span class='line'>[root@kube-worker1 ~]# docker exec -ti c200 sh 
+</span><span class='line'>/ # ip a
+</span><span class='line'>1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 65536 qdisc noqueue qlen 1
+</span><span class='line'>    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+</span><span class='line'>    inet 127.0.0.1/8 scope host lo
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>12: eth0@if13: &lt;BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN&gt; mtu 1500 qdisc noqueue 
+</span><span class='line'>    link/ether 02:42:c0:a8:bf:c8 brd ff:ff:ff:ff:ff:ff
+</span><span class='line'>    inet 192.168.191.200/24 scope global eth0
+</span><span class='line'>       valid_lft forever preferred_lft forever
+</span><span class='line'>/ # route -n
+</span><span class='line'>Kernel IP routing table
+</span><span class='line'>Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+</span><span class='line'>0.0.0.0         192.168.191.2   0.0.0.0         UG    0      0        0 eth0
+</span><span class='line'>192.168.191.0   0.0.0.0         255.255.255.0   U     0      0        0 eth0
+</span><span class='line'>/ # ping baidu.com 
+</span><span class='line'>PING baidu.com (111.13.101.208): 56 data bytes
+</span><span class='line'>64 bytes from 111.13.101.208: seq=0 ttl=128 time=48.225 ms
+</span><span class='line'>^C
+</span><span class='line'>--- baidu.com ping statistics ---
+</span><span class='line'>1 packets transmitted, 1 packets received, 0% packet loss
+</span><span class='line'>round-trip min/avg/max = 48.225/48.225/48.225 ms
+</span><span class='line'>/ # ping 192.169.191.140
+</span><span class='line'>PING 192.169.191.140 (192.169.191.140): 56 data bytes
+</span><span class='line'>^C
+</span><span class='line'>--- 192.169.191.140 ping statistics ---
+</span><span class='line'>4 packets transmitted, 0 packets received, 100% packet loss
+</span><span class='line'>/ # ping 192.168.191.140
+</span><span class='line'>PING 192.168.191.140 (192.168.191.140): 56 data bytes
+</span><span class='line'>64 bytes from 192.168.191.140: seq=0 ttl=64 time=2.572 ms
+</span><span class='line'>64 bytes from 192.168.191.140: seq=1 ttl=64 time=1.076 ms
+</span><span class='line'>^C
+</span><span class='line'>--- 192.168.191.140 ping statistics ---
+</span><span class='line'>2 packets transmitted, 2 packets received, 0% packet loss
+</span><span class='line'>round-trip min/avg/max = 1.076/1.824/2.572 ms
+</span><span class='line'>/ # ping 192.168.191.141
+</span><span class='line'>PING 192.168.191.141 (192.168.191.141): 56 data bytes
+</span><span class='line'>64 bytes from 192.168.191.141: seq=0 ttl=64 time=0.474 ms
+</span><span class='line'>64 bytes from 192.168.191.141: seq=1 ttl=64 time=0.138 ms
+</span><span class='line'>^C
+</span><span class='line'>--- 192.168.191.141 ping statistics ---
+</span><span class='line'>2 packets transmitted, 2 packets received, 0% packet loss
+</span><span class='line'>round-trip min/avg/max = 0.138/0.306/0.474 ms
+</span><span class='line'>/ # ping 192.168.191.1
+</span><span class='line'>PING 192.168.191.1 (192.168.191.1): 56 data bytes
+</span><span class='line'>64 bytes from 192.168.191.1: seq=0 ttl=128 time=1.068 ms
+</span><span class='line'>64 bytes from 192.168.191.1: seq=1 ttl=128 time=0.603 ms
+</span><span class='line'>^C
+</span><span class='line'>--- 192.168.191.1 ping statistics ---
+</span><span class='line'>2 packets transmitted, 2 packets received, 0% packet loss
+</span><span class='line'>round-trip min/avg/max = 0.603/0.835/1.068 ms
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1650,240 +2160,6 @@ your root STAF directory</p>
 
     </article>
   
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2017-09-18T23:46:24+08:00" pubdate data-updated="true">Mon 2017-09-18 23:46</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>Redmine是类似JIRA的一个项目/BUG管理工具，使用ruby语言编写的。安装相对就麻烦一点，不熟嘛，一堆的东西要安装。有两种简单/傻瓜式的安装方式：</p>
-
-<ul>
-<li>bitnami-redmine，相当于一键安装；</li>
-<li>docker + redmine，使用docker把所有的依赖都安装好，只需要配置remine即可。</li>
-</ul>
-
-
-<p>这里选择使用docker-compose来安装 <a href="https://github.com/sameersbn/docker-redmine">sameersbn/redmine:3.4.2</a></p>
-
-<h2>部署</h2>
-
-<p>先跑起来，然后再根据需求修改配置。搞得不好的话，重新安装也超级简单，是吧！</p>
-
-<ul>
-<li><a href="https://github.com/sameersbn/docker-redmine#quick-start">https://github.com/sameersbn/docker-redmine#quick-start</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>mkdir -p /srv/docker/redmine/{redmine,postgresql}
-</span><span class='line'>
-</span><span class='line'>wget https://raw.githubusercontent.com/sameersbn/docker-redmine/master/docker-compose.yml
-</span><span class='line'>docker-compose up
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>启动后，浏览器访问 <a href="http://HOSTED_IP:10083">http://HOSTED_IP:10083</a> ，使用 admin/admin 登录。</p>
-
-<ul>
-<li>重新弄，初始化：</li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>docker-compose rm -f 或者 docker-compose down
-</span><span class='line'>
-</span><span class='line'>rm -rf /srv/docker/redmine/redmine/tmp/*
-</span><span class='line'>rm -rf /srv/docker/redmine/postgresql/* 
-</span><span class='line'>
-</span><span class='line'>docker-compose up --build
-</span><span class='line'>
-</span><span class='line'>#docker-compose up -d
-</span><span class='line'>#docker-compose start</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>Theme主题</h2>
-
-<ul>
-<li><a href="https://github.com/sameersbn/docker-redmine#themes">https://github.com/sameersbn/docker-redmine#themes</a></li>
-<li><a href="http://www.redmine.org/projects/redmine/wiki/Themes">http://www.redmine.org/projects/redmine/wiki/Themes</a></li>
-<li><a href="https://www.redmineup.com/pages/themes/a1">https://www.redmineup.com/pages/themes/a1</a></li>
-</ul>
-
-
-<p>改头换面，下载主题后放到 /srv/docker/redmine/redmine/themes/ 目录下。然后 <strong> 重启容器 </strong>，再重新登录，修改 <strong> 管理 - 配置 - 显示 - 主题 - A1 </strong></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@k8s redmine]# ll /srv/docker/redmine/redmine/themes/
-</span><span class='line'>total 0
-</span><span class='line'>drwxr-xr-x. 6 es es 69 Sep 18 23:38 a1
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>Plugins</h2>
-
-<p>有些插件不兼容3.4，注意版本的选择！以下是在3.4下面安装使用的插件：</p>
-
-<ul>
-<li><a href="http://www.redmine.org/projects/redmine/wiki/Plugins">http://www.redmine.org/projects/redmine/wiki/Plugins</a></li>
-<li><a href="http://www.redmine.org/plugins/clipboard_image_paste">http://www.redmine.org/plugins/clipboard_image_paste</a></li>
-<li><a href="https://github.com/peclik/clipboard_image_paste">https://github.com/peclik/clipboard_image_paste</a></li>
-<li><a href="http://www.redmine.org/plugins/redmine_checklists">http://www.redmine.org/plugins/redmine_checklists</a></li>
-<li><a href="http://www.redmine.org/plugins/redmine_agile">http://www.redmine.org/plugins/redmine_agile</a></li>
-<li><a href="https://github.com/paginagmbh/redmine_lightbox2.git">https://github.com/paginagmbh/redmine_lightbox2.git</a></li>
-<li><a href="https://github.com/paginagmbh/redmine_lightbox2">https://github.com/paginagmbh/redmine_lightbox2</a></li>
-<li><a href="http://www.redmine.org/plugins/mega_calendar">http://www.redmine.org/plugins/mega_calendar</a></li>
-<li><a href="https://github.com/berti92/mega_calendar/wiki/Installation">https://github.com/berti92/mega_calendar/wiki/Installation</a></li>
-<li><a href="http://www.redmine.org/plugins/redmine_work_time">http://www.redmine.org/plugins/redmine_work_time</a></li>
-<li><a href="http://www.redmine.org/plugins/redmine_issue_templates">http://www.redmine.org/plugins/redmine_issue_templates</a></li>
-<li>Kanban</li>
-<li><a href="http://www.redmine.org/plugins/redhopper">http://www.redmine.org/plugins/redhopper</a></li>
-<li><a href="http://www.redmine.org/plugins/redhopper">http://www.redmine.org/plugins/redhopper</a></li>
-<li><a href="http://www.redmine.org/plugins/deployer">http://www.redmine.org/plugins/deployer</a></li>
-<li><a href="https://github.com/zapic0/deployer">https://github.com/zapic0/deployer</a></li>
-<li><a href="http://www.redmine.org/plugins/redmine-ckeditor">http://www.redmine.org/plugins/redmine-ckeditor</a></li>
-<li><a href="https://github.com/a-ono/redmine_ckeditor">https://github.com/a-ono/redmine_ckeditor</a></li>
-<li><a href="http://www.redmine.org/plugins/apijs">http://www.redmine.org/plugins/apijs</a> 有一些依赖要安装，没用到的可以不安装apijs这个插件。</li>
-<li><a href="https://www.luigifab.info/redmine/en/apijs.php">https://www.luigifab.info/redmine/en/apijs.php</a></li>
-</ul>
-
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[root@k8s plugins]# sed -i '/haml/s/^/#/' redhopper/Gemfile           
-</span><span class='line'>[root@k8s plugins]# mv apijs redmine_apijs
-</span><span class='line'>
-</span><span class='line'>[root@k8s redmine]# ll /srv/docker/redmine/redmine/plugins/
-</span><span class='line'>total 0
-</span><span class='line'>drwxr-xr-x.  8 es es 118 Sep 18 14:05 clipboard_image_paste
-</span><span class='line'>drwxr-xr-x. 10 es es 212 Sep 18 19:18 deployer
-</span><span class='line'>drwxr-xr-x.  7 es es 160 Sep 18 12:00 issuefy
-</span><span class='line'>drwxr-xr-x.  4 es es  60 Sep 18 11:59 line_numbers
-</span><span class='line'>drwxr-xr-x.  8 es es 182 Sep 17 18:05 mega_calendar
-</span><span class='line'>drwxr-xr-x.  6 es es 158 Sep 18 12:00 open_flash_chart
-</span><span class='line'>drwxrwxr-x.  8 es es 225 Sep 18 22:15 redhopper
-</span><span class='line'>drwxr-xr-x.  9 es es 156 Sep  6 19:02 redmine_agile
-</span><span class='line'>drwxr-xr-x.  7 es es 133 Sep 18 22:00 redmine_apijs
-</span><span class='line'>drwxr-xr-x. 10 es es 119 Aug 30 21:46 redmine_checklists
-</span><span class='line'>drwxr-xr-x.  9 es es 158 Sep 18 19:19 redmine_ckeditor
-</span><span class='line'>drwxr-xr-x.  8 es es 221 Sep 18 12:01 redmine_code_review
-</span><span class='line'>drwxr-xr-x.  8 es es 252 Sep 18 12:01 redmine_dashboard
-</span><span class='line'>drwxr-xr-x.  3 es es  70 Sep 18 12:00 redmine_embedded_video
-</span><span class='line'>drwxr-xr-x.  2 es es  78 Sep 18 12:00 redmine_gist
-</span><span class='line'>drwxrwxr-x.  8 es es 129 Aug  5 10:52 redmine_issue_templates
-</span><span class='line'>drwxr-xr-x.  8 es es 170 Sep 18 17:46 redmine_lightbox2
-</span><span class='line'>drwxr-xr-x.  8 es es 160 Mar  5  2017 redmine_work_time</span></code></pre></td></tr></table></div></figure>
-
-
-<p>不重启容器的话，可以登录到容器把 ~/data/plugins 拷贝到 ~/redmine/plugins 下面，然后执行下面的命令进行更新：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>root@f0481f5f8cda:/home/redmine/redmine# 
-</span><span class='line'>bundle install --without development test
-</span><span class='line'>bundle exec rake redmine:plugins:migrate RAILS_ENV=production
-</span><span class='line'>
-</span><span class='line'>supervisorctl restart unicorn
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>其他的一些插件</h2>
-
-<ul>
-<li><a href="http://www.redmine.org/plugins/dmsf">http://www.redmine.org/plugins/dmsf</a></li>
-<li><a href="https://github.com/danmunn/redmine_dmsf">https://github.com/danmunn/redmine_dmsf</a></li>
-<li><a href="http://www.redmine.org/plugins/redmine_git_hosting">http://www.redmine.org/plugins/redmine_git_hosting</a> X</li>
-<li><a href="http://www.redmine.org/plugins/redmine_upwork_plugin">http://www.redmine.org/plugins/redmine_upwork_plugin</a></li>
-<li><a href="https://github.com/alexbevi/redmine_knowledgebase">https://github.com/alexbevi/redmine_knowledgebase</a></li>
-<li><a href="https://github.com/danmunn/redmine_dmsf">https://github.com/danmunn/redmine_dmsf</a></li>
-<li><a href="https://github.com/jbox-web/redmine_jenkins">https://github.com/jbox-web/redmine_jenkins</a></li>
-<li><a href="https://github.com/masweetman/issue_charts">https://github.com/masweetman/issue_charts</a></li>
-<li>3.3.x</li>
-<li><a href="http://www.redmine.org/plugins/redmine_pivot_table">http://www.redmine.org/plugins/redmine_pivot_table</a></li>
-<li><a href="https://www.redmine.org/plugins/advanced_roadmap_v2">https://www.redmine.org/plugins/advanced_roadmap_v2</a></li>
-<li><a href="https://github.com/Coren/redmine_advanced_roadmap_v2">https://github.com/Coren/redmine_advanced_roadmap_v2</a></li>
-<li><a href="https://github.com/Loriowar/redmine_issues_tree">https://github.com/Loriowar/redmine_issues_tree</a></li>
-<li><a href="https://github.com/speedy32129/projects_show">https://github.com/speedy32129/projects_show</a></li>
-</ul>
-
-
-<h2>参考</h2>
-
-<ul>
-<li><a href="https://github.com/bitnami/bitnami-docker-redmine">https://github.com/bitnami/bitnami-docker-redmine</a></li>
-<li><a href="http://11398377.blog.51cto.com/11388377/1875686">http://11398377.blog.51cto.com/11388377/1875686</a></li>
-</ul>
-
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
   <div class="pagination">
     
       <a class="prev" href="/posts/11">&larr; Older</a>
@@ -1906,19 +2182,23 @@ your root STAF directory</p>
 	<ul role="list">
 		
 			<li class="post">
-				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+				<a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+				<a href="/blog/2023/03/25/reinstall-raspberry2/">重新折腾raspberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+				<a href="/blog/2023/03/25/mirror-request/">请求复制/镜像</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+				<a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2021/12/08/recommand-blogs/">认真的博客</a>
 			</li>
 		
 			<li class="post">
@@ -1926,47 +2206,15 @@ your root STAF directory</p>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+				<a href="/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+				<a href="/blog/2015/09/13/review-linux-101-hacks/">【linux 101 Hacks】读后感</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
 			</li>
 		
 	</ul>
@@ -1974,6 +2222,10 @@ your root STAF directory</p>
 <section>
   <h1>Recent Posts</h1>
   <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
+      </li>
     
       <li class="post">
         <a href="/blog/2023/04/09/dingtalk-with-openai/">钉钉群机器人对接ChatGPT</a>
@@ -2001,10 +2253,6 @@ your root STAF directory</p>
     
       <li class="post">
         <a href="/blog/2023/02/01/register-openai/">注册OpenAI</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
       </li>
     
   </ul>
@@ -2037,7 +2285,7 @@ your root STAF directory</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (5) 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2078,6 +2326,10 @@ your root STAF directory</p>
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/git/'>git</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/good-series-1/'>good-series-1</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2169,7 +2421,7 @@ your root STAF directory</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (16) 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (18) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2177,11 +2429,19 @@ your root STAF directory</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redmine/'>redmine</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/respberry2/'>respberry2</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/shell/'>shell</a> (3) 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2201,7 +2461,7 @@ your root STAF directory</p>
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (70) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (71) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -2226,7 +2486,7 @@ your root STAF directory</p>
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (235)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (236)</li>
 	</ul>
 	
 </section>

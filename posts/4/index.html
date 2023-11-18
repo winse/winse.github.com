@@ -9,7 +9,7 @@
   <meta name="author" content="Winse Liu">
 
   
-  <meta name="description" content="随着时间车轮往前滚滚，Centos-7正逐渐的走下神坛，国内开源操作系统蓬勃发展，跟上时代的步伐，先把docker在欧拉上安装起来。 使用欧拉自带库非常容易安装，但是相对版本比较旧：18.09。还有就是，使用docker官网最新版，可以使用centos-8版本的库来进行安装。 &hellip;">
+  <meta name="description" content="几年前安装使用过k8s(kubernetes)，明白安装过程最大的一个难关是容器镜像的下载，所以找回原来的文章，试着用原来的代理翻墙的方式，但是原来可行的 ssh -D socks5 的方式在 Amazon Linux 2 上面不好使，最后直接在外网主机上安装并缓冲RPM，然后下载打包 k8s. &hellip;">
   
 
   <!-- http://t.co/dKP3o1e -->
@@ -85,6 +85,393 @@
     <div id="content">
       <div class="blog-index">
   
+  
+  
+    <article>
+      
+  <header>
+    
+      <h1 class="entry-title"><a href="/blog/2022/03/18/k8s-deps-download/">k8s-v1.23.5依赖下载</a></h1>
+    
+    
+      <p class="meta">
+        
+
+
+
+
+
+
+
+
+  
+
+
+<time datetime="2022-03-18T10:57:38+08:00" pubdate data-updated="true">Fri 2022-03-18 10:57</time>
+		
+        
+		
+      </p>
+    
+  </header>
+
+
+  <div class="entry-content"><p>几年前安装使用过k8s(kubernetes)，明白安装过程最大的一个难关是容器镜像的下载，所以找回原来的文章，试着用原来的代理翻墙的方式，但是原来可行的 <code>ssh -D</code> socks5 的方式在 Amazon Linux 2 上面不好使，最后直接在外网主机上安装并缓冲RPM，然后下载打包 k8s.gcr.io 下的所有镜像。</p>
+
+<p>尽管过程没有那么的严谨，但是每个步骤还是都得执行的。</p>
+
+<h2>参考文章</h2>
+
+<ul>
+<li><p><a href="https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/install-kubeadm/">安装 kubeadm</a></p></li>
+<li><p><a href="https://docs.docker.com/engine/install/centos/">Install Docker Engine on CentOS</a></p></li>
+<li><a href="https://docs.aws.amazon.com/AmazonECS/latest/developerguide/docker-basics.html">Docker basics for Amazon ECS</a></li>
+<li><p><a href="https://kubernetes.io/zh/docs/setup/production-environment/container-runtimes/#docker">容器运行时 - Docker</a></p></li>
+<li><p><a href="https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#%E5%AE%89%E8%A3%85-kubeadm-kubelet-%E5%92%8C-kubectl">安装 kubeadm、kubelet 和 kubectl</a></p></li>
+<li><p><a href="https://kubernetes.io/zh/docs/reference/setup-tools/kubeadm/kubeadm-init/#%E5%9C%A8%E6%B2%A1%E6%9C%89%E4%BA%92%E8%81%94%E7%BD%91%E8%BF%9E%E6%8E%A5%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8B%E8%BF%90%E8%A1%8C-kubeadm">在没有互联网连接的情况下运行 kubeadm</a></p></li>
+<li><p><a href="https://www.jianshu.com/p/5fe108d70310">k8s metrics-server 轻量化监控</a></p></li>
+</ul>
+
+
+<h2>安装Docker</h2>
+
+<p>k8s的pod需要容器运行时（Container Runtime），这里直接选择熟悉的docker。外网的主机是centos7的，按照docker官网步骤安装。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+<span class='line-number'>37</span>
+<span class='line-number'>38</span>
+<span class='line-number'>39</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## https://docs.docker.com/engine/install/centos/
+</span><span class='line'>$ sudo yum remove docker \
+</span><span class='line'>                   docker-client \
+</span><span class='line'>                   docker-client-latest \
+</span><span class='line'>                   docker-common \
+</span><span class='line'>                   docker-latest \
+</span><span class='line'>                   docker-latest-logrotate \
+</span><span class='line'>                   docker-logrotate \
+</span><span class='line'>                   docker-engine
+</span><span class='line'>
+</span><span class='line'>$ sudo yum install -y yum-utils
+</span><span class='line'>$ sudo yum-config-manager \
+</span><span class='line'>     --add-repo \
+</span><span class='line'>     https://download.docker.com/linux/centos/docker-ce.repo
+</span><span class='line'>
+</span><span class='line'>$ yum list docker-ce --showduplicates | sort -r
+</span><span class='line'>
+</span><span class='line'>$ sudo yum clean all
+</span><span class='line'>$ sudo yum install docker-ce docker-ce-cli containerd.io
+</span><span class='line'>
+</span><span class='line'>$ sudo service docker start
+</span><span class='line'>$ sudo systemctl enable docker
+</span><span class='line'># docker info
+</span><span class='line'>
+</span><span class='line'>## https://kubernetes.io/zh/docs/setup/production-environment/container-runtimes/#docker
+</span><span class='line'>$ cat &lt;&lt;EOF | sudo tee /etc/docker/daemon.json
+</span><span class='line'>{
+</span><span class='line'>  "exec-opts": ["native.cgroupdriver=systemd"],
+</span><span class='line'>  "log-driver": "json-file",
+</span><span class='line'>  "log-opts": {
+</span><span class='line'>    "max-size": "100m"
+</span><span class='line'>  },
+</span><span class='line'>  "storage-driver": "overlay2"
+</span><span class='line'>}
+</span><span class='line'>EOF
+</span><span class='line'>
+</span><span class='line'>$ sudo systemctl enable docker
+</span><span class='line'>$ sudo systemctl daemon-reload
+</span><span class='line'>$ sudo systemctl restart docker
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>安装 kubeadm、kubelet 和 kubectl</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## 设置缓冲
+</span><span class='line'># vi /etc/yum.conf 
+</span><span class='line'>keepcache=1
+</span><span class='line'>
+</span><span class='line'>
+</span><span class='line'>## https://kubernetes.io/zh/docs/setup/production-environment/tools/kubeadm/install-kubeadm/#%E5%AE%89%E8%A3%85-kubeadm-kubelet-%E5%92%8C-kubectl
+</span><span class='line'>## 在官网基础上，禁用gpgcheck
+</span><span class='line'># cat &lt;&lt;EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+</span><span class='line'>[kubernetes]
+</span><span class='line'>name=Kubernetes
+</span><span class='line'>baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
+</span><span class='line'>enabled=1
+</span><span class='line'>gpgcheck=0
+</span><span class='line'>repo_gpgcheck=0
+</span><span class='line'>gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+</span><span class='line'>exclude=kubelet kubeadm kubectl
+</span><span class='line'>EOF
+</span><span class='line'>
+</span><span class='line'>## 将 SELinux 设置为 permissive 模式（相当于将其禁用）
+</span><span class='line'># sudo setenforce 0
+</span><span class='line'># sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
+</span><span class='line'>
+</span><span class='line'># sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+</span><span class='line'>
+</span><span class='line'>## 无需启动 sudo systemctl enable --now kubelet
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>把缓冲的rpm下载到本地</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[root@ea5df05219bb /]# cd /var/cache/yum/
+</span><span class='line'>[root@ea5df05219bb yum]# ll -R 
+</span><span class='line'>
+</span><span class='line'>[root@ea5df05219bb yum]# yum install lrzsz 
+</span><span class='line'>
+</span><span class='line'>[root@ea5df05219bb yum]# sz x86_64/7/kubernetes/packages/*
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>在没有互联网连接的情况下运行kubeadm</h2>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+<span class='line-number'>28</span>
+<span class='line-number'>29</span>
+<span class='line-number'>30</span>
+<span class='line-number'>31</span>
+<span class='line-number'>32</span>
+<span class='line-number'>33</span>
+<span class='line-number'>34</span>
+<span class='line-number'>35</span>
+<span class='line-number'>36</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>## https://kubernetes.io/zh/docs/reference/setup-tools/kubeadm/kubeadm-init/#%E5%9C%A8%E6%B2%A1%E6%9C%89%E4%BA%92%E8%81%94%E7%BD%91%E8%BF%9E%E6%8E%A5%E7%9A%84%E6%83%85%E5%86%B5%E4%B8%8B%E8%BF%90%E8%A1%8C-kubeadm
+</span><span class='line'>
+</span><span class='line'># kubeadm config images list
+</span><span class='line'>k8s.gcr.io/kube-apiserver:v1.23.5
+</span><span class='line'>k8s.gcr.io/kube-controller-manager:v1.23.5
+</span><span class='line'>k8s.gcr.io/kube-scheduler:v1.23.5
+</span><span class='line'>k8s.gcr.io/kube-proxy:v1.23.5
+</span><span class='line'>k8s.gcr.io/pause:3.6
+</span><span class='line'>k8s.gcr.io/etcd:3.5.1-0
+</span><span class='line'>k8s.gcr.io/coredns/coredns:v1.8.6
+</span><span class='line'>
+</span><span class='line'># kubeadm config images pull
+</span><span class='line'>[config/images] Pulled k8s.gcr.io/kube-apiserver:v1.23.5
+</span><span class='line'>[config/images] Pulled k8s.gcr.io/kube-controller-manager:v1.23.5
+</span><span class='line'>[config/images] Pulled k8s.gcr.io/kube-scheduler:v1.23.5
+</span><span class='line'>[config/images] Pulled k8s.gcr.io/kube-proxy:v1.23.5
+</span><span class='line'>[config/images] Pulled k8s.gcr.io/pause:3.6
+</span><span class='line'>[config/images] Pulled k8s.gcr.io/etcd:3.5.1-0
+</span><span class='line'>[config/images] Pulled k8s.gcr.io/coredns/coredns:v1.8.6
+</span><span class='line'>
+</span><span class='line'># docker images
+</span><span class='line'>REPOSITORY                           TAG       IMAGE ID       CREATED         SIZE
+</span><span class='line'>k8s.gcr.io/kube-apiserver            v1.23.5   3fc1d62d6587   14 hours ago    135MB
+</span><span class='line'>k8s.gcr.io/kube-proxy                v1.23.5   3c53fa8541f9   14 hours ago    112MB
+</span><span class='line'>k8s.gcr.io/kube-controller-manager   v1.23.5   b0c9e5e4dbb1   14 hours ago    125MB
+</span><span class='line'>k8s.gcr.io/kube-scheduler            v1.23.5   884d49d6d8c9   14 hours ago    53.5MB
+</span><span class='line'>k8s.gcr.io/etcd                      3.5.1-0   25f8c7f3da61   4 months ago    293MB
+</span><span class='line'>k8s.gcr.io/coredns/coredns           v1.8.6    a4ca41631cc7   5 months ago    46.8MB
+</span><span class='line'>k8s.gcr.io/pause                     3.6       6270bb605e12   6 months ago    683kB
+</span><span class='line'>centos                               7         8652b9f0cb4c   16 months ago   204MB
+</span><span class='line'>
+</span><span class='line'># docker images | awk '{print $1}' | grep k8s | xargs echo 
+</span><span class='line'>k8s.gcr.io/kube-apiserver k8s.gcr.io/kube-proxy k8s.gcr.io/kube-controller-manager k8s.gcr.io/kube-scheduler k8s.gcr.io/etcd k8s.gcr.io/coredns/coredns k8s.gcr.io/pause
+</span><span class='line'>
+</span><span class='line'># docker save -o k8s-v1.23.5.tar k8s.gcr.io/kube-apiserver k8s.gcr.io/kube-proxy k8s.gcr.io/kube-controller-manager k8s.gcr.io/kube-scheduler k8s.gcr.io/etcd k8s.gcr.io/coredns/coredns k8s.gcr.io/pause
+</span><span class='line'># gzip k8s-v1.23.5.tar
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>把导出的images下载回来后，加载到本地主机</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ docker load -i k8s-v1.23.5.tar.gz 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>metrics-server</h2>
+
+<p>metrics server的镜像也是在google的服务上的，也下载保存下来。在dashboard上可以通过它查看node/pod的cpu/内存占用图形情况。</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'># docker pull k8s.gcr.io/metrics-server/metrics-server:v0.6.1
+</span><span class='line'>
+</span><span class='line'># docker save -o metrics-server-v0.6.1.tar k8s.gcr.io/metrics-server/metrics-server:v0.6.1
+</span><span class='line'># gzip metrics-server-v0.6.1.tar 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>下载回来后，加载到本地主机</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ docker load -i metrics-server-v0.6.1.tar.gz 
+</span></code></pre></td></tr></table></div></figure>
+
+
+<p>基本安装好后，本地镜像如下：</p>
+
+<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
+<span class='line-number'>2</span>
+<span class='line-number'>3</span>
+<span class='line-number'>4</span>
+<span class='line-number'>5</span>
+<span class='line-number'>6</span>
+<span class='line-number'>7</span>
+<span class='line-number'>8</span>
+<span class='line-number'>9</span>
+<span class='line-number'>10</span>
+<span class='line-number'>11</span>
+<span class='line-number'>12</span>
+<span class='line-number'>13</span>
+<span class='line-number'>14</span>
+<span class='line-number'>15</span>
+<span class='line-number'>16</span>
+<span class='line-number'>17</span>
+<span class='line-number'>18</span>
+<span class='line-number'>19</span>
+<span class='line-number'>20</span>
+<span class='line-number'>21</span>
+<span class='line-number'>22</span>
+<span class='line-number'>23</span>
+<span class='line-number'>24</span>
+<span class='line-number'>25</span>
+<span class='line-number'>26</span>
+<span class='line-number'>27</span>
+</pre></td><td class='code'><pre><code class=''><span class='line'>[ec2-user@k8s ~]$ docker images 
+</span><span class='line'>REPOSITORY                                       TAG       IMAGE ID       CREATED        SIZE
+</span><span class='line'>k8s.gcr.io/kube-apiserver                        v1.23.5   3fc1d62d6587   39 hours ago   135MB
+</span><span class='line'>k8s.gcr.io/kube-proxy                            v1.23.5   3c53fa8541f9   39 hours ago   112MB
+</span><span class='line'>k8s.gcr.io/kube-scheduler                        v1.23.5   884d49d6d8c9   39 hours ago   53.5MB
+</span><span class='line'>k8s.gcr.io/kube-controller-manager               v1.23.5   b0c9e5e4dbb1   39 hours ago   125MB
+</span><span class='line'>rancher/mirrored-flannelcni-flannel              v0.17.0   9247abf08677   2 weeks ago    59.8MB
+</span><span class='line'>k8s.gcr.io/metrics-server/metrics-server         v0.6.1    e57a417f15d3   5 weeks ago    68.8MB
+</span><span class='line'>rancher/mirrored-flannelcni-flannel-cni-plugin   v1.0.1    ac40ce625740   8 weeks ago    8.1MB
+</span><span class='line'>k8s.gcr.io/etcd                                  3.5.1-0   25f8c7f3da61   4 months ago   293MB
+</span><span class='line'>k8s.gcr.io/coredns/coredns                       v1.8.6    a4ca41631cc7   5 months ago   46.8MB
+</span><span class='line'>k8s.gcr.io/pause                                 3.6       6270bb605e12   6 months ago   683kB
+</span><span class='line'>
+</span><span class='line'>[ec2-user@worker1 ~]$ docker images 
+</span><span class='line'>REPOSITORY                                       TAG       IMAGE ID       CREATED        SIZE
+</span><span class='line'>k8s.gcr.io/kube-apiserver                        v1.23.5   3fc1d62d6587   39 hours ago   135MB
+</span><span class='line'>k8s.gcr.io/kube-proxy                            v1.23.5   3c53fa8541f9   39 hours ago   112MB
+</span><span class='line'>k8s.gcr.io/kube-controller-manager               v1.23.5   b0c9e5e4dbb1   39 hours ago   125MB
+</span><span class='line'>k8s.gcr.io/kube-scheduler                        v1.23.5   884d49d6d8c9   39 hours ago   53.5MB
+</span><span class='line'>kubernetesui/dashboard                           v2.5.1    7fff914c4a61   7 days ago     243MB
+</span><span class='line'>rancher/mirrored-flannelcni-flannel              v0.17.0   9247abf08677   2 weeks ago    59.8MB
+</span><span class='line'>k8s.gcr.io/metrics-server/metrics-server         v0.6.1    e57a417f15d3   5 weeks ago    68.8MB
+</span><span class='line'>rancher/mirrored-flannelcni-flannel-cni-plugin   v1.0.1    ac40ce625740   8 weeks ago    8.1MB
+</span><span class='line'>k8s.gcr.io/etcd                                  3.5.1-0   25f8c7f3da61   4 months ago   293MB
+</span><span class='line'>k8s.gcr.io/coredns/coredns                       v1.8.6    a4ca41631cc7   5 months ago   46.8MB
+</span><span class='line'>k8s.gcr.io/pause                                 3.6       6270bb605e12   6 months ago   683kB
+</span><span class='line'>kubernetesui/metrics-scraper                     v1.0.7    7801cfc6d5c0   9 months ago   34.4MB
+</span></code></pre></td></tr></table></div></figure>
+
+
+<h2>小结</h2>
+
+<p>本文就要在外网模拟了一下安装，把需要翻墙的两个组件（rpm，docker image）缓冲下来，然后在本地机器上直接使用。</p>
+
+<p>下载的 最新版本v1.23.5 的（需翻墙的）依赖可以在百度网盘下载：</p>
+
+<pre><code>链接：https://pan.baidu.com/s/1P3ABqKGt1JhNkg-9yB22yQ 
+提取码：k7af
+</code></pre>
+
+<p>&ndash;END</p>
+</div>
+  
+  
+
+
+    </article>
   
   
     <article>
@@ -1048,7 +1435,9 @@
 <p>5) 断路由器的电，然后按着reset键不松手，最后通电5秒后再松开reset键      <br/>
 6) 访问 <a href="http://192.168.1.1">http://192.168.1.1</a> 进入Breed Web恢复控制台   <br/>
 7) 恢复出厂设置，选 <code>Config区（公版）</code>   <br/>
+等一阵子，不行再点一次
 8) 固件更新，选 <code>固件</code> 上面的trx文件，然后等     <br/>
+上传成功，会出来跳到upgrading.html的页面，有进度条的。
 9) 偶尔刷新 192.168.123.1 , 访问成功就说明ok了。默认密码admin/admin</p>
 
 <h2>科学上网</h2>
@@ -1056,353 +1445,6 @@
 <p><a href="https://ssrv2ray.xyz/posts/%E8%80%81%E6%AF%9B%E5%AD%90padavan%E5%9B%BA%E4%BB%B6ssv2ray%E6%9C%BA%E5%9C%BA%E6%9C%8D%E5%8A%A1%E5%99%A8%E8%AE%A2%E9%98%85%E4%B8%8Eclash%E9%85%8D%E7%BD%AE">https://ssrv2ray.xyz/posts/%E8%80%81%E6%AF%9B%E5%AD%90padavan%E5%9B%BA%E4%BB%B6ssv2ray%E6%9C%BA%E5%9C%BA%E6%9C%8D%E5%8A%A1%E5%99%A8%E8%AE%A2%E9%98%85%E4%B8%8Eclash%E9%85%8D%E7%BD%AE</a></p>
 
 <p><a href="https://viencoding.com/article/155">https://viencoding.com/article/155</a></p>
-
-<p>&ndash;END</p>
-</div>
-  
-  
-
-
-    </article>
-  
-  
-    <article>
-      
-  <header>
-    
-      <h1 class="entry-title"><a href="/blog/2020/05/11/redmine-on-arm-pi/">在树莓派上部署redmine - Respberrypi</a></h1>
-    
-    
-      <p class="meta">
-        
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2020-05-11T10:33:44+08:00" pubdate data-updated="true">Mon 2020-05-11 10:33</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-  <div class="entry-content"><p>变废为宝。</p>
-
-<p>服务器没怎么用，但是偶尔又想访问下文档或者redmine，狠狠心咬咬牙最后把x64上的迁移到了树莓派2： Raspbian GNU/Linux 9 (stretch) 。</p>
-
-<p>温故下原来redmine的安装过程： <a href="http://www.winseliu.com/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a></p>
-
-<p>过程中涉及到了docker的重新编译，这其中主要使用ubuntu apt源码在本地arm上进行再编译。其中涉及的镜像有：</p>
-
-<ul>
-<li><a href="https://github.com/sameersbn/docker-ubuntu/tree/14.04">https://github.com/sameersbn/docker-ubuntu/tree/14.04</a></li>
-<li><a href="https://github.com/sameersbn/docker-postgresql/tree/9.6-2">https://github.com/sameersbn/docker-postgresql/tree/9.6-2</a></li>
-<li><a href="https://github.com/sameersbn/docker-redmine/tree/3.4.6">https://github.com/sameersbn/docker-redmine/tree/3.4.6</a></li>
-</ul>
-
-
-<h2>备份</h2>
-
-<p>redmine直接整个目录打包 /srv/docker/redmine/redmine 。数据库的要备份出来，架构不同不兼容。</p>
-
-<p>这是编译后arm postgres直接用x64的/srv/docker/redmine/postgresql的报错信息：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~# docker run --rm -ti --entrypoint="bash" -v /srv/docker/redmine/postgresql:/var/lib/postgresql sameersbn/postgresql:9.6-2 
-</span><span class='line'>
-</span><span class='line'>root@8f39c2904607:/var/lib/postgresql# sudo -HEu postgres /usr/lib/postgresql/9.6/bin/pg_ctl -D /var/lib/postgresql/9.6/main -w start
-</span><span class='line'>waiting for server to start....FATAL:  database files are incompatible with server
-</span><span class='line'>DETAIL:  The database cluster was initialized with USE_FLOAT8_BYVAL but the server was compiled without USE_FLOAT8_BYVAL.
-</span><span class='line'>HINT:  It looks like you need to recompile or initdb.
-</span><span class='line'>LOG:  database system is shut down
-</span><span class='line'>stopped waiting
-</span><span class='line'>pg_ctl: could not start server
-</span><span class='line'>Examine the log output.</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>编译ubuntu镜像</h2>
-
-<p>直接使用最新的trusty发布版镜像。由于低版本的可能会没有 linux/arm/v7 : <a href="https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty">https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty</a></p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~/docker-ubuntu# vi Dockerfile
-</span><span class='line'>FROM ubuntu:trusty
-</span><span class='line'>
-</span><span class='line'>docker build -t sameersbn/ubuntu:14.04.20170123 . 
-</span><span class='line'>docker tag sameersbn/ubuntu:14.04.20170123 sameersbn/ubuntu:14.04.20170711 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>编译postgres镜像</h2>
-
-<p>由于postgresql apt的库中没有armhf的deb，需要先手动编译好对应的deb。先运行一个容器，再里面编译好postgres。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
-</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
-</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
-</span><span class='line'> && apt-get update
-</span><span class='line'>
-</span><span class='line'>root@7d55994af11e:/# apt-get build-dep dh-exec postgresql-common  pgdg-keyring     
-</span><span class='line'>root@7d55994af11e:/# apt-get source --compile dh-exec postgresql-common  pgdg-keyring   
-</span><span class='line'>
-</span><span class='line'>root@7d55994af11e:/# apt-get build-dep postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} dh-exec
-</span><span class='line'>root@7d55994af11e:/# apt-get source --compile postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} 
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>再测试安装一下这些deb：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
-</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
-</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
-</span><span class='line'> && apt-get update
-</span><span class='line'>
-</span><span class='line'>apt-get install -y acl \
-</span><span class='line'>    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6
-</span><span class='line'>
-</span><span class='line'>dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb
-</span><span class='line'>
-</span><span class='line'>dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>修改Dockerfile，直接通过dpkg安装postgresql的deb：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>root@raspberrypi:~/docker-postgresql# less Dockerfile 
-</span><span class='line'>...
-</span><span class='line'>COPY deb/ /tmp/psql/
-</span><span class='line'>
-</span><span class='line'>RUN wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-</span><span class='line'> && echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
-</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
-</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
-</span><span class='line'> && apt-get update \
-</span><span class='line'> && DEBIAN_FRONTEND=noninteractive apt-get install -y acl \
-</span><span class='line'>    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6 \
-</span><span class='line'> && cd /tmp/psql \
-</span><span class='line'> && dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb \
-</span><span class='line'> && dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb \
-</span><span class='line'> && rm -rf /tmp/psql \
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>root@raspberrypi:~/docker-postgresql# docker build -t sameersbn/postgresql:9.6-2 .</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>编译redmine镜像</h2>
-
-<p>redmine主要是缺少ruby2.3的包，跟上面的步骤类似。先编译出arm的ruby2.3，再编译镜像。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
-</span><span class='line'>&& sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list
-</span><span class='line'>
-</span><span class='line'>apt-get build-dep ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
-</span><span class='line'>apt-get source --compile ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
-</span><span class='line'>
-</span><span class='line'>
-</span><span class='line'>root@raspberrypi:~/docker-redmine# vi Dockerfile 
-</span><span class='line'>...
-</span><span class='line'>COPY deb/ /tmp/ruby/
-</span><span class='line'>
-</span><span class='line'>RUN apt-key adv --keyserver keyserver.ubuntu.com --recv E1DD270288B4E6030699E45FA1715D88E1DF1F24 \
-</span><span class='line'> && echo "deb http://ppa.launchpad.net/git-core/ppa/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
-</span><span class='line'> && apt-key adv --keyserver keyserver.ubuntu.com --recv 80F70E11F0F0D5F10CB20E62F5DA5F09C3173AA6 \
-</span><span class='line'> && echo "deb http://ppa.launchpad.net/brightbox/ruby-ng/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
-</span><span class='line'> && apt-key adv --keyserver keyserver.ubuntu.com --recv 8B3981E7A6852F782CC4951600A6F0A3C300EE8C \
-</span><span class='line'> && echo "deb http://ppa.launchpad.net/nginx/stable/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
-</span><span class='line'> && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-</span><span class='line'> && echo 'deb-src http://apt.postgresql.org/pub/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
-</span><span class='line'> && sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
-</span><span class='line'> && sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
-</span><span class='line'> && apt-get update \
-</span><span class='line'> && DEBIAN_FRONTEND=noninteractive apt-get install -y supervisor logrotate nginx mysql-client postgresql-client \
-</span><span class='line'>      imagemagick subversion git cvs bzr mercurial darcs rsync   locales openssh-client \
-</span><span class='line'>      gcc g++ make patch pkg-config gettext-base   libc6-dev zlib1g-dev libxml2-dev \
-</span><span class='line'>      libmysqlclient18 libpq5 libyaml-0-2 libcurl3 libssl1.0.0 uuid-dev xz-utils \
-</span><span class='line'>      libxslt1.1 libffi6 zlib1g gsfonts \
-</span><span class='line'>      libgmpxx4ldbl libgmp-dev libtk8.5 libxft2 libxrender1 libxss1 x11-common libtcl8.5 rubygems-integration \
-</span><span class='line'> && dpkg -i /tmp/ruby/*.deb \
-</span><span class='line'> && rm -rf /tmp/ruby \
-</span><span class='line'> && update-locale LANG=C.UTF-8 LC_MESSAGES=POSIX \
-</span><span class='line'> && gem install --no-document --version '&lt; 2.0' bundler \
-</span><span class='line'> && rm -rf /var/lib/apt/lists/*
-</span><span class='line'>...
-</span><span class='line'>
-</span><span class='line'>root@raspberrypi:~/docker-redmine# docker build -t sameersbn/redmine:3.4.6 .</span></code></pre></td></tr></table></div></figure>
-
-
-<p>如果docker构建失败，可以通过以下两种方式来进行调试：</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 1
-</span><span class='line'>docker commit $container-id image-id
-</span><span class='line'>docker run -ti $image-id bash
-</span><span class='line'>
-</span><span class='line'># 2 
-</span><span class='line'>失败也会有前一步骤的镜像已经提交，再次基础上检查后面的步骤
-</span><span class='line'>The last successful step is 2. It produced an image a3acfa4ab179. Now you start a container
-</span><span class='line'>docker run -it a3acfa4ab179 bash</span></code></pre></td></tr></table></div></figure>
-
-
-<h2>结合原有数据进行迁移</h2>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'># 备份
-</span><span class='line'>psql -U postgres -cC --if-exists -d redmine_production &gt;redmine.dump 
-</span><span class='line'>
-</span><span class='line'># 安装compose
-</span><span class='line'>root@raspberrypi:~/redmine/bin# python -m pip install --upgrade pip
-</span><span class='line'>root@raspberrypi:~/redmine/bin# pip install docker-compose
-</span><span class='line'>
-</span><span class='line'># 启动
-</span><span class='line'>root@raspberrypi:~/redmine/bin# docker-compose up -d 
-</span><span class='line'>
-</span><span class='line'># 数据库还原
-</span><span class='line'>docker cp redmine.dump e472d9ec3124:/var/lib/postgresql/
-</span><span class='line'>psql -U postgres &lt;redmine.dump
-</span><span class='line'>
-</span><span class='line'># redmine修复
-</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libmysqlclient-dev                                    
-</span><span class='line'>
-</span><span class='line'>https://stackoverflow.com/questions/13086073/rails-install-pg-cant-find-the-libpq-fe-h-header
-</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libpq-dev
-</span><span class='line'>https://stackoverflow.com/questions/38200015/package-magickcore-was-not-found-in-the-pkg-config-search-path
-</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# apt-get install libmagickwand-dev
-</span><span class='line'>
-</span><span class='line'>root@3f0774db222d:/home/redmine/redmine# bundle install                    
-</span></code></pre></td></tr></table></div></figure>
-
-
-<p>后面就直接安装docker-compose.yml中的端口映射配置访问即可。</p>
 
 <p>&ndash;END</p>
 </div>
@@ -1434,19 +1476,23 @@
 	<ul role="list">
 		
 			<li class="post">
-				<a href="/blog/2019/04/10/try-k8s/">Try K8s</a>
+				<a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/08/25/video-auto-translate/">视频自动翻译</a>
+				<a href="/blog/2023/03/25/reinstall-raspberry2/">重新折腾raspberry2</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2018/06/09/reasonable-way-to-access-the-internet/">科学上网（续）</a>
+				<a href="/blog/2023/03/25/mirror-request/">请求复制/镜像</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/11/16/sphinx-generate-docs/">使用Sphinx生成/管理文档</a>
+				<a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
+			</li>
+		
+			<li class="post">
+				<a href="/blog/2021/12/08/recommand-blogs/">认真的博客</a>
 			</li>
 		
 			<li class="post">
@@ -1454,47 +1500,15 @@
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/30/kubeadm-install-kubenetes-on-centos7/">Kubeadm部署kubernetes</a>
+				<a href="/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2017/07/08/casperjs-crawler/">爬虫之CasperJS</a>
+				<a href="/blog/2015/09/13/review-linux-101-hacks/">【linux 101 Hacks】读后感</a>
 			</li>
 		
 			<li class="post">
-				<a href="/blog/2016/09/19/163-open-movies-download/">批量下载163-open的视频</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/23/hadoop-guide-catalog/">[整理] Hadoop入门</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2016/04/04/rpm-build-your-package/">RPM打包</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/11/22/gfw-ladder/">搭梯笔记</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2015/08/24/manual-install-supervisor/">Supervisor安装配置</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/07/27/start-redis/">[读读书]Redis入门指南</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/04/21/hadoop2-windows-startguide/">Windows下部署/配置/调试hadoop2</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/03/30/git-cheatsheet/">GIT操作记录手册</a>
-			</li>
-		
-			<li class="post">
-				<a href="/blog/2014/02/23/quickly-open-program-in-windows/">[Windows运行]快速打开程序</a>
+				<a href="/blog/2013/09/19/let-shell-command-efficient/">让敲Shell命令高效起来</a>
 			</li>
 		
 	</ul>
@@ -1502,6 +1516,10 @@
 <section>
   <h1>Recent Posts</h1>
   <ul id="recent_posts">
+    
+      <li class="post">
+        <a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Respberry2</a>
+      </li>
     
       <li class="post">
         <a href="/blog/2023/04/09/dingtalk-with-openai/">钉钉群机器人对接ChatGPT</a>
@@ -1529,10 +1547,6 @@
     
       <li class="post">
         <a href="/blog/2023/02/01/register-openai/">注册OpenAI</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2022/07/24/xinchuang-install-postgres/">信创环境迁移浅析-以Postgres为例</a>
       </li>
     
   </ul>
@@ -1565,7 +1579,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (5) 
+			<a class='category' href='/blog/categories/books/'>books</a> (6) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1606,6 +1620,10 @@
 		 
 		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/git/'>git</a> (4) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/good-series-1/'>good-series-1</a> (9) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1697,7 +1715,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/recommend/'>recommend</a> (16) 
+			<a class='category' href='/blog/categories/recommend/'>recommend</a> (18) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1705,11 +1723,19 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/redmine/'>redmine</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
+			<a class='category' href='/blog/categories/respberry2/'>respberry2</a> (1) 
+		</li>
+		 
+		<li style="float:left; width:120px"> 
 			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/shell/'>shell</a> (3) 
+			<a class='category' href='/blog/categories/shell/'>shell</a> (4) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1729,7 +1755,7 @@
 		</li>
 		 
 		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/tools/'>tools</a> (70) 
+			<a class='category' href='/blog/categories/tools/'>tools</a> (71) 
 		</li>
 		 
 		<li style="float:left; width:120px"> 
@@ -1754,7 +1780,7 @@
 		
 		
 		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (235)</li>
+		<li class="category"><a href="/blog/archives">All categories</a> (236)</li>
 	</ul>
 	
 </section>
