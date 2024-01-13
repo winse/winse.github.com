@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 
-  <title><![CDATA[Category: Zookeeper | Winse Blog]]></title>
+  <title><![CDATA[Category: #zookeeper | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/zookeeper/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2023-12-07T21:28:24+08:00</updated>
+  <updated>2024-01-13T08:46:58+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,398 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[Zookeeper ACL]]></title>
+    <link href="http://winse.github.io/blog/2017/09/02/zookeeper-acl/"/>
+    <updated>2017-09-02T23:14:55+08:00</updated>
+    <id>http://winse.github.io/blog/2017/09/02/zookeeper-acl</id>
+    <content type="html"><![CDATA[<p>集群又一次进行安检，SSH躲不过需要升级的，这次还加了hadoop security和zookeeper acl的bug。以前没太在意这些内容，既然安全检查出来了，还是需要处理的。</p>
+
+<pre><code>ZooKeeper 未授权访问【原理扫描】
+详细描述    ZooKeeper是一个分布式的，开放源码的分布式应用程序协调服务，是Google的Chubby一个开源的实现，是Hadoop和Hbase的重要组件。它是一个为分布式应用提供一致性服务的软件，提供的功能包括：配置维护、域名服务、分布式同步、组服务等。 
+ZooKeeper的目标就是封装好复杂易出错的关键服务，将简单易用的接口和性能高效、功能稳定的系统提供给用户。 
+在通常情况下，zookeeper允许未经授权的访问。
+解决办法    为ZooKeeper配置相应的访问权限。 
+
+方式一： 
+1）增加一个认证用户 
+addauth digest 用户名:密码明文 
+eg. addauth digest user1:password1 
+2）设置权限 
+setAcl /path auth:用户名:密码明文:权限 
+eg. setAcl /test auth:user1:password1:cdrwa 
+3）查看Acl设置 
+getAcl /path 
+
+方式二： 
+setAcl /path digest:用户名:密码密文:权限
+
+威胁分值    5.0
+危险插件    否
+发现日期    2015-02-10
+</code></pre>
+
+<h2>Zookeeper权限基本知识点、操作</h2>
+
+<ul>
+<li><a href="https://zookeeper.apache.org/doc/r3.3.3/zookeeperProgrammers.html#sc_ZooKeeperAccessControl">https://zookeeper.apache.org/doc/r3.3.3/zookeeperProgrammers.html#sc_ZooKeeperAccessControl</a></li>
+<li><a href="https://my.oschina.net/guol/blog/1358538">https://my.oschina.net/guol/blog/1358538</a></li>
+<li><a href="http://blog.csdn.net/xyang81/article/details/53147894">http://blog.csdn.net/xyang81/article/details/53147894</a></li>
+<li><a href="https://ihong5.wordpress.com/2014/07/24/apache-zookeeper-setting-acl-in-zookeeper-client/">https://ihong5.wordpress.com/2014/07/24/apache-zookeeper-setting-acl-in-zookeeper-client/</a></li>
+<li><a href="https://zookeeper.apache.org/doc/r3.3.3/zookeeperStarted.html">https://zookeeper.apache.org/doc/r3.3.3/zookeeperStarted.html</a></li>
+</ul>
+
+
+<p>Note also that an ACL pertains only to a specific znode. In particular it does not apply to children. ACL在znode上无继承性，也就是说子znode不会继承父znode的ACL权限.</p>
+
+<ul>
+<li>world has a single id, anyone, that represents anyone.</li>
+<li>auth doesn&rsquo;t use any id, represents any authenticated user.</li>
+<li>digest uses a username:password string to generate MD5 hash which is then used as an ACL ID identity. Authentication is done by sending the username:password in clear text. When used in the ACL the expression will be the username:base64 encoded SHA1 password digest.</li>
+<li>ip uses the client host IP as an ACL ID identity. The ACL expression is of the form addr/bits(3.5+) where the most significant bits of addr are matched against the most significant bits of the client host IP.</li>
+</ul>
+
+
+<p>zookeeper的ACL格式为 schema:id:permissions 。模式就是上面列的几种，再加一个super。创建的节点默认权限为 world:anyone:rwadc 表示所有人都对这个节点有rwadc的权限。</p>
+
+<ul>
+<li>Create：允许对子节点Create 操作</li>
+<li>Read：允许对本节点GetChildren 和GetData 操作</li>
+<li>Write ：允许对本节点SetData 操作</li>
+<li>Delete ：允许对子节点Delete 操作</li>
+<li>Admin ：允许对本节点setAcl 操作</li>
+</ul>
+
+
+<h2>Auth授权</h2>
+
+<p>不需要id，当前 &ldquo;登录&rdquo; 的所有users都有权限（sasl、kerberos这些授权方式不懂，囧)。虽然不需要id，但是格式还得按照 scheme:id:perm 的写法。</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 15] setAcl /c auth:rwadc  
+auth:rwadc does not have the form scheme:id:perm
+Acl is not valid : /c
+
+[zk: k8s(CONNECTED) 13] addauth digest a:a
+[zk: k8s(CONNECTED) 14] addauth digest b:b
+[zk: k8s(CONNECTED) 15] addauth digest c:c
+[zk: k8s(CONNECTED) 16] create /e e
+Created /e
+[zk: k8s(CONNECTED) 17] setAcl /e auth::cdrwa
+...省略节点输出信息
+
+[zk: k8s(CONNECTED) 18] getAcl /e
+'digest,'a:mDmPUap4qvYwm+PZOtJ/scGyHLY=
+: cdrwa
+'digest,'b:+F8zPn3x1CLx3qpYHEaRwIheWcc=
+: cdrwa
+'digest,'c:K7CO7OxIfBOQxczG+7FI9BdZ6/s=
+: cdrwa
+</code></pre>
+
+<p>id随便写也可以，zookeeper都不记录的。</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 9] addauth digest hdfs:hdfs    
+[zk: localhost:2181(CONNECTED) 10] setAcl /c auth:x:x:rwadc
+...
+[zk: localhost:2181(CONNECTED) 11] getAcl /c               
+'digest,'user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+: cdrwa
+'digest,'hdfs:0wpra2yK6RCUB9sbo0BkElpzcl8=
+: cdrwa
+</code></pre>
+
+<p>也可以对根 / 授权，这样客户端就不能随便在根下面新建节点了。</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 9] addauth digest user:password    
+[zk: localhost:2181(CONNECTED) 21] setAcl / auth::rawdc
+
+重新登录
+[zk: localhost:2181(CONNECTED) 0] ls /
+Authentication is not valid : /
+[zk: localhost:2181(CONNECTED) 1] getAcl /
+'digest,'user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+: cdrwa
+</code></pre>
+
+<p>还原</p>
+
+<p>使用有权限的用户/实例，如果都忘了那就只能放绝招：使用超级管理员登录，重新设置权限为world即可。</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 26] setAcl / world:anyone:cdrwa
+</code></pre>
+
+<h2>Digest</h2>
+
+<p>直接用起来比 auth 简单，直接把密文交给zookeeper。首先得生成对应用户的密码。</p>
+
+<pre><code>[root@k8s zookeeper-3.4.10]# java -cp zookeeper-3.4.10.jar:lib/* org.apache.zookeeper.server.auth.DigestAuthenticationProvider user:password
+user:password-&gt;user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+
+[root@k8s zookeeper-3.4.10]# java -cp zookeeper-3.4.10.jar:lib/* org.apache.zookeeper.server.auth.DigestAuthenticationProvider es:es
+es:es-&gt;es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+</code></pre>
+
+<p>scheme是digest的时候，id需要密文。通过Zookeeper的客户端编码方式添加认证（登录），digest对应的auth数据是明文。</p>
+
+<p>ACL授权一样使用 setAcl ：</p>
+
+<pre><code>$$ A实例
+[zk: localhost:2181(CONNECTED) 17] setAcl /b digest:user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=:cdrwa
+和md5密码类似，数据库被盗了，如果是常用的密码会被猜出来
+[zk: localhost:2181(CONNECTED) 18] getAcl /b
+'digest,'user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+: cdrwa
+
+$$ B实例
+重新登录：
+[zk: k8s:2181(CONNECTED) 2] ls /b
+Authentication is not valid : /b
+
+$$ A实例
+[zk: localhost:2181(CONNECTED) 20] create /b/bb ''
+Authentication is not valid : /b/bb
+[zk: localhost:2181(CONNECTED) 21] addauth digest user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=
+[zk: localhost:2181(CONNECTED) 22] create /b/bb ''                                 
+Authentication is not valid : /b/bb
+
+# 需要使用明文登录
+[zk: localhost:2181(CONNECTED) 23] addauth digest user:password
+[zk: localhost:2181(CONNECTED) 24] create /b/bb '' 
+Created /b/bb 
+
+# 权限没有继承性
+[zk: localhost:2181(CONNECTED) 25] getAcl /b/bb
+'world,'anyone
+: cdrwa
+</code></pre>
+
+<h1>IP</h1>
+
+<p>ip的权限配置更简单些。逻辑就是匹配客户端的IP地址，在权限IP地址段范围内的才能访问。</p>
+
+<pre><code>$$ A实例
+[zk: localhost:2181(CONNECTED) 18] setAcl /i ip:127.0.0.1:cdrwa
+...
+[zk: localhost:2181(CONNECTED) 19] getAcl /i
+'ip,'127.0.0.1
+: cdrwa
+[zk: localhost:2181(CONNECTED) 24] get /i
+Authentication is not valid : /i
+
+咋回事呢，就是本地还没权限？有时可localhost不一定对应127.0.0.1的。。。
+
+$$ B实例
+[root@k8s zookeeper-3.4.10]# bin/zkCli.sh -server 127.0.0.1
+[zk: 127.0.0.1(CONNECTED) 0] get /i
+i
+...
+改成另一个网卡的ip地址
+[zk: 127.0.0.1(CONNECTED) 1] setAcl /i ip:192.168.191.138:cdrwa
+...
+[zk: 127.0.0.1(CONNECTED) 2] getAcl /i
+'ip,'192.168.191.138
+: cdrwa
+[zk: 127.0.0.1(CONNECTED) 3] get /i
+Authentication is not valid : /i
+
+$$ C实例
+用主机名(191.138)登录的实例
+[zk: k8s(CONNECTED) 19] get /i
+i
+</code></pre>
+
+<h2>超级管理员</h2>
+
+<p>如果权限设置错了，咋办？</p>
+
+<pre><code>[zk: k8s(CONNECTED) 21] setAcl /i ip:192.168.191.0/24:cdrwa                   
+Acl is not valid : /i
+
+[zk: k8s(CONNECTED) 25] setAcl /i ip:192.168.191.0:cdrwa
+
+[zk: k8s(CONNECTED) 26] getAcl /i
+'ip,'192.168.191.0
+: cdrwa
+[zk: k8s(CONNECTED) 27] get /i
+Authentication is not valid : /i
+</code></pre>
+
+<p>除非把客户端的ip地址换成 192.168.191.0 否则就访问不了了。</p>
+
+<p>此时需要超级管理员才行，不然真没办法折腾了。（不知道为啥）是可以删掉（特指我当前的环境啊），但是这样数据就没有了啊！！</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 26] getAcl /i
+'ip,'192.168.191.0
+: cdrwa
+[zk: localhost:2181(CONNECTED) 27] delete /i
+[zk: localhost:2181(CONNECTED) 28] ls /
+[a, b, c, zookeeper, d, e]
+[zk: localhost:2181(CONNECTED) 29] ls /i
+Node does not exist: /i
+</code></pre>
+
+<p>如果数据很重要，重启后用超级管理员的方式找回密码还是很划的来的。</p>
+
+<ul>
+<li><a href="https://community.hortonworks.com/articles/29900/zookeeper-using-superdigest-to-gain-full-access-to.html">https://community.hortonworks.com/articles/29900/zookeeper-using-superdigest-to-gain-full-access-to.html</a></li>
+</ul>
+
+
+<p>用 DigestAuthenticationProvider 加密就不操作了，直接用 es:es 对应的 es:es->es:KiHfMOSWCTgPKpz78IL/6qO8AEE= 作为管理员的账号密码。</p>
+
+<pre><code>export SERVER_JVMFLAGS=-Dzookeeper.DigestAuthenticationProvider.superDigest=es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+
+[root@k8s zookeeper-3.4.10]# bin/zkServer.sh stop
+[root@k8s zookeeper-3.4.10]# bin/zkServer.sh start
+ZooKeeper JMX enabled by default
+Using config: /opt/zookeeper-3.4.10/bin/../conf/zoo.cfg
+Starting zookeeper ... STARTED
+
+$$ A实例
+[root@k8s zookeeper-3.4.10]# bin/zkCli.sh 
+[zk: localhost:2181(CONNECTED) 0] get /i
+Authentication is not valid : /i
+[zk: localhost:2181(CONNECTED) 1] getAcl /i
+'ip,'192.168.191.0
+: cdrwa
+[zk: localhost:2181(CONNECTED) 2] addauth digest es:es
+[zk: localhost:2181(CONNECTED) 3] get /i
+i
+...
+[zk: localhost:2181(CONNECTED) 4] setAcl /i world:anyone:cdrwa
+...
+
+$$ B实例
+[zk: localhost:2181(CONNECTED) 0] get /i
+i
+[zk: localhost:2181(CONNECTED) 1] getAcl /i
+'world,'anyone
+: cdrwa
+</code></pre>
+
+<h2>实践&mdash;好玩</h2>
+
+<p>权限可以直接在创建的时刻指定：</p>
+
+<pre><code>create /mynode content digest:user:tpUq/4Pn5A64fVZyQ0gOJ8ZWqkY=:cdrwa
+</code></pre>
+
+<p>也可以一次性设置N个权限：</p>
+
+<p>注：以下操作都是超级管理员登录的窗口，所以不存在权限的问题。想怎么改就怎么改</p>
+
+<pre><code>setAcl /i ip:192.168.191.0:cdrwa,ip:127.0.0.1:cdrwa,ip:192.168.191.138:cdrwa
+
+getAcl /i
+'ip,'192.168.191.0
+: cdrwa
+'ip,'127.0.0.1
+: cdrwa
+'ip,'192.168.191.138
+: cdrwa
+</code></pre>
+
+<p>但是，使用ip、digest、word重设权限后，会覆盖旧的：</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 7] setAcl /i ip:0.0.0.0:cdrwa
+[zk: localhost:2181(CONNECTED) 8] getAcl /i
+'ip,'0.0.0.0
+: cdrwa
+
+[zk: localhost:2181(CONNECTED) 15] setAcl /i world:anyone:cdraw
+[zk: localhost:2181(CONNECTED) 16] getAcl /i
+'world,'anyone
+: cdrwa
+</code></pre>
+
+<p>3.4的版本不支持ip段（3.5应该是ok的）： <a href="https://github.com/apache/zookeeper/blob/release-3.4.10/src/java/main/org/apache/zookeeper/server/auth/IPAuthenticationProvider.java#L114">IPAuthenticationProvider</a></p>
+
+<pre><code>    public boolean isValid(String id) {
+        return addr2Bytes(id) != null;
+    }
+</code></pre>
+
+<p>可以找对应版本的源码（远程）调试下：</p>
+
+<pre><code>[root@k8s zookeeper-3.4.10]# export SERVER_JVMFLAGS="-Dzookeeper.DigestAuthenticationProvider.superDigest=es:KiHfMOSWCTgPKpz78IL/6qO8AEE= -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
+[root@k8s zookeeper-3.4.10]# bin/zkServer.sh start
+</code></pre>
+
+<p>auth的权限比较有意思：自家兄弟添加、排除异己；permission按最新的算</p>
+
+<pre><code>[zk: localhost:2181(CONNECTED) 21] setAcl /i auth::cdrwa,ip:0.0.0.0:cd
+...
+[zk: localhost:2181(CONNECTED) 22] getAcl /i
+'ip,'0.0.0.0
+: cd
+'digest,'es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+: cdrwa
+
+# auth add
+[zk: localhost:2181(CONNECTED) 27] addauth digest m:m
+[zk: localhost:2181(CONNECTED) 28] addauth digest n:n
+[zk: localhost:2181(CONNECTED) 29] setAcl /i auth::cdrwa
+...
+[zk: localhost:2181(CONNECTED) 30] getAcl /i
+'digest,'es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+: cdrwa
+'digest,'m:WZiIgWqJgd8EQVBh55Bslf/7JRc=
+: cdrwa
+'digest,'n:TZ3f1UF7B75EF5g6qWR0VmEvb/s=
+: cdrwa
+
+# perm
+[zk: localhost:2181(CONNECTED) 31] addauth digest z:z
+[zk: localhost:2181(CONNECTED) 32] addauth digest l:l
+[zk: localhost:2181(CONNECTED) 33] setAcl /i auth:z:z:cd
+...
+[zk: localhost:2181(CONNECTED) 34] getAcl /i
+'digest,'es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+: cd
+'digest,'m:WZiIgWqJgd8EQVBh55Bslf/7JRc=
+: cd
+'digest,'n:TZ3f1UF7B75EF5g6qWR0VmEvb/s=
+: cd
+'digest,'z:cOgtYxFOAwKiTCMigcN2j2fFI3c=
+: cd
+'digest,'l:gdlgatwJdq7uG8kFfIjcIZj0tnQ=
+: cd
+
+可以看到全部变成cd了
+
+[zk: localhost:2181(CONNECTED) 35] setAcl /i auth:z:z:cdraw
+...
+[zk: localhost:2181(CONNECTED) 36] getAcl /i               
+'digest,'es:KiHfMOSWCTgPKpz78IL/6qO8AEE=
+: cdrwa
+'digest,'m:WZiIgWqJgd8EQVBh55Bslf/7JRc=
+: cdrwa
+'digest,'n:TZ3f1UF7B75EF5g6qWR0VmEvb/s=
+: cdrwa
+'digest,'z:cOgtYxFOAwKiTCMigcN2j2fFI3c=
+: cdrwa
+'digest,'l:gdlgatwJdq7uG8kFfIjcIZj0tnQ=
+: cdrwa
+
+全部变成cdrwa
+</code></pre>
+
+<p>我觉得用 auth 设置权限是最保险的，不会搞错了出现自己都访问不了的情况。</p>
+
+<h2>后记</h2>
+
+<p>ok，到此基本的知识点算大概了解了。还有自定义实现授权的provider，这有点高级了有兴趣的自己去看官方文档了。</p>
+
+<p>但是因为权限没有继承关系，像一些开源项目用到zookeeper的话，怎么进行加密呢？所有子目录都一个个的加？或者自定义根路径（chroot）让别人猜不到？</p>
+
+<p>还有像zookeeper自己的目录 /zookeeper ，怎么进行权限管理呢？</p>
+
+<p></p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[Zookeeper节点切换]]></title>

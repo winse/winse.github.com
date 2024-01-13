@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 
-  <title><![CDATA[Category: Logstash | Winse Blog]]></title>
+  <title><![CDATA[Category: #logstash | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/logstash/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2023-12-07T21:28:24+08:00</updated>
+  <updated>2024-01-13T08:46:58+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -84,6 +84,199 @@ output {
   dataType: "json"
 });
 </code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Logstash Elasticsearch Kibana日志采集查询系统搭建]]></title>
+    <link href="http://winse.github.io/blog/2015/08/21/logstash-elasticsearch-kibana-startguide/"/>
+    <updated>2015-08-21T14:42:30+08:00</updated>
+    <id>http://winse.github.io/blog/2015/08/21/logstash-elasticsearch-kibana-startguide</id>
+    <content type="html"><![CDATA[<h2>软件版本</h2>
+
+<pre><code>[root@master opt]# ll
+total 20
+drwxr-xr-x 7 root root 4096 Aug 21 01:23 elasticsearch-1.7.1
+drwxr-xr-x 8 uucp  143 4096 Mar 18  2014 jdk1.8.0_05
+drwxrwxr-x 7 1000 1000 4096 Aug 21 01:09 kibana-4.1.1-linux-x64
+drwxr-xr-x 5 root root 4096 Aug 21 05:58 logstash-1.5.3
+drwxrwxr-x 6 root root 4096 Aug 21 06:44 redis-3.0.3
+</code></pre>
+
+<h2>安装运行脚本</h2>
+
+<pre><code># java
+vi /etc/profile
+source /etc/profile
+
+cd /opt/elasticsearch-1.7.1
+bin/elasticsearch -p elasticsearch.pid -d
+
+curl localhost:9200/_cluster/nodes/172.17.0.4
+
+cd /opt/kibana-4.1.1-linux-x64/
+bin/kibana 
+# http://master:5601
+
+cd /opt/redis-3.0.3
+yum install gcc
+yum install bzip2
+make MALLOC=jemalloc
+
+# 也可以修改配置的daemon属性
+nohup src/redis-server &amp; 
+
+cd /opt/logstash-1.5.3/
+bin/logstash -e 'input { stdin { } } output { stdout {} }'
+
+vi index.conf
+vi agent.conf
+
+# agent可不加
+bin/logstash agent -f agent.conf &amp;
+bin/logstash agent -f index.conf &amp;
+</code></pre>
+
+<h2>logstash配置</h2>
+
+<p>由于程序都运行在一台机器(localhost)，redis、elasticsearch和kibana都使用默认配置。下面贴的是logstash的采集和过滤的配置：</p>
+
+<p>(kibaba的配置config/kibana.yml, elasticsearch的配置config/elasticsearch.yml)</p>
+
+<pre><code>[root@master logstash-1.5.3]# cat agent.conf 
+input {
+  file {
+    path =&gt; "/var/log/yum.log"
+    start_position =&gt; beginning
+  }
+}
+
+output {
+  redis {
+    key =&gt; "logstash.redis"
+    data_type =&gt; list
+  }
+
+  # 便于查看调试
+  stdout { }
+}
+
+[root@master logstash-1.5.3]# cat index.conf 
+input {
+  redis {
+    data_type =&gt; list
+    key =&gt; "logstash.redis"
+  }
+}
+
+output {
+  elasticsearch {
+    host =&gt; "localhost"
+  }
+}
+</code></pre>
+
+<p>注意要改动下被采集的原始文件！！然后启动相应的程序，打开浏览器<a href="http://master:5601">http://master:5601</a>配置一下索引项，就可以查看了。</p>
+
+<p>至于input/output/filter(map,reduce)怎么配置，查看官方文档<a href="https://www.elastic.co/guide/en/logstash/current/filter-plugins.html">filter-plugins</a></p>
+
+<h2>filter</h2>
+
+<pre><code>[hadoop@cu1 logstash-1.5.3]$ bin/logstash -e "
+input {
+stdin {}
+}
+
+filter {
+grok { 
+match =&gt; {\"message\" =&gt; \"%{WORD:content}\"}
+add_field =&gt; { \"foo_%{content}\" =&gt; \"helloworld\" }
+}
+}
+
+output {
+stdout { codec =&gt; json }
+}
+"
+
+abc
+{"message":"abc","@version":"1","@timestamp":"2015-09-10T08:02:52.024Z","host":"cu1","content":"abc","foo_abc":"helloworld"}
+</code></pre>
+
+<p>grok-pattern文件的位置：</p>
+
+<pre><code>[hadoop@cu2 logstash-1.5.3]$ less ./vendor/bundle/jruby/1.9/gems/logstash-patterns-core-0.1.10/patterns/grok-patterns 
+
+2015-09-06 15:23:53,027 INFO org.apache.hadoop.hdfs.server.namenode.FSNamesystem: No KeyProvider found.
+%{TIMESTAMP_ISO8601:time} %{LOGLEVEL:loglevel} %{GREEDYDATA:content}
+
+[2015-09-10 08:00:46,539][INFO ][cluster.metadata         ] [Jumbo Carnation] [logstash-2015.09.10] update_mapping [hbase-logs] (dynamic)
+\[%{TIMESTAMP_ISO8601:time}\]\[%{LOGLEVEL:loglevel}%{SPACE}\]%{GREEDYDATA:content}
+</code></pre>
+
+<h2>学习</h2>
+
+<p>过滤DEBUG/INFO日志</p>
+
+<pre><code>[hadoop@cu1 logstash-1.5.3]$ bin/logstash -e "
+ input {
+ stdin {}
+ }
+
+ filter {
+ grok {
+ match =&gt; { \"message\" =&gt; \"%{TIMESTAMP_ISO8601:time} %{LOGLEVEL:loglevel} %{GREEDYDATA:content}\" }
+ }
+
+ if [loglevel] == \"INFO\" { drop {} }
+ }
+
+ output {
+ stdout {}
+ }
+
+ "
+</code></pre>
+
+<p>用shell先预处理</p>
+
+<pre><code>input {
+    stdin {
+        type =&gt; "nginx"
+        format =&gt; "json_event"
+    }
+} 
+output {
+    amqp {
+        type =&gt; "nginx"
+        host =&gt; "10.10.10.10"
+        key  =&gt; "cdn"
+        name =&gt; "logstash"
+        exchange_type =&gt; "direct"
+    }
+}
+
+#!/bin/sh
+      tail -F /data/nginx/logs/access.json \
+    | sed 's/upstreamtime":-/upstreamtime":0/' \
+    | /usr/local/logstash/bin/logstash -f /usr/local/logstash/etc/agent.conf &amp;
+</code></pre>
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="http://www.cnblogs.com/buzzlight/p/logstash_elasticsearch_kibana_log.html">http://www.cnblogs.com/buzzlight/p/logstash_elasticsearch_kibana_log.html</a></li>
+<li><a href="http://www.cnblogs.com/ibook360/archive/2013/03/15/2961428.html">http://www.cnblogs.com/ibook360/archive/2013/03/15/2961428.html</a></li>
+<li><a href="https://www.elastic.co/guide/en/logstash/current/index.html">https://www.elastic.co/guide/en/logstash/current/index.html</a></li>
+<li><a href="https://www.elastic.co/guide/en/logstash/current/first-event.html">https://www.elastic.co/guide/en/logstash/current/first-event.html</a></li>
+<li><a href="https://www.elastic.co/guide/en/logstash/current/working-with-plugins.html">https://www.elastic.co/guide/en/logstash/current/working-with-plugins.html</a></li>
+<li><a href="https://www.elastic.co/guide/en/logstash/current/advanced-pipeline.html">https://www.elastic.co/guide/en/logstash/current/advanced-pipeline.html</a></li>
+<li><p><a href="https://www.elastic.co/guide/en/logstash/current/codec-plugins.html">https://www.elastic.co/guide/en/logstash/current/codec-plugins.html</a></p></li>
+<li><p><a href="http://blog.csdn.net/yeasy/article/details/45332493">http://blog.csdn.net/yeasy/article/details/45332493</a></p></li>
+</ul>
+
 
 <p>&ndash;END</p>
 ]]></content>

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 
-  <title><![CDATA[Category: Nfs | Winse Blog]]></title>
+  <title><![CDATA[Category: #nfs | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/nfs/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2023-12-07T21:28:24+08:00</updated>
+  <updated>2024-01-13T08:46:58+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -12,6 +12,425 @@
   </author>
   <generator uri="http://octopress.org/">Octopress</generator>
 
+  
+  <entry>
+    <title type="html"><![CDATA[K8S官方例子NFS]]></title>
+    <link href="http://winse.github.io/blog/2022/04/19/k8s-nfs-run-example/"/>
+    <updated>2022-04-19T18:34:01+08:00</updated>
+    <id>http://winse.github.io/blog/2022/04/19/k8s-nfs-run-example</id>
+    <content type="html"><![CDATA[<h2>参考</h2>
+
+<p>源码</p>
+
+<ul>
+<li><a href="https://github.com/kubernetes/examples/tree/master/staging/volumes/nfs">https://github.com/kubernetes/examples/tree/master/staging/volumes/nfs</a></li>
+<li><a href="https://github.com/kubernetes/examples/blob/master/staging/volumes/nfs/nfs-server-deployment.yaml">https://github.com/kubernetes/examples/blob/master/staging/volumes/nfs/nfs-server-deployment.yaml</a></li>
+</ul>
+
+
+<p>本地volumn</p>
+
+<ul>
+<li><a href="https://kubernetes.io/zh/docs/concepts/storage/volumes/#local">https://kubernetes.io/zh/docs/concepts/storage/volumes/#local</a></li>
+</ul>
+
+
+<h2>运行</h2>
+
+<h3>目录结构</h3>
+
+<pre><code>[ec2-user@k8s ~]$ git clone https://github.com/kubernetes/examples
+
+[ec2-user@k8s ~]$ cd examples/staging/volumes/nfs/
+[ec2-user@k8s nfs]$ ls -l
+total 48
+-rw-rw-r-- 1 ec2-user ec2-user  823 Apr 19 20:34 nfs-busybox-deployment.yaml
+drwxrwxr-x 2 ec2-user ec2-user   77 Apr 19 20:34 nfs-data
+-rw-rw-r-- 1 ec2-user ec2-user  193 Apr 19 20:34 nfs-pvc.yaml
+-rw-rw-r-- 1 ec2-user ec2-user 9379 Apr 19 20:34 nfs-pv.png
+-rw-rw-r-- 1 ec2-user ec2-user  234 Apr 19 20:34 nfs-pv.yaml
+-rw-rw-r-- 1 ec2-user ec2-user  729 Apr 19 20:34 nfs-server-deployment.yaml
+-rw-rw-r-- 1 ec2-user ec2-user  212 Apr 19 20:34 nfs-server-service.yaml
+-rw-rw-r-- 1 ec2-user ec2-user  673 Apr 19 20:34 nfs-web-deployment.yaml
+-rw-rw-r-- 1 ec2-user ec2-user  120 Apr 19 20:34 nfs-web-service.yaml
+drwxrwxr-x 2 ec2-user ec2-user   98 Apr 19 20:34 provisioner
+-rw-rw-r-- 1 ec2-user ec2-user 6540 Apr 19 20:34 README.md
+[ec2-user@k8s nfs]$ ls -l provisioner/
+total 12
+-rw-rw-r-- 1 ec2-user ec2-user 291 Apr 19 20:34 nfs-server-azure-pv.yaml
+-rw-rw-r-- 1 ec2-user ec2-user 324 Apr 19 20:34 nfs-server-cdk-pv.yaml
+-rw-rw-r-- 1 ec2-user ec2-user 215 Apr 19 20:34 nfs-server-gce-pv.yaml
+</code></pre>
+
+<ul>
+<li>nfs-data 是nfs-server镜像构建Dockerfile相关文件。</li>
+<li>nfs-server：
+
+<ul>
+<li>nfs-server-deployment.yaml</li>
+<li>nfs-server-service.yaml</li>
+<li>provisioner</li>
+</ul>
+</li>
+<li>web
+
+<ul>
+<li>nfs-pv.yaml</li>
+<li>nfs-pvc.yaml</li>
+<li>nfs-web-deployment.yaml</li>
+<li>nfs-web-service.yaml</li>
+<li>nfs-busybox-deployment.yaml</li>
+</ul>
+</li>
+</ul>
+
+
+<p>按照结构，一步步的来进行配置和运行。</p>
+
+<h3>搭建NFS Server的本地存储卷</h3>
+
+<ul>
+<li><a href="https://kubernetes.io/zh/docs/concepts/storage/volumes/#local">https://kubernetes.io/zh/docs/concepts/storage/volumes/#local</a></li>
+</ul>
+
+
+<pre><code>[ec2-user@k8s ~]$ sudo mkdir /nfs
+[ec2-user@k8s ~]$ sudo chmod 777 /nfs
+
+[ec2-user@k8s nfs]$ cat server-pv.yml 
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv
+spec:
+  capacity:
+    storage: 10Gi
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteOnce
+# https://kubernetes.io/docs/concepts/storage/persistent-volumes/#reclaiming
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: local-storage
+  local:
+    path: /nfs
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - k8s
+
+[ec2-user@k8s nfs]$ kubectl apply -f server-pv.yml
+persistentvolume/nfs-pv created
+</code></pre>
+
+<p>创建server pvc：</p>
+
+<pre><code>[ec2-user@k8s nfs]$ kubectl create namespace nfs
+namespace/nfs-server created
+
+[ec2-user@k8s nfs]$ cat provisioner/nfs-server-gce-pv.yaml   
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-pv-provisioning-demo
+  labels:
+    demo: nfs-pv-provisioning
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: local-storage
+
+[ec2-user@k8s nfs]$ kubectl apply -f provisioner/nfs-server-gce-pv.yaml -n nfs
+persistentvolumeclaim/nfs-pv-provisioning-demo created
+
+[ec2-user@k8s nfs]$ kubectl get pv 
+NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                          STORAGECLASS    REASON   AGE
+nfs-pv   10Gi       RWO            Delete           Bound    nfs/nfs-pv-provisioning-demo   local-storage            21s
+[ec2-user@k8s nfs]$ kubectl get pvc -n nfs 
+NAME                       STATUS   VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS    AGE
+nfs-pv-provisioning-demo   Bound    nfs-pv   10Gi       RWO            local-storage   18s
+</code></pre>
+
+<h3>启动nfs-server</h3>
+
+<pre><code># 下载镜像要代理的，可以替换image或者下载后改tag
+
+[ec2-user@k8s nfs]$ cat nfs-server-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      role: nfs-server
+  template:
+    metadata:
+      labels:
+        role: nfs-server
+    spec:
+      containers:
+      - name: nfs-server
+        image: k8s.gcr.io/volume-nfs:0.8
+        ports:
+          - name: nfs
+            containerPort: 2049
+          - name: mountd
+            containerPort: 20048
+          - name: rpcbind
+            containerPort: 111
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - mountPath: /exports
+            name: mypvc
+      volumes:
+        - name: mypvc
+          persistentVolumeClaim:
+            claimName: nfs-pv-provisioning-demo
+[ec2-user@k8s nfs]$ cat nfs-server-service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: nfs-server
+spec:
+  ports:
+    - name: nfs
+      port: 2049
+    - name: mountd
+      port: 20048
+    - name: rpcbind
+      port: 111
+  selector:
+    role: nfs-server
+
+[ec2-user@k8s nfs]$ kubectl apply -f nfs-server-deployment.yaml -f nfs-server-service.yaml -n nfs
+deployment.apps/nfs-server created
+service/nfs-server created
+
+[ec2-user@k8s nfs]$ kubectl get all -n nfs -o wide
+NAME                              READY   STATUS    RESTARTS   AGE   IP             NODE   NOMINATED NODE   READINESS GATES
+pod/nfs-server-64886b598f-57mnx   1/1     Running   0          18s   10.244.0.146   k8s    &lt;none&gt;           &lt;none&gt;
+
+NAME                 TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)                      AGE   SELECTOR
+service/nfs-server   ClusterIP   10.111.29.73   &lt;none&gt;        2049/TCP,20048/TCP,111/TCP   18s   role=nfs-server
+
+NAME                         READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES                      SELECTOR
+deployment.apps/nfs-server   1/1     1            1           18s   nfs-server   k8s.gcr.io/volume-nfs:0.8   role=nfs-server
+
+NAME                                    DESIRED   CURRENT   READY   AGE   CONTAINERS   IMAGES                      SELECTOR
+replicaset.apps/nfs-server-64886b598f   1         1         1       18s   nfs-server   k8s.gcr.io/volume-nfs:0.8   pod-template-hash=64886b598f,role=nfs-server
+</code></pre>
+
+<p>根据nodeAffinity容器部署在了k8s的机器。</p>
+
+<h3>启动web应用</h3>
+
+<p>创建容器使用的卷：</p>
+
+<pre><code># 不知为何，后面容器挂载卷的时刻识别不了域名... 
+# mount的时刻可能是在node节点上执行的，所以解析不了域名。
+# 把主机的 nameserver设置为（/etc/resolv.conf） nameserver 10.96.0.10 就可以了。
+[ec2-user@k8s nfs]$ cat nfs-pv.yaml 
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs
+spec:
+  capacity:
+    storage: 1Mi
+  accessModes:
+    - ReadWriteMany
+  nfs:
+    server: nfs-server.nfs.svc.cluster.local
+    path: "/"
+  mountOptions:
+    - nfsvers=4.2
+
+[ec2-user@k8s nfs]$ kubectl apply -f nfs-pv.yaml 
+persistentvolume/nfs created
+[ec2-user@k8s nfs]$ kubectl get pv nfs
+NAME   CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   REASON   AGE
+nfs    1Mi        RWX            Retain           Available                                   12s
+
+
+[ec2-user@k8s nfs]$ cat nfs-pvc.yaml 
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  resources:
+    requests:
+      storage: 1Mi
+  volumeName: nfs
+
+# kubectl get pv | tail -n+2 | awk '$5 == "Released" {print $1}' | xargs -I{} kubectl patch pv {} --type='merge' -p '{"spec":{"claimRef": null}}
+# 
+# [ec2-user@k8s nfs]$ kubectl patch pv nfs -p '{"spec":{"claimRef": null}}'                
+# persistentvolume/nfs patched
+[ec2-user@k8s nfs]$ kubectl apply -f nfs-pvc.yaml
+persistentvolumeclaim/nfs created
+
+
+[ec2-user@k8s nfs]$ kubectl get pv 
+NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                          STORAGECLASS    REASON   AGE
+nfs      1Mi        RWX            Retain           Bound    default/nfs                                                 56s
+nfs-pv   10Gi       RWO            Delete           Bound    nfs/nfs-pv-provisioning-demo   local-storage            3m8s
+[ec2-user@k8s nfs]$ kubectl get pvc -A 
+NAMESPACE   NAME                       STATUS   VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS    AGE
+nfs         nfs                        Bound    nfs      1Mi        RWX                            22s
+nfs         nfs-pv-provisioning-demo   Bound    nfs-pv   10Gi       RWO            local-storage   3m
+</code></pre>
+
+<p>部署web应用的容器：</p>
+
+<pre><code>[ec2-user@k8s nfs]$ cat nfs-web-deployment.yaml 
+# This pod mounts the nfs volume claim into /usr/share/nginx/html and
+# serves a simple web page.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      role: web-frontend
+  template:
+    metadata:
+      labels:
+        role: web-frontend
+    spec:
+      containers:
+      - name: web
+        image: nginx
+        ports:
+          - name: web
+            containerPort: 80
+        volumeMounts:
+            # name must match the volume name below
+            - name: nfs
+              mountPath: "/usr/share/nginx/html"
+      volumes:
+      - name: nfs
+        persistentVolumeClaim:
+          claimName: nfs
+
+[ec2-user@k8s nfs]$ cat nfs-web-service.yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: nfs-web
+spec:
+  ports:
+    - port: 80
+  selector:
+    role: web-frontend
+
+[ec2-user@k8s nfs]$ kubectl apply -f nfs-web-deployment.yaml -f nfs-web-service.yaml
+deployment.apps/nfs-web created
+service/nfs-web created
+
+[ec2-user@k8s nfs]$ kubectl get all
+NAME                           READY   STATUS    RESTARTS   AGE
+pod/nfs-web-5554f77845-6rq5p   1/1     Running   0          4m56s
+pod/nfs-web-5554f77845-8r885   1/1     Running   0          4m56s
+
+NAME                 TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)   AGE
+service/kubernetes   ClusterIP   10.96.0.1        &lt;none&gt;        443/TCP   33d
+service/nfs-web      ClusterIP   10.108.129.153   &lt;none&gt;        80/TCP    4m56s
+
+NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/nfs-web   2/2     2            2           4m56s
+
+NAME                                 DESIRED   CURRENT   READY   AGE
+replicaset.apps/nfs-web-5554f77845   2         2         2       4m56s
+</code></pre>
+
+<p>测试：deployment创建两个busybox，会在nfs共享目录下创建修改index.html，内容为：时间和主机名。</p>
+
+<pre><code>[ec2-user@k8s nfs]$ kubectl apply -f nfs-busybox-deployment.yaml 
+deployment.apps/nfs-busybox created
+
+[ec2-user@k8s nfs]$ curl nfs-web.default.svc.cluster.local 
+Wed Apr 20 00:15:20 UTC 2022
+nfs-busybox-55c668489c-dxqcx
+[ec2-user@k8s nfs]$ curl nfs-web.default.svc.cluster.local
+Wed Apr 20 00:16:51 UTC 2022
+nfs-busybox-55c668489c-sl7jz
+</code></pre>
+
+<h3>清理</h3>
+
+<pre><code>[ec2-user@k8s nfs]$ kubectl delete -f nfs-busybox-deployment.yaml -f nfs-web-deployment.yaml -f nfs-web-service.yaml -f nfs-pvc.yaml -f nfs-pv.yaml 
+[ec2-user@k8s nfs]$ kubectl delete ns nfs 
+[ec2-user@k8s nfs]$ kubectl delete -f server-pv.yml 
+</code></pre>
+
+<h2>问题</h2>
+
+<h3>NFS服务器的域名解析不了</h3>
+
+<p>一开始没有改节点的dns，会出现域名解析不了的情况：</p>
+
+<pre><code>[ec2-user@k8s nfs]$ kubectl describe pod nfs-web-7bc965b94f-k6mrj -n nfs 
+...
+Events:
+  Type     Reason       Age               From               Message
+  ----     ------       ----              ----               -------
+  Normal   Scheduled    43s               default-scheduler  Successfully assigned nfs/nfs-web-7bc965b94f-k6mrj to worker1
+  Warning  FailedMount  1s (x7 over 35s)  kubelet            MountVolume.SetUp failed for volume "nfs" : mount failed: exit status 32
+Mounting command: mount
+Mounting arguments: -t nfs -o nfsvers=4.2 nfs-server.nfs.svc.cluster.local:/ /var/lib/kubelet/pods/03049217-ded3-4d31-86e8-6a13c0f5b12f/volumes/kubernetes.io~nfs/nfs
+Output: mount.nfs: Failed to resolve server nfs-server.nfs.svc.cluster.local: Name or service not known
+mount.nfs: Operation already in progress
+</code></pre>
+
+<p>容器内是可以通过域名访问的，mount的时刻可能是在node节点上执行的，所以解析不了域名。</p>
+
+<pre><code>[ec2-user@k8s ~]$ kubectl run -ti test --rm --image busybox -n nfs -- sh  
+/ # ping nfs-server.nfs.svc.cluster.local
+[ec2-user@k8s nfs]$ kubectl run -ti test --rm --image busybox -- sh
+
+/ # cat /etc/resolv.conf 
+nameserver 10.96.0.10
+search default.svc.cluster.local svc.cluster.local cluster.local localdomain
+options ndots:5
+</code></pre>
+
+<p>把所有节点的dns设置为 kube-dns 的 10.96.0.10 就可以了。</p>
+
+<h3>集群出问题</h3>
+
+<pre><code>[ec2-user@k8s nfs]$ kubectl get pods -A 
+,,,
+ingress-nginx          ingress-nginx-controller-755447bb4d-55hjz    0/1     CrashLoopBackOff       32 (2m19s ago)   17d
+kube-system            coredns-64897985d-4d5rx                      0/1     CrashLoopBackOff       40 (4m30s ago)   33d
+kube-system            coredns-64897985d-m9p9q                      0/1     CrashLoopBackOff       40 (4m15s ago)   33d
+,,,
+kubernetes-dashboard   dashboard-metrics-scraper-799d786dbf-rj8rl   0/1     CrashLoopBackOff       33 (116s ago)    17d
+kubernetes-dashboard   kubernetes-dashboard-fb8648fd9-22krh         0/1     CrashLoopBackOff       32 (3m35s ago)   17d
+</code></pre>
+
+<p>把所有的容器都清理了，然后重启服务器（或者kubelet）</p>
+
+<pre><code>[ec2-user@k8s nfs]$ docker ps -a |  awk '{print $1}' | while read i ; do docker rm -f $i ; done 
+</code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[k8s共享存储使用NFS]]></title>
@@ -690,6 +1109,139 @@ total 0
 
 
 <p>就是直接在k8s集群中装一个NFS server。感觉没有直接在系统安装NFS管理方便，先搁置了。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[NFS on Centos7]]></title>
+    <link href="http://winse.github.io/blog/2017/08/05/nfs-on-centos7/"/>
+    <updated>2017-08-05T16:38:56+08:00</updated>
+    <id>http://winse.github.io/blog/2017/08/05/nfs-on-centos7</id>
+    <content type="html"><![CDATA[<h2>参考</h2>
+
+<ul>
+<li><a href="https://www.howtoforge.com/nfs-server-and-client-on-centos-7">https://www.howtoforge.com/nfs-server-and-client-on-centos-7</a></li>
+<li><a href="http://blog.huatai.me/2014/10/14/CentOS-7-NFS-Server-and-Client-Setup/">http://blog.huatai.me/2014/10/14/CentOS-7-NFS-Server-and-Client-Setup/</a></li>
+</ul>
+
+
+<h2>指令</h2>
+
+<p>安装</p>
+
+<pre><code>[root@cu3 data]# yum install nfs-utils -y 
+[root@cu3 data]# chmod -R 777 /data/k8s-dta
+
+systemctl enable rpcbind
+systemctl enable nfs-server
+systemctl enable nfs-lock
+systemctl enable nfs-idmap
+
+systemctl start rpcbind
+systemctl start nfs-server
+systemctl start nfs-lock
+systemctl start nfs-idmap
+</code></pre>
+
+<p>配置</p>
+
+<pre><code>[root@cu3 data]# vi /etc/exports
+/data/k8s-dta 192.168.0.0/24(rw,sync,no_root_squash,no_all_squash)
+</code></pre>
+
+<p>说明：</p>
+
+<pre><code>/data/k8s-dta – 共享目录
+192.168.0.0/24 – 允许访问NFS的客户端IP地址段
+rw – 允许对共享目录进行读写
+sync – 实时同步共享目录
+no_root_squash – 允许root访问
+no_all_squash - 允许用户授权
+no_subtree_check - 如果卷的一部分被输出，从客户端发出请求文件的一个常规的调用子目录检查验证卷的相应部分。如果是整个卷输出，禁止这个检查可以加速传输。
+no_subtree_check - If only part of a volume is exported, a routine called subtree checking verifies that a file that is requested from the client is in the appropriate part of the volume. If the entire volume is exported, disabling this check will speed up transfers. Setting Up an NFS Server
+</code></pre>
+
+<p></p>
+
+<p>然后重启服务，并开放防火墙（或者关闭）</p>
+
+<pre><code>systemctl restart nfs-server
+
+firewall-cmd --permanent --zone=public --add-service=ssh
+firewall-cmd --permanent --zone=public --add-service=nfs
+firewall-cmd --reload
+</code></pre>
+
+<h2>客户端配置</h2>
+
+<pre><code>[root@cu2 opt]# yum install -y nfs-utils
+
+[root@cu2 opt]# mount cu3:/data/k8s-dta dta
+[root@cu2 opt]# touch dta/abc
+[root@cu2 opt]# ll dta
+total 0
+-rw-r--r-- 1 root root 0 Aug  3  2017 abc
+
+[root@cu3 data]# ll k8s-dta/
+total 0
+-rw-r--r-- 1 root root 0 Aug  3 15:19 abc
+</code></pre>
+
+<p></p>
+
+<h2>on ubuntu</h2>
+
+<ul>
+<li><a href="https://sysadmins.co.za/setup-a-nfs-server-on-ubuntu/">https://sysadmins.co.za/setup-a-nfs-server-on-ubuntu/</a></li>
+</ul>
+
+
+<pre><code># In this post 10.8.133.83 will be the IP of our NFS Server.
+$ apt update &amp;&amp; sudo apt upgrade -y
+$ sudo apt-get install nfs-kernel-server nfs-common -y
+
+$ mkdir /vol
+$ chown -R nobody:nogroup /vol
+
+# We need to set in the exports file, the clients we would like to allow:
+# 
+# rw: Allows Client R/W Access to the Volume.
+# sync: This option forces NFS to write changes to disk before replying. More stable and Consistent. Note, it does reduce the speed of file operations.
+# no_subtree_check: This prevents subtree checking, which is a process where the host must check whether the file is actually still available in the exported tree for every request. This can cause many problems when a file is renamed while the client has it opened. In almost all cases, it is better to disable subtree checking.
+# In order for the containers to be able to change permissions, you need to set (rw,async,no_subtree_check,no_wdelay,crossmnt,insecure,all_squash,insecure_locks,sec=sys,anonuid=0,anongid=0)
+$ echo '/vol 10.8.133.83(rw,sync,no_subtree_check) 10.8.166.19(rw,sync,no_subtree_check) 10.8.142.195(rw,sync,no_subtree_check)' &gt;&gt; /etc/exports
+
+$ sudo systemctl restart nfs-kernel-server
+$ sudo systemctl enable nfs-kernel-server
+</code></pre>
+
+<p>Client Side:</p>
+
+<pre><code>$ sudo apt-get install nfs-common -y
+
+$ sudo mount 10.8.133.83:/vol /mnt
+$ sudo umount /mnt
+$ df -h
+
+$ sudo bash -c "echo '10.8.133.83:/vol /mnt nfs auto,nofail,noatime,nolock,intr,tcp,actimeo=1800 0 0' &gt;&gt; /etc/fstab"
+$ sudo mount -a
+$ df -h
+</code></pre>
+
+<h2>后记</h2>
+
+<p>建好NFS服务后，可以把它作为k8s容器的存储，这样就不怕丢数据了。</p>
+
+<ul>
+<li><a href="https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/#writing-to-stable-storage">https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/#writing-to-stable-storage</a></li>
+<li><a href="https://kubernetes.io/docs/concepts/storage/volumes/#nfs">https://kubernetes.io/docs/concepts/storage/volumes/#nfs</a></li>
+<li><a href="https://github.com/kubernetes/kubernetes/tree/master/examples/volumes/nfs">https://github.com/kubernetes/kubernetes/tree/master/examples/volumes/nfs</a></li>
+</ul>
+
+
+<p></p>
 
 <p>&ndash;END</p>
 ]]></content>

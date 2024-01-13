@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 
-  <title><![CDATA[Category: Redmine | Winse Blog]]></title>
+  <title><![CDATA[Category: #redmine | Winse Blog]]></title>
   <link href="http://winse.github.io/blog/categories/redmine/atom.xml" rel="self"/>
   <link href="http://winse.github.io/"/>
-  <updated>2023-12-07T21:28:24+08:00</updated>
+  <updated>2024-01-13T08:46:58+08:00</updated>
   <id>http://winse.github.io/</id>
   <author>
     <name><![CDATA[Winse Liu]]></name>
@@ -373,6 +373,357 @@ root@d744a148ea59:/var/lib/postgresql# psql -U redmine -d postgres -f redmine.du
 
 # srv的话，只需要复制redmine下的files、plugins。
 </code></pre>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[在树莓派上部署redmine - Respberrypi]]></title>
+    <link href="http://winse.github.io/blog/2020/05/11/redmine-on-arm-pi/"/>
+    <updated>2020-05-11T10:33:44+08:00</updated>
+    <id>http://winse.github.io/blog/2020/05/11/redmine-on-arm-pi</id>
+    <content type="html"><![CDATA[<p>变废为宝。</p>
+
+<p>服务器没怎么用，但是偶尔又想访问下文档或者redmine，狠狠心咬咬牙最后把x64上的迁移到了树莓派2： Raspbian GNU/Linux 9 (stretch) 。</p>
+
+<p>温故下原来redmine的安装过程： <a href="http://www.winseliu.com/blog/2017/09/18/redmine-deploy-and-install-plugins/">Redmine部署以及插件安装</a></p>
+
+<p>过程中涉及到了docker的重新编译，这其中主要使用ubuntu apt源码在本地arm上进行再编译。其中涉及的镜像有：</p>
+
+<ul>
+<li><a href="https://github.com/sameersbn/docker-ubuntu/tree/14.04">https://github.com/sameersbn/docker-ubuntu/tree/14.04</a></li>
+<li><a href="https://github.com/sameersbn/docker-postgresql/tree/9.6-2">https://github.com/sameersbn/docker-postgresql/tree/9.6-2</a></li>
+<li><a href="https://github.com/sameersbn/docker-redmine/tree/3.4.6">https://github.com/sameersbn/docker-redmine/tree/3.4.6</a></li>
+</ul>
+
+
+<h2>备份</h2>
+
+<p>redmine直接整个目录打包 /srv/docker/redmine/redmine 。数据库的要备份出来，架构不同不兼容。</p>
+
+<p>这是编译后arm postgres直接用x64的/srv/docker/redmine/postgresql的报错信息：
+```
+root@raspberrypi:~# docker run &ndash;rm -ti &ndash;entrypoint=&ldquo;bash&rdquo; -v /srv/docker/redmine/postgresql:/var/lib/postgresql sameersbn/postgresql:9.6-2</p>
+
+<p>root@8f39c2904607:/var/lib/postgresql# sudo -HEu postgres /usr/lib/postgresql/9.6/bin/pg_ctl -D /var/lib/postgresql/9.6/main -w start
+waiting for server to start&hellip;.FATAL:  database files are incompatible with server
+DETAIL:  The database cluster was initialized with USE_FLOAT8_BYVAL but the server was compiled without USE_FLOAT8_BYVAL.
+HINT:  It looks like you need to recompile or initdb.
+LOG:  database system is shut down
+stopped waiting
+pg_ctl: could not start server
+Examine the log output.
+```</p>
+
+<h2>编译ubuntu镜像</h2>
+
+<p>直接使用最新的trusty发布版镜像。由于低版本的可能会没有 linux/arm/v7 : <a href="https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty">https://hub.docker.com/_/ubuntu/?tab=tags&amp;page=1&amp;name=trusty</a></p>
+
+<pre><code>root@raspberrypi:~/docker-ubuntu# vi Dockerfile
+FROM ubuntu:trusty
+
+docker build -t sameersbn/ubuntu:14.04.20170123 . 
+docker tag sameersbn/ubuntu:14.04.20170123 sameersbn/ubuntu:14.04.20170711 
+</code></pre>
+
+<h2>编译postgres镜像</h2>
+
+<p>由于postgresql apt的库中没有armhf的deb，需要先手动编译好对应的deb。先运行一个容器，再里面编译好postgres。</p>
+
+<pre><code>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+ &amp;&amp; echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+ &amp;&amp; sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+ &amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+ &amp;&amp; apt-get update
+
+root@7d55994af11e:/# apt-get build-dep dh-exec postgresql-common  pgdg-keyring     
+root@7d55994af11e:/# apt-get source --compile dh-exec postgresql-common  pgdg-keyring   
+
+root@7d55994af11e:/# apt-get build-dep postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} dh-exec
+root@7d55994af11e:/# apt-get source --compile postgresql-${PG_VERSION} postgresql-client-${PG_VERSION} postgresql-contrib-${PG_VERSION} 
+</code></pre>
+
+<p>再测试安装一下这些deb：</p>
+
+<pre><code>wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+ &amp;&amp; echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+ &amp;&amp; sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+ &amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+ &amp;&amp; apt-get update
+
+apt-get install -y acl \
+    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6
+
+dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb
+
+dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb
+</code></pre>
+
+<p>修改Dockerfile，直接通过dpkg安装postgresql的deb：</p>
+
+<pre><code>root@raspberrypi:~/docker-postgresql# less Dockerfile 
+...
+COPY deb/ /tmp/psql/
+
+RUN wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+ &amp;&amp; echo 'deb-src http://mirrors.zju.edu.cn/postgresql/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+ &amp;&amp; sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+ &amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+ &amp;&amp; apt-get update \
+ &amp;&amp; DEBIAN_FRONTEND=noninteractive apt-get install -y acl \
+    libpipeline1 debhelper ssl-cert libxml2 libedit2 libxslt1.1 libperl5.18 libpython2.7 libpython3.4 libtcl8.6 \
+ &amp;&amp; cd /tmp/psql \
+ &amp;&amp; dpkg -i pgdg-keyring_2018.2_all.deb postgresql-common_201.pgdg14.04+1_all.deb  postgresql-client-common_201.pgdg14.04+1_all.deb \
+ &amp;&amp; dpkg -i libpq5_9.6.13-1.pgdg14.04+1_armhf.deb  postgresql-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-client-9.6_9.6.13-1.pgdg14.04+1_armhf.deb postgresql-contrib-9.6_9.6.13-1.pgdg14.04+1_armhf.deb \
+ &amp;&amp; rm -rf /tmp/psql \
+...
+
+root@raspberrypi:~/docker-postgresql# docker build -t sameersbn/postgresql:9.6-2 .
+</code></pre>
+
+<h2>编译redmine镜像</h2>
+
+<p>redmine主要是缺少ruby2.3的包，跟上面的步骤类似。先编译出arm的ruby2.3，再编译镜像。</p>
+
+<pre><code>sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+&amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list
+
+apt-get build-dep ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
+apt-get source --compile ruby${RUBY_VERSION} ruby${RUBY_VERSION}-dev
+
+
+root@raspberrypi:~/docker-redmine# vi Dockerfile 
+...
+COPY deb/ /tmp/ruby/
+
+RUN apt-key adv --keyserver keyserver.ubuntu.com --recv E1DD270288B4E6030699E45FA1715D88E1DF1F24 \
+ &amp;&amp; echo "deb http://ppa.launchpad.net/git-core/ppa/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+ &amp;&amp; apt-key adv --keyserver keyserver.ubuntu.com --recv 80F70E11F0F0D5F10CB20E62F5DA5F09C3173AA6 \
+ &amp;&amp; echo "deb http://ppa.launchpad.net/brightbox/ruby-ng/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+ &amp;&amp; apt-key adv --keyserver keyserver.ubuntu.com --recv 8B3981E7A6852F782CC4951600A6F0A3C300EE8C \
+ &amp;&amp; echo "deb http://ppa.launchpad.net/nginx/stable/ubuntu trusty main" &gt;&gt; /etc/apt/sources.list \
+ &amp;&amp; wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+ &amp;&amp; echo 'deb-src http://apt.postgresql.org/pub/repos/apt/ trusty-pgdg main' &gt; /etc/apt/sources.list.d/pgdg.list \
+ &amp;&amp; sed -i 's/ports.ubuntu.com/mirrors.aliyun.com/' /etc/apt/sources.list \
+ &amp;&amp; sed -Ei 's/^# deb-src /deb-src /' /etc/apt/sources.list \
+ &amp;&amp; apt-get update \
+ &amp;&amp; DEBIAN_FRONTEND=noninteractive apt-get install -y supervisor logrotate nginx mysql-client postgresql-client \
+      imagemagick subversion git cvs bzr mercurial darcs rsync   locales openssh-client \
+      gcc g++ make patch pkg-config gettext-base   libc6-dev zlib1g-dev libxml2-dev \
+      libmysqlclient18 libpq5 libyaml-0-2 libcurl3 libssl1.0.0 uuid-dev xz-utils \
+      libxslt1.1 libffi6 zlib1g gsfonts \
+      libgmpxx4ldbl libgmp-dev libtk8.5 libxft2 libxrender1 libxss1 x11-common libtcl8.5 rubygems-integration \
+ &amp;&amp; dpkg -i /tmp/ruby/*.deb \
+ &amp;&amp; rm -rf /tmp/ruby \
+ &amp;&amp; update-locale LANG=C.UTF-8 LC_MESSAGES=POSIX \
+ &amp;&amp; gem install --no-document --version '&lt; 2.0' bundler \
+ &amp;&amp; rm -rf /var/lib/apt/lists/*
+...
+
+root@raspberrypi:~/docker-redmine# docker build -t sameersbn/redmine:3.4.6 .
+</code></pre>
+
+<p>如果docker构建失败，可以通过以下两种方式来进行调试：</p>
+
+<pre><code># 1
+docker commit $container-id image-id
+docker run -ti $image-id bash
+
+# 2 
+失败也会有前一步骤的镜像已经提交，再次基础上检查后面的步骤
+The last successful step is 2. It produced an image a3acfa4ab179. Now you start a container
+docker run -it a3acfa4ab179 bash
+</code></pre>
+
+<h2>结合原有数据进行迁移</h2>
+
+<pre><code># 备份
+psql -U postgres -cC --if-exists -d redmine_production &gt;redmine.dump 
+
+# 安装compose
+root@raspberrypi:~/redmine/bin# python -m pip install --upgrade pip
+root@raspberrypi:~/redmine/bin# pip install docker-compose
+
+# 启动
+root@raspberrypi:~/redmine/bin# docker-compose up -d 
+
+# 数据库还原
+docker cp redmine.dump e472d9ec3124:/var/lib/postgresql/
+psql -U postgres &lt;redmine.dump
+
+# redmine修复
+root@3f0774db222d:/home/redmine/redmine# apt-get install libmysqlclient-dev                                    
+
+https://stackoverflow.com/questions/13086073/rails-install-pg-cant-find-the-libpq-fe-h-header
+root@3f0774db222d:/home/redmine/redmine# apt-get install libpq-dev
+https://stackoverflow.com/questions/38200015/package-magickcore-was-not-found-in-the-pkg-config-search-path
+root@3f0774db222d:/home/redmine/redmine# apt-get install libmagickwand-dev
+
+root@3f0774db222d:/home/redmine/redmine# bundle install                    
+</code></pre>
+
+<p>后面就直接安装docker-compose.yml中的端口映射配置访问即可。</p>
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Redmine部署以及插件安装]]></title>
+    <link href="http://winse.github.io/blog/2017/09/18/redmine-deploy-and-install-plugins/"/>
+    <updated>2017-09-18T23:46:24+08:00</updated>
+    <id>http://winse.github.io/blog/2017/09/18/redmine-deploy-and-install-plugins</id>
+    <content type="html"><![CDATA[<p>Redmine是类似JIRA的一个项目/BUG管理工具，使用ruby语言编写的。安装相对就麻烦一点，不熟嘛，一堆的东西要安装。有两种简单/傻瓜式的安装方式：</p>
+
+<ul>
+<li>bitnami-redmine，相当于一键安装；</li>
+<li>docker + redmine，使用docker把所有的依赖都安装好，只需要配置remine即可。</li>
+</ul>
+
+
+<p>这里选择使用docker-compose来安装： <a href="https://github.com/sameersbn/docker-redmine">sameersbn/redmine:3.4.2</a></p>
+
+<h2>部署</h2>
+
+<p>先跑起来，然后再根据需求修改配置。搞得不好的话，重新安装也超级简单，是吧！</p>
+
+<ul>
+<li><a href="https://github.com/sameersbn/docker-redmine#quick-start">https://github.com/sameersbn/docker-redmine#quick-start</a></li>
+</ul>
+
+
+<pre><code>mkdir -p /srv/docker/redmine/{redmine,postgresql}
+
+wget https://raw.githubusercontent.com/sameersbn/docker-redmine/master/docker-compose.yml
+docker-compose up
+</code></pre>
+
+<p>启动后，浏览器访问 <a href="http://HOSTED_IP:10083">http://HOSTED_IP:10083</a> ，使用 admin/admin 登录。</p>
+
+<ul>
+<li>重新弄，初始化：</li>
+</ul>
+
+
+<pre><code>docker-compose rm -f 或者 docker-compose down
+
+rm -rf /srv/docker/redmine/redmine/tmp/*
+rm -rf /srv/docker/redmine/postgresql/* 
+
+docker-compose up --build
+
+#docker-compose up -d
+#docker-compose start
+</code></pre>
+
+<p></p>
+
+<h2>Theme主题</h2>
+
+<ul>
+<li><a href="https://github.com/sameersbn/docker-redmine#themes">https://github.com/sameersbn/docker-redmine#themes</a></li>
+<li><a href="http://www.redmine.org/projects/redmine/wiki/Themes">http://www.redmine.org/projects/redmine/wiki/Themes</a></li>
+<li><a href="https://www.redmineup.com/pages/themes/a1">https://www.redmineup.com/pages/themes/a1</a></li>
+</ul>
+
+
+<p>改头换面，下载主题后放到 /srv/docker/redmine/redmine/themes/ 目录下。然后 <strong> 重启容器 </strong>，再重新登录，修改 <strong> 管理 - 配置 - 显示 - 主题 - A1 </strong></p>
+
+<pre><code>[root@k8s redmine]# ll /srv/docker/redmine/redmine/themes/
+total 0
+drwxr-xr-x. 6 es es 69 Sep 18 23:38 a1
+</code></pre>
+
+<h2>Plugins</h2>
+
+<p>有些插件不兼容3.4，注意版本的选择！以下是在3.4下面安装使用的插件：</p>
+
+<ul>
+<li><a href="http://www.redmine.org/projects/redmine/wiki/Plugins">http://www.redmine.org/projects/redmine/wiki/Plugins</a></li>
+<li><a href="http://www.redmine.org/plugins/clipboard_image_paste">http://www.redmine.org/plugins/clipboard_image_paste</a></li>
+<li><a href="https://github.com/peclik/clipboard_image_paste">https://github.com/peclik/clipboard_image_paste</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_checklists">http://www.redmine.org/plugins/redmine_checklists</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_agile">http://www.redmine.org/plugins/redmine_agile</a></li>
+<li><a href="https://github.com/paginagmbh/redmine_lightbox2.git">https://github.com/paginagmbh/redmine_lightbox2.git</a></li>
+<li><a href="https://github.com/paginagmbh/redmine_lightbox2">https://github.com/paginagmbh/redmine_lightbox2</a></li>
+<li><a href="http://www.redmine.org/plugins/mega_calendar">http://www.redmine.org/plugins/mega_calendar</a></li>
+<li><a href="https://github.com/berti92/mega_calendar/wiki/Installation">https://github.com/berti92/mega_calendar/wiki/Installation</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_work_time">http://www.redmine.org/plugins/redmine_work_time</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_issue_templates">http://www.redmine.org/plugins/redmine_issue_templates</a></li>
+<li>Kanban</li>
+<li><a href="http://www.redmine.org/plugins/redhopper">http://www.redmine.org/plugins/redhopper</a></li>
+<li><a href="http://www.redmine.org/plugins/redhopper">http://www.redmine.org/plugins/redhopper</a></li>
+<li><a href="http://www.redmine.org/plugins/deployer">http://www.redmine.org/plugins/deployer</a></li>
+<li><a href="https://github.com/zapic0/deployer">https://github.com/zapic0/deployer</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine-ckeditor">http://www.redmine.org/plugins/redmine-ckeditor</a></li>
+<li><a href="https://github.com/a-ono/redmine_ckeditor">https://github.com/a-ono/redmine_ckeditor</a></li>
+<li><a href="http://www.redmine.org/plugins/apijs">http://www.redmine.org/plugins/apijs</a> 有一些依赖要安装，没用到的可以不安装apijs这个插件。</li>
+<li><a href="https://www.luigifab.info/redmine/en/apijs.php">https://www.luigifab.info/redmine/en/apijs.php</a></li>
+</ul>
+
+
+<pre><code>[root@k8s plugins]# sed -i '/haml/s/^/#/' redhopper/Gemfile           
+[root@k8s plugins]# mv apijs redmine_apijs
+
+[root@k8s redmine]# ll /srv/docker/redmine/redmine/plugins/
+total 0
+drwxr-xr-x.  8 es es 118 Sep 18 14:05 clipboard_image_paste
+drwxr-xr-x. 10 es es 212 Sep 18 19:18 deployer
+drwxr-xr-x.  7 es es 160 Sep 18 12:00 issuefy
+drwxr-xr-x.  4 es es  60 Sep 18 11:59 line_numbers
+drwxr-xr-x.  8 es es 182 Sep 17 18:05 mega_calendar
+drwxr-xr-x.  6 es es 158 Sep 18 12:00 open_flash_chart
+drwxrwxr-x.  8 es es 225 Sep 18 22:15 redhopper
+drwxr-xr-x.  9 es es 156 Sep  6 19:02 redmine_agile
+drwxr-xr-x.  7 es es 133 Sep 18 22:00 redmine_apijs
+drwxr-xr-x. 10 es es 119 Aug 30 21:46 redmine_checklists
+drwxr-xr-x.  9 es es 158 Sep 18 19:19 redmine_ckeditor
+drwxr-xr-x.  8 es es 221 Sep 18 12:01 redmine_code_review
+drwxr-xr-x.  8 es es 252 Sep 18 12:01 redmine_dashboard
+drwxr-xr-x.  3 es es  70 Sep 18 12:00 redmine_embedded_video
+drwxr-xr-x.  2 es es  78 Sep 18 12:00 redmine_gist
+drwxrwxr-x.  8 es es 129 Aug  5 10:52 redmine_issue_templates
+drwxr-xr-x.  8 es es 170 Sep 18 17:46 redmine_lightbox2
+drwxr-xr-x.  8 es es 160 Mar  5  2017 redmine_work_time
+</code></pre>
+
+<p>不重启容器的话，可以登录到容器把 ~/data/plugins 拷贝到 ~/redmine/plugins 下面，然后执行下面的命令进行更新：</p>
+
+<pre><code>root@f0481f5f8cda:/home/redmine/redmine# 
+bundle install --without development test
+bundle exec rake redmine:plugins:migrate RAILS_ENV=production
+
+supervisorctl restart unicorn
+</code></pre>
+
+<h2>其他的一些插件</h2>
+
+<ul>
+<li><a href="http://www.redmine.org/plugins/dmsf">http://www.redmine.org/plugins/dmsf</a></li>
+<li><a href="https://github.com/danmunn/redmine_dmsf">https://github.com/danmunn/redmine_dmsf</a></li>
+<li><a href="http://www.redmine.org/plugins/redmine_git_hosting">http://www.redmine.org/plugins/redmine_git_hosting</a> X</li>
+<li><a href="http://www.redmine.org/plugins/redmine_upwork_plugin">http://www.redmine.org/plugins/redmine_upwork_plugin</a></li>
+<li><a href="https://github.com/alexbevi/redmine_knowledgebase">https://github.com/alexbevi/redmine_knowledgebase</a></li>
+<li><a href="https://github.com/danmunn/redmine_dmsf">https://github.com/danmunn/redmine_dmsf</a></li>
+<li><a href="https://github.com/jbox-web/redmine_jenkins">https://github.com/jbox-web/redmine_jenkins</a></li>
+<li><a href="https://github.com/masweetman/issue_charts">https://github.com/masweetman/issue_charts</a></li>
+<li>3.3.x</li>
+<li><a href="http://www.redmine.org/plugins/redmine_pivot_table">http://www.redmine.org/plugins/redmine_pivot_table</a></li>
+<li><a href="https://www.redmine.org/plugins/advanced_roadmap_v2">https://www.redmine.org/plugins/advanced_roadmap_v2</a></li>
+<li><a href="https://github.com/Coren/redmine_advanced_roadmap_v2">https://github.com/Coren/redmine_advanced_roadmap_v2</a></li>
+<li><a href="https://github.com/Loriowar/redmine_issues_tree">https://github.com/Loriowar/redmine_issues_tree</a></li>
+<li><a href="https://github.com/speedy32129/projects_show">https://github.com/speedy32129/projects_show</a></li>
+</ul>
+
+
+<h2>参考</h2>
+
+<ul>
+<li><a href="https://github.com/bitnami/bitnami-docker-redmine">https://github.com/bitnami/bitnami-docker-redmine</a></li>
+<li><a href="http://11398377.blog.51cto.com/11388377/1875686">http://11398377.blog.51cto.com/11388377/1875686</a></li>
+</ul>
+
 
 <p>&ndash;END</p>
 ]]></content>

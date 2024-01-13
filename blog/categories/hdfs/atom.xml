@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+
+  <title><![CDATA[Category: #hdfs | Winse Blog]]></title>
+  <link href="http://winse.github.io/blog/categories/hdfs/atom.xml" rel="self"/>
+  <link href="http://winse.github.io/"/>
+  <updated>2024-01-13T08:46:58+08:00</updated>
+  <id>http://winse.github.io/</id>
+  <author>
+    <name><![CDATA[Winse Liu]]></name>
+    <email><![CDATA[winseliu@foxmail.com]]></email>
+  </author>
+  <generator uri="http://octopress.org/">Octopress</generator>
+
+  
+  <entry>
+    <title type="html"><![CDATA[Hdfs异构存储实操]]></title>
+    <link href="http://winse.github.io/blog/2016/05/05/hdfs-heterogeneous-storage/"/>
+    <updated>2016-05-05T21:41:39+08:00</updated>
+    <id>http://winse.github.io/blog/2016/05/05/hdfs-heterogeneous-storage</id>
+    <content type="html"><![CDATA[<p>[注意] 查看官方文档一定要和自己使用的环境对应！操作 storagepolicies 不同版本对应的命令不同（2.6.3<->2.7.2）！</p>
+
+<p>我这里测试环境使用的是 2.6.3 <a href="https://hadoop.apache.org/docs/r2.6.3/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html">Heterogeneous Storage: Archival Storage, SSD &amp; Memory</a></p>
+
+<h2>配置</h2>
+
+<p>直接把内存盘放到 /dev/shm 下，单独挂载一个 tmpfs 的效果也差不多。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/MemoryStorage.html">r2.7.2 Memory Storage Support in HDFS</a> 2.6.3没有这个文档 概念都适应的。</p>
+
+<p>1 调节系统参数</p>
+
+<pre><code>vi /etc/security/limits.conf
+
+    hadoop           -       nofile          65535
+    hadoop           -       nproc           65535
+    hadoop           -       memlock         268435456
+</code></pre>
+
+<p>需要调节memlock的大小，否则启动datanode报错。</p>
+
+<pre><code>2016-05-05 19:22:22,674 FATAL org.apache.hadoop.hdfs.server.datanode.DataNode: Exception in secureMain
+java.lang.RuntimeException: Cannot start datanode because the configured max locked memory size (dfs.datanode.max.locked.memory) of 134217728 bytes is more than the datanode's available RLIMIT_MEMLOCK ulimit of 65536 bytes.
+        at org.apache.hadoop.hdfs.server.datanode.DataNode.startDataNode(DataNode.java:1067)
+        at org.apache.hadoop.hdfs.server.datanode.DataNode.&lt;init&gt;(DataNode.java:417)
+</code></pre>
+
+<p>2 添加RAM_DISK</p>
+
+<pre><code>vi hdfs-site.xml
+
+    &lt;property&gt;
+    &lt;name&gt;dfs.datanode.data.dir&lt;/name&gt;
+    &lt;value&gt;/data/bigdata/hadoop/dfs/data,[RAM_DISK]/dev/shm/dfs/data&lt;/value&gt;
+    &lt;/property&gt;
+
+    &lt;property&gt;
+    &lt;name&gt;dfs.datanode.max.locked.memory&lt;/name&gt;
+    &lt;value&gt;134217728&lt;/value&gt;
+    &lt;/property&gt;
+</code></pre>
+
+<p>注意内存盘的写法，<code>[RAM_DISK]</code> 必须这些写，不然datanode不知道指定路径的storage的类型(默认是 DISK )。<a href="https://hadoop.apache.org/docs/r2.7.2/hadoop-project-dist/hadoop-hdfs/ArchivalStorage.html#Storage_Types_and_Storage_Policies">Storage_Types_and_Storage_Policies</a></p>
+
+<blockquote><p>The default storage type of a datanode storage location will be DISK if it does not have a storage type tagged explicitly.</p></blockquote>
+
+<p>3 同步配置并重启dfs</p>
+
+<pre><code>[root@cu2 ~]# scp /etc/security/limits.conf cu3:/etc/security/
+[hadoop@cu2 hadoop-2.6.3]$ rsync -vaz etc cu3:~/hadoop-2.6.3/ 
+
+[hadoop@cu2 hadoop-2.6.3] sbin/stop-dfs.sh
+[hadoop@cu2 hadoop-2.6.3] sbin/start-dfs.sh
+</code></pre>
+
+<p>可以去到datanode查看日志，可以看到 /dev/shm/dfs/data 路径 <strong>StorageType</strong> 为 <strong>RAM_DISK</strong> ：</p>
+
+<pre><code>2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /data/bigdata/hadoop/dfs/data/current
+2016-05-05 19:33:39,862 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /data/bigdata/hadoop/dfs/data/current, StorageType: DISK
+2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added new volume: /dev/shm/dfs/data/current
+2016-05-05 19:33:39,863 INFO org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl: Added volume - /dev/shm/dfs/data/current, StorageType: RAM_DISK
+</code></pre>
+
+<p>同时查看 内存盘 的路径内容：</p>
+
+<pre><code>[hadoop@cu2 hadoop-2.6.3]$ ssh cu3 tree /dev/shm/dfs
+/dev/shm/dfs
+└── data
+    ├── current
+    │   ├── BP-1108852639-192.168.0.148-1452322889531
+    │   │   ├── current
+    │   │   │   ├── finalized
+    │   │   │   ├── rbw
+    │   │   │   └── VERSION
+    │   │   └── tmp
+    │   └── VERSION
+    └── in_use.lock
+
+7 directories, 3 files
+</code></pre>
+
+<h2>测试使用</h2>
+
+<p>通过三个例子对比，简单描述下使用。</p>
+
+<p>首先，使用默认的方式(主要用于对比)， <br/>
+第二，写文件时添加参数，  <br/>
+第三，设置目录的存储类型（目录/文件会继承父目录的存储类型）</p>
+
+<p>1 测试1</p>
+
+<pre><code>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /tmp/
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /tmp/README.txt -files -blocks -locations
+...
+/tmp/README.txt 1366 bytes, 1 block(s):  OK
+0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752574_11776 len=1366 repl=1 [192.168.0.148:50010]
+
+[hadoop@cu3 hadoop-2.6.3]$ find /data/bigdata/hadoop/dfs/data/ /dev/shm/dfs/data/ -name "*1073752574*"
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574_11776.meta
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir41/blk_1073752574
+</code></pre>
+
+<p>2 写文件时添加 lazy_persist 标识</p>
+
+<pre><code># 添加 -l 参数，后台代码会加上 LAZY_PERSIST 标识。
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -help put 
+-put [-f] [-p] [-l] &lt;localsrc&gt; ... &lt;dst&gt; :
+  Copy files from the local file system into fs. Copying fails if the file already
+  exists, unless the -f flag is given.
+  Flags:
+
+  -p  Preserves access and modification times, ownership and the mode. 
+  -f  Overwrites the destination if it already exists.                 
+  -l  Allow DataNode to lazily persist the file to disk. Forces        
+         replication factor of 1. This flag will result in reduced
+         durability. Use with care.
+</code></pre>
+
+<p><img src="/images/blogs/storage-lazy.png" alt="" /></p>
+
+<pre><code># -l 参数会把 replication 强制设置成数字1 ！
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put -l README.txt /tmp/readme.txt2
+
+# 查看namenode的日志，可以看到文件写入到 RAM_DISK 类型的存储
+[hadoop@cu2 hadoop-2.6.3]$ less logs/hadoop-hadoop-namenode-cu2.log 
+
+    2016-05-05 20:38:36,465 INFO org.apache.hadoop.hdfs.StateChange: BLOCK* allocateBlock: /tmp/readme.txt2._COPYING_. BP-1108852639-192.168.0.148-1452322889531 blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[DISK]DS-dcb2673f-3297-4bd7-af1c-ac0ee3eebaf9:NORMAL:192.168.0.30:50010|RBW]]}
+    2016-05-05 20:38:36,592 INFO BlockStateChange: BLOCK* addStoredBlock: blockMap updated: 192.168.0.30:50010 is added to blk_1073752578_11780{blockUCState=UNDER_CONSTRUCTION, primaryNodeIndex=-1, replicas=[ReplicaUnderConstruction[[RAM_DISK]DS-bf1ab64f-7eb3-41e0-8466-43287de9893d:NORMAL:192.168.0.30:50010|FINALIZED]]} size 0
+    2016-05-05 20:38:36,594 INFO org.apache.hadoop.hdfs.StateChange: DIR* completeFile: /tmp/readme.txt2._COPYING_ is closed by DFSClient_NONMAPREDUCE_-1388277364_1
+
+# 具体的内容所在位置
+[hadoop@cu4 ~]$ tree /dev/shm/dfs/data/
+/dev/shm/dfs/data/
+├── current
+│   ├── BP-1108852639-192.168.0.148-1452322889531
+│   │   ├── current
+│   │   │   ├── finalized
+│   │   │   │   └── subdir0
+│   │   │   │       └── subdir42
+│   │   │   │           ├── blk_1073752578
+│   │   │   │           └── blk_1073752578_11780.meta
+│   │   │   ├── rbw
+│   │   │   └── VERSION
+│   │   └── tmp
+│   └── VERSION
+└── in_use.lock
+</code></pre>
+
+<p>3 设置目录的存储类型</p>
+
+<pre><code>[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -mkdir /ramdisk
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -setStoragePolicy /ramdisk LAZY_PERSIST 
+Set storage policy LAZY_PERSIST on /ramdisk
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -put README.txt /ramdisk
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk
+The storage policy of /ramdisk:
+BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+
+# 不支持通配符
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/*
+getStoragePolicy: File/Directory does not exist: /ramdisk/*
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/README.txt
+The storage policy of /ramdisk/README.txt:
+BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+
+
+# 添加replication参数，再测试多个备份只有一个写ram_disk
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfs -Ddfs.replication=3 -put README.txt /ramdisk/readme.txt2
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs dfsadmin -getStoragePolicy /ramdisk/readme.txt2
+The storage policy of /ramdisk/readme.txt2:
+BlockStoragePolicy{LAZY_PERSIST:15, storageTypes=[RAM_DISK, DISK], creationFallbacks=[DISK], replicationFallbacks=[DISK]}
+
+[hadoop@cu2 hadoop-2.6.3]$ hdfs fsck /ramdisk/readme.txt2 -files -blocks -locations
+
+    /ramdisk/readme.txt2 1366 bytes, 1 block(s):  OK
+    0. BP-1108852639-192.168.0.148-1452322889531:blk_1073752580_11782 len=1366 repl=3 [192.168.0.30:50010, 192.168.0.174:50010, 192.168.0.148:50010]
+
+[hadoop@cu3 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+
+# 已经把ram_disk的内容持久化到磁盘了("Lazy_Persist")
+[hadoop@cu4 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/lazypersist/subdir0/subdir42/blk_1073752580_11782.meta
+/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+/dev/shm/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+
+[hadoop@cu5 ~]$ find /data/bigdata/hadoop/dfs/data /dev/shm/dfs/data -name "*1073752580*"
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580_11782.meta
+/data/bigdata/hadoop/dfs/data/current/BP-1108852639-192.168.0.148-1452322889531/current/finalized/subdir0/subdir42/blk_1073752580
+</code></pre>
+
+<p>[设想] 对于那些处理完就删除的临时文件，可以把保存的时间设置的久一点 <code>dfs.datanode.lazywriter.interval.sec</code>。这样就不需要写磁盘了。</p>
+
+<p>不要妄想了，反正都会持久化！就是缓冲的效果，其他没有了！！一次性存储并且不需要持久化的还是用alluxio吧。</p>
+
+<pre><code>org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl.LazyWriter#saveNextReplica
+    org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskAsyncLazyPersistService#submitLazyPersistTask
+</code></pre>
+
+<h2>参考</h2>
+
+<ul>
+<li>挺详细的<a href="http://blog.csdn.net/androidlushangderen/article/details/51105876">HDFS异构存储</a></li>
+</ul>
+
+
+<p>&ndash;END</p>
+]]></content>
+  </entry>
+  
+</feed>
