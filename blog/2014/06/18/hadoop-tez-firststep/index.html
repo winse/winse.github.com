@@ -1,740 +1,348 @@
-
 <!DOCTYPE html>
-<!--[if IEMobile 7 ]><html class="no-js iem7"><![endif]-->
-<!--[if lt IE 9]><html class="no-js lte-ie8"><![endif]-->
-<!--[if (gt IE 8)|(gt IEMobile 7)|!(IEMobile)|!(IE)]><!--><html class="no-js" lang="en"><!--<![endif]-->
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>Tez编译及使用 - Winse Blog</title>
-  <meta name="author" content="Winse Liu">
-
-  
-  <meta name="description" content="初步了解 hadoop2自带的mapreduce任务中间只能传递一次，也即一个任务只能聚合一次（然后就的写入磁盘）。tez项目是对原有yarn架构的一个拓展，使用DAG（无环有向图）实现MRR的任务框架。 上图中，左边的MR任务完成一个步骤后，需要进行 数据存储 后再执行另一个任务来进行第二个 &hellip;">
-  
-
-  <!-- http://t.co/dKP3o1e -->
-  <meta name="HandheldFriendly" content="True">
-  <meta name="MobileOptimized" content="320">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
+  <meta name="theme-color" content="#f7f4ef">
+  <title>tez编译及使用 · Winse Blog</title>
   
-  <link rel="canonical" href="http://winse.github.io/blog/2014/06/18/hadoop-tez-firststep">
-  <link href="/favicon.png" rel="icon">
-  <link href="/stylesheets/screen.css" media="screen, projection" rel="stylesheet" type="text/css">
-  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.1.0/css/font-awesome.min.css" rel="stylesheet">
-  <link href="/atom.xml" rel="alternate" title="Winse Blog" type="application/atom+xml">
-  <script src="/javascripts/modernizr-2.0.js"></script>
-  <script src="//cdn.bootcss.com/jquery/1.9.1/jquery.min.js"></script>
-  <script>!window.jQuery && document.write(unescape('%3Cscript src="/javascripts/libs/jquery.min.js"%3E%3C/script%3E'))</script>
-  <script src="/javascripts/libs/jquery.toc.min.js" type="text/javascript"></script>
-  <script src="/javascripts/octopress.js" type="text/javascript"></script>
-  <!--Fonts from Google"s Web font directory at http://google.com/webfonts -->
-<!--
-<link href="//fonts.googleapis.com/css?family=PT+Serif:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
-<link href="//fonts.googleapis.com/css?family=PT+Sans:regular,italic,bold,bolditalic" rel="stylesheet" type="text/css">
--->
-
-<script src="/javascripts/generate-toc.js" type="text/javascript"></script>
-
-
-  <!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-D3G1YVNBK4"></script>
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
-
-  gtag('config', 'G-D3G1YVNBK4');
-</script>
-
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="alternate" type="application/atom+xml" title="Winse Blog" href="/atom.xml">
+  <link rel="stylesheet" href="/css/main.css">
+  
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-43198550-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'UA-43198550-1');
+  </script>
+  
 </head>
+<body class="min-h-screen flex flex-col">
+  <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-full focus:bg-ink focus:px-4 focus:py-2 focus:text-white">
+    跳到正文
+  </a>
+  <header class="sticky top-0 z-50 border-b border-line/80 bg-surface/85 backdrop-blur-xl">
+  <div class="site-shell flex items-center justify-between gap-4 py-4">
+    <a href="/" class="group flex items-center gap-3">
+      <span class="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface-elevated text-sm font-semibold text-accent shadow-sm transition group-hover:border-accent/30 group-hover:bg-accent-soft/50">W</span>
+      <span class="text-xl font-bold tracking-tight text-ink">Winse Blog</span>
+    </a>
 
-<body   >
-  <header role="banner"><hgroup>
-  <h1><a href="/">Winse Blog</a></h1>
-  
-    <h2>走走停停都是风景, 熙熙攘攘都向最好, 忙忙碌碌都为明朝, 何畏之.</h2>
-  
-</hgroup>
+    <button type="button" id="nav-toggle" class="btn-ghost px-3 py-2 sm:hidden" aria-expanded="false" aria-controls="site-nav">
+      Menu
+    </button>
 
+    <nav id="site-nav" class="hidden items-center gap-5 text-sm sm:flex" aria-label="Primary">
+      <a href="/" class="nav-link" data-nav="/">Blog</a>
+      <a href="/blog/archives/" class="nav-link" data-nav="/blog/archives/">Archives</a>
+      <a href="/atom.xml" class="nav-link" data-nav="/atom.xml">RSS</a>
+      <form action="https://www.google.com/search" method="get" onsubmit="this.q.value = this.q.value ? this.q.value + ' site:winse.github.io' : ''" class="hidden items-center lg:flex">
+        <label class="sr-only" for="site-search">Search blog</label>
+        <input id="site-search" type="search" name="q" placeholder="Search site…"
+          class="w-44 rounded-full border border-line bg-surface-elevated px-4 py-2 text-sm text-ink placeholder:text-muted focus:border-accent/40 xl:w-52">
+      </form>
+      <a href="https://github.com/winse" target="_blank" rel="noopener" class="btn-ghost hidden sm:inline-flex">
+        GitHub
+      </a>
+    </nav>
+  </div>
+
+  <div id="mobile-nav" class="hidden border-t border-line/80 bg-surface/95 sm:hidden">
+    <div class="site-shell flex flex-col gap-3 py-4 text-sm">
+      <a href="/" class="nav-link">Blog</a>
+      <a href="/blog/archives/" class="nav-link">Archives</a>
+      <a href="/atom.xml" class="nav-link">RSS</a>
+      <a href="https://github.com/winse" target="_blank" rel="noopener" class="nav-link">GitHub</a>
+    </div>
+  </div>
 </header>
-  <nav role="navigation"><ul class="subscription" data-subscription="rss">
-  <li><a href="/atom.xml" rel="subscribe-rss" title="subscribe via RSS">RSS</a></li>
-  
-</ul>
-  
-<form action="https://www.google.com/search" method="get">
-  <fieldset role="search">
-    <input type="hidden" name="q" value="site:winse.github.io" />
-    <input class="search" type="text" name="q" results="0" placeholder="站内搜索"/>
-  </fieldset>
-</form>
-  
-<ul class="main-navigation">
-  <li><a href="/">Blog</a></li>
-  <li><a href="/blog/archives/">Archives</a></li>
-  <li><a href="/blog/archives/updated.html">Updated</a></li>
-  <li><a href="/tool/">Tools</a></li>
-</ul>
 
-</nav>
-  <div id="main">
-    <div id="content">
-      <div>
-<article class="hentry" role="article">
-  
-  <header>
+  <main id="main-content" class="flex-1">
     
-      <h1 class="entry-title">Tez编译及使用</h1>
-    
-    
-      <p class="meta">
-        
+<article class="site-shell py-10 sm:py-14">
+  <div class="mx-auto max-w-6xl ">
+    <div class="min-w-0 max-w-3xl mx-auto">
+      <header class="border-b border-line pb-8">
+        <p class="section-label">Article</p>
+        <div class="meta-row mt-4">
+          
+          
+          <a href="/blog/categories/hadoop/" class="rounded-full bg-accent-soft/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent transition hover:bg-accent-soft">hadoop</a>
+          
+          <a href="/blog/categories/tez/" class="rounded-full bg-accent-soft/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent transition hover:bg-accent-soft">tez</a>
+          
+          <span aria-hidden="true">·</span>
+          
+          <time datetime="2014-06-18">发布于 2014-06-17</time>
+          
+          <span aria-hidden="true">·</span>
+          <span>7 min read</span>
+        </div>
 
+        <h1 class="article-title mt-6">tez编译及使用</h1>
+      </header>
 
+      
 
-
-
-
-
-
-  
-
-
-<time datetime="2014-06-18T04:22:58+08:00" pubdate data-updated="true">Wed 2014-06-18 04:22</time>
-		
-        
-		
-      </p>
-    
-  </header>
-
-
-
-<div class="toc-icon">
-	<svg viewBox="0 0 20 20" enable-background="new 0 0 20 20" xml:space="preserve" style="width: 20px;">
-		<g>
-			<path fill-rule="evenodd" clip-rule="evenodd" d="M2,15c-1.1,0-2,0.9-2,2c0,1.1,0.9,2,2,2s2-0.9,2-2C4,15.9,3.1,15,2,15z M2,8
-				c-1.1,0-2,0.9-2,2c0,1.1,0.9,2,2,2s2-0.9,2-2C4,8.9,3.1,8,2,8z M7,4h12c0.55,0,1-0.45,1-1c0-0.55-0.45-1-1-1H7C6.45,2,6,2.45,6,3
-				C6,3.55,6.45,4,7,4z M2,1C0.9,1,0,1.9,0,3c0,1.1,0.9,2,2,2s2-0.9,2-2C4,1.9,3.1,1,2,1z M19,9H7c-0.55,0-1,0.45-1,1
-				c0,0.55,0.45,1,1,1h12c0.55,0,1-0.45,1-1C20,9.45,19.55,9,19,9z M19,16H7c-0.55,0-1,0.45-1,1c0,0.55,0.45,1,1,1h12
-				c0.55,0,1-0.45,1-1C20,16.45,19.55,16,19,16z"></path>
-		</g>
-	</svg>
-</div>
-<div class="entry-content"><h2>初步了解</h2>
-
+      <div class="prose-blog py-8" id="post-content">
+        <h2 id="初步了解" tabindex="-1"><a class="anchor-link" href="#初步了解">#</a> 初步了解</h2>
 <p>hadoop2自带的mapreduce任务中间只能传递一次，也即一个任务只能聚合一次（然后就的写入磁盘）。tez项目是对原有yarn架构的一个拓展，使用DAG（无环有向图）实现MRR的任务框架。</p>
-
-<p><img src="http://farm6.staticflickr.com/5571/14256993179_4990fc86d5_o.png" alt="" /></p>
-
+<p><img src="http://farm6.staticflickr.com/5571/14256993179_4990fc86d5_o.png" alt=""></p>
 <p>上图中，左边的MR任务完成一个步骤后，需要进行 <strong>数据存储</strong> 后再执行另一个任务来进行第二个 <strong>reduce</strong> ； 而tez则可以在reduce后继续执行reduce，减少了中间过程的IO以及mapreduce的启动时间。</p>
-
-<h2>环境整合</h2>
-
+<h2 id="环境整合" tabindex="-1"><a class="anchor-link" href="#环境整合">#</a> 环境整合</h2>
 <ul>
 <li><a href="http://tez.incubator.apache.org/install.html">Install/Deploy</a></li>
 <li>hadoop-2.2.0（umcc97-44：hdfs， umcc97-79：yarn）</li>
 <li>windows下使用Cygwin编译</li>
 </ul>
-
-
-<h3>下载编译tez</h3>
-
+<h3 id="下载编译tez" tabindex="-1"><a class="anchor-link" href="#下载编译tez">#</a> 下载编译tez</h3>
 <p>首先下载<a href="http://apache.fayea.com/apache-mirror/incubator/tez/tez-0.4.0-incubating/">tez-0.4.0-incubating.tar.gz</a>，同时还需要<a href="http://code.google.com/p/protobuf">protoc</a>的程序支持（可以参考<a href="http://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/SingleCluster.html">Hadoop源码编译</a>）。
 解压后，使用mvn编译。</p>
+<pre class="hljs"><code class="hljs">Administrator@winseliu /cygdrive/e/local/libs/big
+$ tar zxvf tez-0.4.0-incubating.tar.gz
 
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
-</span><span class='line'>$ tar zxvf tez-0.4.0-incubating.tar.gz
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big
-</span><span class='line'>$ cd tez-0.4.0-incubating/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
-</span><span class='line'>$ mvn install -DskipTests -Dmaven.javadoc.skip
-</span><span class='line'>...
-</span><span class='line'>[INFO] Reactor Summary:
-</span><span class='line'>[INFO]
-</span><span class='line'>[INFO] tez ............................................... SUCCESS [1.518s]
-</span><span class='line'>[INFO] tez-api ........................................... SUCCESS [8.890s]
-</span><span class='line'>[INFO] tez-common ........................................ SUCCESS [0.725s]
-</span><span class='line'>[INFO] tez-runtime-internals ............................. SUCCESS [2.529s]
-</span><span class='line'>[INFO] tez-runtime-library ............................... SUCCESS [5.100s]
-</span><span class='line'>[INFO] tez-mapreduce ..................................... SUCCESS [3.666s]
-</span><span class='line'>[INFO] tez-mapreduce-examples ............................ SUCCESS [2.692s]
-</span><span class='line'>[INFO] tez-dag ........................................... SUCCESS [13.943s]
-</span><span class='line'>[INFO] tez-tests ......................................... SUCCESS [1.691s]
-</span><span class='line'>[INFO] tez-dist .......................................... SUCCESS [14.370s]
-</span><span class='line'>[INFO] Tez ............................................... SUCCESS [0.245s]
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] BUILD SUCCESS
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span><span class='line'>[INFO] Total time: 55.791s
-</span><span class='line'>[INFO] Finished at: Tue Jun 17 17:33:45 CST 2014
-</span><span class='line'>[INFO] Final Memory: 35M/151M
-</span><span class='line'>[INFO] ------------------------------------------------------------------------
-</span></code></pre></td></tr></table></div></figure>
+Administrator@winseliu /cygdrive/e/local/libs/big
+$ cd tez-0.4.0-incubating/
 
+Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
+$ mvn install -DskipTests -Dmaven.javadoc.skip
+<span class="hljs-built_in">..</span>.
+[<span class="hljs-built_in">INFO</span>] Reactor Summary:
+[<span class="hljs-built_in">INFO</span>]
+[<span class="hljs-built_in">INFO</span>] tez <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span>. SUCCESS [1.518s]
+[<span class="hljs-built_in">INFO</span>] tez-api <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span>. SUCCESS [8.890s]
+[<span class="hljs-built_in">INFO</span>] tez-common <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span> SUCCESS [0.725s]
+[<span class="hljs-built_in">INFO</span>] tez-runtime-internals <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span>. SUCCESS [2.529s]
+[<span class="hljs-built_in">INFO</span>] tez-runtime-library <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span>. SUCCESS [5.100s]
+[<span class="hljs-built_in">INFO</span>] tez-mapreduce <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span>. SUCCESS [3.666s]
+[<span class="hljs-built_in">INFO</span>] tez-mapreduce-examples <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span> SUCCESS [2.692s]
+[<span class="hljs-built_in">INFO</span>] tez-dag <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span>. SUCCESS [13.943s]
+[<span class="hljs-built_in">INFO</span>] tez-tests <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span>. SUCCESS [1.691s]
+[<span class="hljs-built_in">INFO</span>] tez-dist <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span> SUCCESS [14.370s]
+[<span class="hljs-built_in">INFO</span>] Tez <span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span><span class="hljs-built_in">..</span>. SUCCESS [0.245s]
+[<span class="hljs-built_in">INFO</span>] ------------------------------------------------------------------------
+[<span class="hljs-built_in">INFO</span>] BUILD SUCCESS
+[<span class="hljs-built_in">INFO</span>] ------------------------------------------------------------------------
+[<span class="hljs-built_in">INFO</span>] Total time: 55.791s
+[<span class="hljs-built_in">INFO</span>] Finished at: Tue Jun 17 17:33:45 CST 2014
+[<span class="hljs-built_in">INFO</span>] Final Memory: 35M/151M
+[<span class="hljs-built_in">INFO</span>] ------------------------------------------------------------------------
 
-<h3>上传tez程序的jars到HDFS</h3>
-
+</code></pre>
+<h3 id="上传tez程序的jars到hdfs" tabindex="-1"><a class="anchor-link" href="#上传tez程序的jars到hdfs">#</a> 上传tez程序的jars到HDFS</h3>
 <p>为了简单我直接把tez jars上传到开发环境的集群上面去测试了。放到本地集群环境应该也类似。</p>
+<pre class="hljs"><code class="hljs"><span class="hljs-type">Administrator</span><span class="hljs-meta">@winseliu</span> <span class="hljs-regexp">/cygdrive/</span>e<span class="hljs-regexp">/local/</span>libs<span class="hljs-regexp">/big/</span>tez<span class="hljs-operator">-</span><span class="hljs-number">0.4</span>.<span class="hljs-number">0</span><span class="hljs-operator">-</span>incubating
+$ cd tez<span class="hljs-operator">-</span>dist<span class="hljs-operator">/</span>
 
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating
-</span><span class='line'>$ cd tez-dist/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist
-</span><span class='line'>$ cd target/
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
-</span><span class='line'>$ export HADOOP_USER_NAME=hadoop
-</span><span class='line'>
-</span><span class='line'>Administrator@winseliu /cygdrive/e/local/libs/big/tez-0.4.0-incubating/tez-dist/target
-</span><span class='line'>$ hadoop dfs -put tez-0.4.0-incubating/tez-0.4.0-incubating/ hdfs://umcc97-44:9000/apps/ 
-</span></code></pre></td></tr></table></div></figure>
+<span class="hljs-type">Administrator</span><span class="hljs-meta">@winseliu</span> <span class="hljs-regexp">/cygdrive/</span>e<span class="hljs-regexp">/local/</span>libs<span class="hljs-regexp">/big/</span>tez<span class="hljs-operator">-</span><span class="hljs-number">0.4</span>.<span class="hljs-number">0</span><span class="hljs-operator">-</span>incubating<span class="hljs-operator">/</span>tez<span class="hljs-operator">-</span>dist
+$ cd target<span class="hljs-operator">/</span>
 
+<span class="hljs-type">Administrator</span><span class="hljs-meta">@winseliu</span> <span class="hljs-regexp">/cygdrive/</span>e<span class="hljs-regexp">/local/</span>libs<span class="hljs-regexp">/big/</span>tez<span class="hljs-operator">-</span><span class="hljs-number">0.4</span>.<span class="hljs-number">0</span><span class="hljs-operator">-</span>incubating<span class="hljs-regexp">/tez-dist/</span>target
+$ export <span class="hljs-type">HADOOP_USER_NAME</span><span class="hljs-operator">=</span>hadoop
 
-<h3>配置集群环境</h3>
+<span class="hljs-type">Administrator</span><span class="hljs-meta">@winseliu</span> <span class="hljs-regexp">/cygdrive/</span>e<span class="hljs-regexp">/local/</span>libs<span class="hljs-regexp">/big/</span>tez<span class="hljs-operator">-</span><span class="hljs-number">0.4</span>.<span class="hljs-number">0</span><span class="hljs-operator">-</span>incubating<span class="hljs-regexp">/tez-dist/</span>target
+$ hadoop dfs <span class="hljs-operator">-</span>put tez<span class="hljs-operator">-</span><span class="hljs-number">0.4</span>.<span class="hljs-number">0</span><span class="hljs-operator">-</span>incubating<span class="hljs-regexp">/tez-0.4.0-incubating/</span> hdfs:<span class="hljs-comment">//umcc97-44:9000/apps/ </span>
 
+</code></pre>
+<h3 id="配置集群环境" tabindex="-1"><a class="anchor-link" href="#配置集群环境">#</a> 配置集群环境</h3>
 <p>首先看下原来集群的classpath路径，路径中已经包括了 <code>etc/hadoop</code> 目录，所以这里我直接把 <code>tez-site.xml</code> 放到该目录下。同时把tez-lib复制到 <code>share/hadoop/tez</code> 目录下，并添加到 <code>HADOOP_CLASSPATH</code> 环境变量。</p>
+<pre class="hljs"><code class="hljs">[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> hadoop]<span class="hljs-variable">$ </span>hadoop classpath
+/home/hadoop/hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/etc/<span class="hljs-symbol">hadoop:</span>/home/hadoop/hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/share/hadoop/common/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/common/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/<span class="hljs-symbol">hdfs:</span>/home/hadoop/hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/share/hadoop/hdfs/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/hdfs/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/yarn/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/yarn/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/mapreduce/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/mapreduce/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/contrib/capacity-scheduler/*.jar
 
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-<span class='line-number'>12</span>
-<span class='line-number'>13</span>
-<span class='line-number'>14</span>
-<span class='line-number'>15</span>
-<span class='line-number'>16</span>
-<span class='line-number'>17</span>
-<span class='line-number'>18</span>
-<span class='line-number'>19</span>
-<span class='line-number'>20</span>
-<span class='line-number'>21</span>
-<span class='line-number'>22</span>
-<span class='line-number'>23</span>
-<span class='line-number'>24</span>
-<span class='line-number'>25</span>
-<span class='line-number'>26</span>
-<span class='line-number'>27</span>
-<span class='line-number'>28</span>
-<span class='line-number'>29</span>
-<span class='line-number'>30</span>
-<span class='line-number'>31</span>
-<span class='line-number'>32</span>
-<span class='line-number'>33</span>
-<span class='line-number'>34</span>
-<span class='line-number'>35</span>
-<span class='line-number'>36</span>
-<span class='line-number'>37</span>
-<span class='line-number'>38</span>
-<span class='line-number'>39</span>
-<span class='line-number'>40</span>
-<span class='line-number'>41</span>
-<span class='line-number'>42</span>
-<span class='line-number'>43</span>
-<span class='line-number'>44</span>
-<span class='line-number'>45</span>
-<span class='line-number'>46</span>
-<span class='line-number'>47</span>
-<span class='line-number'>48</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-79 hadoop]$ hadoop classpath
-</span><span class='line'>/home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
-</span><span class='line'>
-</span><span class='line'># 用于map/reduce
-</span><span class='line'>[hadoop@umcc97-79 hadoop]$ cat tez-site.xml 
-</span><span class='line'>&lt;?xml version="1.0"?&gt;
-</span><span class='line'>&lt;?xml-stylesheet type="text/xsl" href="configuration.xsl"?&gt;
-</span><span class='line'>
-</span><span class='line'>&lt;configuration&gt;
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;tez.lib.uris&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;${fs.default.name}/apps/tez-0.4.0-incubating,${fs.default.name}/apps/tez-0.4.0-incubating/lib/&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span><span class='line'>&lt;/configuration&gt;
-</span><span class='line'>
-</span><span class='line'>[hadoop@umcc97-79 hadoop]$ cd ~/hadoop-2.2.0/share/hadoop/tez/
-</span><span class='line'>[hadoop@umcc97-79 tez]$ ll
-</span><span class='line'>total 9616
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  303139 Jun 17 17:33 avro-1.7.4.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   41123 Jun 17 17:33 commons-cli-1.2.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  610259 Jun 17 17:33 commons-collections4-4.0.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 1648200 Jun 17 17:33 guava-11.0.2.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  710492 Jun 17 17:33 guice-3.0.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  656365 Jun 17 17:33 hadoop-mapreduce-client-common-2.2.0.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop 1455001 Jun 17 17:33 hadoop-mapreduce-client-core-2.2.0.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   21537 Jun 17 17:33 hadoop-mapreduce-client-shuffle-2.2.0.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   81743 Jun 17 17:33 jettison-1.3.4.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  533455 Jun 17 17:33 protobuf-java-2.5.0.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  995968 Jun 17 17:33 snappy-java-1.0.4.1.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  749917 Jun 17 17:33 tez-api-0.4.0-incubating.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop   34049 Jun 17 17:33 tez-common-0.4.0-incubating.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  970987 Jun 17 17:33 tez-dag-0.4.0-incubating.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  246409 Jun 17 17:33 tez-mapreduce-0.4.0-incubating.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  199934 Jun 17 17:33 tez-mapreduce-examples-0.4.0-incubating.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  114692 Jun 17 17:33 tez-runtime-internals-0.4.0-incubating.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop  352177 Jun 17 17:33 tez-runtime-library-0.4.0-incubating.jar
-</span><span class='line'>-rw-r--r-- 1 hadoop hadoop    6845 Jun 17 17:33 tez-tests-0.4.0-incubating.jar
-</span><span class='line'>
-</span><span class='line'># MR配置，用于client任务提交
-</span><span class='line'>[hadoop@umcc97-79 hadoop]$ grep HADOOP_CLASSPATH hadoop-env.sh
-</span><span class='line'>export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>
-</span><span class='line'>[hadoop@umcc97-79 hadoop]$ sed -n 19,23p mapred-site.xml
-</span><span class='line'>&lt;configuration&gt;
-</span><span class='line'>&lt;property&gt;
-</span><span class='line'>  &lt;name&gt;mapreduce.framework.name&lt;/name&gt;
-</span><span class='line'>  &lt;value&gt;yarn-tez&lt;/value&gt;
-</span><span class='line'>&lt;/property&gt;
-</span></code></pre></td></tr></table></div></figure>
+<span class="hljs-comment"># 用于map/reduce</span>
+[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> hadoop]<span class="hljs-variable">$ </span>cat tez-site.xml 
+&lt;?xml version=<span class="hljs-string">&quot;1.0&quot;</span>?&gt;
+&lt;?xml-stylesheet type=<span class="hljs-string">&quot;text/xsl&quot;</span> href=<span class="hljs-string">&quot;configuration.xsl&quot;</span>?&gt;
 
+&lt;configuration&gt;
+&lt;property&gt;
+  &lt;name&gt;tez.lib.uris&lt;/name&gt;
+  &lt;value&gt;<span class="hljs-variable">${</span>fs.default.name}/apps/tez<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating,<span class="hljs-variable">${</span>fs.default.name}/apps/tez<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating/lib/&lt;/value&gt;
+&lt;/property&gt;
+&lt;/configuration&gt;
 
-<h3>同步，重启yarn</h3>
+[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> hadoop]<span class="hljs-variable">$ </span>cd ~/hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/share/hadoop/tez/
+[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> tez]<span class="hljs-variable">$ </span>ll
+total <span class="hljs-number">9616</span>
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">303139</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> avro<span class="hljs-number">-1.7</span>.<span class="hljs-number">4</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop   <span class="hljs-number">41123</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> commons-cli<span class="hljs-number">-1.2</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">610259</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> commons-collections4<span class="hljs-number">-4.0</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop <span class="hljs-number">1648200</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> guava<span class="hljs-number">-11.0</span>.<span class="hljs-number">2</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">710492</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> guice<span class="hljs-number">-3.0</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">656365</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> hadoop-mapreduce-client-common<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop <span class="hljs-number">1455001</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> hadoop-mapreduce-client-core<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop   <span class="hljs-number">21537</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> hadoop-mapreduce-client-shuffle<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop   <span class="hljs-number">81743</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> jettison<span class="hljs-number">-1.3</span>.<span class="hljs-number">4</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">533455</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> protobuf-java<span class="hljs-number">-2.5</span>.<span class="hljs-number">0</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">995968</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> snappy-java<span class="hljs-number">-1.0</span>.<span class="hljs-number">4.1</span>.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">749917</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> tez-api<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop   <span class="hljs-number">34049</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> tez-common<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">970987</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> tez-dag<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">246409</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> tez-mapreduce<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">199934</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> tez-mapreduce-examples<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">114692</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> tez-runtime-internals<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop  <span class="hljs-number">352177</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> tez-runtime-library<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar
+-rw-r--r-- <span class="hljs-number">1</span> hadoop hadoop    <span class="hljs-number">6845</span> <span class="hljs-title class_">Jun</span> <span class="hljs-number">17</span> <span class="hljs-number">17</span><span class="hljs-symbol">:</span><span class="hljs-number">33</span> tez-tests<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar
 
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>for h in `cat hadoop-2.2.0/etc/hadoop/slaves ` ; do 
-</span><span class='line'>  rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 $h:~/ ; 
-</span><span class='line'>done
-</span><span class='line'>
-</span><span class='line'># 同步到secondnamenode
-</span><span class='line'>rsync -vaz --exclude=logs --exclude=pid --exclude=tmp  hadoop-2.2.0 umcc97-44:~/</span></code></pre></td></tr></table></div></figure>
+<span class="hljs-comment"># MR配置，用于client任务提交</span>
+[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> hadoop]<span class="hljs-variable">$ </span>grep <span class="hljs-title class_">HADOOP_CLASSPATH</span> hadoop-env.sh
+export <span class="hljs-title class_">HADOOP_CLASSPATH</span>=<span class="hljs-variable">${</span><span class="hljs-title class_">HADOOP_HOME</span>}/share/hadoop/tez/*<span class="hljs-symbol">:</span><span class="hljs-variable">${</span><span class="hljs-title class_">HADOOP_HOME</span>}/share/hadoop/tez/lib/*<span class="hljs-symbol">:</span><span class="hljs-variable">$HADOOP_CLASSPATH</span>
 
+[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> hadoop]<span class="hljs-variable">$ </span>sed -n <span class="hljs-number">19</span>,<span class="hljs-number">23</span>p mapred-site.xml
+&lt;configuration&gt;
+&lt;property&gt;
+  &lt;name&gt;mapreduce.framework.name&lt;/name&gt;
+  &lt;value&gt;yarn-tez&lt;/value&gt;
+&lt;/property&gt;
 
-<h3>测试</h3>
+</code></pre>
+<h3 id="同步重启yarn" tabindex="-1"><a class="anchor-link" href="#同步重启yarn">#</a> 同步，重启yarn</h3>
+<pre class="hljs"><code class="hljs"><span class="hljs-keyword">for</span> h <span class="hljs-keyword">in</span> `cat hadoop-2.2.0/etc/hadoop/slaves ` ; <span class="hljs-keyword">do</span> 
+	rsync -vaz <span class="hljs-attribute">--exclude</span>=logs <span class="hljs-attribute">--exclude</span>=pid <span class="hljs-attribute">--exclude</span>=tmp  hadoop-2.2.0 <span class="hljs-variable">$h</span>:~/ ; 
+done
 
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-<span class='line-number'>9</span>
-<span class='line-number'>10</span>
-<span class='line-number'>11</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>[hadoop@umcc97-79 ~]$ hadoop classpath
-</span><span class='line'>/home/hadoop/hadoop-2.2.0/etc/hadoop:/home/hadoop/hadoop-2.2.0/share/hadoop/common/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/common/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/hdfs/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/yarn/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/lib/*:/home/hadoop/hadoop-2.2.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/*:/home/hadoop/hadoop-2.2.0/share/hadoop/tez/lib/*:/home/hadoop/hadoop-2.2.0/contrib/capacity-scheduler/*.jar
-</span><span class='line'>
-</span><span class='line'>[hadoop@umcc97-79 ~]$ cd hadoop-2.2.0/share/hadoop/mapreduce/
-</span><span class='line'>[hadoop@umcc97-79 mapreduce]$ hadoop jar hadoop-mapreduce-client-jobclient-2.2.0-tests.jar sleep -mt 1 -rt 1 -m 1 -r 1
-</span><span class='line'>
-</span><span class='line'>cd hadoop-2.2.0/share/hadoop/tez/
-</span><span class='line'>
-</span><span class='line'>hadoop fs -put ~/hadoop-2.2.0/logs/yarn-hadoop-resourcemanager-umcc97-79.* /hello/in
-</span><span class='line'>hadoop fs -rmr /hello/out
-</span><span class='line'>hadoop jar tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount  /hello/in /hello/out
-</span></code></pre></td></tr></table></div></figure>
+<span class="hljs-comment"># 同步到secondnamenode</span>
+rsync -vaz <span class="hljs-attribute">--exclude</span>=logs <span class="hljs-attribute">--exclude</span>=pid <span class="hljs-attribute">--exclude</span>=tmp  hadoop-2.2.0 umcc97-44:~/
+</code></pre>
+<h3 id="测试" tabindex="-1"><a class="anchor-link" href="#测试">#</a> 测试</h3>
+<pre class="hljs"><code class="hljs">[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> ~]<span class="hljs-variable">$ </span>hadoop classpath
+/home/hadoop/hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/etc/<span class="hljs-symbol">hadoop:</span>/home/hadoop/hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/share/hadoop/common/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/common/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/<span class="hljs-symbol">hdfs:</span>/home/hadoop/hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/share/hadoop/hdfs/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/hdfs/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/yarn/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/yarn/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/mapreduce/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/mapreduce/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/tez/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/share/hadoop/tez/lib/*<span class="hljs-symbol">:/home/hadoop/hadoop-</span><span class="hljs-number">2.2</span>.<span class="hljs-number">0</span>/contrib/capacity-scheduler/*.jar
 
+[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> ~]<span class="hljs-variable">$ </span>cd hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/share/hadoop/mapreduce/
+[hadoop<span class="hljs-variable">@umcc97</span><span class="hljs-number">-79</span> mapreduce]<span class="hljs-variable">$ </span>hadoop jar hadoop-mapreduce-client-jobclient<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>-tests.jar sleep -mt <span class="hljs-number">1</span> -rt <span class="hljs-number">1</span> -m <span class="hljs-number">1</span> -r <span class="hljs-number">1</span>
 
-<h3>回滚，使用时临时修改环境变量即可</h3>
+cd hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/share/hadoop/tez/
 
-<p>使用了tez后，导致hive-0.12.0不能运行。由于其他同事需要用hive，得把配置全部修改回去。【升级hive请查看<a href="/blog/2014/06/21/upgrade-hive/">hive-0.13中使用tez</a>】</p>
+hadoop fs -put ~/hadoop<span class="hljs-number">-2.2</span>.<span class="hljs-number">0</span>/logs/yarn-hadoop-resourcemanager-umcc97<span class="hljs-number">-79</span>.* /hello/<span class="hljs-keyword">in</span>
+hadoop fs -rmr /hello/out
+hadoop jar tez-mapreduce-examples<span class="hljs-number">-0.4</span>.<span class="hljs-number">0</span>-incubating.jar orderedwordcount  /hello/<span class="hljs-keyword">in</span> /hello/out
 
+</code></pre>
+<h3 id="回滚使用时临时修改环境变量即可" tabindex="-1"><a class="anchor-link" href="#回滚使用时临时修改环境变量即可">#</a> 回滚，使用时临时修改环境变量即可</h3>
+<pre class="hljs language-liquid"><code class="hljs language-liquid">使用了tez后，导致hive-<span class="hljs-number">0.12</span>.<span class="hljs-number">0</span>不能运行。由于其他同事需要用hive，得把配置全部修改回去。【升级hive请查看[hive-<span class="hljs-number">0.13</span>中使用tez]({{ BASE_PATH }}<span class="hljs-regexp">/blog/</span><span class="hljs-number">2014</span><span class="hljs-regexp">/06/</span><span class="hljs-number">21</span><span class="hljs-regexp">/upgrade-hive/</span>)】
+</code></pre>
 <p>在配置文件中配置为yarn，要使用tez在 <strong>提交任务</strong> 时指定配置参数即可。</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>export HADOOP_CLASSPATH=${HADOOP_HOME}/share/hadoop/tez/*:${HADOOP_HOME}/share/hadoop/tez/lib/*:$HADOOP_CLASSPATH
-</span><span class='line'>hadoop jar hadoop-2.2.0/share/hadoop/tez/tez-mapreduce-examples-0.4.0-incubating.jar orderedwordcount \
-</span><span class='line'>  -Dmapreduce.framework.name=yarn-tez  /hello/in /hello/out</span></code></pre></td></tr></table></div></figure>
-
-
+<pre class="hljs"><code class="hljs">export HADOOP_CLASSPATH=<span class="hljs-variable">${HADOOP_HOME}</span><span class="hljs-regexp">/share/</span>hadoop<span class="hljs-regexp">/tez/</span>*:<span class="hljs-variable">${HADOOP_HOME}</span><span class="hljs-regexp">/share/</span>hadoop<span class="hljs-regexp">/tez/</span>lib/*:<span class="hljs-variable">$HADOOP_CLASSPATH</span>
+hadoop jar hadoop-<span class="hljs-number">2.2</span>.<span class="hljs-number">0</span><span class="hljs-regexp">/share/</span>hadoop<span class="hljs-regexp">/tez/</span>tez-mapreduce-examples-<span class="hljs-number">0.4</span>.<span class="hljs-number">0</span>-incubating.jar orderedwordcount \
+	-Dmapreduce.framework.name=yarn-tez  <span class="hljs-regexp">/hello/i</span>n <span class="hljs-regexp">/hello/</span>out
+</code></pre>
 <p>org.apache.tez.mapreduce.examples.OrderedWordCount不仅计算出了结果，同时按个数大小进行了排序。</p>
-
 <p>问题： tez的任务的history还不知道怎么弄的，启动historyserver没作用？</p>
-
 <p>0.6版本已经有ui了。</p>
-
-<h3>持续更新</h3>
-
+<h3 id="持续更新" tabindex="-1"><a class="anchor-link" href="#持续更新">#</a> 持续更新</h3>
 <p>本来想编译好tez-0.6就往hive-0.13上面放，没想到遇到钉子了！！hive-0.13不支持！！</p>
-
 <p>在编译tez并想集成到hive，先下载hive的源码，看看pom.xml中使用的是到底是什么版本的tez，再编译tez不迟！！！</p>
-
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>apache-hive-1.1.0-src.tar.gz/pom.xml
-</span><span class='line'>    &lt;tez.version&gt;0.5.2&lt;/tez.version&gt;</span></code></pre></td></tr></table></div></figure>
-
-
+<pre class="hljs"><code class="hljs"><span class="hljs-attribute">apache</span>-hive-<span class="hljs-number">1</span>.<span class="hljs-number">1</span>.<span class="hljs-number">0</span>-src.tar.gz/pom.xml
+    <span class="hljs-section">&lt;tez.version&gt;</span><span class="hljs-attribute">0</span>.<span class="hljs-number">5</span>.<span class="hljs-number">2</span>&lt;/tez.version&gt;
+</code></pre>
 <p>tez-0.6在hadoop-2.2基础上编译：</p>
+<pre class="hljs"><code class="hljs"><span class="hljs-attribute">E</span>:\local\opt\bigdata\apache-tez-<span class="hljs-number">0</span>.<span class="hljs-number">6</span>.<span class="hljs-number">0</span>-src&gt;mvn  package -Dhadoop.version=<span class="hljs-number">2</span>.<span class="hljs-number">2</span>.<span class="hljs-number">0</span> -DskipTests -Dmaven.javadoc.skip=true -DskipATS
 
-<figure class='code'><div class="highlight"><table><tr><td class="gutter"><pre class="line-numbers"><span class='line-number'>1</span>
-<span class='line-number'>2</span>
-<span class='line-number'>3</span>
-<span class='line-number'>4</span>
-<span class='line-number'>5</span>
-<span class='line-number'>6</span>
-<span class='line-number'>7</span>
-<span class='line-number'>8</span>
-</pre></td><td class='code'><pre><code class=''><span class='line'>E:\local\opt\bigdata\apache-tez-0.6.0-src&gt;mvn  package -Dhadoop.version=2.2.0 -DskipTests -Dmaven.javadoc.skip=true -DskipATS
-</span><span class='line'>
-</span><span class='line'>vi tez-dist/pom.xml
-</span><span class='line'>&lt;profile&gt;
-</span><span class='line'>      &lt;id&gt;hadoop26&lt;/id&gt;
-</span><span class='line'>      &lt;activation&gt;
-</span><span class='line'>        &lt;activeByDefault&gt;false&lt;/activeByDefault&gt;
-</span><span class='line'>      &lt;/activation&gt;</span></code></pre></td></tr></table></div></figure>
+<span class="hljs-attribute">vi</span> tez-dist/pom.xml
+<span class="hljs-section">&lt;profile&gt;</span>
+      <span class="hljs-section">&lt;id&gt;</span><span class="hljs-attribute">hadoop26</span>&lt;/id&gt;
+      <span class="hljs-section">&lt;activation&gt;</span>
+        <span class="hljs-section">&lt;activeByDefault&gt;</span><span class="hljs-attribute">false</span>&lt;/activeByDefault&gt;
+      <span class="hljs-section">&lt;/activation&gt;</span>
+</code></pre>
+<p>–END</p>
 
+      </div>
 
-<p>&ndash;END</p>
-</div>
-
-
-  <footer>
-    <p class="meta">
+      <section class="discuss-panel mt-12">
+  <div class="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+    <div class="max-w-xl">
+      <p class="section-label">Discussion</p>
+      <h2 class="page-title mt-2 text-3xl text-ink">在 GitHub 上讨论</h2>
+      <p class="mt-3 text-sm leading-7 text-muted">欢迎通过 GitHub Issue 留言或反馈。每条讨论都会关联到对应文章的源文件路径。</p>
       
-  
-
-<span class="byline author vcard">Posted by <span class="fn">Winse Liu</span></span>
-
+      <p class="mt-4 inline-flex rounded-full border border-line bg-white/70 px-3 py-1 font-mono text-xs text-muted">2014-06-17-hadoop-tez-firststep.md</p>
       
-
-
-
-
-
-
-
-
-  
-
-
-<time datetime="2014-06-18T04:22:58+08:00" pubdate data-updated="true">Wed 2014-06-18 04:22</time>
-      
-
-<span class="categories">
-  
-    <a class='category' href='/blog/categories/hadoop/'>hadoop</a>, <a class='category' href='/blog/categories/tez/'>tez</a>
-  
-</span>
-
-
-	  <span style="padding: 0 1em;">
-<a class="shellExecuteLink" href="npp-windows://e/_posts/2014-06-17-hadoop-tez-firststep.md" title="本地编辑"><i class="icon-edit"> </i>编辑</a>
-</span>	
-    </p>
-    <p class="meta">
-      
-        <a class="basic-alignment left" href="/blog/2014/04/22/remote-debug-hadoop2/" title="Previous Post: 远程调试hadoop2以及错误处理方法">&laquo; 远程调试hadoop2以及错误处理方法</a>
-      
-      
-        <a class="basic-alignment right" href="/blog/2014/06/21/upgrade-hive/" title="Next Post: upgrade hive: 0.12.0 to 0.13.1">upgrade hive: 0.12.0 to 0.13.1 &raquo;</a>
-      
-    </p>
-  </footer>
-</article>
-
-</div>
-
-<aside class="sidebar">
-  
-    <section>
-  <h1>佛爷</h1>
-  <p>来之不易, 且等且珍惜. <br>得之我幸; 不得<span style="display:none">-争-复争-且不得</span>, 命也, 乐享天命, 福也. </p>
-  <p><a href="https://github.com/winse"><i class="fa fa-github-alt">winse</i></a>&nbsp;&nbsp;<a href="http://weibo.com/winseliu"><i class="fa fa-weibo">winseliu</i></a></p>
-</section>
-<section>
-
-
-
-</section>
-<section>
-  <h1>Recent Posts</h1>
-  <ul id="recent_posts">
-    
-      <li class="post">
-        <a href="/blog/2024/01/15/aigc-setup-on-windows-wsl-2/">AIGC Setup on Win11 WSL2</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2023/11/18/reinstall-redmine-on-respberry2/">Reinstall Redmine on Raspberry2</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2023/04/09/dingtalk-with-openai/">钉钉群机器人对接ChatGPT</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2023/03/26/clash-on-raspberry4/">树莓派4安装Clash</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2023/03/25/reinstall-raspberry2/">重新折腾raspberry2</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2023/03/25/mirror-request/">请求复制/镜像</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2023/03/18/wechat-on-openai/">微信对接OpenAI</a>
-      </li>
-    
-      <li class="post">
-        <a href="/blog/2023/02/01/git-reset-hard/">记git Reset --hard</a>
-      </li>
-    
-  </ul>
-</section>
-<section>
-  <h1>Categories</h1>
-
-<!-- key -->
-	 
-	<ul role="list">
-		
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hadoop/'>hadoop</a> (68) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/efficity/'>efficity</a> (23) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/java/'>java</a> (16) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/k8s/'>k8s</a> (15) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/docker/'>docker</a> (15) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/spark/'>spark</a> (13) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/puppet/'>puppet</a> (11) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/blog/'>blog</a> (11) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/hive/'>hive</a> (8) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/redis/'>redis</a> (7) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/jekyll/'>jekyll</a> (7) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/raspberry/'>raspberry</a> (6) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/nginx/'>nginx</a> (6) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/books/'>books</a> (6) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/ganglia/'>ganglia</a> (5) 
-		</li>
-		 
-		<li style="float:left; width:120px"> 
-			<a class='category' href='/blog/categories/scala/'>scala</a> (4) 
-		</li>
-		
-		
-		<li style="clear:both; width: 1px; margin: 0; padding: 0;"></li>
-		<li class="category"><a href="/blog/archives">All categories</a> (237)</li>
-	</ul>
-	
-</section>
-
-<section>
-  <h1>GitHub Repos</h1>
-  <ul id="gh_repos">
-    <li class="loading">Status updating...</li>
-  </ul>
-  
-  <a href="https://github.com/winse">@winse</a> on GitHub
-  
-  <script type="text/javascript">
-    $(document).ready(function(){
-        if (!window.jXHR){
-            var jxhr = document.createElement('script');
-            jxhr.type = 'text/javascript';
-            jxhr.src = '/javascripts/libs/jXHR.js';
-            var s = document.getElementsByTagName('script')[0];
-            s.parentNode.insertBefore(jxhr, s);
-        }
-
-        github.showRepos({
-            user: 'winse',
-            count: 4,
-            skip_forks: true,
-            target: '#gh_repos'
-        });
-    });
-  </script>
-  <script src="/javascripts/github.js" type="text/javascript"> </script>
-</section>
-
-<section>
-<!--
-  <h1>Softs, I'm using</h1>
-  <ul>
-    <li class="post">
-		<a href="http://hadoop.apache.org/releases.html">hadoop-2.6.3</a>
-	</li>
-	<li class="post">
-		<a href="https://issues.apache.org/jira/browse/HBASE/?selectedTab=com.atlassian.jira.jira-projects-plugin:changelog-panel">hbase-0.96.0</a>
-	</li>
-	<li class="post">
-		<a href="https://hive.apache.org/downloads.html">hive-1.2.1</a>
-	</li>
-	<li class="post">
-		<a href="https://issues.apache.org/jira/browse/TEZ/?selectedTab=com.atlassian.jira.jira-projects-plugin:summary-panel">tez-0.7.0</a>
-    </li>
-  </ul>
--->
-</section>
-
-  
-</aside>
-
-
+    </div>
+    <div class="flex shrink-0 flex-wrap gap-3">
+      <a href="https://github.com/winse/winse.github.com/issues?q=is%3Aissue%20label%3Ablog%202014-06-17-hadoop-tez-firststep.md" class="btn-ghost" target="_blank" rel="noopener">
+        查看已有讨论
+      </a>
+      <a href="https://github.com/winse/winse.github.com/issues/new?title=%5B2014-06-17-hadoop-tez-firststep.md%5D%20tez%E7%BC%96%E8%AF%91%E5%8F%8A%E4%BD%BF%E7%94%A8&amp;body=%E6%96%87%E7%AB%A0%E9%93%BE%E6%8E%A5%3A%20https%3A%2F%2Fwinse.github.io%2Fblog%2F2014%2F06%2F18%2Fhadoop-tez-firststep%2F%0A%0A%E6%BA%90%E6%96%87%E4%BB%B6%3A%20%602014-06-17-hadoop-tez-firststep.md%60&amp;labels=blog" class="btn-primary" target="_blank" rel="noopener">
+        新建 Issue
+      </a>
     </div>
   </div>
-  <footer role="contentinfo"><p>
-  Copyright &copy; 2024 - Winse Liu -
-  <span class="credit">Powered by <a href="http://octopress.org">Octopress</a></span>
-</p>
+</section>
 
+
+      
+      
+      <section class="mt-16 border-t border-line pt-10">
+        <p class="section-label">Related</p>
+        <h2 class="page-title mt-2 text-3xl">Related posts</h2>
+        <ul class="mt-6 space-y-4">
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2016/01/12/tez-ui-config-and-run/" class="font-medium text-ink transition hover:text-accent">配置TEZ-UI</a>
+            <p class="mt-1 text-sm text-muted">2016-01-12</p>
+          </li>
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2017/09/02/zookeeper-acl/" class="font-medium text-ink transition hover:text-accent">Zookeeper ACL</a>
+            <p class="mt-1 text-sm text-muted">2017-09-02</p>
+          </li>
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2017/05/23/spark-on-hive-speculation-shit-bug/" class="font-medium text-ink transition hover:text-accent">Hive on Spark预测性执行BUG一枚</a>
+            <p class="mt-1 text-sm text-muted">2017-05-23</p>
+          </li>
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2017/04/14/k8s-hadoop-deploy/" class="font-medium text-ink transition hover:text-accent">k8s hadoop deploy</a>
+            <p class="mt-1 text-sm text-muted">2017-04-14</p>
+          </li>
+          
+        </ul>
+      </section>
+      
+    </div>
+
+    
+  </div>
+</article>
+
+  </main>
+  <footer class="mt-20 border-t border-line bg-surface-elevated/70">
+  <div class="site-shell py-12">
+    <div class="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr]">
+      <div>
+        <p class="page-title text-2xl text-ink">Winse Blog</p>
+        <p class="mt-3 max-w-md text-sm leading-7 text-muted">走走停停都是风景, 熙熙攘攘都向最好, 忙忙碌碌都为明朝, 何畏之.</p>
+      </div>
+      <div>
+        <p class="section-label">Explore</p>
+        <ul class="mt-4 space-y-2 text-sm text-muted">
+          <li><a href="/" class="transition hover:text-ink">Latest posts</a></li>
+          <li><a href="/blog/archives/" class="transition hover:text-ink">Archives</a></li>
+          <li><a href="/atom.xml" class="transition hover:text-ink">RSS feed</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="section-label">Connect</p>
+        <ul class="mt-4 space-y-2 text-sm text-muted">
+          <li><a href="https://github.com/winse" target="_blank" rel="noopener" class="transition hover:text-ink">GitHub @winse</a></li>
+          <li><a href="mailto:winseliu@foxmail.com" class="transition hover:text-ink">winseliu@foxmail.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="mt-10 flex flex-col gap-2 border-t border-line pt-6 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
+      <p>&copy; 2026 Winse Liu</p>
+      <p>Built with <a href="https://www.11ty.dev/" class="transition hover:text-ink">Eleventy</a> + Tailwind</p>
+    </div>
+  </div>
 </footer>
-  
 
-
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.css">
-<script src="https://cdn.jsdelivr.net/npm/gitalk@1/dist/gitalk.min.js"></script>
-
-<script>
-
-var time=location.pathname.substring(6).substring(0,11);
-var eName=location.pathname.substring(17);
-var gitalk = new Gitalk({
-  clientID: 'c14f68eac6330d15d984',
-  clientSecret: '73b7c1fffa98e299ff0cdd332821201933858e6e',
-  repo: 'winse.github.com',
-  owner: 'winse',
-  admin: ['winse'],
-  id: eName,
-  labels: ['Gitalk', time],
-  body: "http://winse.github.io" + location.pathname,
-  createIssueManually: true,
-  
-  // facebook-like distraction free mode
-  distractionFreeMode: false
-})
-
-gitalk.render('gitalk-container')
-
-</script>
-
-
-
-<script>
-/*
-$.ajax({
-  type: "POST",
-  url: "http://log.winseliu.com:20000",
-  data: JSON.stringify({
-    title: document.title,
-    location: JSON.stringify(location),
-    referrer: document.referrer,
-    userAgent: navigator.userAgent
-  }),
-  contentType: "application/json; charset=utf-8",
-  dataType: "json"
-});
-*/
-</script>
-
-
-
-
-
-
-
-
-<script type="text/javascript">
-    $(function(){  
-        $("img").click(function(){  
-            var _this = $(this);
-			window.open(_this.attr("src"), '_blank');
-        });  
-    });
-</script>
-
+  <script src="/js/main.js" defer></script>
 </body>
 </html>

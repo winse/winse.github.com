@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f4ef">
+  <title>基于对象存储的 Spark 数据读写实战：从末尾追加到任意更新 · Winse Blog</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="alternate" type="application/atom+xml" title="Winse Blog" href="/atom.xml">
+  <link rel="stylesheet" href="/css/main.css">
+  
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-43198550-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'UA-43198550-1');
+  </script>
+  
+</head>
+<body class="min-h-screen flex flex-col">
+  <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-full focus:bg-ink focus:px-4 focus:py-2 focus:text-white">
+    跳到正文
+  </a>
+  <header class="sticky top-0 z-50 border-b border-line/80 bg-surface/85 backdrop-blur-xl">
+  <div class="site-shell flex items-center justify-between gap-4 py-4">
+    <a href="/" class="group flex items-center gap-3">
+      <span class="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface-elevated text-sm font-semibold text-accent shadow-sm transition group-hover:border-accent/30 group-hover:bg-accent-soft/50">W</span>
+      <span class="text-xl font-bold tracking-tight text-ink">Winse Blog</span>
+    </a>
+
+    <button type="button" id="nav-toggle" class="btn-ghost px-3 py-2 sm:hidden" aria-expanded="false" aria-controls="site-nav">
+      Menu
+    </button>
+
+    <nav id="site-nav" class="hidden items-center gap-5 text-sm sm:flex" aria-label="Primary">
+      <a href="/" class="nav-link" data-nav="/">Blog</a>
+      <a href="/blog/archives/" class="nav-link" data-nav="/blog/archives/">Archives</a>
+      <a href="/atom.xml" class="nav-link" data-nav="/atom.xml">RSS</a>
+      <form action="https://www.google.com/search" method="get" onsubmit="this.q.value = this.q.value ? this.q.value + ' site:winse.github.io' : ''" class="hidden items-center lg:flex">
+        <label class="sr-only" for="site-search">Search blog</label>
+        <input id="site-search" type="search" name="q" placeholder="Search site…"
+          class="w-44 rounded-full border border-line bg-surface-elevated px-4 py-2 text-sm text-ink placeholder:text-muted focus:border-accent/40 xl:w-52">
+      </form>
+      <a href="https://github.com/winse" target="_blank" rel="noopener" class="btn-ghost hidden sm:inline-flex">
+        GitHub
+      </a>
+    </nav>
+  </div>
+
+  <div id="mobile-nav" class="hidden border-t border-line/80 bg-surface/95 sm:hidden">
+    <div class="site-shell flex flex-col gap-3 py-4 text-sm">
+      <a href="/" class="nav-link">Blog</a>
+      <a href="/blog/archives/" class="nav-link">Archives</a>
+      <a href="/atom.xml" class="nav-link">RSS</a>
+      <a href="https://github.com/winse" target="_blank" rel="noopener" class="nav-link">GitHub</a>
+    </div>
+  </div>
+</header>
+
+  <main id="main-content" class="flex-1">
+    
+<article class="site-shell py-10 sm:py-14">
+  <div class="mx-auto max-w-6xl ">
+    <div class="min-w-0 max-w-3xl mx-auto">
+      <header class="border-b border-line pb-8">
+        <p class="section-label">Article</p>
+        <div class="meta-row mt-4">
+          
+          
+          <a href="/blog/categories/dev/" class="rounded-full bg-accent-soft/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent transition hover:bg-accent-soft">dev</a>
+          
+          <span aria-hidden="true">·</span>
+          
+          <time datetime="2025-10-29">发布于 2025-10-28</time>
+          
+          <span aria-hidden="true">·</span>
+          <span>2 min read</span>
+        </div>
+
+        <h1 class="article-title mt-6">基于对象存储的 Spark 数据读写实战：从末尾追加到任意更新</h1>
+      </header>
+
+      
+
+      <div class="prose-blog py-8" id="post-content">
+        <p>很久没有碰 Spark 大数据这一块的东西了，最近需要做一些数据转换的工作，又重新捡了起来，Hadoop已经到了3.4，Spark最新的版本都4.0了。</p>
+<p>现在流行对象存储了，Hadoop的分布式存储HDFS确实设计精妙、安全而且高效，但在灵活性和使用成本上稍显笨重。对象存储是从亚马逊AWS的 S3 来的，后面它就成了一种事实的行业标准，有点类似 OpenAI 的接口大家都去适配它。</p>
+<p>HDFS 缺点是不适合小文件、集群运维复杂、不支持HTTP访问，而 FTP 没有容错、没有扩展能力、而且不支持随机访问。S3 可以做到无限的扩展，REST API 访问方便，支持版本控制，还带生命周期管理。</p>
+<p>MinIO 是当前最流行的开源实现，服务使用也很便捷。国人写的Rust版本rustfs，也可以作为备选之一。</p>
+<p><img src="/images/2025-10-28/e11afe268450.png" alt=""></p>
+<p><img src="/images/2025-10-28/1a17a4132ac5.jpg" alt=""></p>
+<p>Spark 计算框架默认通过 Hadoop FileSystem 接口去访问存储，访问 S3 对象存储的 s3a 协议就是它的一个实现。Hadoop的文件系统FileSystem还是很厉害。相比Java NIO FileSystem，Hadoop 的 FileSystem 是为分布式的文件系统设计的，无需关注底层存储实现细节差异，提供容错和安全机制，并可统一访问HDFS、S3、OSS 等不同存储。</p>
+<p><strong>运行Spark</strong></p>
+<p>下载 spark-3.5.7-bin-hadoop3 版本（最终都是需要 hadoop 的依赖，直接下载附带 hadoop 的版本更直接一点）。如果是在 Windows 上运行，需要本地 Hadoop DLL 的支持，编译不是我们这关注的重点，文章最后附录部分有详细的说明。</p>
+<p>配置 conf/spark-env.cmd，设置 HADOOP_HOME 和 PATH。然后，运行 spark-shell.cmd 脚本，即可启动交互式环境。</p>
+<p><img src="/images/2025-10-28/3f1465b4e314.png" alt=""></p>
+<p>写个hello（spark-shell）：</p>
+<p><img src="/images/2025-10-28/465eb285eb58.jpg" alt=""></p>
+<p><img src="/images/2025-10-28/37a953670412.jpg" alt=""></p>
+<p>使用 spark-sql 命令执行SQL语句：</p>
+<p><img src="/images/2025-10-28/9fdd8bc0e1fe.png" alt=""></p>
+<p>Spark 默认以 Hive 表格式保存数据，执行写入后可在文件系统中看到数据文件的效果：</p>
+<p><img src="/images/2025-10-28/c4edc278492b.png" alt=""></p>
+<p><strong>数据追加：连接 S3 对象存储</strong></p>
+<p>使用s3需要配置访问端点、用户和密码。最方便的方式是直接写到 conf/spark-defaults.conf 文件。</p>
+<p><img src="/images/2025-10-28/47e1204a2701.jpg" alt=""></p>
+<p><img src="/images/2025-10-28/d3d8d68b487c.png" alt=""></p>
+<p>当然，启动时还需要添加 aws 的 jar 依赖包。首先，创建准备好 S3 的 bucket，创建一个 test 的存储桶，然后，使用下面的命令启动，下面操作的 建表以及插入数据 会放置到这个桶里面。</p>
+<pre class="hljs"><code class="hljs"><span class="hljs-attribute">spark</span>-sql --jars ..\..\aws-java-sdk-bundle-<span class="hljs-number">1</span>.<span class="hljs-number">12</span>.<span class="hljs-number">712</span>.jar,..\..\hadoop-aws-<span class="hljs-number">3</span>.<span class="hljs-number">3</span>.<span class="hljs-number">4</span>.jar
+</code></pre>
+<p><img src="/images/2025-10-28/58ce87cb7e24.png" alt=""></p>
+<p>对象存储的写入记录后，结果看起来就像本地文件系统上一样。在对象存储的桶中生成了表的目录和数据文件，文件的记录列表如下：</p>
+<p><img src="/images/2025-10-28/81fa43b97e17.png" alt=""></p>
+<p><strong>数据更新：iceberg 表管理</strong></p>
+<p>传统的Hive表格是不支持删除或修改操作：</p>
+<p><img src="/images/2025-10-28/c94fa15c7ea1.png" alt=""></p>
+<p>如果要支持更新、删除、表结构的变更等操作，需要一种新的表管理模式：iceberg。iceberg 原理通过重新设计元数据来管理数据库的实际数据文件，通过快照的方式追踪表的版本，在对象存储上实现类数据库的操作DML、历史版本以及表模式（DDL）的修改。</p>
+<p>参考文档：<a href="https://iceberg.apache.org/docs/nightly/spark-getting-started/#creating%5C-a-table%E3%80%82">https://iceberg.apache.org/docs/nightly/spark-getting-started/#creating\-a-table。</a></p>
+<p>首先，在 spark-defaults.conf 中配置iceberg：</p>
+<p><img src="/images/2025-10-28/ee4d7c5d31e5.png" alt=""></p>
+<p>然后，运行的命令行中增加 iceberg 的 jar 依赖：</p>
+<pre class="hljs"><code class="hljs"><span class="hljs-attribute">spark</span>-sql --jars ..\..\iceberg-spark-runtime-<span class="hljs-number">3</span>.<span class="hljs-number">5</span>_2.<span class="hljs-number">12</span>-<span class="hljs-number">1</span>.<span class="hljs-number">10</span>.<span class="hljs-number">0</span>.jar,..\..\bundle-<span class="hljs-number">2</span>.<span class="hljs-number">36</span>.<span class="hljs-number">1</span>.jar,..\..\aws-java-sdk-bundle-<span class="hljs-number">1</span>.<span class="hljs-number">12</span>.<span class="hljs-number">712</span>.jar,..\..\hadoop-aws-<span class="hljs-number">3</span>.<span class="hljs-number">3</span>.<span class="hljs-number">4</span>.jar
+</code></pre>
+<p><img src="/images/2025-10-28/397c75dd59df.png" alt=""></p>
+<p>iceberg表的数据放在data目录下：</p>
+<p><img src="/images/2025-10-28/bbeb7b14bb5b.jpg" alt=""></p>
+<p>iceberg表的元数据放在metadata目录下：</p>
+<p><img src="/images/2025-10-28/01ee4e5cd9c0.png" alt=""></p>
+<p>每个版本元数据记录了表的字段，以及它对应快照信息：</p>
+<p><img src="/images/2025-10-28/cbb2a429bf22.png" alt=""></p>
+<p>快照snapshot元数据的内容：</p>
+<p><img src="/images/2025-10-28/4eeb46731560.png" alt=""></p>
+<p>快照清单文件manifest内容：</p>
+<p><img src="/images/2025-10-28/fb470333b169.png" alt=""></p>
+<p><strong>数据更新-法2：Delta Lake 表管理</strong></p>
+<p>Delta Lake也是实现数据修改的一个工具，主要与 Spark 集成，读写策略方面，Delta Lake在写入时合并（Merge-on-Write），写入时重写整个数据文件，这样后续读取速度更快。而 iceberg 是读取时合并（Merge-on-Read），即写入时仅追加或记录删除信息，读取的时刻再合并数据文件和删除文件，也就是说写入更快，读取稍慢一点。</p>
+<p>入门文档：<a href="https://docs.delta.io/quick-start/">https://docs.delta.io/quick-start/</a></p>
+<p><img src="/images/2025-10-28/d262e598e9d3.png" alt=""></p>
+<p>使用文件格式加路径的方式，需要指定绝对路径（使用相对路径会导致报错）。</p>
+<p><img src="/images/2025-10-28/36a657bd3b71.png" alt=""></p>
+<p>再进行一些操作：</p>
+<p><img src="/images/2025-10-28/08682be6b8ad.png" alt=""></p>
+<p>数据目录下包括数据文件和日志：</p>
+<p><img src="/images/2025-10-28/aa10bcea0934.png" alt=""></p>
+<p>日志目录（_delta_log）保存了每次操作的事务json和当前版本元数据文件crc（Version Checksum file）：</p>
+<p><img src="/images/2025-10-28/bdc20cd25703.png" alt=""></p>
+<p>可以看到 Delta Lake 会在每次写入记录操作日志，同时合并汇聚生成了最终的数据文件。</p>
+<p>可以通过指定版本查看<strong>历史数据</strong> 情况：</p>
+<p><img src="/images/2025-10-28/d92b12a413a9.png" alt=""></p>
+<p>最后，看看执行的 Spark 操作的任务列表：</p>
+<p><img src="/images/2025-10-28/499591a93209.png" alt=""></p>
+<p><strong>小结</strong></p>
+<p>这里我们探索了 Spark SQL 在对象存储上的应用实践，在对象存储上进行表数据的增删改查，还有历史版本数据回溯等。</p>
+<p>1、对象存储可以理解为把文件系统扩展为了一种服务，它不仅仅是存文件的地方，而且是可扩展带权限的数据存储方法。</p>
+<p>2、在实际使用中，Spark 使用 FileSystem接口 来统一访问各种存储系统，屏蔽了底层的实现细节差异，不管什么存储都可以统一的进行读写操作。</p>
+<p>3、在存储系统的基础之上，叠加 Iceberg、Delta Lake表管理工具，能为数据湖提供更高层的能力：方便的实现数据的更新和删除，以及实现多版本快照，不同版本数据的切换，实现数据时光机的功能。</p>
+<hr>
+<p><strong>附：Windows编译****Hadoop</strong></p>
+<p>下载spark-3.5.7-bin-hadoop3对应版本hadoop-3.3.4，先查看BUILDING.txt的Building on Windows部分。</p>
+<p>安装配置好环境依赖：GIT，MAVEN3.9.11, JDK11，VS2022。</p>
+<p>在程序菜单打开VS2022的命令行：x64 Native Tools Command Prompt for VS 2022。编译整个hadoop是一个巨大的挑战，因为我们只需要本地文件，编译hadoop-common即可。</p>
+<pre class="hljs"><code class="hljs"><span class="hljs-name">D</span>:\hadoop\hadoop<span class="hljs-number">-3.3</span><span class="hljs-number">.4</span>-src\hadoop-common-project\hadoop-common&gt;mvn clean <span class="hljs-built_in">package</span> -Pdist,native-win -DskipTests -DskipDocs -Dmaven.javadoc.skip=<span class="hljs-literal">true</span> -Dtar -Dshell-executable=<span class="hljs-name">E</span>:\local\PortableGit\bin\bash.exe
+</code></pre>
+<p><img src="/images/2025-10-28/9fe1b61dd495.png" alt=""></p>
+<p><img src="/images/2025-10-28/bb1e58a9a95b.png" alt=""></p>
+<p>构建完成后，在target目录下生成的tar.gz包。</p>
+<p><img src="/images/2025-10-28/0d1042f658d6.png" alt=""></p>
+<p>解压后，将文件放到我们的 HADOOP_HOME/bin 目录下即可。</p>
+
+      </div>
+
+      <section class="discuss-panel mt-12">
+  <div class="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+    <div class="max-w-xl">
+      <p class="section-label">Discussion</p>
+      <h2 class="page-title mt-2 text-3xl text-ink">在 GitHub 上讨论</h2>
+      <p class="mt-3 text-sm leading-7 text-muted">欢迎通过 GitHub Issue 留言或反馈。每条讨论都会关联到对应文章的源文件路径。</p>
+      
+      <p class="mt-4 inline-flex rounded-full border border-line bg-white/70 px-3 py-1 font-mono text-xs text-muted">2025-10-28-基于对象存储的-Spark-数据读写实战：从末尾追加到任意更新.md</p>
+      
+    </div>
+    <div class="flex shrink-0 flex-wrap gap-3">
+      <a href="https://github.com/winse/winse.github.com/issues?q=is%3Aissue%20label%3Ablog%202025-10-28-%E5%9F%BA%E4%BA%8E%E5%AF%B9%E8%B1%A1%E5%AD%98%E5%82%A8%E7%9A%84-Spark-%E6%95%B0%E6%8D%AE%E8%AF%BB%E5%86%99%E5%AE%9E%E6%88%98%EF%BC%9A%E4%BB%8E%E6%9C%AB%E5%B0%BE%E8%BF%BD%E5%8A%A0%E5%88%B0%E4%BB%BB%E6%84%8F%E6%9B%B4%E6%96%B0.md" class="btn-ghost" target="_blank" rel="noopener">
+        查看已有讨论
+      </a>
+      <a href="https://github.com/winse/winse.github.com/issues/new?title=%5B2025-10-28-%E5%9F%BA%E4%BA%8E%E5%AF%B9%E8%B1%A1%E5%AD%98%E5%82%A8%E7%9A%84-Spark-%E6%95%B0%E6%8D%AE%E8%AF%BB%E5%86%99%E5%AE%9E%E6%88%98%EF%BC%9A%E4%BB%8E%E6%9C%AB%E5%B0%BE%E8%BF%BD%E5%8A%A0%E5%88%B0%E4%BB%BB%E6%84%8F%E6%9B%B4%E6%96%B0.md%5D%20%E5%9F%BA%E4%BA%8E%E5%AF%B9%E8%B1%A1%E5%AD%98%E5%82%A8%E7%9A%84%20Spark%20%E6%95%B0%E6%8D%AE%E8%AF%BB%E5%86%99%E5%AE%9E%E6%88%98%EF%BC%9A%E4%BB%8E%E6%9C%AB%E5%B0%BE%E8%BF%BD%E5%8A%A0%E5%88%B0%E4%BB%BB%E6%84%8F%E6%9B%B4%E6%96%B0&amp;body=%E6%96%87%E7%AB%A0%E9%93%BE%E6%8E%A5%3A%20https%3A%2F%2Fwinse.github.io%2Fblog%2F2025%2F10%2F28%2F%E5%9F%BA%E4%BA%8E%E5%AF%B9%E8%B1%A1%E5%AD%98%E5%82%A8%E7%9A%84-Spark-%E6%95%B0%E6%8D%AE%E8%AF%BB%E5%86%99%E5%AE%9E%E6%88%98%EF%BC%9A%E4%BB%8E%E6%9C%AB%E5%B0%BE%E8%BF%BD%E5%8A%A0%E5%88%B0%E4%BB%BB%E6%84%8F%E6%9B%B4%E6%96%B0%2F%0A%0A%E6%BA%90%E6%96%87%E4%BB%B6%3A%20%602025-10-28-%E5%9F%BA%E4%BA%8E%E5%AF%B9%E8%B1%A1%E5%AD%98%E5%82%A8%E7%9A%84-Spark-%E6%95%B0%E6%8D%AE%E8%AF%BB%E5%86%99%E5%AE%9E%E6%88%98%EF%BC%9A%E4%BB%8E%E6%9C%AB%E5%B0%BE%E8%BF%BD%E5%8A%A0%E5%88%B0%E4%BB%BB%E6%84%8F%E6%9B%B4%E6%96%B0.md%60&amp;labels=blog" class="btn-primary" target="_blank" rel="noopener">
+        新建 Issue
+      </a>
+    </div>
+  </div>
+</section>
+
+
+      
+      
+      <section class="mt-16 border-t border-line pt-10">
+        <p class="section-label">Related</p>
+        <h2 class="page-title mt-2 text-3xl">Related posts</h2>
+        <ul class="mt-6 space-y-4">
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2026/06/02/有一种自由叫做程序员的自由：把公众号文章镜像回自己的博客/" class="font-medium text-ink transition hover:text-accent">有一种自由叫做程序员的自由：把公众号文章镜像回自己的博客</a>
+            <p class="mt-1 text-sm text-muted">2026-06-02</p>
+          </li>
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2025/12/31/跟着-n8n-案例来学习子流程-Sub-workflow/" class="font-medium text-ink transition hover:text-accent">跟着 n8n 案例来学习子流程 Sub-workflow</a>
+            <p class="mt-1 text-sm text-muted">2025-12-31</p>
+          </li>
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2025/12/29/n8n-终于还是部署到-Docker-了，经验就是要反反复复地去验证：要想少走弯路，就按官方推荐的最佳实践/" class="font-medium text-ink transition hover:text-accent">n8n 终于还是部署到 Docker 了，经验就是要反反复复地去验证：要想少走弯路，就按官方推荐的最佳实践</a>
+            <p class="mt-1 text-sm text-muted">2025-12-29</p>
+          </li>
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2025/12/27/增强-Chat-Memo-管理-AI-聊天记录，导出文本让-AI-来总结我这一年的-AI-聊天记录/" class="font-medium text-ink transition hover:text-accent">增强 Chat Memo 管理 AI 聊天记录，导出文本让 AI 来总结我这一年的 AI 聊天记录</a>
+            <p class="mt-1 text-sm text-muted">2025-12-27</p>
+          </li>
+          
+        </ul>
+      </section>
+      
+    </div>
+
+    
+  </div>
+</article>
+
+  </main>
+  <footer class="mt-20 border-t border-line bg-surface-elevated/70">
+  <div class="site-shell py-12">
+    <div class="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr]">
+      <div>
+        <p class="page-title text-2xl text-ink">Winse Blog</p>
+        <p class="mt-3 max-w-md text-sm leading-7 text-muted">走走停停都是风景, 熙熙攘攘都向最好, 忙忙碌碌都为明朝, 何畏之.</p>
+      </div>
+      <div>
+        <p class="section-label">Explore</p>
+        <ul class="mt-4 space-y-2 text-sm text-muted">
+          <li><a href="/" class="transition hover:text-ink">Latest posts</a></li>
+          <li><a href="/blog/archives/" class="transition hover:text-ink">Archives</a></li>
+          <li><a href="/atom.xml" class="transition hover:text-ink">RSS feed</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="section-label">Connect</p>
+        <ul class="mt-4 space-y-2 text-sm text-muted">
+          <li><a href="https://github.com/winse" target="_blank" rel="noopener" class="transition hover:text-ink">GitHub @winse</a></li>
+          <li><a href="mailto:winseliu@foxmail.com" class="transition hover:text-ink">winseliu@foxmail.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="mt-10 flex flex-col gap-2 border-t border-line pt-6 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
+      <p>&copy; 2026 Winse Liu</p>
+      <p>Built with <a href="https://www.11ty.dev/" class="transition hover:text-ink">Eleventy</a> + Tailwind</p>
+    </div>
+  </div>
+</footer>
+
+  <script src="/js/main.js" defer></script>
+</body>
+</html>

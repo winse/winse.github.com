@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f4ef">
+  <title>被 n8n 任务 60s 超时反复折磨后的排查记录：从报错、堆栈到源码，理清 TASK_TIMEOUT 的真实用途与位置 · Winse Blog</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="alternate" type="application/atom+xml" title="Winse Blog" href="/atom.xml">
+  <link rel="stylesheet" href="/css/main.css">
+  
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-43198550-1"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'UA-43198550-1');
+  </script>
+  
+</head>
+<body class="min-h-screen flex flex-col">
+  <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-full focus:bg-ink focus:px-4 focus:py-2 focus:text-white">
+    跳到正文
+  </a>
+  <header class="sticky top-0 z-50 border-b border-line/80 bg-surface/85 backdrop-blur-xl">
+  <div class="site-shell flex items-center justify-between gap-4 py-4">
+    <a href="/" class="group flex items-center gap-3">
+      <span class="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-surface-elevated text-sm font-semibold text-accent shadow-sm transition group-hover:border-accent/30 group-hover:bg-accent-soft/50">W</span>
+      <span class="text-xl font-bold tracking-tight text-ink">Winse Blog</span>
+    </a>
+
+    <button type="button" id="nav-toggle" class="btn-ghost px-3 py-2 sm:hidden" aria-expanded="false" aria-controls="site-nav">
+      Menu
+    </button>
+
+    <nav id="site-nav" class="hidden items-center gap-5 text-sm sm:flex" aria-label="Primary">
+      <a href="/" class="nav-link" data-nav="/">Blog</a>
+      <a href="/blog/archives/" class="nav-link" data-nav="/blog/archives/">Archives</a>
+      <a href="/atom.xml" class="nav-link" data-nav="/atom.xml">RSS</a>
+      <form action="https://www.google.com/search" method="get" onsubmit="this.q.value = this.q.value ? this.q.value + ' site:winse.github.io' : ''" class="hidden items-center lg:flex">
+        <label class="sr-only" for="site-search">Search blog</label>
+        <input id="site-search" type="search" name="q" placeholder="Search site…"
+          class="w-44 rounded-full border border-line bg-surface-elevated px-4 py-2 text-sm text-ink placeholder:text-muted focus:border-accent/40 xl:w-52">
+      </form>
+      <a href="https://github.com/winse" target="_blank" rel="noopener" class="btn-ghost hidden sm:inline-flex">
+        GitHub
+      </a>
+    </nav>
+  </div>
+
+  <div id="mobile-nav" class="hidden border-t border-line/80 bg-surface/95 sm:hidden">
+    <div class="site-shell flex flex-col gap-3 py-4 text-sm">
+      <a href="/" class="nav-link">Blog</a>
+      <a href="/blog/archives/" class="nav-link">Archives</a>
+      <a href="/atom.xml" class="nav-link">RSS</a>
+      <a href="https://github.com/winse" target="_blank" rel="noopener" class="nav-link">GitHub</a>
+    </div>
+  </div>
+</header>
+
+  <main id="main-content" class="flex-1">
+    
+<article class="site-shell py-10 sm:py-14">
+  <div class="mx-auto max-w-6xl ">
+    <div class="min-w-0 max-w-3xl mx-auto">
+      <header class="border-b border-line pb-8">
+        <p class="section-label">Article</p>
+        <div class="meta-row mt-4">
+          
+          
+          <a href="/blog/categories/n8n/" class="rounded-full bg-accent-soft/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent transition hover:bg-accent-soft">n8n</a>
+          
+          <span aria-hidden="true">·</span>
+          
+          <time datetime="2026-01-10">发布于 2026-01-10</time>
+          
+          <span aria-hidden="true">·</span>
+          <span>2 min read</span>
+        </div>
+
+        <h1 class="article-title mt-6">被 n8n 任务 60s 超时反复折磨后的排查记录：从报错、堆栈到源码，理清 TASK_TIMEOUT 的真实用途与位置</h1>
+      </header>
+
+      
+
+      <div class="prose-blog py-8" id="post-content">
+        <p>一个完美、符合各种要求的环境是不存在的，只能在掌控和便捷之间来回游离。</p>
+<p>最开始在 Windows 上部署的测试环境，用着也蛮好。刚开始，事情还没那么复杂，也还没用到Python。就这样通过拖拽 n8n 低代码来实现简单的功能，跑得也挺顺。</p>
+<p>但程序员嘛，总会难耐的去各种折腾。环境一旦开始换，就很难再停下来。后面把最新的 <strong>n8n 2.x</strong> 部署进了 Docker。一开始都是正常的，流程都能正常的跑，任务也都不大。直到开始跑一些耗时的任务，比如下载大视频，运行时间一长，<strong>超过60秒就直接报错了</strong>。</p>
+<p>重试多次，错误日志都是：Task execution timed out after 60 seconds</p>
+<p><img src="/images/2026-01-10/2ae503e65a4e.png" alt=""></p>
+<p>遇到问题，第一个当然是下意识的去问 AI。给的方案里，其实有符合我预期的，但它不推荐这么做🧐。</p>
+<p><img src="/images/2026-01-10/5716ae2b03bd.png" alt=""></p>
+<p>程序员除了自己写代码，还有一个天然优势：用开源软件遇到问题，可以直接翻源码自己处理🤣。</p>
+<p><strong>开发环境配置</strong></p>
+<p>按照运行的版本，切换到 <strong>n8n@2.2.5</strong>，重新把开发环境搭起来。以前写过的相关文章翻出来，当复习资料，也算是自己教自己了。</p>
+<p>这一步其实挺花时间的，不是难，而是前前后后的环境很多需要对应。</p>
+<p>虚拟环境路径在源码 task-runner-python 的位置下。它用了一些只能在 Linux 下运行的依赖包，于是直接切到 VSCode 的 WSL 模式来进行调试（代码千万得放 WSL内部）。</p>
+<p>一整套流程下来，总算能顺畅的查看代码、打断点、跑调试了。</p>
+<pre class="hljs"><code class="hljs"><span class="hljs-symbol">C:</span>\Users\P16&gt;wsl --<span class="hljs-keyword">set</span>-<span class="hljs-keyword">default</span>-version <span class="hljs-number">2</span>
+</code></pre>
+<p><strong>巨细节的定位问题</strong></p>
+<p>接下来，一起来，进行一次<strong>沉浸式文字版****调试</strong>，DEBUG 走起。</p>
+<p>最直接的报错的点在 PythonTaskRunnerSandbox#runUsingIncomingItems。</p>
+<p><img src="/images/2026-01-10/c3582294faa3.png" alt=""></p>
+<p>错误日志的关键字：Task execution timed out。</p>
+<p>直觉上，这个是 TaskRunner 被强制中断的异常，应该对应的是  TaskRunnerExecutionTimeoutError 的异常，这与上面的都是 TS 类。</p>
+<p><img src="/images/2026-01-10/1046d0472e52.png" alt=""></p>
+<p>但问题在于，这个异常和 PythonTaskRunnerSandbox 之间不清楚有多大的鸿沟，前后关系是完全对不上的。</p>
+<p>那就只能从两头向中间逼近。只要能在中间某个点对上了，问题就一定藏在那里了。</p>
+<p>一、</p>
+<p>1、先从任务启动的入口 executionFunctions.<strong>startJob</strong> 找。</p>
+<p><img src="/images/2026-01-10/5f800ccf6020.png" alt=""></p>
+<p>2、接着找 <strong>startRunnerTask</strong>。这里的 Container 有点像 Spring 的依赖注入。</p>
+<p><img src="/images/2026-01-10/595e8f6b89f6.png" alt=""></p>
+<p>3、继续往下追，找 TaskRequester.<strong>startTask</strong> 的实现。</p>
+<p><img src="/images/2026-01-10/51557c91e2d6.png" alt=""></p>
+<p><strong>startTask</strong> 这里是提交任务的地方，通过消息把任务发给 TaskBroker。</p>
+<p><img src="/images/2026-01-10/54a017f45819.png" alt=""></p>
+<p>4、在顺着 <strong>requester:taskrequest</strong> 消息往下找，看它在哪里被处理的。</p>
+<p><img src="/images/2026-01-10/27495d2de1f3.png" alt=""></p>
+<p>这里就是 TaskRequester 和 TaskBroker 之间，通过发送消息进行任务管理的。</p>
+<p><img src="/images/2026-01-10/6d47dc519b6f.png" alt=""></p>
+<p>从官网的运行架构图来看，它们两个都是运行在 n8n 主进程里的。</p>
+<p><img src="/images/2026-01-10/4dc7d4b81458.png" alt=""></p>
+<p>二、</p>
+<p>另一边，我们再拿着 TaskRunnerExecutionTimeoutError 沿着引用往回查找。</p>
+<p><img src="/images/2026-01-10/00102fb05173.png" alt=""></p>
+<p>现在，两条线最后在 task-broker.service.ts 这里对上了。到这里，前面的链条算是合上了，方向是对的。</p>
+<p>精神一振，曙光就在眼前了😎。</p>
+<p>超时异常是在 handleTaskTimeout 里抛出来的。这个方法是在超时检测定时器 setTimeout 里被调用。</p>
+<p><img src="/images/2026-01-10/d1e6f0b33d04.png" alt=""></p>
+<p>超时时间来自配置项 taskRunnersConfig.taskTimeout，它上面标注了环境变量 <strong>N8N_RUNNERS_TASK_TIMEOUT</strong>。</p>
+<p><img src="/images/2026-01-10/dc01d67e73b9.png" alt=""></p>
+<p>整条链路基本串起来了，接下来就很自然了：修改环境变量，运行，验证。</p>
+<p>在 n8n 主容器添加环境变量 N8N_RUNNERS_TASK_TIMEOUT 设成3600（1个小时）。重启，再跑一次 docker compose。</p>
+<p><img src="/images/2026-01-10/863f7a86e4cd.png" alt=""></p>
+<p><strong>第一尝试：失败，结果还是同样报错<strong><strong>超时</strong></strong>。</strong></p>
+<p>从前面代码一路看下来，方向是对的，尽管还是报同样的错，第六感告诉我就在前方不远了。</p>
+<p>其实，上面简单一行的报错信息并不是 TaskRunnersConfig#taskTimeout 这个配置导致的。</p>
+<p>把时间设成 10s 时，它抛出的报错信息明显更加详细。</p>
+<p><img src="/images/2026-01-10/4a3261463b29.png" alt=""></p>
+<p>从结果来看，至少说明这个配置是生效的。但它不是最终导致任务超时的直接原因。还要继续精进，问题还没有完全的解决掉。</p>
+<p><strong>回到起点，再定位</strong></p>
+<p>回到最开始的报错信息，再查一次 Task execution timed out，现在来看，它就是 Python TaskRunner 超时抛出来的。</p>
+<p><img src="/images/2026-01-10/ac5443636c10.png" alt=""></p>
+<p>上面 TaskBroker 中异常处理 taskErrorHandler，还可能来自任务运行时的报错。</p>
+<p><img src="/images/2026-01-10/a88ffa6aadf5.png" alt=""></p>
+<p>于是顺着 Python 这条线找，依次查找：</p>
+<ul>
+<li>
+<p><strong>TaskTimeoutError</strong>（task_timeout_error.py）</p>
+</li>
+<li>
+<p>-&gt; <strong>execute_process</strong>（task_executor.py）</p>
+</li>
+<li>
+<p>-&gt; <strong>TaskRunner</strong>（task_runner.py）</p>
+</li>
+<li>
+<p>-&gt; <strong>T<strong><strong>askRunn</strong></strong>erConfig</strong></p>
+</li>
+</ul>
+<p>从 Python 的 TaskRunnerConfig 也是从环境变量  N8N_RUNNERS_TASK_TIMEOUT 获取数据，并且它的默认值是 60s。</p>
+<p><img src="/images/2026-01-10/e909822edffb.png" alt=""></p>
+<p>还可以进到 runners 容器验证。查看运行任务的环境变量，可以看到  N8N_RUNNERS_TASK_TIMEOUT 的值也确实为 60s。</p>
+<p><img src="/images/2026-01-10/0bf2d2436f78.png" alt=""></p>
+<p>距离清楚问题又近了一点。</p>
+<p>我之前只改了 n8n 主容器，以为这就够了的。但 external 模式下 Task Runner 实际是单独在 runners 容器运行的。</p>
+<p>把主容器和 runners 容器的超时时间环境变量 N8N_RUNNERS_TASK_TIMEOUT 都一起改掉。</p>
+<p><img src="/images/2026-01-10/2124b84e95ab.png" alt=""></p>
+<p>再跑一次。</p>
+<p>这次就完美的下载到这个大视频了。</p>
+<p><img src="/images/2026-01-10/98a206c7e729.png" alt=""></p>
+<p>至此，超时的问题通过配置环境变量 <strong>N8<strong><strong>N_RUNNER</strong></strong>S_TASK_TIMEOUT</strong> 算是完美的解决了。</p>
+<p><strong>解惑</strong></p>
+<p><strong>1、</strong> TaskRunnersConfig 代码 taskTimeout 里面明明是300，怎么运行就变成60了呢？</p>
+<p>这其实和 internal 模式搞混淆了，<strong>T<strong><strong>askRunne</strong></strong>rsConfig.taskTimeout</strong> <strong>实际就是300s。</strong></p>
+<p>可以通过只设置 runners 的 task timeout 的值，跑一个 sleep 300s 的代码，就能验证了。</p>
+<p><img src="/images/2026-01-10/e4456b9cc2da.png" alt=""></p>
+<p><strong>2、</strong> PyTaskRunnerProcess 启动任务进程时从 TaskRunnersConfig 拿了 taskTimeout 设置了环境变量。为什么没有作用到 Python 任务呢？</p>
+<p><img src="/images/2026-01-10/0eeb6bc80c30.png" alt=""></p>
+<p><strong>PyTaskRunnerProcess</strong> <strong>只用于 internal 模式</strong>。</p>
+<p>在 external 模式下使用 GO 写的 task-runner-launcher 来启动任务进程，它读取的是 runners 系统环境变量。</p>
+<p><strong>总结</strong></p>
+<p>由于 n8n 任务节点的超时，我们细致地的翻了翻源码，最后把 N8N_RUNNERS_TASK_TIMEOUT 这一个环境变量搞明白了。</p>
+<p>虽然听起来确实很小，就一个变量，一个超时时间而已。但真正搞清楚那一刻，心里还是有一丝不同。以后再遇到类型超时问题，不用连滚带爬，而是从从容容。</p>
+<p>把 N8N_RUNNERS_TASK_TIMEOUT 设好之后，任务该跑多久就跑多久。</p>
+<p>这次就到这。代码还在那，坑也还在那。但至少，这一个已经不会再绊到我了。</p>
+
+      </div>
+
+      <section class="discuss-panel mt-12">
+  <div class="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+    <div class="max-w-xl">
+      <p class="section-label">Discussion</p>
+      <h2 class="page-title mt-2 text-3xl text-ink">在 GitHub 上讨论</h2>
+      <p class="mt-3 text-sm leading-7 text-muted">欢迎通过 GitHub Issue 留言或反馈。每条讨论都会关联到对应文章的源文件路径。</p>
+      
+      <p class="mt-4 inline-flex rounded-full border border-line bg-white/70 px-3 py-1 font-mono text-xs text-muted">2026-01-10-被-n8n-任务-60s-超时反复折磨后的排查记录：从报错、堆栈到源码，理清-TASK_TIMEOUT-的真实用途与位置.md</p>
+      
+    </div>
+    <div class="flex shrink-0 flex-wrap gap-3">
+      <a href="https://github.com/winse/winse.github.com/issues?q=is%3Aissue%20label%3Ablog%202026-01-10-%E8%A2%AB-n8n-%E4%BB%BB%E5%8A%A1-60s-%E8%B6%85%E6%97%B6%E5%8F%8D%E5%A4%8D%E6%8A%98%E7%A3%A8%E5%90%8E%E7%9A%84%E6%8E%92%E6%9F%A5%E8%AE%B0%E5%BD%95%EF%BC%9A%E4%BB%8E%E6%8A%A5%E9%94%99%E3%80%81%E5%A0%86%E6%A0%88%E5%88%B0%E6%BA%90%E7%A0%81%EF%BC%8C%E7%90%86%E6%B8%85-TASK_TIMEOUT-%E7%9A%84%E7%9C%9F%E5%AE%9E%E7%94%A8%E9%80%94%E4%B8%8E%E4%BD%8D%E7%BD%AE.md" class="btn-ghost" target="_blank" rel="noopener">
+        查看已有讨论
+      </a>
+      <a href="https://github.com/winse/winse.github.com/issues/new?title=%5B2026-01-10-%E8%A2%AB-n8n-%E4%BB%BB%E5%8A%A1-60s-%E8%B6%85%E6%97%B6%E5%8F%8D%E5%A4%8D%E6%8A%98%E7%A3%A8%E5%90%8E%E7%9A%84%E6%8E%92%E6%9F%A5%E8%AE%B0%E5%BD%95%EF%BC%9A%E4%BB%8E%E6%8A%A5%E9%94%99%E3%80%81%E5%A0%86%E6%A0%88%E5%88%B0%E6%BA%90%E7%A0%81%EF%BC%8C%E7%90%86%E6%B8%85-TASK_TIMEOUT-%E7%9A%84%E7%9C%9F%E5%AE%9E%E7%94%A8%E9%80%94%E4%B8%8E%E4%BD%8D%E7%BD%AE.md%5D%20%E8%A2%AB%20n8n%20%E4%BB%BB%E5%8A%A1%2060s%20%E8%B6%85%E6%97%B6%E5%8F%8D%E5%A4%8D%E6%8A%98%E7%A3%A8%E5%90%8E%E7%9A%84%E6%8E%92%E6%9F%A5%E8%AE%B0%E5%BD%95%EF%BC%9A%E4%BB%8E%E6%8A%A5%E9%94%99%E3%80%81%E5%A0%86%E6%A0%88%E5%88%B0%E6%BA%90%E7%A0%81%EF%BC%8C%E7%90%86%E6%B8%85%20TASK_TIMEOUT%20%E7%9A%84%E7%9C%9F%E5%AE%9E%E7%94%A8%E9%80%94%E4%B8%8E%E4%BD%8D%E7%BD%AE&amp;body=%E6%96%87%E7%AB%A0%E9%93%BE%E6%8E%A5%3A%20https%3A%2F%2Fwinse.github.io%2Fblog%2F2026%2F01%2F10%2F%E8%A2%AB-n8n-%E4%BB%BB%E5%8A%A1-60s-%E8%B6%85%E6%97%B6%E5%8F%8D%E5%A4%8D%E6%8A%98%E7%A3%A8%E5%90%8E%E7%9A%84%E6%8E%92%E6%9F%A5%E8%AE%B0%E5%BD%95%EF%BC%9A%E4%BB%8E%E6%8A%A5%E9%94%99%E3%80%81%E5%A0%86%E6%A0%88%E5%88%B0%E6%BA%90%E7%A0%81%EF%BC%8C%E7%90%86%E6%B8%85-TASK_TIMEOUT-%E7%9A%84%E7%9C%9F%E5%AE%9E%E7%94%A8%E9%80%94%E4%B8%8E%E4%BD%8D%E7%BD%AE%2F%0A%0A%E6%BA%90%E6%96%87%E4%BB%B6%3A%20%602026-01-10-%E8%A2%AB-n8n-%E4%BB%BB%E5%8A%A1-60s-%E8%B6%85%E6%97%B6%E5%8F%8D%E5%A4%8D%E6%8A%98%E7%A3%A8%E5%90%8E%E7%9A%84%E6%8E%92%E6%9F%A5%E8%AE%B0%E5%BD%95%EF%BC%9A%E4%BB%8E%E6%8A%A5%E9%94%99%E3%80%81%E5%A0%86%E6%A0%88%E5%88%B0%E6%BA%90%E7%A0%81%EF%BC%8C%E7%90%86%E6%B8%85-TASK_TIMEOUT-%E7%9A%84%E7%9C%9F%E5%AE%9E%E7%94%A8%E9%80%94%E4%B8%8E%E4%BD%8D%E7%BD%AE.md%60&amp;labels=blog" class="btn-primary" target="_blank" rel="noopener">
+        新建 Issue
+      </a>
+    </div>
+  </div>
+</section>
+
+
+      
+      
+      <section class="mt-16 border-t border-line pt-10">
+        <p class="section-label">Related</p>
+        <h2 class="page-title mt-2 text-3xl">Related posts</h2>
+        <ul class="mt-6 space-y-4">
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2026/01/16/从一个视频到一个合集：n8n-+-YouTube合集批量自动下载/" class="font-medium text-ink transition hover:text-accent">从一个视频到一个合集：n8n + YouTube合集批量自动下载</a>
+            <p class="mt-1 text-sm text-muted">2026-01-16</p>
+          </li>
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2026/01/13/重构：使用-n8n+飞书-重写视频下载小工具，直接上链接/" class="font-medium text-ink transition hover:text-accent">重构：使用 n8n+飞书 重写视频下载小工具，直接上链接</a>
+            <p class="mt-1 text-sm text-muted">2026-01-13</p>
+          </li>
+          
+          <li class="rounded-2xl border border-line bg-surface-elevated/70 px-4 py-4 transition hover:border-accent/20 hover:bg-white">
+            <a href="/blog/2026/01/11/一个-If-节点引发的灾难，去年折腾到今年：在-n8n-节点路径上踩到最隐蔽的坑/" class="font-medium text-ink transition hover:text-accent">一个 If 节点引发的灾难，去年折腾到今年：在 n8n 节点路径上踩到最隐蔽的坑</a>
+            <p class="mt-1 text-sm text-muted">2026-01-11</p>
+          </li>
+          
+        </ul>
+      </section>
+      
+    </div>
+
+    
+  </div>
+</article>
+
+  </main>
+  <footer class="mt-20 border-t border-line bg-surface-elevated/70">
+  <div class="site-shell py-12">
+    <div class="grid gap-10 md:grid-cols-[1.4fr_1fr_1fr]">
+      <div>
+        <p class="page-title text-2xl text-ink">Winse Blog</p>
+        <p class="mt-3 max-w-md text-sm leading-7 text-muted">走走停停都是风景, 熙熙攘攘都向最好, 忙忙碌碌都为明朝, 何畏之.</p>
+      </div>
+      <div>
+        <p class="section-label">Explore</p>
+        <ul class="mt-4 space-y-2 text-sm text-muted">
+          <li><a href="/" class="transition hover:text-ink">Latest posts</a></li>
+          <li><a href="/blog/archives/" class="transition hover:text-ink">Archives</a></li>
+          <li><a href="/atom.xml" class="transition hover:text-ink">RSS feed</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="section-label">Connect</p>
+        <ul class="mt-4 space-y-2 text-sm text-muted">
+          <li><a href="https://github.com/winse" target="_blank" rel="noopener" class="transition hover:text-ink">GitHub @winse</a></li>
+          <li><a href="mailto:winseliu@foxmail.com" class="transition hover:text-ink">winseliu@foxmail.com</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="mt-10 flex flex-col gap-2 border-t border-line pt-6 text-sm text-muted sm:flex-row sm:items-center sm:justify-between">
+      <p>&copy; 2026 Winse Liu</p>
+      <p>Built with <a href="https://www.11ty.dev/" class="transition hover:text-ink">Eleventy</a> + Tailwind</p>
+    </div>
+  </div>
+</footer>
+
+  <script src="/js/main.js" defer></script>
+</body>
+</html>
