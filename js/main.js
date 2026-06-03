@@ -28,7 +28,6 @@
 
   function createPostCard(post) {
     const article = document.createElement("article");
-    article.className = "card-post group";
     article.dataset.categories = (post.categories || []).join(",");
 
     const category = post.categories && post.categories[0];
@@ -36,25 +35,28 @@
     const description = post.description
       ? `<p class="mt-3 line-clamp-2 text-sm leading-7 text-muted">${escapeHtml(post.description)}</p>`
       : "";
+    const cover = post.cover
+      ? `<a href="${escapeHtml(post.url)}" class="post-card-cover shrink-0 self-center" aria-hidden="true" tabindex="-1">
+          <img src="${escapeHtml(post.cover)}" alt="" loading="lazy" decoding="async" class="post-card-cover-img">
+        </a>`
+      : "";
 
+    article.className = "card-post group flex gap-5";
     article.innerHTML = `
-      <div class="meta-row mb-4">
-        ${category ? `<span class="rounded-full bg-accent-soft/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent">${escapeHtml(category)}</span>` : ""}
-        <time datetime="${escapeHtml(post.date)}">${escapeHtml(post.dateLabel)}</time>
-        ${updatedLabel}
-        <span aria-hidden="true">·</span>
-        <span>${escapeHtml(post.readingTime)}</span>
+      <div class="min-w-0 flex-1">
+        <div class="meta-row mb-4">
+          ${category ? `<span class="rounded-full bg-accent-soft/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-accent">${escapeHtml(category)}</span>` : ""}
+          <time datetime="${escapeHtml(post.date)}">${escapeHtml(post.dateLabel)}</time>
+          ${updatedLabel}
+          <span aria-hidden="true">·</span>
+          <span>${escapeHtml(post.readingTime)}</span>
+        </div>
+        <h2 class="post-card-title">
+          <a href="${escapeHtml(post.url)}" class="transition hover:text-accent">${escapeHtml(post.title)}</a>
+        </h2>
+        ${description}
       </div>
-      <h2 class="post-card-title">
-        <a href="${escapeHtml(post.url)}" class="transition hover:text-accent">${escapeHtml(post.title)}</a>
-      </h2>
-      ${description}
-      <div class="mt-6 flex items-center justify-between gap-3">
-        <a href="${escapeHtml(post.url)}" class="inline-flex items-center gap-2 text-sm font-semibold text-ink transition hover:text-accent">
-          Read more
-          <span aria-hidden="true" class="inline-block transition group-hover:translate-x-0.5">→</span>
-        </a>
-      </div>
+      ${cover}
     `;
 
     return article;
